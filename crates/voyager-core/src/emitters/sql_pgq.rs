@@ -255,7 +255,9 @@ impl AstVisitor for SqlPgqEmitter {
 
         let root_node = arena.get(root)?;
         if let AstNode::QueryStatement {
+            unwinds: _,
             matches,
+            mutations: _,
             return_clause,
         } = root_node
         {

@@ -38,16 +38,30 @@ struct PendingEdge {
     max_hops: Option<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClauseMode {
+    Match,
+    OptionalMatch,
+    Create,
+    Merge,
+}
+
 /// Fluent query builder for assembling ASTs with type safety and zero pointer indirection.
 #[derive(Debug, Default, Clone)]
 pub struct QueryBuilder {
     arena: QueryAstArena,
+    unwind_clauses: Vec<NodeHandle>,
     match_clauses: Vec<NodeHandle>,
+    mutation_clauses: Vec<NodeHandle>,
+    clause_mode: Option<ClauseMode>,
     is_optional_match: bool,
     current_path_start: Option<NodeHandle>,
     current_edges: Vec<NodeHandle>,
     pending_edge: Option<PendingEdge>,
     current_where_predicates: Vec<NodeHandle>,
+    current_on_create_set: Vec<NodeHandle>,
+    current_on_match_set: Vec<NodeHandle>,
+    current_set_items: Vec<NodeHandle>,
     projections: Vec<ProjectionItem>,
     order_bys: Vec<(NodeHandle, bool)>,
     distinct: bool,
@@ -93,6 +107,39 @@ impl QueryBuilder {
             .alloc(AstNode::BinaryExpression { left, op, right })
     }
 
+    /// Allocates an explicit named parameter node: `$param_name`.
+    #[inline(always)]
+    pub fn param(&mut self, name: impl Into<String>) -> NodeHandle {
+        self.arena.alloc(AstNode::Parameter(name.into()))
+    }
+
+    /// Adds an UNWIND batch expansion clause: `UNWIND <expr> AS <alias>`.
+    pub fn unwind(&mut self, expr: NodeHandle, alias: impl Into<String>) -> &mut Self {
+        self.flush_current_path();
+        let unwind = self.arena.alloc(AstNode::UnwindClause {
+            expression: expr,
+            alias: alias.into(),
+        });
+        self.unwind_clauses.push(unwind);
+        self
+    }
+
+    /// Adds an UNWIND batch parameter expansion clause: `UNWIND $param_name AS <alias>`.
+    pub fn unwind_param(
+        &mut self,
+        param_name: impl Into<String>,
+        alias: impl Into<String>,
+    ) -> &mut Self {
+        self.flush_current_path();
+        let expr = self.param(param_name);
+        let unwind = self.arena.alloc(AstNode::UnwindClause {
+            expression: expr,
+            alias: alias.into(),
+        });
+        self.unwind_clauses.push(unwind);
+        self
+    }
+
     // ========================================================
     // MATCH & Path Chaining (Memgraph & GQLAlchemy Pattern)
     // ========================================================
@@ -100,6 +147,7 @@ impl QueryBuilder {
     /// Starts a new mandatory `MATCH` block.
     pub fn r#match(&mut self) -> &mut Self {
         self.flush_current_path();
+        self.clause_mode = Some(ClauseMode::Match);
         self.is_optional_match = false;
         self
     }
@@ -107,7 +155,162 @@ impl QueryBuilder {
     /// Starts a new `OPTIONAL MATCH` block.
     pub fn optional_match(&mut self) -> &mut Self {
         self.flush_current_path();
+        self.clause_mode = Some(ClauseMode::OptionalMatch);
         self.is_optional_match = true;
+        self
+    }
+
+    /// Starts a new `CREATE` mutation block: `CREATE (p:Person {name: 'Alice'})`.
+    pub fn create(&mut self) -> &mut Self {
+        self.flush_current_path();
+        self.clause_mode = Some(ClauseMode::Create);
+        self
+    }
+
+    /// Starts a new `MERGE` idempotent upsert block: `MERGE (p:Person {id: $p0})`.
+    pub fn merge(&mut self) -> &mut Self {
+        self.flush_current_path();
+        self.clause_mode = Some(ClauseMode::Merge);
+        self
+    }
+
+    /// Adds an `ON CREATE SET target.prop = value` assignment to the active MERGE block.
+    pub fn on_create_set(
+        &mut self,
+        var: impl Into<String>,
+        prop: impl Into<String>,
+        val: impl Into<LiteralValue>,
+    ) -> &mut Self {
+        let value = self.literal(val);
+        self.on_create_set_expr(var, prop, value)
+    }
+
+    /// Adds an `ON CREATE SET target.prop = expr` assignment using an explicit AST expression handle.
+    pub fn on_create_set_expr(
+        &mut self,
+        var: impl Into<String>,
+        prop: impl Into<String>,
+        expr: NodeHandle,
+    ) -> &mut Self {
+        let target = self.prop(var, prop);
+        let item = self.arena.alloc(AstNode::SetItem {
+            target,
+            value: expr,
+            is_merge: false,
+        });
+        self.current_on_create_set.push(item);
+        self
+    }
+
+    /// Adds an `ON MATCH SET target.prop = value` assignment to the active MERGE block.
+    pub fn on_match_set(
+        &mut self,
+        var: impl Into<String>,
+        prop: impl Into<String>,
+        val: impl Into<LiteralValue>,
+    ) -> &mut Self {
+        let value = self.literal(val);
+        self.on_match_set_expr(var, prop, value)
+    }
+
+    /// Adds an `ON MATCH SET target.prop = expr` assignment using an explicit AST expression handle.
+    pub fn on_match_set_expr(
+        &mut self,
+        var: impl Into<String>,
+        prop: impl Into<String>,
+        expr: NodeHandle,
+    ) -> &mut Self {
+        let target = self.prop(var, prop);
+        let item = self.arena.alloc(AstNode::SetItem {
+            target,
+            value: expr,
+            is_merge: false,
+        });
+        self.current_on_match_set.push(item);
+        self
+    }
+
+    /// Adds a `SET target.prop = value` property assignment to the active statement.
+    pub fn set_property(
+        &mut self,
+        var: impl Into<String>,
+        prop: impl Into<String>,
+        val: impl Into<LiteralValue>,
+    ) -> &mut Self {
+        let value = self.literal(val);
+        self.set_property_expr(var, prop, value)
+    }
+
+    /// Adds a `SET target.prop = expr` property assignment using an explicit AST expression handle.
+    pub fn set_property_expr(
+        &mut self,
+        var: impl Into<String>,
+        prop: impl Into<String>,
+        expr: NodeHandle,
+    ) -> &mut Self {
+        let target = self.prop(var, prop);
+        let item = self.arena.alloc(AstNode::SetItem {
+            target,
+            value: expr,
+            is_merge: false,
+        });
+        self.current_set_items.push(item);
+        self
+    }
+
+    /// Adds a `SET var += map` map merge assignment to the active statement.
+    pub fn set_merge(
+        &mut self,
+        var: impl Into<String>,
+        val_map: impl Into<LiteralValue>,
+    ) -> &mut Self {
+        let target = self.ident(var);
+        let value = self.literal(val_map);
+        let item = self.arena.alloc(AstNode::SetItem {
+            target,
+            value,
+            is_merge: true,
+        });
+        self.current_set_items.push(item);
+        self
+    }
+
+    /// Adds a `DELETE` clause for one or more entity variables.
+    pub fn delete(&mut self, targets: Vec<impl Into<String>>) -> &mut Self {
+        self.flush_current_path();
+        let target_handles = targets.into_iter().map(|t| self.ident(t)).collect();
+        let del = self.arena.alloc(AstNode::DeleteClause {
+            detach: false,
+            targets: target_handles,
+        });
+        self.mutation_clauses.push(del);
+        self
+    }
+
+    /// Adds a `DETACH DELETE` clause for one or more entity variables.
+    pub fn detach_delete(&mut self, targets: Vec<impl Into<String>>) -> &mut Self {
+        self.flush_current_path();
+        let target_handles = targets.into_iter().map(|t| self.ident(t)).collect();
+        let del = self.arena.alloc(AstNode::DeleteClause {
+            detach: true,
+            targets: target_handles,
+        });
+        self.mutation_clauses.push(del);
+        self
+    }
+
+    /// Adds a `REMOVE` clause for removing a property: `REMOVE var.prop`.
+    pub fn remove_property(
+        &mut self,
+        var: impl Into<String>,
+        prop: impl Into<String>,
+    ) -> &mut Self {
+        self.flush_current_path();
+        let target = self.prop(var, prop);
+        let rem = self.arena.alloc(AstNode::RemoveClause {
+            items: vec![target],
+        });
+        self.mutation_clauses.push(rem);
         self
     }
 
@@ -524,35 +727,61 @@ impl QueryBuilder {
                 self.arena.alloc(AstNode::PathChain { start_node, edges })
             };
 
-            let where_clause = if self.current_where_predicates.is_empty() {
-                None
-            } else {
-                let preds = std::mem::take(&mut self.current_where_predicates);
-                let root_pred = if preds.len() == 1 {
-                    preds[0]
-                } else {
-                    let mut combined = preds[0];
-                    for &next_pred in &preds[1..] {
-                        combined = self.arena.alloc(AstNode::BinaryExpression {
-                            left: combined,
-                            op: BinaryOp::And,
-                            right: next_pred,
-                        });
-                    }
-                    combined
-                };
-                Some(self.arena.alloc(AstNode::WhereClause {
-                    root_predicate: root_pred,
-                }))
-            };
+            match self.clause_mode {
+                Some(ClauseMode::Create) => {
+                    let create_handle = self.arena.alloc(AstNode::CreateClause {
+                        paths: vec![path_handle],
+                    });
+                    self.mutation_clauses.push(create_handle);
+                }
+                Some(ClauseMode::Merge) => {
+                    let on_create_set = std::mem::take(&mut self.current_on_create_set);
+                    let on_match_set = std::mem::take(&mut self.current_on_match_set);
+                    let merge_handle = self.arena.alloc(AstNode::MergeClause {
+                        path: path_handle,
+                        on_create_set,
+                        on_match_set,
+                    });
+                    self.mutation_clauses.push(merge_handle);
+                }
+                _ => {
+                    let where_clause = if self.current_where_predicates.is_empty() {
+                        None
+                    } else {
+                        let preds = std::mem::take(&mut self.current_where_predicates);
+                        let root_pred = if preds.len() == 1 {
+                            preds[0]
+                        } else {
+                            let mut combined = preds[0];
+                            for &next_pred in &preds[1..] {
+                                combined = self.arena.alloc(AstNode::BinaryExpression {
+                                    left: combined,
+                                    op: BinaryOp::And,
+                                    right: next_pred,
+                                });
+                            }
+                            combined
+                        };
+                        Some(self.arena.alloc(AstNode::WhereClause {
+                            root_predicate: root_pred,
+                        }))
+                    };
 
-            let match_handle = self.arena.alloc(AstNode::MatchClause {
-                optional: self.is_optional_match,
-                paths: vec![path_handle],
-                where_clause,
-            });
+                    let match_handle = self.arena.alloc(AstNode::MatchClause {
+                        optional: self.is_optional_match,
+                        paths: vec![path_handle],
+                        where_clause,
+                    });
 
-            self.match_clauses.push(match_handle);
+                    self.match_clauses.push(match_handle);
+                }
+            }
+        }
+
+        if !self.current_set_items.is_empty() {
+            let items = std::mem::take(&mut self.current_set_items);
+            let set_clause = self.arena.alloc(AstNode::SetClause { items });
+            self.mutation_clauses.push(set_clause);
         }
     }
 
@@ -574,7 +803,9 @@ impl QueryBuilder {
         };
 
         let root_handle = self.arena.alloc(AstNode::QueryStatement {
+            unwinds: self.unwind_clauses,
             matches: self.match_clauses,
+            mutations: self.mutation_clauses,
             return_clause,
         });
 

@@ -155,6 +155,11 @@ impl CypherEmitter {
                 self.buffer.push_str(id);
                 Ok(())
             }
+            AstNode::Parameter(param) => {
+                self.buffer.push('$');
+                self.buffer.push_str(param);
+                Ok(())
+            }
             AstNode::PropertyAccess { target, property } => {
                 self.emit_expression(arena, *target, false)?;
                 self.buffer.push('.');
@@ -267,6 +272,158 @@ impl CypherEmitter {
 
         Ok(())
     }
+
+    fn emit_set_item(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::SetItem {
+            target,
+            value,
+            is_merge,
+        } = node
+        {
+            self.emit_expression(arena, *target, false)?;
+            if *is_merge {
+                self.buffer.push_str(" += ");
+            } else {
+                self.buffer.push_str(" = ");
+            }
+            self.emit_expression(arena, *value, false)?;
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected SetItem, got {node:?}"
+            )))
+        }
+    }
+
+    fn emit_create(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::CreateClause { paths } = node {
+            self.buffer.push_str("CREATE ");
+            for (i, &p) in paths.iter().enumerate() {
+                if i > 0 {
+                    self.buffer.push_str(", ");
+                }
+                self.emit_path(arena, p)?;
+            }
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected CreateClause, got {node:?}"
+            )))
+        }
+    }
+
+    fn emit_merge(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::MergeClause {
+            path,
+            on_create_set,
+            on_match_set,
+        } = node
+        {
+            self.buffer.push_str("MERGE ");
+            self.emit_path(arena, *path)?;
+
+            if !on_create_set.is_empty() {
+                self.buffer.push_str(" ON CREATE SET ");
+                for (i, &item) in on_create_set.iter().enumerate() {
+                    if i > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.emit_set_item(arena, item)?;
+                }
+            }
+
+            if !on_match_set.is_empty() {
+                self.buffer.push_str(" ON MATCH SET ");
+                for (i, &item) in on_match_set.iter().enumerate() {
+                    if i > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.emit_set_item(arena, item)?;
+                }
+            }
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected MergeClause, got {node:?}"
+            )))
+        }
+    }
+
+    fn emit_set(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::SetClause { items } = node {
+            self.buffer.push_str("SET ");
+            for (i, &item) in items.iter().enumerate() {
+                if i > 0 {
+                    self.buffer.push_str(", ");
+                }
+                self.emit_set_item(arena, item)?;
+            }
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected SetClause, got {node:?}"
+            )))
+        }
+    }
+
+    fn emit_delete(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::DeleteClause { detach, targets } = node {
+            if *detach {
+                self.buffer.push_str("DETACH DELETE ");
+            } else {
+                self.buffer.push_str("DELETE ");
+            }
+            for (i, &t) in targets.iter().enumerate() {
+                if i > 0 {
+                    self.buffer.push_str(", ");
+                }
+                self.emit_expression(arena, t, false)?;
+            }
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected DeleteClause, got {node:?}"
+            )))
+        }
+    }
+
+    fn emit_remove(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::RemoveClause { items } = node {
+            self.buffer.push_str("REMOVE ");
+            for (i, &item) in items.iter().enumerate() {
+                if i > 0 {
+                    self.buffer.push_str(", ");
+                }
+                self.emit_expression(arena, item, false)?;
+            }
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected RemoveClause, got {node:?}"
+            )))
+        }
+    }
+
+    fn emit_unwind(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::UnwindClause { expression, alias } = node {
+            self.buffer.push_str("UNWIND ");
+            self.emit_expression(arena, *expression, false)?;
+            self.buffer.push_str(" AS ");
+            self.buffer.push_str(alias);
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected UnwindClause, got {node:?}"
+            )))
+        }
+    }
 }
 
 impl AstVisitor for CypherEmitter {
@@ -278,13 +435,27 @@ impl AstVisitor for CypherEmitter {
         let root_node = arena.get(root)?;
         match root_node {
             AstNode::QueryStatement {
+                unwinds,
                 matches,
+                mutations,
                 return_clause,
             } => {
-                for (i, &match_handle) in matches.iter().enumerate() {
-                    if i > 0 {
+                let mut has_emitted = false;
+
+                for &unwind_handle in unwinds {
+                    if has_emitted {
                         self.buffer.push(' ');
                     }
+                    has_emitted = true;
+                    self.emit_unwind(arena, unwind_handle)?;
+                }
+
+                for &match_handle in matches {
+                    if has_emitted {
+                        self.buffer.push(' ');
+                    }
+                    has_emitted = true;
+
                     let match_node = arena.get(match_handle)?;
                     if let AstNode::MatchClause {
                         optional,
@@ -307,6 +478,27 @@ impl AstVisitor for CypherEmitter {
 
                         if let Some(wh) = where_clause {
                             self.emit_where(arena, *wh)?;
+                        }
+                    }
+                }
+
+                for &mut_handle in mutations {
+                    if has_emitted {
+                        self.buffer.push(' ');
+                    }
+                    has_emitted = true;
+
+                    let mut_node = arena.get(mut_handle)?;
+                    match mut_node {
+                        AstNode::CreateClause { .. } => self.emit_create(arena, mut_handle)?,
+                        AstNode::MergeClause { .. } => self.emit_merge(arena, mut_handle)?,
+                        AstNode::SetClause { .. } => self.emit_set(arena, mut_handle)?,
+                        AstNode::DeleteClause { .. } => self.emit_delete(arena, mut_handle)?,
+                        AstNode::RemoveClause { .. } => self.emit_remove(arena, mut_handle)?,
+                        other => {
+                            return Err(Error::AstInvariantViolation(format!(
+                                "Unsupported mutation clause in QueryStatement: {other:?}"
+                            )));
                         }
                     }
                 }
