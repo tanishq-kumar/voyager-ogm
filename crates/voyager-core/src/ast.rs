@@ -338,10 +338,52 @@ pub enum AstNode {
         /// Output yield items
         yield_items: Vec<String>,
     },
-    /// Complete graph query statement combining match blocks and projections.
+    /// CREATE mutation clause creating nodes or relationship paths: `CREATE (p:Person {name: 'Alice'})`.
+    CreateClause {
+        /// Patterns to create (NodePattern or PathChain handles)
+        paths: Vec<NodeHandle>,
+    },
+    /// MERGE idempotent upsert clause: `MERGE (p:Person {id: $p0}) ON CREATE SET ... ON MATCH SET ...`.
+    MergeClause {
+        /// Target pattern to match or create (NodePattern or PathChain handle)
+        path: NodeHandle,
+        /// Optional ON CREATE SET mutation handles
+        on_create_set: Vec<NodeHandle>,
+        /// Optional ON MATCH SET mutation handles
+        on_match_set: Vec<NodeHandle>,
+    },
+    /// SET property mutation clause: `SET p.age = $p0, p += $props`.
+    SetClause {
+        /// Mutation assignment expression handles (SetItem handles)
+        items: Vec<NodeHandle>,
+    },
+    /// Property assignment or map merge item in a SET clause.
+    SetItem {
+        /// Target PropertyAccess or Variable handle
+        target: NodeHandle,
+        /// Assigned value or map expression handle
+        value: NodeHandle,
+        /// Whether this is a map merge assignment (`+=`)
+        is_merge: bool,
+    },
+    /// DELETE node or relationship entity clause: `DELETE p` or `DETACH DELETE p`.
+    DeleteClause {
+        /// Whether to detach connecting relationships before deleting (`DETACH DELETE`)
+        detach: bool,
+        /// Variable / Identifier handles of entities to delete
+        targets: Vec<NodeHandle>,
+    },
+    /// REMOVE property or label clause: `REMOVE p.age` or `REMOVE p:Inactive`.
+    RemoveClause {
+        /// Target handles to remove (PropertyAccess or Variable/Label handles)
+        items: Vec<NodeHandle>,
+    },
+    /// Complete graph query statement combining match blocks, mutations, and projections.
     QueryStatement {
         /// Sequence of MATCH clauses
         matches: Vec<NodeHandle>,
+        /// Sequence of mutation clauses (CREATE, MERGE, SET, DELETE, REMOVE)
+        mutations: Vec<NodeHandle>,
         /// Optional RETURN projection clause
         return_clause: Option<NodeHandle>,
     },

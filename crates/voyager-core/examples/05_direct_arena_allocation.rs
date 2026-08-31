@@ -47,6 +47,7 @@ fn main() {
     // 4. Combine into root QueryStatement
     let root_handle = arena.alloc(AstNode::QueryStatement {
         matches: vec![match_handle],
+        mutations: vec![],
         return_clause: Some(return_handle),
     });
 

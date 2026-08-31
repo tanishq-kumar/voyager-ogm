@@ -89,6 +89,7 @@ fn test_fluent_query_builder_simple_match() {
     let root_node = arena.get(root).expect("Root statement must exist");
     if let AstNode::QueryStatement {
         matches,
+        mutations: _,
         return_clause,
     } = root_node
     {
@@ -220,6 +221,7 @@ fn test_intuitive_builder_aliases() {
     let root_node = arena.get(root).unwrap();
     if let AstNode::QueryStatement {
         matches,
+        mutations: _,
         return_clause,
     } = root_node
     {
@@ -267,6 +269,7 @@ fn test_memgraph_gqlalchemy_chaining_style() {
 
     if let AstNode::QueryStatement {
         matches,
+        mutations: _,
         return_clause,
     } = root_node
     {

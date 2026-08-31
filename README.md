@@ -77,7 +77,7 @@ gantt
 ### Phase 2: Mutations, Ingestion, Streaming & Bridging (Status: In Progress)
 - [x] **Task 2.1:** Zero-copy Apache Arrow and Polars stream ingestion (1,000,000 nodes in 9.08 ms).
 - [x] **Task 2.2:** Two-layer transaction Unit-of-Work with in-memory savepoint rollbacks.
-- [ ] **Task 2.3:** DML mutation AST nodes and dialect emitters (`CREATE`, `MERGE`, `SET`, `DELETE`, `DETACH DELETE`).
+- [x] **Task 2.3:** DML mutation AST nodes and dialect emitters (`CREATE`, `MERGE`, `SET`, `DELETE`, `DETACH DELETE`).
 - [ ] **Task 2.4:** High-throughput bulk ingestion engine (`UNWIND $batch` and Polars DataFrame importer).
 - [ ] **Task 2.5:** Database driver evaluation and query dispatch bridging layer.
 
@@ -112,15 +112,18 @@ uv run maturin develop
 ```python
 from voyager_ogm import Node, Relationship, Query, node, relationship
 
+
 @node(label="Person")
 class Person:
     name: str
     age: int
     city: str = "London"
 
+
 @relationship(type_name="WORKS_AT")
 class WorksAt:
     since: int = 2024
+
 
 @node(label="Company")
 class Company:
@@ -222,11 +225,11 @@ Voyager OGM uses continuous testing across three languages:
 
 | Engine / Target | Test Runner | Test Count | Status | Execution Time |
 | :--- | :--- | :---: | :---: | :---: |
-| **Rust Core (`voyager-core`)** | `cargo-nextest` | **47 tests** | Passing | **1.73s** |
+| **Rust Core (`voyager-core`)** | `cargo-nextest` | **53 tests** | Passing | **2.03s** |
 | **Multi-Dialect Golden Snapshots** | `insta` | **18 snapshots** | Passing | **Instant** |
-| **Python SDK (`voyager_ogm`)** | `pytest` + `pytest-cov` | **40 tests** | Passing | **5.72s** |
-| **TypeScript SDK (`@voyager-ogm/core`)**| `bun test` | **1 test** | Passing | **0.14s** |
-| **Total Automated Tests** | Across all components | **88 tests** | **100% Green** | **< 8.0s Total** |
+| **Python SDK (`voyager_ogm`)** | `pytest` + `pytest-cov` | **47 tests** | Passing | **10.82s** |
+| **TypeScript SDK (`@voyager-ogm/core`)**| `bun test` | **1 test** | Passing | **0.12s** |
+| **Total Automated Tests** | Across all components | **101 tests** | **100% Green** | **< 13.0s Total** |
 
 ---
 

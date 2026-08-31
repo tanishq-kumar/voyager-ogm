@@ -143,6 +143,44 @@ impl PyQueryBuilder {
         self.inner.r#return();
     }
 
+    fn create(&mut self) {
+        self.inner.create();
+    }
+
+    fn merge(&mut self) {
+        self.inner.merge();
+    }
+
+    fn on_create_set(&mut self, var: String, prop: String, val: &Bound<'_, PyAny>) -> PyResult<()> {
+        let lit = py_to_literal(val)?;
+        self.inner.on_create_set(var, prop, lit);
+        Ok(())
+    }
+
+    fn on_match_set(&mut self, var: String, prop: String, val: &Bound<'_, PyAny>) -> PyResult<()> {
+        let lit = py_to_literal(val)?;
+        self.inner.on_match_set(var, prop, lit);
+        Ok(())
+    }
+
+    fn set_property(&mut self, var: String, prop: String, val: &Bound<'_, PyAny>) -> PyResult<()> {
+        let lit = py_to_literal(val)?;
+        self.inner.set_property(var, prop, lit);
+        Ok(())
+    }
+
+    fn delete(&mut self, targets: Vec<String>) {
+        self.inner.delete(targets);
+    }
+
+    fn detach_delete(&mut self, targets: Vec<String>) {
+        self.inner.detach_delete(targets);
+    }
+
+    fn remove_property(&mut self, var: String, prop: String) {
+        self.inner.remove_property(var, prop);
+    }
+
     #[pyo3(signature = (var, prop, alias=None))]
     fn field(&mut self, var: String, prop: String, alias: Option<String>) {
         self.inner.field(var, prop, alias);
