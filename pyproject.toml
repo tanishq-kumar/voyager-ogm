@@ -1,0 +1,64 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "voyager-ogm"
+version = "0.1.0a1"
+description = "High-performance, vendor-neutral Object-Graph Mapper (OGM) with zero-copy Polars Arrow streaming"
+readme = "README.md"
+authors = [{ name = "Voyager OGM Team", email = "dev@voyager-ogm.org" }]
+license = { text = "MIT OR Apache-2.0" }
+requires-python = ">=3.10"
+keywords = ["graph", "ogm", "cypher", "sql-pgq", "gql", "polars", "arrow"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database :: Database Engines/Servers",
+]
+dependencies = [
+    "polars>=1.0.0",
+    "pyarrow>=15.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-benchmark>=4.0.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "maturin>=1.7.0",
+]
+marimo = [
+    "marimo>=0.10.0",
+    "anywidget>=0.9.0",
+]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+manifest-path = "crates/voyager-pyo3/Cargo.toml"
+module-name = "voyager_ogm._voyager_rs"
+python-source = "packages/python"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B"]
+ignore = []
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.pytest.ini_options]
+testpaths = ["packages/python/tests"]
+python_files = ["test_*.py"]

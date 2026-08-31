@@ -72,11 +72,11 @@ gantt
 - [x] **Task 1.2:** Build 32-bit handle memory arena (`QueryAstArena`) with zero memory fragmentation.
 - [x] **Task 1.3:** Build query emitters for openCypher, SQL:2023 PGQ, and ISO GQL.
 - [x] **Task 1.4:** Create 18 golden snapshot tests with `insta`.
-- [ ] **Task 1.5:** Build Python SDK with model decorators (`@node`, `@relationship`) and type annotations.
+- [x] **Task 1.5:** Build Python SDK with model decorators (`@node`, `@relationship`) and type annotations.
 
 ### Phase 2: Mutations, Ingestion, Streaming & Bridging (Status: In Progress)
-- [ ] **Task 2.1:** Zero-copy Apache Arrow and Polars stream ingestion (1,000,000 nodes in 9.08 ms).
-- [ ] **Task 2.2:** Two-layer transaction Unit-of-Work with in-memory savepoint rollbacks.
+- [x] **Task 2.1:** Zero-copy Apache Arrow and Polars stream ingestion (1,000,000 nodes in 9.08 ms).
+- [x] **Task 2.2:** Two-layer transaction Unit-of-Work with in-memory savepoint rollbacks.
 - [ ] **Task 2.3:** DML mutation AST nodes and dialect emitters (`CREATE`, `MERGE`, `SET`, `DELETE`, `DETACH DELETE`).
 - [ ] **Task 2.4:** High-throughput bulk ingestion engine (`UNWIND $batch` and Polars DataFrame importer).
 - [ ] **Task 2.5:** Database driver evaluation and query dispatch bridging layer.
