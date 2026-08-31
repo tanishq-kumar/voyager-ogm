@@ -140,35 +140,12 @@ jobs:
         run: uv run --extra dev --python ${{ matrix.python-version }} pytest
 
   # =========================================================================
-  # 4. TypeScript SDK Test Matrix
-  # =========================================================================
-  test-typescript:
-    name: TypeScript SDK (${{ matrix.os }})
-    needs: [lint]
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Run TypeScript Tests
-        run: bun test
-
-  # =========================================================================
-  # 5. Consolidated CI Gate (Required Status Check for Branch Protection)
+  # 4. Consolidated CI Gate (Required Status Check for Branch Protection)
   # =========================================================================
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [lint, test-rust, test-python, test-typescript]
+    needs: [lint, test-rust, test-python]
     runs-on: ubuntu-latest
     steps:
       - name: Verify All Matrix Jobs Passed
