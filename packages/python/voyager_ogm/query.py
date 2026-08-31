@@ -137,6 +137,21 @@ class Query:
         q._native.call_procedure(procedure_name, arg_literals, kwargs)
         return q
 
+    @classmethod
+    def unwind(cls, batch_param: str, alias: str = "row") -> Query:
+        """Starts an UNWIND batch unrolling statement: `UNWIND $batch_param AS alias`.
+
+        Args:
+            batch_param: Name of the parameter list (e.g. 'batch').
+            alias: Row alias name (default: 'row').
+
+        Returns:
+            A new Query instance initialized with the UNWIND clause.
+        """
+        q = cls()
+        q._native.unwind(batch_param.lstrip("$"), alias)
+        return q
+
     def yield_(self, *yield_items: str) -> Query:
         """Yields columns from a procedure call.
 
@@ -147,6 +162,47 @@ class Query:
             The Query instance for fluent chaining.
         """
         self._native.yield_items(list(yield_items))
+        return self
+
+    def add_unwind(self, batch_param: str, alias: str = "row") -> Query:
+        """Adds an UNWIND batch expansion clause: `UNWIND $batch_param AS alias`.
+
+        Args:
+            batch_param: Name of the parameter list (e.g. 'batch').
+            alias: Row alias name (default: 'row').
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        self._native.unwind(batch_param.lstrip("$"), alias)
+        return self
+
+    def add_create(self, node_or_type: Node | type[Node] | None = None) -> Query:
+        """Adds a CREATE mutation clause to the active query statement.
+
+        Args:
+            node_or_type: Optional Node instance or Node subclass to initialize the path.
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        self._native.create()
+        if node_or_type is not None:
+            self.node(node_or_type)
+        return self
+
+    def add_merge(self, node_or_type: Node | type[Node] | None = None) -> Query:
+        """Adds a MERGE idempotent upsert clause to the active query statement.
+
+        Args:
+            node_or_type: Optional Node instance or Node subclass to initialize the path.
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        self._native.merge()
+        if node_or_type is not None:
+            self.node(node_or_type)
         return self
 
     def add_match(self, node_or_type: Node | type[Node] | None = None) -> Query:
@@ -550,3 +606,8 @@ class Query:
         """
         res = self._native.compile(dialect, graph_name)
         return CompiledQuery(statement=res["statement"], parameters=res["parameters"])
+
+
+def unwind(batch_param: str, alias: str = "row") -> Query:
+    """Starts an UNWIND batch expansion query statement: `UNWIND $batch_param AS alias`."""
+    return Query.unwind(batch_param, alias=alias)
