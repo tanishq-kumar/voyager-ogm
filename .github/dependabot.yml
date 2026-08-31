@@ -1,28 +1,40 @@
-# Dependabot Configuration
-# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+# Dependabot Grouped Updates Configuration
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#groups
 
 version: 2
 updates:
-  # Maintain GitHub Actions commit SHAs
+  # Group all GitHub Actions updates into a single monthly PR
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
     commit-message:
       prefix: "ci"
 
-  # Maintain Rust Cargo dependencies
+  # Group all Rust Cargo dependencies into a single monthly PR
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
+    groups:
+      rust-dependencies:
+        patterns:
+          - "*"
     commit-message:
       prefix: "chore(deps)"
 
-  # Maintain Python dependencies
+  # Group all Python dependencies into a single monthly PR
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
     commit-message:
       prefix: "chore(deps)"
