@@ -155,6 +155,11 @@ impl CypherEmitter {
                 self.buffer.push_str(id);
                 Ok(())
             }
+            AstNode::Parameter(param) => {
+                self.buffer.push('$');
+                self.buffer.push_str(param);
+                Ok(())
+            }
             AstNode::PropertyAccess { target, property } => {
                 self.emit_expression(arena, *target, false)?;
                 self.buffer.push('.');
@@ -404,6 +409,21 @@ impl CypherEmitter {
             )))
         }
     }
+
+    fn emit_unwind(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::UnwindClause { expression, alias } = node {
+            self.buffer.push_str("UNWIND ");
+            self.emit_expression(arena, *expression, false)?;
+            self.buffer.push_str(" AS ");
+            self.buffer.push_str(alias);
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected UnwindClause, got {node:?}"
+            )))
+        }
+    }
 }
 
 impl AstVisitor for CypherEmitter {
@@ -415,11 +435,20 @@ impl AstVisitor for CypherEmitter {
         let root_node = arena.get(root)?;
         match root_node {
             AstNode::QueryStatement {
+                unwinds,
                 matches,
                 mutations,
                 return_clause,
             } => {
                 let mut has_emitted = false;
+
+                for &unwind_handle in unwinds {
+                    if has_emitted {
+                        self.buffer.push(' ');
+                    }
+                    has_emitted = true;
+                    self.emit_unwind(arena, unwind_handle)?;
+                }
 
                 for &match_handle in matches {
                     if has_emitted {

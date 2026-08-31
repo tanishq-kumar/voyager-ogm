@@ -30,7 +30,7 @@ impl IsoGqlEmitter {
         if let AstNode::NodePattern {
             variable,
             labels,
-            predicates: _,
+            predicates,
         } = node
         {
             self.buffer.push('(');
@@ -44,6 +44,16 @@ impl IsoGqlEmitter {
                     self.buffer.push('&');
                 }
                 self.buffer.push_str(label);
+            }
+            if !predicates.is_empty() {
+                self.buffer.push_str(" {");
+                for (i, &pred_handle) in predicates.iter().enumerate() {
+                    if i > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.emit_expression(arena, pred_handle, false)?;
+                }
+                self.buffer.push('}');
             }
             self.buffer.push(')');
             Ok(())
@@ -139,6 +149,11 @@ impl IsoGqlEmitter {
         match node {
             AstNode::Identifier(id) => {
                 self.buffer.push_str(id);
+                Ok(())
+            }
+            AstNode::Parameter(param) => {
+                self.buffer.push('$');
+                self.buffer.push_str(param);
                 Ok(())
             }
             AstNode::PropertyAccess { target, property } => {
@@ -378,6 +393,21 @@ impl IsoGqlEmitter {
             )))
         }
     }
+
+    fn emit_unwind(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::UnwindClause { expression, alias } = node {
+            self.buffer.push_str("UNWIND ");
+            self.emit_expression(arena, *expression, false)?;
+            self.buffer.push_str(" AS ");
+            self.buffer.push_str(alias);
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected UnwindClause, got {node:?}"
+            )))
+        }
+    }
 }
 
 impl AstVisitor for IsoGqlEmitter {
@@ -388,12 +418,21 @@ impl AstVisitor for IsoGqlEmitter {
 
         let root_node = arena.get(root)?;
         if let AstNode::QueryStatement {
+            unwinds,
             matches,
             mutations,
             return_clause,
         } = root_node
         {
             let mut has_emitted = false;
+
+            for &unwind_handle in unwinds {
+                if has_emitted {
+                    self.buffer.push(' ');
+                }
+                has_emitted = true;
+                self.emit_unwind(arena, unwind_handle)?;
+            }
 
             for &match_handle in matches {
                 if has_emitted {
