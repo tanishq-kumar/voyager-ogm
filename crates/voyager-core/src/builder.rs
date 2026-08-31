@@ -50,6 +50,7 @@ enum ClauseMode {
 #[derive(Debug, Default, Clone)]
 pub struct QueryBuilder {
     arena: QueryAstArena,
+    unwind_clauses: Vec<NodeHandle>,
     match_clauses: Vec<NodeHandle>,
     mutation_clauses: Vec<NodeHandle>,
     clause_mode: Option<ClauseMode>,
@@ -106,6 +107,39 @@ impl QueryBuilder {
             .alloc(AstNode::BinaryExpression { left, op, right })
     }
 
+    /// Allocates an explicit named parameter node: `$param_name`.
+    #[inline(always)]
+    pub fn param(&mut self, name: impl Into<String>) -> NodeHandle {
+        self.arena.alloc(AstNode::Parameter(name.into()))
+    }
+
+    /// Adds an UNWIND batch expansion clause: `UNWIND <expr> AS <alias>`.
+    pub fn unwind(&mut self, expr: NodeHandle, alias: impl Into<String>) -> &mut Self {
+        self.flush_current_path();
+        let unwind = self.arena.alloc(AstNode::UnwindClause {
+            expression: expr,
+            alias: alias.into(),
+        });
+        self.unwind_clauses.push(unwind);
+        self
+    }
+
+    /// Adds an UNWIND batch parameter expansion clause: `UNWIND $param_name AS <alias>`.
+    pub fn unwind_param(
+        &mut self,
+        param_name: impl Into<String>,
+        alias: impl Into<String>,
+    ) -> &mut Self {
+        self.flush_current_path();
+        let expr = self.param(param_name);
+        let unwind = self.arena.alloc(AstNode::UnwindClause {
+            expression: expr,
+            alias: alias.into(),
+        });
+        self.unwind_clauses.push(unwind);
+        self
+    }
+
     // ========================================================
     // MATCH & Path Chaining (Memgraph & GQLAlchemy Pattern)
     // ========================================================
@@ -147,11 +181,21 @@ impl QueryBuilder {
         prop: impl Into<String>,
         val: impl Into<LiteralValue>,
     ) -> &mut Self {
-        let target = self.prop(var, prop);
         let value = self.literal(val);
+        self.on_create_set_expr(var, prop, value)
+    }
+
+    /// Adds an `ON CREATE SET target.prop = expr` assignment using an explicit AST expression handle.
+    pub fn on_create_set_expr(
+        &mut self,
+        var: impl Into<String>,
+        prop: impl Into<String>,
+        expr: NodeHandle,
+    ) -> &mut Self {
+        let target = self.prop(var, prop);
         let item = self.arena.alloc(AstNode::SetItem {
             target,
-            value,
+            value: expr,
             is_merge: false,
         });
         self.current_on_create_set.push(item);
@@ -165,11 +209,21 @@ impl QueryBuilder {
         prop: impl Into<String>,
         val: impl Into<LiteralValue>,
     ) -> &mut Self {
-        let target = self.prop(var, prop);
         let value = self.literal(val);
+        self.on_match_set_expr(var, prop, value)
+    }
+
+    /// Adds an `ON MATCH SET target.prop = expr` assignment using an explicit AST expression handle.
+    pub fn on_match_set_expr(
+        &mut self,
+        var: impl Into<String>,
+        prop: impl Into<String>,
+        expr: NodeHandle,
+    ) -> &mut Self {
+        let target = self.prop(var, prop);
         let item = self.arena.alloc(AstNode::SetItem {
             target,
-            value,
+            value: expr,
             is_merge: false,
         });
         self.current_on_match_set.push(item);
@@ -183,11 +237,21 @@ impl QueryBuilder {
         prop: impl Into<String>,
         val: impl Into<LiteralValue>,
     ) -> &mut Self {
-        let target = self.prop(var, prop);
         let value = self.literal(val);
+        self.set_property_expr(var, prop, value)
+    }
+
+    /// Adds a `SET target.prop = expr` property assignment using an explicit AST expression handle.
+    pub fn set_property_expr(
+        &mut self,
+        var: impl Into<String>,
+        prop: impl Into<String>,
+        expr: NodeHandle,
+    ) -> &mut Self {
+        let target = self.prop(var, prop);
         let item = self.arena.alloc(AstNode::SetItem {
             target,
-            value,
+            value: expr,
             is_merge: false,
         });
         self.current_set_items.push(item);
@@ -655,12 +719,6 @@ impl QueryBuilder {
     }
 
     fn flush_current_path(&mut self) {
-        if !self.current_set_items.is_empty() {
-            let items = std::mem::take(&mut self.current_set_items);
-            let set_clause = self.arena.alloc(AstNode::SetClause { items });
-            self.mutation_clauses.push(set_clause);
-        }
-
         if let Some(start_node) = self.current_path_start.take() {
             let path_handle = if self.current_edges.is_empty() {
                 start_node
@@ -719,6 +777,12 @@ impl QueryBuilder {
                 }
             }
         }
+
+        if !self.current_set_items.is_empty() {
+            let items = std::mem::take(&mut self.current_set_items);
+            let set_clause = self.arena.alloc(AstNode::SetClause { items });
+            self.mutation_clauses.push(set_clause);
+        }
     }
 
     /// Finalizes the AST and returns the completed arena alongside the root statement handle.
@@ -739,6 +803,7 @@ impl QueryBuilder {
         };
 
         let root_handle = self.arena.alloc(AstNode::QueryStatement {
+            unwinds: self.unwind_clauses,
             matches: self.match_clauses,
             mutations: self.mutation_clauses,
             return_clause,

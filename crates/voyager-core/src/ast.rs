@@ -300,6 +300,15 @@ pub enum AstNode {
     Literal(LiteralValue),
     /// Named identifier reference (e.g. `p`, `director_name`).
     Identifier(String),
+    /// Explicit named query parameter reference: `$batch`, `$user_id`.
+    Parameter(String),
+    /// UNWIND clause for batch unrolling: `UNWIND $batch AS row`.
+    UnwindClause {
+        /// Expression handle representing the batch list (Parameter / Literal / Identifier)
+        expression: NodeHandle,
+        /// Alias identifier name for each unrolled row (e.g. "row")
+        alias: String,
+    },
     /// Dedicated WHERE clause block.
     WhereClause {
         /// Root predicate expression handle
@@ -378,8 +387,10 @@ pub enum AstNode {
         /// Target handles to remove (PropertyAccess or Variable/Label handles)
         items: Vec<NodeHandle>,
     },
-    /// Complete graph query statement combining match blocks, mutations, and projections.
+    /// Complete graph query statement combining unwinds, match blocks, mutations, and projections.
     QueryStatement {
+        /// Sequence of UNWIND clauses
+        unwinds: Vec<NodeHandle>,
         /// Sequence of MATCH clauses
         matches: Vec<NodeHandle>,
         /// Sequence of mutation clauses (CREATE, MERGE, SET, DELETE, REMOVE)
