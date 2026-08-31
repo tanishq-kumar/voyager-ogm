@@ -17,6 +17,7 @@
 pub mod arrow;
 pub mod ast;
 pub mod builder;
+pub mod bulk;
 pub mod emitters;
 pub mod error;
 pub mod transaction;

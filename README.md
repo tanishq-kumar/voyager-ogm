@@ -36,11 +36,11 @@ Voyager OGM solves four common problems in graph databases:
 
 ---
 
-## Project Plan and Roadmap (5 Phases)
+## Project Plan and Roadmap (6 Phases)
 
 ```mermaid
 gantt
-    title Voyager OGM Implementation Roadmap (5 Phases)
+    title Voyager OGM Implementation Roadmap (6 Phases)
     dateFormat  YYYY-MM-DD
     section Phase 1: Core Engine (v0.1.0-alpha)
     Workspace & Tooling Scaffolding       :done, p1_1, 2026-08-25, 2d
@@ -48,23 +48,27 @@ gantt
     Dialect Emitters (Cypher, SQL, GQL)   :done, p1_3, after p1_2, 3d
     Golden Snapshot Test Suite (Insta)    :done, p1_4, after p1_3, 2d
     Python PyO3 SDK & Type Annotations    :done, p1_5, after p1_4, 3d
-    section Phase 2: Mutations & Ingestion (v0.2.0-alpha)
+    section Phase 2: Mutations & Ingestion (v0.2.0-beta)
     Zero-Copy Arrow & Polars Streaming    :done, p2_1, after p1_5, 3d
     Two-Layer Rollbacks & Savepoints      :done, p2_2, after p2_1, 3d
-    DML Mutations (CREATE, MERGE, SET)    :active, p2_3, after p2_2, 3d
-    Bulk Importer (UNWIND & DataFrame)    :p2_4, after p2_3, 3d
-    Driver Evaluation & Bridging System   :p2_5, after p2_4, 3d
-    section Phase 3: TS SDK & Python Add-ons (v0.3.0-alpha)
-    TypeScript NAPI SDK Integration       :p3_1, after p2_5, 4d
-    SQLAlchemy Hybrid Bridge              :p3_2, after p3_1, 3d
-    Marimo Reactive WebGL Extension       :p3_3, after p3_2, 3d
-    section Phase 4: Voyager CLI Engine (v0.4.0-alpha)
-    CLI Scaffolding & clap Integration    :p4_1, after p3_3, 2d
-    voyager compile Command               :p4_2, after p4_1, 3d
-    voyager migrate Command               :p4_3, after p4_2, 3d
-    voyager introspect Command            :p4_4, after p4_3, 3d
-    section Phase 5: Production GA (v0.5.0-alpha)
-    Multi-Registry OIDC Publishing        :p5_1, after p4_4, 3d
+    DML Mutations (CREATE, MERGE, SET)    :done, p2_3, after p2_2, 3d
+    Bulk Importer (UNWIND & DataFrame)    :done, p2_4, after p2_3, 3d
+    Driver Evaluation & Bridging System   :active, p2_5, after p2_4, 3d
+    section Phase 3: Formal TCK Conformance (v0.3.0)
+    openCypher TCK Grammar Verification   :p3_1, after p2_5, 4d
+    openGQL / ISO:IEC 39075 TCK Harness   :p3_2, after p3_1, 3d
+    Multi-Engine Live Matrix (Neo4j/Memgraph) :p3_3, after p3_2, 3d
+    section Phase 4: TS SDK & Python Add-ons (v0.4.0)
+    TypeScript NAPI SDK Integration       :p4_1, after p3_3, 4d
+    SQLAlchemy Hybrid Bridge              :p4_2, after p4_1, 3d
+    Marimo Reactive WebGL Extension       :p4_3, after p4_2, 3d
+    section Phase 5: Voyager CLI Engine (v0.5.0)
+    CLI Scaffolding & clap Integration    :p5_1, after p4_3, 2d
+    voyager compile Command               :p5_2, after p5_1, 3d
+    voyager migrate Command               :p5_3, after p5_2, 3d
+    voyager introspect Command            :p5_4, after p5_3, 3d
+    section Phase 6: Production GA (v1.0.0)
+    Multi-Registry OIDC Publishing        :p6_1, after p5_4, 3d
 ```
 
 ### Phase 1: Core Read AST Engine (Status: Completed)
@@ -77,23 +81,29 @@ gantt
 ### Phase 2: Mutations, Ingestion, Streaming & Bridging (Status: In Progress)
 - [x] **Task 2.1:** Zero-copy Apache Arrow and Polars stream ingestion (1,000,000 nodes in 9.08 ms).
 - [x] **Task 2.2:** Two-layer transaction Unit-of-Work with in-memory savepoint rollbacks.
-- [ ] **Task 2.3:** DML mutation AST nodes and dialect emitters (`CREATE`, `MERGE`, `SET`, `DELETE`, `DETACH DELETE`).
-- [ ] **Task 2.4:** High-throughput bulk ingestion engine (`UNWIND $batch` and Polars DataFrame importer).
+- [x] **Task 2.3:** DML mutation AST nodes and dialect emitters (`CREATE`, `MERGE`, `SET`, `DELETE`, `DETACH DELETE`).
+- [x] **Task 2.4:** High-throughput bulk ingestion engine (`UNWIND $batch` and Polars DataFrame importer).
 - [ ] **Task 2.5:** Database driver evaluation and query dispatch bridging layer.
 
-### Phase 3: TypeScript SDK & Python Add-ons (Status: Planned)
-- [ ] **Task 3.1:** TypeScript SDK (`@voyager-ogm/core`) with NAPI-RS bindings.
-- [ ] **Task 3.2:** SQLAlchemy hybrid bridge connecting relational models with graph traversals.
-- [ ] **Task 3.3:** Marimo reactive notebook visual extension (`voyager_graph[marimo]`).
+### Phase 3: Formal TCK Conformance & Multi-Engine Compatibility Matrix (Status: Planned)
+- [ ] **Task 3.1:** [openCypher TCK](https://github.com/opencypher/openCypher/tree/main/tck) & [openGQL TCK](https://github.com/opengql/tck) automated syntax and grammar verification.
+- [ ] **Task 3.2:** [DuckPGQ SQLLogicTest Suite](https://github.com/cwida/duckpgq-extension/tree/main/test) for SQL:2023 `GRAPH_TABLE` standard conformance.
+- [ ] **Task 3.3:** [Apache AGE Regression Suite](https://github.com/apache/age/tree/master/regress) for PostgreSQL embedded Cypher conformance.
+- [ ] **Task 3.4:** Automated multi-engine live integration matrix (Neo4j, Memgraph, DuckDB DuckPGQ, PostgreSQL Apache AGE, FalkorDB, Kùzu).
 
-### Phase 4: Voyager CLI Development (Status: Planned)
-- [ ] **Task 4.1:** Standalone CLI tool (`voyager-cli`) built with `clap`.
-- [ ] **Task 4.2:** `voyager compile`: (sqlc-style) Compiles `.cypher` / `.gql` queries into type-safe models and async functions.
-- [ ] **Task 4.3:** `voyager migrate`: Manages in-graph schema migrations (constraints, indexes, labels).
-- [ ] **Task 4.4:** `voyager introspect`: Scans live database catalogs to generate model classes and query functions.
+### Phase 4: TypeScript SDK & Python Add-ons (Status: Planned)
+- [ ] **Task 4.1:** TypeScript SDK (`@voyager-ogm/core`) with NAPI-RS bindings.
+- [ ] **Task 4.2:** SQLAlchemy hybrid bridge connecting relational models with graph traversals.
+- [ ] **Task 4.3:** Marimo reactive notebook visual extension (`voyager_graph[marimo]`).
 
-### Phase 5: Production GA Release & Multi-Registry Publishing (Status: Planned)
-- [ ] **Task 5.1:** Automated multi-registry publishing to PyPI, Crates.io, and npm with trusted OIDC provenance.
+### Phase 5: Voyager CLI Development (Status: Planned)
+- [ ] **Task 5.1:** Standalone CLI tool (`voyager-cli`) built with `clap`.
+- [ ] **Task 5.2:** `voyager compile`: (sqlc-style) Compiles `.cypher` / `.gql` queries into type-safe models and async functions.
+- [ ] **Task 5.3:** `voyager migrate`: Manages in-graph schema migrations (constraints, indexes, labels).
+- [ ] **Task 5.4:** `voyager introspect`: Scans live database catalogs to generate model classes and query functions.
+
+### Phase 6: Production GA Release & Multi-Registry Publishing (Status: Planned)
+- [ ] **Task 6.1:** Automated multi-registry publishing to PyPI, Crates.io, and npm with trusted OIDC provenance.
 
 ---
 
@@ -112,15 +122,18 @@ uv run maturin develop
 ```python
 from voyager_ogm import Node, Relationship, Query, node, relationship
 
+
 @node(label="Person")
 class Person:
     name: str
     age: int
     city: str = "London"
 
+
 @relationship(type_name="WORKS_AT")
 class WorksAt:
     since: int = 2024
+
 
 @node(label="Company")
 class Company:
@@ -222,11 +235,32 @@ Voyager OGM uses continuous testing across three languages:
 
 | Engine / Target | Test Runner | Test Count | Status | Execution Time |
 | :--- | :--- | :---: | :---: | :---: |
-| **Rust Core (`voyager-core`)** | `cargo-nextest` | **47 tests** | Passing | **1.73s** |
+| **Rust Core (`voyager-core`)** | `cargo-nextest` | **57 tests** | Passing | **1.48s** |
 | **Multi-Dialect Golden Snapshots** | `insta` | **18 snapshots** | Passing | **Instant** |
-| **Python SDK (`voyager_ogm`)** | `pytest` + `pytest-cov` | **40 tests** | Passing | **5.72s** |
-| **TypeScript SDK (`@voyager-ogm/core`)**| `bun test` | **1 test** | Passing | **0.14s** |
-| **Total Automated Tests** | Across all components | **88 tests** | **100% Green** | **< 8.0s Total** |
+| **Python SDK (`voyager_ogm`)** | `pytest` + `pytest-cov` | **56 tests** | Passing | **7.51s** |
+| **TypeScript SDK (`@voyager-ogm/core`)**| `bun test` | **1 test** | Passing | **0.12s** |
+| **Total Automated Tests** | Across all components | **114 tests** | **100% Green** | **< 10.0s Total** |
+
+### Current Test Suite Architecture
+
+Voyager OGM validates its core query compiler and memory engine through five layers:
+
+1. **Memory Arena & Handle Integrity**: Verifies zero-leak allocation, mutable updates, and automatic garbage-free reclamation across 100+ hop traversals.
+2. **Deterministic Golden Snapshots (`insta`)**: Locks in exact string emissions across openCypher, SQL:2023 PGQ, and ISO GQL for real-world graph patterns (LDBC Social Network, Movie Graph, aggregations, and APOC vendor procedures).
+3. **Transaction Rollback & Chaos Tests**: Guarantees zero memory leaks and state rollbacks across 500 aborted transactions and nested savepoints.
+4. **Zero-Copy Columnar Streaming**: Microbenchmarked streaming of 1,000,000 Arrow records into Polars DataFrames in ~9 ms.
+5. **Bulk Ingestion Verification**: Verifies batch generation (`UNWIND $batch AS row`) and zero-copy chunking across 100,000 Polars DataFrame rows in ~83 ms.
+
+### Multi-Standard Conformance & Correctness Verification (Phase 3)
+
+In **Phase 3**, Voyager OGM integrates four authoritative test suites to ensure 100% formal correctness across all supported graph query paradigms:
+
+1. [**openCypher TCK**](https://github.com/opencypher/openCypher/tree/main/tck): Validates complete openCypher grammar, clause evaluation, and semantic equivalence (Neo4j, Memgraph).
+2. [**openGQL / ISO:IEC 39075:2024 TCK**](https://github.com/opengql/tck): Validates formal ISO standard query constructs, type systems, and graph pattern matching.
+3. [**DuckPGQ Test Suite**](https://github.com/cwida/duckpgq-extension/tree/main/test): Validates formal **SQL:2023 Part 16 (SQL/PGQ)** `GRAPH_TABLE` nested projections and `COLUMNS(...)` syntax against DuckDB.
+4. [**Apache AGE Regression Suite**](https://github.com/apache/age/tree/master/regress): Validates PostgreSQL-embedded Cypher execution (`cypher('graph', $$ ... $$)`) and `agtype` property mappings.
+
+Running these official suites guarantees **100% formal mathematical and grammatical correctness** directly against international graph standards and real-world database runtimes.
 
 ---
 

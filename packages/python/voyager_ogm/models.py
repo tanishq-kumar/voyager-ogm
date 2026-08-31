@@ -345,7 +345,8 @@ class Node:
         label = self.__labels__[0] if self.__labels__ else self.__class__.__name__
         self._alias = alias or _get_next_alias(label)
         self._bound_fields: dict[str, BoundField] = {}
-        self._values = values
+        self._values: dict[str, Any] = dict(values)
+        self._dirty_fields: dict[str, Any] = dict(values)
 
     @property
     def alias(self) -> str:
@@ -356,6 +357,30 @@ class Node:
     def labels(self) -> list[str]:
         """Returns the list of graph labels associated with this node."""
         return self.__labels__ if self.__labels__ else [self.__class__.__name__]
+
+    @property
+    def dirty_fields(self) -> dict[str, Any]:
+        """Returns a dictionary of modified property names and their updated values."""
+        return dict(self._dirty_fields)
+
+    def clear_dirty(self) -> None:
+        """Clears recorded dirty fields after a commit or save."""
+        self._dirty_fields.clear()
+
+    def get(self, name: str, default: Any = None) -> Any:
+        """Retrieves an in-memory property value."""
+        return self._values.get(name, default)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name.startswith("_"):
+            super().__setattr__(name, value)
+        else:
+            if not hasattr(self, "_values"):
+                self._values = {}
+            if not hasattr(self, "_dirty_fields"):
+                self._dirty_fields = {}
+            self._values[name] = value
+            self._dirty_fields[name] = value
 
     def __getattr__(self, name: str) -> BoundField:
         """Dynamically resolves unknown property names into BoundField descriptors.

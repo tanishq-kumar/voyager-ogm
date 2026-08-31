@@ -143,6 +143,48 @@ impl PyQueryBuilder {
         self.inner.r#return();
     }
 
+    fn create(&mut self) {
+        self.inner.create();
+    }
+
+    fn merge(&mut self) {
+        self.inner.merge();
+    }
+
+    fn on_create_set(&mut self, var: String, prop: String, val: &Bound<'_, PyAny>) -> PyResult<()> {
+        let lit = py_to_literal(val)?;
+        self.inner.on_create_set(var, prop, lit);
+        Ok(())
+    }
+
+    fn on_match_set(&mut self, var: String, prop: String, val: &Bound<'_, PyAny>) -> PyResult<()> {
+        let lit = py_to_literal(val)?;
+        self.inner.on_match_set(var, prop, lit);
+        Ok(())
+    }
+
+    fn set_property(&mut self, var: String, prop: String, val: &Bound<'_, PyAny>) -> PyResult<()> {
+        let lit = py_to_literal(val)?;
+        self.inner.set_property(var, prop, lit);
+        Ok(())
+    }
+
+    fn delete(&mut self, targets: Vec<String>) {
+        self.inner.delete(targets);
+    }
+
+    fn detach_delete(&mut self, targets: Vec<String>) {
+        self.inner.detach_delete(targets);
+    }
+
+    fn unwind(&mut self, param_name: String, alias: String) {
+        self.inner.unwind_param(param_name, alias);
+    }
+
+    fn remove_property(&mut self, var: String, prop: String) {
+        self.inner.remove_property(var, prop);
+    }
+
     #[pyo3(signature = (var, prop, alias=None))]
     fn field(&mut self, var: String, prop: String, alias: Option<String>) {
         self.inner.field(var, prop, alias);
@@ -387,11 +429,118 @@ impl PyTransaction {
     }
 }
 
+/// Compiles a high-speed bulk create Cypher/GQL query: `UNWIND $batch AS row CREATE ...`.
+#[pyfunction]
+#[pyo3(signature = (label, properties, batch_param="batch", row_alias="row", dialect="cypher"))]
+fn compile_bulk_create<'py>(
+    py: Python<'py>,
+    label: String,
+    properties: Vec<String>,
+    batch_param: &str,
+    row_alias: &str,
+    dialect: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let prop_refs: Vec<&str> = properties.iter().map(|s| s.as_str()).collect();
+    let compiled = voyager_core::bulk::compile_bulk_create(
+        &label,
+        &prop_refs,
+        batch_param,
+        row_alias,
+        dialect,
+    )
+    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    let dict = PyDict::new(py);
+    dict.set_item("statement", compiled.statement)?;
+    let params_dict = PyDict::new(py);
+    for (k, v) in compiled.parameters {
+        params_dict.set_item(k, literal_to_py(&v, py)?)?;
+    }
+    dict.set_item("parameters", params_dict)?;
+    Ok(dict)
+}
+
+/// Compiles a high-speed bulk upsert / MERGE Cypher/GQL query: `UNWIND $batch AS row MERGE ...`.
+#[pyfunction]
+#[pyo3(signature = (label, key_property, properties, batch_param="batch", row_alias="row", dialect="cypher"))]
+fn compile_bulk_merge<'py>(
+    py: Python<'py>,
+    label: String,
+    key_property: String,
+    properties: Vec<String>,
+    batch_param: &str,
+    row_alias: &str,
+    dialect: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let prop_refs: Vec<&str> = properties.iter().map(|s| s.as_str()).collect();
+    let compiled = voyager_core::bulk::compile_bulk_merge(
+        &label,
+        &key_property,
+        &prop_refs,
+        batch_param,
+        row_alias,
+        dialect,
+    )
+    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    let dict = PyDict::new(py);
+    dict.set_item("statement", compiled.statement)?;
+    let params_dict = PyDict::new(py);
+    for (k, v) in compiled.parameters {
+        params_dict.set_item(k, literal_to_py(&v, py)?)?;
+    }
+    dict.set_item("parameters", params_dict)?;
+    Ok(dict)
+}
+
+/// Compiles a high-speed bulk relationship creation query.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (rel_type, properties, from_label, from_key, to_label, to_key, batch_param="batch", row_alias="row", dialect="cypher"))]
+fn compile_bulk_create_rel<'py>(
+    py: Python<'py>,
+    rel_type: String,
+    properties: Vec<String>,
+    from_label: String,
+    from_key: String,
+    to_label: String,
+    to_key: String,
+    batch_param: &str,
+    row_alias: &str,
+    dialect: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let prop_refs: Vec<&str> = properties.iter().map(|s| s.as_str()).collect();
+    let compiled = voyager_core::bulk::compile_bulk_create_rel(
+        &rel_type,
+        &prop_refs,
+        &from_label,
+        &from_key,
+        &to_label,
+        &to_key,
+        batch_param,
+        row_alias,
+        dialect,
+    )
+    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    let dict = PyDict::new(py);
+    dict.set_item("statement", compiled.statement)?;
+    let params_dict = PyDict::new(py);
+    for (k, v) in compiled.parameters {
+        params_dict.set_item(k, literal_to_py(&v, py)?)?;
+    }
+    dict.set_item("parameters", params_dict)?;
+    Ok(dict)
+}
+
 /// Native Python module definition for `_voyager_rs`.
 #[pymodule]
 fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(generate_synthetic_stream, m)?)?;
+    m.add_function(wrap_pyfunction!(compile_bulk_create, m)?)?;
+    m.add_function(wrap_pyfunction!(compile_bulk_merge, m)?)?;
+    m.add_function(wrap_pyfunction!(compile_bulk_create_rel, m)?)?;
     m.add_class::<PyQueryBuilder>()?;
     m.add_class::<PyArrowStream>()?;
     m.add_class::<PyUnitOfWork>()?;
