@@ -1,0 +1,180 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # =========================================================================
+  # 1. Fast Lint & Code Style Gate
+  # =========================================================================
+  lint:
+    name: Code Quality & Linting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          workspaces: |
+            .
+            crates/*
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install Dev Dependencies
+        run: uv sync --extra dev
+
+      - name: Check Rust Formatting
+        run: cargo fmt --all --check
+
+      - name: Run Clippy Linters
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Check Python Formatting (Ruff)
+        run: uv run --extra dev ruff format --check .
+
+      - name: Run Python Linters (Ruff)
+        run: uv run --extra dev ruff check .
+
+  # =========================================================================
+  # 2. Rust Core Engine Test Matrix
+  # =========================================================================
+  test-rust:
+    name: Rust Core (${{ matrix.os }})
+    needs: [lint]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          workspaces: |
+            .
+            crates/*
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Run Rust Nextest Suite
+        run: cargo nextest run --workspace --all-targets
+
+  # =========================================================================
+  # 3. Python SDK Multi-Python & Multi-OS Test Matrix
+  # =========================================================================
+  test-python:
+    name: Python SDK (${{ matrix.os }}, Py ${{ matrix.python-version }})
+    needs: [lint]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          workspaces: |
+            .
+            crates/*
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          version: "latest"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install Dev Dependencies
+        run: uv sync --extra dev --python ${{ matrix.python-version }}
+
+      - name: Build Native Python Extension (maturin develop)
+        run: uv run --extra dev --python ${{ matrix.python-version }} maturin develop
+
+      - name: Run Pytest Suite
+        run: uv run --extra dev --python ${{ matrix.python-version }} pytest
+
+  # =========================================================================
+  # 4. TypeScript SDK Test Matrix
+  # =========================================================================
+  test-typescript:
+    name: TypeScript SDK (${{ matrix.os }})
+    needs: [lint]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Run TypeScript Tests
+        run: bun test
+
+  # =========================================================================
+  # 5. Consolidated CI Gate (Required Status Check for Branch Protection)
+  # =========================================================================
+  ci-gate:
+    name: CI Gate
+    if: always()
+    needs: [lint, test-rust, test-python, test-typescript]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify All Matrix Jobs Passed
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "::error::One or more CI matrix jobs failed or were cancelled."
+            exit 1
+          fi
+          echo "All CI jobs completed successfully."

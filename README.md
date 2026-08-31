@@ -2,7 +2,9 @@
 
 **High-Performance, Multi-Dialect Object-Graph Mapper (OGM) and Query Compiler**
 
+[![CI](https://github.com/tanishq-kumar/voyager-ogm/actions/workflows/ci.yml/badge.svg)](https://github.com/tanishq-kumar/voyager-ogm/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
+[![Changelog](https://img.shields.io/badge/Changelog-Keep%20a%20Changelog-informational.svg)](CHANGELOG.md)
 [![Standards](https://img.shields.io/badge/Standards-openCypher%20%7C%20SQL%3A2023%20PGQ%20%7C%20ISO%20GQL-green.svg)](https://www.iso.org/standard/76120.html)
 [![Arrow](https://img.shields.io/badge/Zero--Copy-Apache%20Arrow%20PyCapsule-orange.svg)](https://arrow.apache.org/)
 
