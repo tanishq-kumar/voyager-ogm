@@ -1,0 +1,12 @@
+{"person1_id":"usr_001","person2_id":"usr_002","creationDate":1680000000,"closenessScore":0.95}
+{"person1_id":"usr_002","person2_id":"usr_001","creationDate":1680000000,"closenessScore":0.95}
+{"person1_id":"usr_002","person2_id":"usr_003","creationDate":1680000100,"closenessScore":0.88}
+{"person1_id":"usr_003","person2_id":"usr_002","creationDate":1680000100,"closenessScore":0.88}
+{"person1_id":"usr_002","person2_id":"usr_005","creationDate":1680000200,"closenessScore":0.92}
+{"person1_id":"usr_005","person2_id":"usr_002","creationDate":1680000200,"closenessScore":0.92}
+{"person1_id":"usr_003","person2_id":"usr_006","creationDate":1680000300,"closenessScore":0.85}
+{"person1_id":"usr_006","person2_id":"usr_003","creationDate":1680000300,"closenessScore":0.85}
+{"person1_id":"usr_004","person2_id":"usr_005","creationDate":1680000400,"closenessScore":0.90}
+{"person1_id":"usr_005","person2_id":"usr_004","creationDate":1680000400,"closenessScore":0.90}
+{"person1_id":"usr_001","person2_id":"usr_006","creationDate":1680000500,"closenessScore":0.78}
+{"person1_id":"usr_006","person2_id":"usr_001","creationDate":1680000500,"closenessScore":0.78}

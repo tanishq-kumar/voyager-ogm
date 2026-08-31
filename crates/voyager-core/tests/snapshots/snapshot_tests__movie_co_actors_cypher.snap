@@ -1,0 +1,5 @@
+---
+source: crates/voyager-core/tests/snapshot_tests.rs
+expression: cypher_res.statement
+---
+MATCH (p:Person)-[r:ACTED_IN*1..2]->(m:Movie)<-[d_rel:DIRECTED]-(d:Director) WHERE (p.age > $p0) AND (m.released = $p1) RETURN p.name AS actor, m.title AS movie, d.name AS director ORDER BY p.name ASC LIMIT 10

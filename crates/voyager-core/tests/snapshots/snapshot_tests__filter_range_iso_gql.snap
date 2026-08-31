@@ -1,0 +1,5 @@
+---
+source: crates/voyager-core/tests/snapshot_tests.rs
+expression: gql_res.statement
+---
+MATCH (p:Person) WHERE ((p.age >= $p0) AND (p.age <= $p1)) AND (p.name CONTAINS $p2) RETURN p.name AS full_name, p.age AS age ORDER BY p.age DESC

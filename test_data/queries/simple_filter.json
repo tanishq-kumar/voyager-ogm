@@ -1,0 +1,47 @@
+{
+  "test_name": "simple_filter",
+  "description": "Find all actors born after 1970 and return their name and birth year ordered by birth year ascending, limit 10.",
+  "ast": {
+    "type": "QueryStatement",
+    "matches": [
+      {
+        "type": "MatchClause",
+        "optional": false,
+        "pattern": {
+          "type": "NodePattern",
+          "variable": "p",
+          "labels": ["Person"],
+          "predicates": [
+            {
+              "type": "BinaryExpression",
+              "left": { "type": "PropertyAccess", "variable": "p", "property": "born" },
+              "op": "Gt",
+              "right": { "type": "Literal", "value": 1970 }
+            }
+          ]
+        }
+      }
+    ],
+    "return_clause": {
+      "distinct": false,
+      "projections": [
+        { "expression": { "type": "PropertyAccess", "variable": "p", "property": "name" }, "alias": "actor_name" },
+        { "expression": { "type": "PropertyAccess", "variable": "p", "property": "born" }, "alias": "birth_year" }
+      ],
+      "order_by": [
+        { "expression": { "type": "PropertyAccess", "variable": "p", "property": "born" }, "ascending": true }
+      ],
+      "limit": 10
+    }
+  },
+  "expected_queries": {
+    "cypher": "MATCH (p:Person)\nWHERE p.born > $p0\nRETURN p.name AS actor_name, p.born AS birth_year\nORDER BY p.born ASC\nLIMIT $p1",
+    "sql_pgq": "SELECT\n  gt.actor_name,\n  gt.birth_year\nFROM GRAPH_TABLE (\n  movie_graph\n  MATCH (p:Person WHERE p.born > :p0)\n  COLUMNS (\n    p.name AS actor_name,\n    p.born AS birth_year\n  )\n) AS gt\nORDER BY gt.birth_year ASC\nLIMIT :p1",
+    "iso_gql": "MATCH (p:Person WHERE p.born > $p0)\nRETURN p.name AS actor_name, p.born AS birth_year\nORDER BY p.born ASC\nLIMIT $p1",
+    "duck_pgq": "SELECT\n  gt.actor_name,\n  gt.birth_year\nFROM GRAPH_TABLE (\n  movie_graph\n  MATCH (p:Person WHERE p.born > $1)\n  COLUMNS (\n    p.name AS actor_name,\n    p.born AS birth_year\n  )\n) AS gt\nORDER BY gt.birth_year ASC\nLIMIT $2"
+  },
+  "expected_parameters": {
+    "$p0": 1970,
+    "$p1": 10
+  }
+}

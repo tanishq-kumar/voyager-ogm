@@ -1,0 +1,44 @@
+# name: test/sql/sql_pgq/variable_length_paths.test
+# description: ISO SQL:2023 PGQ Quantified / Variable-Length Path Matching Tests
+# group: [pgq]
+
+statement ok
+CREATE TABLE Person (id BIGINT PRIMARY KEY, name VARCHAR);
+
+statement ok
+CREATE TABLE knows (src_id BIGINT, dst_id BIGINT);
+
+statement ok
+INSERT INTO Person VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie'), (4, 'Dave');
+
+statement ok
+INSERT INTO knows VALUES (1, 2), (2, 3), (3, 4);
+
+statement ok
+CREATE PROPERTY GRAPH social_net_pg
+  VERTEX TABLES (
+    Person KEY (id) LABEL Person PROPERTIES (id, name)
+  )
+  EDGE TABLES (
+    knows
+      SOURCE KEY (src_id) REFERENCES Person (id)
+      DESTINATION KEY (dst_id) REFERENCES Person (id)
+      LABEL knows
+  );
+
+# Variable Length Path: 1 to 3 hops syntax (->{1,3})
+query TT
+SELECT start_person, reachable_person
+FROM GRAPH_TABLE (
+  social_net_pg
+  MATCH (p1:Person WHERE p1.name = 'Alice') -[k:knows]->{1,3} (p2:Person)
+  COLUMNS (
+    p1.name AS start_person,
+    p2.name AS reachable_person
+  )
+) AS gt
+ORDER BY reachable_person ASC;
+----
+Alice	Bob
+Alice	Charlie
+Alice	Dave

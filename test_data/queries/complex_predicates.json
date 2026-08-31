@@ -1,0 +1,74 @@
+{
+  "test_name": "complex_predicates",
+  "description": "Find movies where rating is >= 8.5 AND (released < 2000 OR budget < 100000000) AND title CONTAINS 'Matrix', returning title and release year.",
+  "ast": {
+    "type": "QueryStatement",
+    "matches": [
+      {
+        "type": "MatchClause",
+        "optional": false,
+        "pattern": {
+          "type": "NodePattern",
+          "variable": "m",
+          "labels": ["Movie"],
+          "predicates": [
+            {
+              "type": "BinaryExpression",
+              "left": {
+                "type": "BinaryExpression",
+                "left": { "type": "PropertyAccess", "variable": "m", "property": "rating" },
+                "op": "Gte",
+                "right": { "type": "Literal", "value": 8.5 }
+              },
+              "op": "And",
+              "right": {
+                "type": "BinaryExpression",
+                "left": {
+                  "type": "BinaryExpression",
+                  "left": { "type": "PropertyAccess", "variable": "m", "property": "released" },
+                  "op": "Lt",
+                  "right": { "type": "Literal", "value": 2000 }
+                },
+                "op": "Or",
+                "right": {
+                  "type": "BinaryExpression",
+                  "left": { "type": "PropertyAccess", "variable": "m", "property": "budget" },
+                  "op": "Lt",
+                  "right": { "type": "Literal", "value": 100000000.0 }
+                }
+              }
+            },
+            {
+              "type": "BinaryExpression",
+              "left": { "type": "PropertyAccess", "variable": "m", "property": "title" },
+              "op": "Contains",
+              "right": { "type": "Literal", "value": "Matrix" }
+            }
+          ]
+        }
+      }
+    ],
+    "return_clause": {
+      "distinct": false,
+      "projections": [
+        { "expression": { "type": "PropertyAccess", "variable": "m", "property": "title" }, "alias": "movie_title" },
+        { "expression": { "type": "PropertyAccess", "variable": "m", "property": "released" }, "alias": "released_year" },
+        { "expression": { "type": "PropertyAccess", "variable": "m", "property": "rating" }, "alias": "score" }
+      ],
+      "order_by": [
+        { "expression": { "type": "PropertyAccess", "variable": "m", "property": "rating" }, "ascending": false }
+      ]
+    }
+  },
+  "expected_queries": {
+    "cypher": "MATCH (m:Movie)\nWHERE m.rating >= $p0 AND (m.released < $p1 OR m.budget < $p2) AND m.title CONTAINS $p3\nRETURN m.title AS movie_title, m.released AS released_year, m.rating AS score\nORDER BY m.rating DESC",
+    "sql_pgq": "SELECT\n  gt.movie_title,\n  gt.released_year,\n  gt.score\nFROM GRAPH_TABLE (\n  movie_graph\n  MATCH (m:Movie WHERE m.rating >= :p0 AND (m.released < :p1 OR m.budget < :p2) AND m.title LIKE '%' || :p3 || '%')\n  COLUMNS (\n    m.title AS movie_title,\n    m.released AS released_year,\n    m.rating AS score\n  )\n) AS gt\nORDER BY gt.score DESC",
+    "iso_gql": "MATCH (m:Movie WHERE m.rating >= $p0 AND (m.released < $p1 OR m.budget < $p2) AND m.title CONTAINS $p3)\nRETURN m.title AS movie_title, m.released AS released_year, m.rating AS score\nORDER BY m.rating DESC"
+  },
+  "expected_parameters": {
+    "$p0": 8.5,
+    "$p1": 2000,
+    "$p2": 100000000.0,
+    "$p3": "Matrix"
+  }
+}

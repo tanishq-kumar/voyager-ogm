@@ -1,0 +1,54 @@
+{
+  "test_name": "aggregation_grouping",
+  "description": "Calculate the count of movies and average rating for each director, having at least 1 movie, ordered by movie count descending.",
+  "ast": {
+    "type": "QueryStatement",
+    "matches": [
+      {
+        "type": "MatchClause",
+        "optional": false,
+        "pattern": {
+          "type": "PathChain",
+          "start_node": {
+            "type": "NodePattern",
+            "variable": "d",
+            "labels": ["Person"]
+          },
+          "edges": [
+            {
+              "type": "EdgePattern",
+              "variable": "r",
+              "edge_types": ["DIRECTED"],
+              "direction": "Outgoing",
+              "target_node": {
+                "type": "NodePattern",
+                "variable": "m",
+                "labels": ["Movie"]
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "return_clause": {
+      "distinct": false,
+      "projections": [
+        { "expression": { "type": "PropertyAccess", "variable": "d", "property": "name" }, "alias": "director_name" },
+        { "expression": { "type": "PropertyAccess", "variable": "m", "property": "id" }, "alias": "movie_count", "aggregation": "Count" },
+        { "expression": { "type": "PropertyAccess", "variable": "m", "property": "rating" }, "alias": "avg_rating", "aggregation": "Avg" }
+      ],
+      "order_by": [
+        { "expression": { "type": "AliasRef", "alias": "movie_count" }, "ascending": false }
+      ],
+      "limit": 5
+    }
+  },
+  "expected_queries": {
+    "cypher": "MATCH (d:Person)-[r:DIRECTED]->(m:Movie)\nRETURN d.name AS director_name, count(m.id) AS movie_count, avg(m.rating) AS avg_rating\nORDER BY movie_count DESC\nLIMIT $p0",
+    "sql_pgq": "SELECT\n  gt.director_name,\n  COUNT(gt.movie_id) AS movie_count,\n  AVG(gt.movie_rating) AS avg_rating\nFROM GRAPH_TABLE (\n  movie_graph\n  MATCH (d:Person) -[r:DIRECTED]-> (m:Movie)\n  COLUMNS (\n    d.name AS director_name,\n    m.id AS movie_id,\n    m.rating AS movie_rating\n  )\n) AS gt\nGROUP BY gt.director_name\nORDER BY movie_count DESC\nLIMIT :p0",
+    "iso_gql": "MATCH (d:Person) -[r:DIRECTED]-> (m:Movie)\nRETURN d.name AS director_name, count(m.id) AS movie_count, avg(m.rating) AS avg_rating\nORDER BY movie_count DESC\nLIMIT $p0"
+  },
+  "expected_parameters": {
+    "$p0": 5
+  }
+}

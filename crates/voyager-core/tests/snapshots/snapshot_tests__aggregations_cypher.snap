@@ -1,0 +1,5 @@
+---
+source: crates/voyager-core/tests/snapshot_tests.rs
+expression: cypher_res.statement
+---
+MATCH (p:Person)-[r:ACTED_IN]->(m:Movie) RETURN p.name AS actor, COUNT(m.title) AS movie_count, AVG(m.released) AS avg_released ORDER BY p.movie_count DESC LIMIT 20

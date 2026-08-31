@@ -1,0 +1,55 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/voyager-core",
+    "crates/voyager-cli",
+    "crates/voyager-pyo3",
+]
+
+[workspace.package]
+version = "0.1.0-alpha.1"
+edition = "2024"
+authors = ["Voyager OGM Team <dev@voyager-ogm.org>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/voyager-ogm/voyager"
+readme = "README.md"
+keywords = ["graph", "ogm", "cypher", "sql-pgq", "arrow"]
+categories = ["database", "compilers"]
+
+[workspace.dependencies]
+# Internal workspace crates
+voyager-core = { path = "crates/voyager-core", version = "0.1.0-alpha.1" }
+
+# Serialization & Data
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+arrow = { version = "53.0", default-features = false, features = ["ffi", "ipc", "json"] }
+arrow-schema = "53.0"
+arrow-array = "53.0"
+
+# CLI & Diagnostics
+clap = { version = "4.5", features = ["derive", "env"] }
+miette = { version = "7.4", features = ["fancy"] }
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Testing & Benchmarking
+insta = { version = "1.41", features = ["json", "yaml"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# Python FFI
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310"] }
+pyo3-polars = "0.18"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.bench]
+opt-level = 3
+debug = true
+lto = "thin"

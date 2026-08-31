@@ -1,0 +1,9 @@
+id,title,tagline,released,rating,budget,gross
+m_matrix,The Matrix,Welcome to the Real World,1999,8.7,63000000.0,467200000.0
+m_matrix_rel,The Matrix Reloaded,Free your mind,2003,7.2,150000000.0,741800000.0
+m_matrix_rev,The Matrix Revolutions,Everything that has a beginning has an end,2003,6.8,150000000.0,427300000.0
+m_inception,Inception,Your mind is the scene of the crime,2010,8.8,160000000.0,836800000.0
+m_interstellar,Interstellar,"Mankind was born on Earth. It was never meant to die here.",2014,8.7,165000000.0,773800000.0
+m_pulp_fiction,Pulp Fiction,"Just because you are a character doesn't mean you have character",1994,8.9,8500000.0,213900000.0
+m_dark_knight,The Dark Knight,Why So Serious?,2008,9.0,185000000.0,1006000000.0
+m_john_wick,John Wick,Don't set him off,2014,7.4,20000000.0,86000000.0

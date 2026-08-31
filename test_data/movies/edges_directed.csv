@@ -1,0 +1,12 @@
+person_id,movie_id,year
+p_lana,m_matrix,1999
+p_lilly,m_matrix,1999
+p_lana,m_matrix_rel,2003
+p_lilly,m_matrix_rel,2003
+p_lana,m_matrix_rev,2003
+p_lilly,m_matrix_rev,2003
+p_nolan,m_inception,2010
+p_nolan,m_interstellar,2014
+p_nolan,m_dark_knight,2008
+p_tarantino,m_pulp_fiction,1994
+p_chad,m_john_wick,2014

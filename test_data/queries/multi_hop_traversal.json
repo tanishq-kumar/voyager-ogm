@@ -1,0 +1,73 @@
+{
+  "test_name": "multi_hop_traversal",
+  "description": "Find directors who directed a movie that Keanu Reeves acted in, returning director name, movie title, and actor name.",
+  "ast": {
+    "type": "QueryStatement",
+    "matches": [
+      {
+        "type": "MatchClause",
+        "optional": false,
+        "pattern": {
+          "type": "PathChain",
+          "start_node": {
+            "type": "NodePattern",
+            "variable": "actor",
+            "labels": ["Person"],
+            "predicates": [
+              {
+                "type": "BinaryExpression",
+                "left": { "type": "PropertyAccess", "variable": "actor", "property": "name" },
+                "op": "Eq",
+                "right": { "type": "Literal", "value": "Keanu Reeves" }
+              }
+            ]
+          },
+          "edges": [
+            {
+              "type": "EdgePattern",
+              "variable": "a_rel",
+              "edge_types": ["ACTED_IN"],
+              "direction": "Outgoing",
+              "target_node": {
+                "type": "NodePattern",
+                "variable": "m",
+                "labels": ["Movie"]
+              }
+            },
+            {
+              "type": "EdgePattern",
+              "variable": "d_rel",
+              "edge_types": ["DIRECTED"],
+              "direction": "Incoming",
+              "target_node": {
+                "type": "NodePattern",
+                "variable": "dir",
+                "labels": ["Person"]
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "return_clause": {
+      "distinct": true,
+      "projections": [
+        { "expression": { "type": "PropertyAccess", "variable": "dir", "property": "name" }, "alias": "director_name" },
+        { "expression": { "type": "PropertyAccess", "variable": "m", "property": "title" }, "alias": "movie_title" },
+        { "expression": { "type": "PropertyAccess", "variable": "actor", "property": "name" }, "alias": "actor_name" }
+      ],
+      "order_by": [
+        { "expression": { "type": "PropertyAccess", "variable": "dir", "property": "name" }, "ascending": true },
+        { "expression": { "type": "PropertyAccess", "variable": "m", "property": "title" }, "ascending": true }
+      ]
+    }
+  },
+  "expected_queries": {
+    "cypher": "MATCH (actor:Person {name: $p0})-[a_rel:ACTED_IN]->(m:Movie)<-[d_rel:DIRECTED]-(dir:Person)\nRETURN DISTINCT dir.name AS director_name, m.title AS movie_title, actor.name AS actor_name\nORDER BY dir.name ASC, m.title ASC",
+    "sql_pgq": "SELECT DISTINCT\n  gt.director_name,\n  gt.movie_title,\n  gt.actor_name\nFROM GRAPH_TABLE (\n  movie_graph\n  MATCH (actor:Person WHERE actor.name = :p0) -[a_rel:ACTED_IN]-> (m:Movie) <-[d_rel:DIRECTED]- (dir:Person)\n  COLUMNS (\n    dir.name AS director_name,\n    m.title AS movie_title,\n    actor.name AS actor_name\n  )\n) AS gt\nORDER BY gt.director_name ASC, gt.movie_title ASC",
+    "iso_gql": "MATCH (actor:Person WHERE actor.name = $p0) -[a_rel:ACTED_IN]-> (m:Movie) <-[d_rel:DIRECTED]- (dir:Person)\nRETURN DISTINCT dir.name AS director_name, m.title AS movie_title, actor.name AS actor_name\nORDER BY dir.name ASC, m.title ASC"
+  },
+  "expected_parameters": {
+    "$p0": "Keanu Reeves"
+  }
+}
