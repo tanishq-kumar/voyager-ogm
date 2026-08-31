@@ -67,6 +67,44 @@ class Query:
         return q
 
     @classmethod
+    def create(cls, node_or_type: Node | type[Node] | None = None) -> Query:
+        """Starts a CREATE mutation clause.
+
+        Args:
+            node_or_type: Optional Node instance or Node subclass to initialize the path.
+
+        Returns:
+            A new Query instance initialized with the CREATE clause.
+
+        Example:
+            >>> query = Query.create(Person(name="Alice"))
+        """
+        q = cls()
+        q._native.create()
+        if node_or_type is not None:
+            q.node(node_or_type)
+        return q
+
+    @classmethod
+    def merge(cls, node_or_type: Node | type[Node] | None = None) -> Query:
+        """Starts a MERGE idempotent upsert clause.
+
+        Args:
+            node_or_type: Optional Node instance or Node subclass to initialize the path.
+
+        Returns:
+            A new Query instance initialized with the MERGE clause.
+
+        Example:
+            >>> query = Query.merge(Person(id=42)).on_create_set(p.name == "Bob")
+        """
+        q = cls()
+        q._native.merge()
+        if node_or_type is not None:
+            q.node(node_or_type)
+        return q
+
+    @classmethod
     def optional_match(cls, node_or_type: Node | type[Node] | None = None) -> Query:
         """Starts an OPTIONAL MATCH clause.
 
@@ -281,6 +319,118 @@ class Query:
             else:
                 msg = f"Unsupported predicate operator: {pred.op}"
                 raise ValueError(msg)
+        return self
+
+    def on_create_set(self, *assignments: PredicateExpr, **kwargs: Any) -> Query:
+        """Adds ON CREATE SET property assignments to the active MERGE block.
+
+        Args:
+            *assignments: PredicateExpr assignments (e.g. `p.created_at == 2026`).
+            **kwargs: Property assignments for the active node.
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        for assign in assignments:
+            self._native.on_create_set(assign.target, assign.field, assign.value)
+        for key, val in kwargs.items():
+            if "." in key:
+                var, prop = key.split(".", 1)
+                self._native.on_create_set(var, prop, val)
+        return self
+
+    def on_match_set(self, *assignments: PredicateExpr, **kwargs: Any) -> Query:
+        """Adds ON MATCH SET property assignments to the active MERGE block.
+
+        Args:
+            *assignments: PredicateExpr assignments (e.g. `p.updated_at == 2026`).
+            **kwargs: Property assignments for the active node.
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        for assign in assignments:
+            self._native.on_match_set(assign.target, assign.field, assign.value)
+        for key, val in kwargs.items():
+            if "." in key:
+                var, prop = key.split(".", 1)
+                self._native.on_match_set(var, prop, val)
+        return self
+
+    def set(self, *assignments: PredicateExpr | Node, **kwargs: Any) -> Query:
+        """Adds SET property assignments to the active statement.
+
+        Args:
+            *assignments: PredicateExpr assignments (e.g. `p.status == 'ACTIVE'`) or
+                Node instances with dirty tracked fields.
+            **kwargs: Property assignments (e.g. `{"p.status": "ACTIVE"}`).
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        for assign in assignments:
+            if isinstance(assign, PredicateExpr):
+                self._native.set_property(assign.target, assign.field, assign.value)
+            elif isinstance(assign, Node):
+                for field_name, val in assign.dirty_fields.items():
+                    self._native.set_property(assign.alias, field_name, val)
+        for key, val in kwargs.items():
+            if "." in key:
+                var, prop = key.split(".", 1)
+                self._native.set_property(var, prop, val)
+        return self
+
+    def delete(self, *targets: Node | Relationship | str) -> Query:
+        """Adds a DELETE clause for one or more entity variables.
+
+        Args:
+            *targets: Node instances, Relationship instances, or variable strings.
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        names: list[str] = []
+        for t in targets:
+            if isinstance(t, (Node, Relationship)):
+                names.append(t.alias)
+            else:
+                names.append(str(t))
+        self._native.delete(names)
+        return self
+
+    def detach_delete(self, *targets: Node | Relationship | str) -> Query:
+        """Adds a DETACH DELETE clause for one or more entity variables.
+
+        Args:
+            *targets: Node instances, Relationship instances, or variable strings.
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        names: list[str] = []
+        for t in targets:
+            if isinstance(t, (Node, Relationship)):
+                names.append(t.alias)
+            else:
+                names.append(str(t))
+        self._native.detach_delete(names)
+        return self
+
+    def remove(self, *properties: BoundField | str) -> Query:
+        """Adds a REMOVE clause for one or more property fields.
+
+        Args:
+            *properties: BoundField instances or property strings ('var.prop').
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        for p in properties:
+            if isinstance(p, BoundField):
+                self._native.remove_property(p.target_alias, p.field_name)
+            elif isinstance(p, str) and "." in p:
+                var, prop = p.split(".", 1)
+                self._native.remove_property(var, prop)
         return self
 
     def return_(
