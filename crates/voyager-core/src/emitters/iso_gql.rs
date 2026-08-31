@@ -253,6 +253,131 @@ impl IsoGqlEmitter {
 
         Ok(())
     }
+
+    fn emit_set_item(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::SetItem {
+            target,
+            value,
+            is_merge,
+        } = node
+        {
+            self.emit_expression(arena, *target, false)?;
+            if *is_merge {
+                self.buffer.push_str(" += ");
+            } else {
+                self.buffer.push_str(" = ");
+            }
+            self.emit_expression(arena, *value, false)?;
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected SetItem, got {node:?}"
+            )))
+        }
+    }
+
+    fn emit_create(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::CreateClause { paths } = node {
+            self.buffer.push_str("INSERT ");
+            for (i, &p) in paths.iter().enumerate() {
+                if i > 0 {
+                    self.buffer.push_str(", ");
+                }
+                self.emit_path(arena, p)?;
+            }
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected CreateClause, got {node:?}"
+            )))
+        }
+    }
+
+    fn emit_merge(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::MergeClause {
+            path,
+            on_create_set,
+            on_match_set,
+        } = node
+        {
+            self.buffer.push_str("UPSERT ");
+            self.emit_path(arena, *path)?;
+
+            let all_sets: Vec<&NodeHandle> =
+                on_create_set.iter().chain(on_match_set.iter()).collect();
+            if !all_sets.is_empty() {
+                self.buffer.push_str(" SET ");
+                for (i, &&item) in all_sets.iter().enumerate() {
+                    if i > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.emit_set_item(arena, item)?;
+                }
+            }
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected MergeClause, got {node:?}"
+            )))
+        }
+    }
+
+    fn emit_set(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::SetClause { items } = node {
+            self.buffer.push_str("SET ");
+            for (i, &item) in items.iter().enumerate() {
+                if i > 0 {
+                    self.buffer.push_str(", ");
+                }
+                self.emit_set_item(arena, item)?;
+            }
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected SetClause, got {node:?}"
+            )))
+        }
+    }
+
+    fn emit_delete(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::DeleteClause { targets, .. } = node {
+            self.buffer.push_str("DELETE ");
+            for (i, &t) in targets.iter().enumerate() {
+                if i > 0 {
+                    self.buffer.push_str(", ");
+                }
+                self.emit_expression(arena, t, false)?;
+            }
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected DeleteClause, got {node:?}"
+            )))
+        }
+    }
+
+    fn emit_remove(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::RemoveClause { items } = node {
+            self.buffer.push_str("REMOVE ");
+            for (i, &item) in items.iter().enumerate() {
+                if i > 0 {
+                    self.buffer.push_str(", ");
+                }
+                self.emit_expression(arena, item, false)?;
+            }
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected RemoveClause, got {node:?}"
+            )))
+        }
+    }
 }
 
 impl AstVisitor for IsoGqlEmitter {
@@ -264,13 +389,18 @@ impl AstVisitor for IsoGqlEmitter {
         let root_node = arena.get(root)?;
         if let AstNode::QueryStatement {
             matches,
+            mutations,
             return_clause,
         } = root_node
         {
-            for (i, &match_handle) in matches.iter().enumerate() {
-                if i > 0 {
+            let mut has_emitted = false;
+
+            for &match_handle in matches {
+                if has_emitted {
                     self.buffer.push(' ');
                 }
+                has_emitted = true;
+
                 let match_node = arena.get(match_handle)?;
                 if let AstNode::MatchClause {
                     paths,
@@ -288,6 +418,27 @@ impl AstVisitor for IsoGqlEmitter {
 
                     if let Some(wh) = where_clause {
                         self.emit_where(arena, *wh)?;
+                    }
+                }
+            }
+
+            for &mut_handle in mutations {
+                if has_emitted {
+                    self.buffer.push(' ');
+                }
+                has_emitted = true;
+
+                let mut_node = arena.get(mut_handle)?;
+                match mut_node {
+                    AstNode::CreateClause { .. } => self.emit_create(arena, mut_handle)?,
+                    AstNode::MergeClause { .. } => self.emit_merge(arena, mut_handle)?,
+                    AstNode::SetClause { .. } => self.emit_set(arena, mut_handle)?,
+                    AstNode::DeleteClause { .. } => self.emit_delete(arena, mut_handle)?,
+                    AstNode::RemoveClause { .. } => self.emit_remove(arena, mut_handle)?,
+                    other => {
+                        return Err(Error::AstInvariantViolation(format!(
+                            "Unsupported mutation clause in ISO GQL: {other:?}"
+                        )));
                     }
                 }
             }
