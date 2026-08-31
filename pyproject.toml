@@ -22,6 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Database :: Database Engines/Servers",
 ]
 dependencies = [
@@ -43,7 +44,7 @@ marimo = [
 ]
 
 [tool.maturin]
-features = ["pyo3/extension-module"]
+features = ["pyo3/extension-module", "pyo3/generate-import-lib"]
 manifest-path = "crates/voyager-pyo3/Cargo.toml"
 module-name = "voyager_ogm._voyager_rs"
 python-source = "packages/python"
