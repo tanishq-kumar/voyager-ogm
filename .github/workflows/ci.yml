@@ -107,7 +107,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -136,7 +136,7 @@ jobs:
         run: uv sync --extra dev --python ${{ matrix.python-version }}
 
       - name: Build Native Python Extension (maturin develop)
-        run: uv run --extra dev --python ${{ matrix.python-version }} maturin develop
+        run: uv run --extra dev --python ${{ matrix.python-version }} maturin develop --uv
 
       - name: Run Pytest Suite
         run: uv run --extra dev --python ${{ matrix.python-version }} pytest
