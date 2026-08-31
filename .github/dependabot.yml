@@ -1,5 +1,5 @@
-# Dependabot Grouped Updates Configuration (Modern Standard)
-# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/grouping-dependabot-updates
+# Dependabot Grouped Updates Configuration
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#groups
 
 version: 2
 updates:
