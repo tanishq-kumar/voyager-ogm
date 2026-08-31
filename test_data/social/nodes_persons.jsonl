@@ -1,0 +1,6 @@
+{"id":"usr_001","firstName":"Ada","lastName":"Lovelace","gender":"F","birthday":"1815-12-10","email":"ada@example.com","locationIp":"192.168.1.10"}
+{"id":"usr_002","firstName":"Alan","lastName":"Turing","gender":"M","birthday":"1912-06-23","email":"alan@example.com","locationIp":"192.168.1.11"}
+{"id":"usr_003","firstName":"Grace","lastName":"Hopper","gender":"F","birthday":"1906-12-09","email":"grace@example.com","locationIp":"192.168.1.12"}
+{"id":"usr_004","firstName":"Claude","lastName":"Shannon","gender":"M","birthday":"1916-04-30","email":"claude@example.com","locationIp":"192.168.1.13"}
+{"id":"usr_005","firstName":"John","lastName":"von Neumann","gender":"M","birthday":"1903-12-28","email":"john@example.com","locationIp":"192.168.1.14"}
+{"id":"usr_006","firstName":"Margaret","lastName":"Hamilton","gender":"F","birthday":"1936-08-17","email":"margaret@example.com","locationIp":"192.168.1.15"}

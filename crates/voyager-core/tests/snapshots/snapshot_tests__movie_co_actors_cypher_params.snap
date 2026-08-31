@@ -1,0 +1,8 @@
+---
+source: crates/voyager-core/tests/snapshot_tests.rs
+expression: cypher_res.sorted_parameters()
+---
+p0:
+  Int64: 21
+p1:
+  Int64: 1999

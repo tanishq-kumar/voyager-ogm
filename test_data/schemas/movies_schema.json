@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "graph_name": "movie_graph",
+  "version": "1.0.0",
+  "description": "Standard Movie, Actor, Director, and Reviewer graph schema for testing Voyager OGM AST compilation and OGM mapping.",
+  "nodes": {
+    "Person": {
+      "primary_key": "id",
+      "properties": {
+        "id": { "type": "string", "indexed": true, "nullable": false },
+        "name": { "type": "string", "indexed": true, "nullable": false },
+        "born": { "type": "integer", "indexed": true, "nullable": true },
+        "died": { "type": "integer", "nullable": true },
+        "nationality": { "type": "string", "nullable": true }
+      }
+    },
+    "Movie": {
+      "primary_key": "id",
+      "properties": {
+        "id": { "type": "string", "indexed": true, "nullable": false },
+        "title": { "type": "string", "indexed": true, "nullable": false },
+        "tagline": { "type": "string", "nullable": true },
+        "released": { "type": "integer", "indexed": true, "nullable": false },
+        "rating": { "type": "float", "nullable": true },
+        "budget": { "type": "float", "nullable": true },
+        "gross": { "type": "float", "nullable": true }
+      }
+    },
+    "Genre": {
+      "primary_key": "id",
+      "properties": {
+        "id": { "type": "string", "indexed": true, "nullable": false },
+        "name": { "type": "string", "unique": true, "nullable": false }
+      }
+    }
+  },
+  "relationships": {
+    "ACTED_IN": {
+      "source": "Person",
+      "target": "Movie",
+      "cardinality": "MANY_TO_MANY",
+      "properties": {
+        "roles": { "type": "array", "items": "string", "nullable": false },
+        "earnings": { "type": "float", "nullable": true }
+      }
+    },
+    "DIRECTED": {
+      "source": "Person",
+      "target": "Movie",
+      "cardinality": "MANY_TO_MANY",
+      "properties": {
+        "year": { "type": "integer", "nullable": true }
+      }
+    },
+    "PRODUCED": {
+      "source": "Person",
+      "target": "Movie",
+      "cardinality": "MANY_TO_MANY",
+      "properties": {
+        "role": { "type": "string", "nullable": true }
+      }
+    },
+    "REVIEWED": {
+      "source": "Person",
+      "target": "Movie",
+      "cardinality": "MANY_TO_MANY",
+      "properties": {
+        "rating": { "type": "float", "nullable": false },
+        "summary": { "type": "string", "nullable": true }
+      }
+    },
+    "HAS_GENRE": {
+      "source": "Movie",
+      "target": "Genre",
+      "cardinality": "MANY_TO_MANY",
+      "properties": {}
+    },
+    "FOLLOWS": {
+      "source": "Person",
+      "target": "Person",
+      "cardinality": "MANY_TO_MANY",
+      "properties": {
+        "since": { "type": "integer", "nullable": true }
+      }
+    }
+  }
+}

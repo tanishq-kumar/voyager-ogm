@@ -1,0 +1,5 @@
+---
+source: crates/voyager-core/tests/snapshot_tests.rs
+expression: compiled.statement
+---
+CALL apoc.path.subgraphNodes($p0, $p1) YIELD node

@@ -1,0 +1,5 @@
+---
+source: crates/voyager-core/tests/snapshot_tests.rs
+expression: pgq_res.statement
+---
+SELECT * FROM GRAPH_TABLE (oss_graph MATCH (p IS Person IS Developer) -[r IS PRODUCED]-> (s IS Software IS OpenSource) WHERE s.license = $p0 COLUMNS (p.name AS author, s.name AS project))

@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "graph_name": "fraud_detection",
+  "version": "1.0.0",
+  "description": "Financial Transaction & Fraud Pattern graph schema for complex path and cycle analysis.",
+  "nodes": {
+    "Customer": {
+      "primary_key": "id",
+      "properties": {
+        "id": { "type": "string", "indexed": true, "nullable": false },
+        "ssn": { "type": "string", "unique": true, "nullable": false },
+        "fullName": { "type": "string", "nullable": false },
+        "riskScore": { "type": "float", "indexed": true, "nullable": false }
+      }
+    },
+    "Account": {
+      "primary_key": "id",
+      "properties": {
+        "id": { "type": "string", "indexed": true, "nullable": false },
+        "iban": { "type": "string", "unique": true, "nullable": false },
+        "accountType": { "type": "string", "nullable": false },
+        "balance": { "type": "float", "nullable": false },
+        "isFlagged": { "type": "boolean", "indexed": true, "nullable": false }
+      }
+    },
+    "Device": {
+      "primary_key": "id",
+      "properties": {
+        "id": { "type": "string", "indexed": true, "nullable": false },
+        "fingerprint": { "type": "string", "indexed": true, "nullable": false },
+        "ipAddress": { "type": "string", "nullable": false },
+        "userAgent": { "type": "string", "nullable": true }
+      }
+    },
+    "Merchant": {
+      "primary_key": "id",
+      "properties": {
+        "id": { "type": "string", "indexed": true, "nullable": false },
+        "name": { "type": "string", "nullable": false },
+        "categoryCode": { "type": "string", "indexed": true, "nullable": false }
+      }
+    }
+  },
+  "relationships": {
+    "OWNS": {
+      "source": "Customer",
+      "target": "Account",
+      "cardinality": "ONE_TO_MANY",
+      "properties": {
+        "openedDate": { "type": "string", "nullable": false }
+      }
+    },
+    "TRANSFERRED_TO": {
+      "source": "Account",
+      "target": "Account",
+      "cardinality": "MANY_TO_MANY",
+      "properties": {
+        "amount": { "type": "float", "indexed": true, "nullable": false },
+        "timestamp": { "type": "integer", "indexed": true, "nullable": false },
+        "txHash": { "type": "string", "unique": true, "nullable": false }
+      }
+    },
+    "TRANSACTED_WITH": {
+      "source": "Account",
+      "target": "Merchant",
+      "cardinality": "MANY_TO_MANY",
+      "properties": {
+        "amount": { "type": "float", "nullable": false },
+        "timestamp": { "type": "integer", "nullable": false }
+      }
+    },
+    "USED_DEVICE": {
+      "source": "Customer",
+      "target": "Device",
+      "cardinality": "MANY_TO_MANY",
+      "properties": {
+        "lastSeen": { "type": "integer", "nullable": false }
+      }
+    }
+  }
+}

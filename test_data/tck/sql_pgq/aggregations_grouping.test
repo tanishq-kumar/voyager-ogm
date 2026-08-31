@@ -1,0 +1,60 @@
+# name: test/sql/sql_pgq/aggregations_grouping.test
+# description: ISO SQL:2023 PGQ & DuckPGQ Aggregation and Grouping in GRAPH_TABLE
+# group: [pgq]
+
+statement ok
+CREATE TABLE Employee (id BIGINT PRIMARY KEY, name VARCHAR, department VARCHAR, salary DOUBLE);
+
+statement ok
+CREATE TABLE projects (emp_id BIGINT, project_name VARCHAR, budget DOUBLE);
+
+statement ok
+INSERT INTO Employee VALUES 
+  (1, 'Alice', 'Engineering', 120000.0),
+  (2, 'Bob', 'Engineering', 95000.0),
+  (3, 'Charlie', 'Marketing', 80000.0),
+  (4, 'Diana', 'Marketing', 110000.0),
+  (5, 'Evan', 'Design', 75000.0);
+
+statement ok
+INSERT INTO projects VALUES
+  (1, 'Project Alpha', 500000.0),
+  (1, 'Project Beta', 300000.0),
+  (2, 'Project Alpha', 500000.0),
+  (3, 'Growth 2026', 150000.0),
+  (4, 'Rebrand', 200000.0);
+
+statement ok
+CREATE PROPERTY GRAPH corp_pg
+  VERTEX TABLES (
+    Employee KEY (id) LABEL Employee PROPERTIES (id, name, department, salary)
+  )
+  EDGE TABLES (
+    projects
+      SOURCE KEY (emp_id) REFERENCES Employee (id)
+      DESTINATION KEY (emp_id) REFERENCES Employee (id)
+      LABEL works_on
+      PROPERTIES (project_name, budget)
+  );
+
+# Aggregations by Department
+query TRR
+SELECT 
+  gt.dept,
+  COUNT(gt.emp_id) AS emp_count,
+  AVG(gt.salary) AS avg_salary
+FROM GRAPH_TABLE (
+  corp_pg
+  MATCH (e:Employee)
+  COLUMNS (
+    e.department AS dept,
+    e.id AS emp_id,
+    e.salary AS salary
+  )
+) AS gt
+GROUP BY gt.dept
+ORDER BY emp_count DESC, gt.dept ASC;
+----
+Engineering	2	107500.0
+Marketing	2	95000.0
+Design	1	75000.0

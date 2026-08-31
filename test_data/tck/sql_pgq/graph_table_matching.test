@@ -1,0 +1,69 @@
+# name: test/sql/sql_pgq/graph_table_matching.test
+# description: ISO SQL:2023 PGQ (Part 16) & DuckPGQ Property Graph Query Test Suite
+# group: [pgq]
+
+statement ok
+CREATE TABLE Student (id BIGINT PRIMARY KEY, name VARCHAR, age INT);
+
+statement ok
+CREATE TABLE School (id BIGINT PRIMARY KEY, name VARCHAR, city VARCHAR);
+
+statement ok
+CREATE TABLE enrolled_in (student_id BIGINT, school_id BIGINT, year INT);
+
+statement ok
+INSERT INTO Student VALUES (1, 'Alice', 20), (2, 'Bob', 22), (3, 'Charlie', 19);
+
+statement ok
+INSERT INTO School VALUES (101, 'Oxford', 'Oxford'), (102, 'Cambridge', 'Cambridge');
+
+statement ok
+INSERT INTO enrolled_in VALUES (1, 101, 2021), (2, 101, 2020), (3, 102, 2022);
+
+statement ok
+CREATE PROPERTY GRAPH university_pg
+  VERTEX TABLES (
+    Student KEY (id) LABEL Student PROPERTIES (id, name, age),
+    School KEY (id) LABEL School PROPERTIES (id, name, city)
+  )
+  EDGE TABLES (
+    enrolled_in
+      SOURCE KEY (student_id) REFERENCES Student (id)
+      DESTINATION KEY (school_id) REFERENCES School (id)
+      LABEL enrolled_in
+      PROPERTIES (year)
+  );
+
+# Query 1: Simple 1-hop GRAPH_TABLE with WHERE condition and Column Projections
+query ITI
+SELECT s_name, sch_name, enroll_year
+FROM GRAPH_TABLE (
+  university_pg
+  MATCH (s:Student WHERE s.age >= 20) -[e:enrolled_in]-> (sch:School)
+  COLUMNS (
+    s.name AS s_name,
+    sch.name AS sch_name,
+    e.year AS enroll_year
+  )
+) AS gt
+ORDER BY s_name ASC;
+----
+Alice	Oxford	2021
+Bob	Oxford	2020
+
+# Query 2: Multiple labels and property aggregation in GRAPH_TABLE
+query TI
+SELECT sch_name, COUNT(s_id) AS student_count
+FROM GRAPH_TABLE (
+  university_pg
+  MATCH (s:Student) -[e:enrolled_in]-> (sch:School)
+  COLUMNS (
+    s.id AS s_id,
+    sch.name AS sch_name
+  )
+) AS gt
+GROUP BY sch_name
+ORDER BY student_count DESC, sch_name ASC;
+----
+Oxford	2
+Cambridge	1

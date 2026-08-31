@@ -1,0 +1,25 @@
+person_id,movie_id,role,earnings
+p_keanu,m_matrix,Neo,10000000.0
+p_carrie,m_matrix,Trinity,5000000.0
+p_laurence,m_matrix,Morpheus,5000000.0
+p_hugo,m_matrix,Agent Smith,4000000.0
+p_keanu,m_matrix_rel,Neo,15000000.0
+p_carrie,m_matrix_rel,Trinity,8000000.0
+p_laurence,m_matrix_rel,Morpheus,8000000.0
+p_hugo,m_matrix_rel,Agent Smith,7000000.0
+p_keanu,m_matrix_rev,Neo,15000000.0
+p_carrie,m_matrix_rev,Trinity,8000000.0
+p_laurence,m_matrix_rev,Morpheus,8000000.0
+p_hugo,m_matrix_rev,Agent Smith,7000000.0
+p_leo,m_inception,Dom Cobb,20000000.0
+p_joseph,m_inception,Arthur,6000000.0
+p_elliot,m_inception,Ariadne,4000000.0
+p_tom_hardy,m_inception,Eames,3500000.0
+p_matthew,m_interstellar,Cooper,18000000.0
+p_anne,m_interstellar,Brand,10000000.0
+p_christian,m_dark_knight,Bruce Wayne,20000000.0
+p_heath,m_dark_knight,Joker,12000000.0
+p_travolta,m_pulp_fiction,Vincent Vega,5000000.0
+p_samuel,m_pulp_fiction,Jules Winnfield,4500000.0
+p_uma,m_pulp_fiction,Mia Wallace,5000000.0
+p_keanu,m_john_wick,John Wick,8000000.0

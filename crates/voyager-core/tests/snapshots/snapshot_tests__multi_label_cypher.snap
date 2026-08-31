@@ -1,0 +1,5 @@
+---
+source: crates/voyager-core/tests/snapshot_tests.rs
+expression: cypher_res.statement
+---
+MATCH (p:Person:Developer)-[r:PRODUCED]->(s:Software:OpenSource) WHERE s.license = $p0 RETURN p.name AS author, s.name AS project

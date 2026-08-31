@@ -1,0 +1,63 @@
+{
+  "test_name": "variable_length_path",
+  "description": "Find all friends-of-friends between 1 and 3 hops away from Ada Lovelace in the social network.",
+  "ast": {
+    "type": "QueryStatement",
+    "matches": [
+      {
+        "type": "MatchClause",
+        "optional": false,
+        "pattern": {
+          "type": "PathChain",
+          "start_node": {
+            "type": "NodePattern",
+            "variable": "p1",
+            "labels": ["Person"],
+            "predicates": [
+              {
+                "type": "BinaryExpression",
+                "left": { "type": "PropertyAccess", "variable": "p1", "property": "firstName" },
+                "op": "Eq",
+                "right": { "type": "Literal", "value": "Ada" }
+              }
+            ]
+          },
+          "edges": [
+            {
+              "type": "EdgePattern",
+              "variable": "k",
+              "edge_types": ["KNOWS"],
+              "direction": "Outgoing",
+              "min_hops": 1,
+              "max_hops": 3,
+              "target_node": {
+                "type": "NodePattern",
+                "variable": "friend",
+                "labels": ["Person"]
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "return_clause": {
+      "distinct": true,
+      "projections": [
+        { "expression": { "type": "PropertyAccess", "variable": "p1", "property": "firstName" }, "alias": "start_person" },
+        { "expression": { "type": "PropertyAccess", "variable": "friend", "property": "firstName" }, "alias": "friend_name" },
+        { "expression": { "type": "PropertyAccess", "variable": "friend", "property": "email" }, "alias": "friend_email" }
+      ],
+      "order_by": [
+        { "expression": { "type": "PropertyAccess", "variable": "friend", "property": "firstName" }, "ascending": true }
+      ]
+    }
+  },
+  "expected_queries": {
+    "cypher": "MATCH (p1:Person {firstName: $p0})-[:KNOWS*1..3]->(friend:Person)\nRETURN DISTINCT p1.firstName AS start_person, friend.firstName AS friend_name, friend.email AS friend_email\nORDER BY friend.firstName ASC",
+    "sql_pgq": "SELECT DISTINCT\n  gt.start_person,\n  gt.friend_name,\n  gt.friend_email\nFROM GRAPH_TABLE (\n  social_graph\n  MATCH (p1:Person WHERE p1.first_name = :p0) -[:KNOWS]->{1,3} (friend:Person)\n  COLUMNS (\n    p1.first_name AS start_person,\n    friend.first_name AS friend_name,\n    friend.email AS friend_email\n  )\n) AS gt\nORDER BY gt.friend_name ASC",
+    "iso_gql": "MATCH (p1:Person WHERE p1.firstName = $p0) -[:KNOWS]->{1,3} (friend:Person)\nRETURN DISTINCT p1.firstName AS start_person, friend.firstName AS friend_name, friend.email AS friend_email\nORDER BY friend.firstName ASC"
+  },
+  "expected_parameters": {
+    "$p0": "Ada"
+  }
+}

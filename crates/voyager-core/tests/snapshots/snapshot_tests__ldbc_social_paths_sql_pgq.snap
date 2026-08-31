@@ -1,0 +1,5 @@
+---
+source: crates/voyager-core/tests/snapshot_tests.rs
+expression: pgq_res.statement
+---
+SELECT * FROM GRAPH_TABLE (social_graph MATCH (a IS Person) -[r IS KNOWS{1,3}]-> (b IS Person) WHERE a.name = $p0 COLUMNS (a.name AS start_person, b.name AS reachable_person)) ORDER BY b.name ASC LIMIT 50

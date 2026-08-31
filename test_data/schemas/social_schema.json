@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "graph_name": "social_network",
+  "version": "1.0.0",
+  "description": "LDBC-style Social Network schema for benchmark and multi-hop graph queries.",
+  "nodes": {
+    "Person": {
+      "primary_key": "id",
+      "properties": {
+        "id": { "type": "string", "indexed": true, "nullable": false },
+        "firstName": { "type": "string", "nullable": false },
+        "lastName": { "type": "string", "nullable": false },
+        "gender": { "type": "string", "nullable": false },
+        "birthday": { "type": "string", "nullable": false },
+        "email": { "type": "string", "unique": true, "nullable": false },
+        "locationIp": { "type": "string", "nullable": false }
+      }
+    },
+    "Post": {
+      "primary_key": "id",
+      "properties": {
+        "id": { "type": "string", "indexed": true, "nullable": false },
+        "content": { "type": "string", "nullable": false },
+        "length": { "type": "integer", "nullable": false },
+        "browserUsed": { "type": "string", "nullable": true },
+        "creationDate": { "type": "integer", "indexed": true, "nullable": false }
+      }
+    },
+    "Tag": {
+      "primary_key": "id",
+      "properties": {
+        "id": { "type": "string", "indexed": true, "nullable": false },
+        "name": { "type": "string", "unique": true, "nullable": false },
+        "url": { "type": "string", "nullable": true }
+      }
+    }
+  },
+  "relationships": {
+    "KNOWS": {
+      "source": "Person",
+      "target": "Person",
+      "cardinality": "MANY_TO_MANY",
+      "properties": {
+        "creationDate": { "type": "integer", "nullable": false },
+        "closenessScore": { "type": "float", "nullable": false }
+      }
+    },
+    "CREATOR_OF": {
+      "source": "Person",
+      "target": "Post",
+      "cardinality": "ONE_TO_MANY",
+      "properties": {
+        "creationDate": { "type": "integer", "nullable": false }
+      }
+    },
+    "HAS_TAG": {
+      "source": "Post",
+      "target": "Tag",
+      "cardinality": "MANY_TO_MANY",
+      "properties": {}
+    },
+    "LIKES": {
+      "source": "Person",
+      "target": "Post",
+      "cardinality": "MANY_TO_MANY",
+      "properties": {
+        "creationDate": { "type": "integer", "nullable": false }
+      }
+    }
+  }
+}

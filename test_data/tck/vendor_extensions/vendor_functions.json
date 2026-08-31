@@ -1,0 +1,49 @@
+{
+  "suite_name": "vendor_extensions_test",
+  "description": "Database-specific procedure and function call test fixtures for Neo4j (APOC/Vector), Memgraph (MAGE), and DuckDB (DuckPGQ/Parquet).",
+  "test_cases": [
+    {
+      "vendor": "neo4j",
+      "feature": "apoc_subgraph_expansion",
+      "description": "Call APOC procedure for path expansion with label filtering",
+      "ast_equivalent": {
+        "call_procedure": "apoc.path.subgraphNodes",
+        "arguments": ["$start_node", { "maxLevel": 3, "relationshipFilter": "KNOWS>" }]
+      },
+      "expected_query": "MATCH (start:Person {id: $p0})\nCALL apoc.path.subgraphNodes(start, {maxLevel: 3, relationshipFilter: 'KNOWS>'}) YIELD node\nRETURN node.name AS reachable_name",
+      "parameters": { "$p0": "usr_001" }
+    },
+    {
+      "vendor": "neo4j",
+      "feature": "vector_search",
+      "description": "Neo4j Vector Index approximate nearest neighbor search (ANN)",
+      "ast_equivalent": {
+        "call_procedure": "db.index.vector.queryNodes",
+        "arguments": ["user_embeddings", 5, "$embedding_vector"]
+      },
+      "expected_query": "CALL db.index.vector.queryNodes('user_embeddings', $p0, $p1) YIELD node, score\nRETURN node.id AS id, node.name AS name, score\nORDER BY score DESC",
+      "parameters": { "$p0": 5, "$p1": [0.12, -0.45, 0.88, 0.05] }
+    },
+    {
+      "vendor": "memgraph",
+      "feature": "mage_pagerank",
+      "description": "Memgraph MAGE PageRank algorithm execution",
+      "ast_equivalent": {
+        "call_procedure": "pagerank.get",
+        "arguments": []
+      },
+      "expected_query": "CALL pagerank.get() YIELD node, rank\nRETURN node.name AS user_name, rank\nORDER BY rank DESC\nLIMIT $p0",
+      "parameters": { "$p0": 10 }
+    },
+    {
+      "vendor": "duckdb",
+      "feature": "duckpgq_parquet_scan",
+      "description": "DuckPGQ property graph querying directly over Parquet files",
+      "ast_equivalent": {
+        "source": "read_parquet('data/nodes_*.parquet')",
+        "graph_query": "GRAPH_TABLE (parquet_graph MATCH (a:Person) -[k:knows]-> (b:Person) COLUMNS (a.name, b.name))"
+      },
+      "expected_query": "SELECT gt.a_name, gt.b_name\nFROM GRAPH_TABLE (\n  parquet_graph\n  MATCH (a:Person) -[k:knows]-> (b:Person)\n  COLUMNS (a.name AS a_name, b.name AS b_name)\n) AS gt"
+    }
+  ]
+}

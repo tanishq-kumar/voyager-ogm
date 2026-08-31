@@ -1,0 +1,8 @@
+---
+source: crates/voyager-core/tests/snapshot_tests.rs
+expression: compiled.sorted_parameters()
+---
+p0:
+  String: Person
+p1:
+  Int64: 3
