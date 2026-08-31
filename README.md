@@ -69,7 +69,6 @@ gantt
     voyager introspect Command            :p5_4, after p5_3, 3d
     section Phase 6: Production GA (v1.0.0)
     Multi-Registry OIDC Publishing        :p6_1, after p5_4, 3d
-    Documentation Site & Sandbox Tutorials:p6_2, after p6_1, 3d
 ```
 
 ### Phase 1: Core Read AST Engine (Status: Completed)
@@ -105,7 +104,6 @@ gantt
 
 ### Phase 6: Production GA Release & Multi-Registry Publishing (Status: Planned)
 - [ ] **Task 6.1:** Automated multi-registry publishing to PyPI, Crates.io, and npm with trusted OIDC provenance.
-- [ ] **Task 6.2:** Documentation website and interactive sandbox tutorials on Cloudflare Pages.
 
 ---
 
