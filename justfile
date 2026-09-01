@@ -71,6 +71,10 @@ lint:
     uv run cargo clippy --workspace --all-targets -- -D warnings
     uv run ruff check .
 
+# Static type checking across Python using Astral ty
+typecheck:
+    uvx ty check packages/python
+
 # Full Continuous Integration (CI) verification suite
 ci: fmt-check lint test
     @echo "[PASS] Full CI verification passed with 0 errors!"
@@ -113,3 +117,7 @@ down:
 # Run live database integration tests against real running databases
 test-live:
     uv run pytest packages/python/tests/test_live_database_bridge.py packages/python/tests/test_real_world_scenarios.py -v
+
+# Run openCypher & openGQL TCK conformance test suite
+test-tck:
+    uv run pytest packages/python/tests/test_tck_conformance.py -v

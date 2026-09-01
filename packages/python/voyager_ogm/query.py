@@ -10,7 +10,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from voyager_ogm._voyager_rs import NativeQueryBuilder
-from voyager_ogm.models import BoundField, Node, PredicateExpr, Relationship
+from voyager_ogm.models import (
+    AggregationExpr,
+    BoundField,
+    Node,
+    PredicateExpr,
+    Relationship,
+)
 
 
 @dataclass(frozen=True)
@@ -151,6 +157,36 @@ class Query:
         q = cls()
         q._native.unwind(batch_param.lstrip("$"), alias)
         return q
+
+    @classmethod
+    def load_csv(cls, url: str, with_headers: bool = True, alias: str = "row") -> Query:
+        """Starts a LOAD CSV file ingestion statement: `LOAD CSV [WITH HEADERS] FROM url AS alias`.
+
+        Args:
+            url: File URL or path (e.g. 'file:///persons.csv').
+            with_headers: Whether to parse the first line as column header keys (default: True).
+            alias: Row alias variable name (default: 'row').
+
+        Returns:
+            A new Query instance initialized with the LOAD CSV clause.
+        """
+        q = cls()
+        q._native.load_csv(url, with_headers, alias)
+        return q
+
+    def add_load_csv(self, url: str, with_headers: bool = True, alias: str = "row") -> Query:
+        """Adds a LOAD CSV ingestion clause to the active query statement.
+
+        Args:
+            url: File URL or path (e.g. 'file:///persons.csv').
+            with_headers: Whether to parse the first line as column header keys (default: True).
+            alias: Row alias variable name (default: 'row').
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        self._native.load_csv(url, with_headers, alias)
+        return self
 
     def yield_(self, *yield_items: str) -> Query:
         """Yields columns from a procedure call.
@@ -493,9 +529,9 @@ class Query:
 
     def return_(
         self,
-        *fields: BoundField | str,
+        *fields: BoundField | AggregationExpr | str,
         distinct: bool = False,
-        **aliased_fields: BoundField | str,
+        **aliased_fields: BoundField | AggregationExpr | str,
     ) -> Query:
         """Initializes column projections for the RETURN clause.
 
@@ -517,6 +553,8 @@ class Query:
         for field in fields:
             if isinstance(field, BoundField):
                 self._native.field(field.target_alias, field.field_name, None)
+            elif isinstance(field, AggregationExpr):
+                self._native.aggregate(field.target_alias, field.field_name, field.func, None)
             elif isinstance(field, str):
                 parts = field.split()
                 if len(parts) == 3 and parts[1].upper() == "AS":
@@ -531,6 +569,8 @@ class Query:
         for alias, field in aliased_fields.items():
             if isinstance(field, BoundField):
                 self._native.field(field.target_alias, field.field_name, alias)
+            elif isinstance(field, AggregationExpr):
+                self._native.aggregate(field.target_alias, field.field_name, field.func, alias)
             elif isinstance(field, str) and "." in field:
                 var_prop = field.split(".")
                 self._native.field(var_prop[0], var_prop[1], alias)
@@ -613,3 +653,8 @@ class Query:
 def unwind(batch_param: str, alias: str = "row") -> Query:
     """Starts an UNWIND batch expansion query statement: `UNWIND $batch_param AS alias`."""
     return Query.unwind(batch_param, alias=alias)
+
+
+def load_csv(url: str, with_headers: bool = True, alias: str = "row") -> Query:
+    """Starts a LOAD CSV file ingestion query statement: `LOAD CSV [WITH HEADERS] FROM url AS alias`."""
+    return Query.load_csv(url, with_headers=with_headers, alias=alias)

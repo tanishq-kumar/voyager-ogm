@@ -151,6 +151,20 @@ impl IsoGqlEmitter {
                 self.buffer.push_str(id);
                 Ok(())
             }
+            AstNode::NodePattern {
+                variable: Some(var),
+                ..
+            } => {
+                self.buffer.push_str(var);
+                Ok(())
+            }
+            AstNode::EdgePattern {
+                variable: Some(var),
+                ..
+            } => {
+                self.buffer.push_str(var);
+                Ok(())
+            }
             AstNode::Parameter(param) => {
                 self.buffer.push('$');
                 self.buffer.push_str(param);
@@ -420,8 +434,10 @@ impl AstVisitor for IsoGqlEmitter {
 
         let root_node = arena.get(root)?;
         if let AstNode::QueryStatement {
+            load_csv: _,
             unwinds,
             matches,
+            with_clauses: _,
             mutations,
             return_clause,
         } = root_node

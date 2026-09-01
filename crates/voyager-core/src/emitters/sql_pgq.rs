@@ -146,6 +146,20 @@ impl SqlPgqEmitter {
                 self.buffer.push_str(id);
                 Ok(())
             }
+            AstNode::NodePattern {
+                variable: Some(var),
+                ..
+            } => {
+                self.buffer.push_str(var);
+                Ok(())
+            }
+            AstNode::EdgePattern {
+                variable: Some(var),
+                ..
+            } => {
+                self.buffer.push_str(var);
+                Ok(())
+            }
             AstNode::PropertyAccess { target, property } => {
                 self.emit_expression(arena, *target, false)?;
                 if !property.is_empty() {
@@ -257,8 +271,10 @@ impl AstVisitor for SqlPgqEmitter {
 
         let root_node = arena.get(root)?;
         if let AstNode::QueryStatement {
+            load_csv: _,
             unwinds: _,
             matches,
+            with_clauses: _,
             mutations: _,
             return_clause,
         } = root_node

@@ -141,6 +141,11 @@ class BulkIngestionPlan:
         """Returns the total number of batches in this plan."""
         return len(self.batches_data)
 
+    @property
+    def batches(self) -> list[BulkIngestionBatch]:
+        """Returns the list of executable batch descriptors."""
+        return list(self)
+
 
 def create_bulk_create_plan(
     model: type[Node],

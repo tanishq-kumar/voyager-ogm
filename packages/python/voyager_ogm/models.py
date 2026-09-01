@@ -235,6 +235,41 @@ class BoundField:
         """
         return PredicateExpr(self.target_alias, self.field_name, "contains", substring)
 
+    def count(self) -> AggregationExpr:
+        """Returns a `COUNT(alias.prop)` aggregation expression."""
+        return AggregationExpr(self.target_alias, self.field_name, "count")
+
+    def avg(self) -> AggregationExpr:
+        """Returns an `AVG(alias.prop)` aggregation expression."""
+        return AggregationExpr(self.target_alias, self.field_name, "avg")
+
+    def sum(self) -> AggregationExpr:
+        """Returns a `SUM(alias.prop)` aggregation expression."""
+        return AggregationExpr(self.target_alias, self.field_name, "sum")
+
+    def min(self) -> AggregationExpr:
+        """Returns a `MIN(alias.prop)` aggregation expression."""
+        return AggregationExpr(self.target_alias, self.field_name, "min")
+
+    def max(self) -> AggregationExpr:
+        """Returns a `MAX(alias.prop)` aggregation expression."""
+        return AggregationExpr(self.target_alias, self.field_name, "max")
+
+    def collect(self) -> AggregationExpr:
+        """Returns a `COLLECT(alias.prop)` aggregation expression."""
+        return AggregationExpr(self.target_alias, self.field_name, "collect")
+
+
+class AggregationExpr:
+    """Container for AST column aggregation expressions (e.g. COUNT, AVG)."""
+
+    def __init__(self, target: str, field: str, func: str) -> None:
+        self.target = target
+        self.target_alias = target
+        self.field = field
+        self.field_name = field
+        self.func = func
+
 
 class PredicateExpr:
     """Container for AST predicate conditions.
@@ -384,6 +419,10 @@ class Node:
                 self._dirty_fields = {}
             self._values[name] = value
             self._dirty_fields[name] = value
+
+    def count(self) -> AggregationExpr:
+        """Returns a `COUNT(alias)` node aggregation expression."""
+        return AggregationExpr(self._alias, "*", "count")
 
     def __getattr__(self, name: str) -> BoundField:
         """Dynamically resolves unknown property names into BoundField descriptors.

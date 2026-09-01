@@ -181,6 +181,11 @@ impl PyQueryBuilder {
         self.inner.unwind_param(param_name, alias);
     }
 
+    #[pyo3(signature = (url, with_headers=true, alias="row".to_string()))]
+    fn load_csv(&mut self, url: String, with_headers: bool, alias: String) {
+        self.inner.load_csv(url, with_headers, alias);
+    }
+
     fn remove_property(&mut self, var: String, prop: String) {
         self.inner.remove_property(var, prop);
     }
@@ -212,7 +217,12 @@ impl PyQueryBuilder {
                 )));
             }
         };
-        self.inner.select_property_aggregate(var, prop, agg, alias);
+        if prop == "*" || prop.is_empty() {
+            let expr = self.inner.ident(var);
+            self.inner.select_aggregate(expr, agg, alias);
+        } else {
+            self.inner.select_property_aggregate(var, prop, agg, alias);
+        }
         Ok(())
     }
 
@@ -234,6 +244,32 @@ impl PyQueryBuilder {
 
     fn skip(&mut self, skip: u64) {
         self.inner.skip(skip);
+    }
+
+    #[pyo3(signature = (procedure_name, args=vec![], kwargs=std::collections::HashMap::new()))]
+    fn call_procedure(
+        &mut self,
+        procedure_name: String,
+        args: Vec<Bound<'_, PyAny>>,
+        kwargs: std::collections::HashMap<String, Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let mut arg_handles = Vec::with_capacity(args.len() + kwargs.len());
+        for arg in args {
+            let lit = py_to_literal(&arg)?;
+            let h = self.inner.literal(lit);
+            arg_handles.push(h);
+        }
+        for (_k, v) in kwargs {
+            let lit = py_to_literal(&v)?;
+            let h = self.inner.literal(lit);
+            arg_handles.push(h);
+        }
+        self.inner.call_procedure(procedure_name, arg_handles);
+        Ok(())
+    }
+
+    fn yield_items(&mut self, items: Vec<String>) {
+        self.inner.yield_items(items);
     }
 
     #[pyo3(signature = (dialect="cypher", graph_name=None))]
