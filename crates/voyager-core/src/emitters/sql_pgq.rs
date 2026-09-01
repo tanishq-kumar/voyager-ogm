@@ -148,8 +148,10 @@ impl SqlPgqEmitter {
             }
             AstNode::PropertyAccess { target, property } => {
                 self.emit_expression(arena, *target, false)?;
-                self.buffer.push('.');
-                self.buffer.push_str(property);
+                if !property.is_empty() {
+                    self.buffer.push('.');
+                    self.buffer.push_str(property);
+                }
                 Ok(())
             }
             AstNode::Literal(lit) => {

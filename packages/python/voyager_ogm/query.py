@@ -377,6 +377,8 @@ class Query:
                 raise ValueError(msg)
         return self
 
+    filter = where
+
     def on_create_set(self, *assignments: PredicateExpr, **kwargs: Any) -> Query:
         """Adds ON CREATE SET property assignments to the active MERGE block.
 

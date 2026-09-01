@@ -16,6 +16,7 @@
 #[cfg(feature = "arrow")]
 pub mod arrow;
 pub mod ast;
+pub mod bridge;
 pub mod builder;
 pub mod bulk;
 pub mod emitters;
@@ -27,6 +28,7 @@ pub use ast::{
     AggregationFunc, AstNode, BinaryOp, Direction, LiteralValue, NodeHandle, ProjectionItem,
     QueryAstArena,
 };
+pub use bridge::{DatabaseBridge, MockDatabaseBridge, QueryResult, QuerySummary};
 pub use builder::QueryBuilder;
 pub use emitters::{CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
 pub use error::{Error, Result};

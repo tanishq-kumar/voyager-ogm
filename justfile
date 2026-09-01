@@ -101,3 +101,15 @@ examples: examples-rust examples-python
 # Generate synthetic scale datasets for hydration benchmarks
 generate-bench-data nodes="100000" edges="500000" out="test_data/bench_100k":
     uv run python test_data/generator/generate_bench_dataset.py --nodes {{nodes}} --edges {{edges}} --output-dir {{out}}
+
+# Start local graph database containers via Podman/Docker Compose
+up:
+    podman compose -f containers/compose.yaml up -d
+
+# Stop and tear down local graph database containers
+down:
+    podman compose -f containers/compose.yaml down
+
+# Run live database integration tests against real running databases
+test-live:
+    uv run pytest packages/python/tests/test_live_database_bridge.py packages/python/tests/test_real_world_scenarios.py -v

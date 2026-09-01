@@ -31,17 +31,12 @@ def chunk_records(
 ) -> Iterator[list[dict[str, Any]]]:
     """Yield successive batch chunks from a sequence of dict records.
 
-    Parameters
-    ----------
-    records : Sequence[dict[str, Any]]
-        List or sequence of dictionary records.
-    batch_size : int, default=50_000
-        Maximum number of records per batch chunk.
+    Args:
+        records: List or sequence of dictionary records.
+        batch_size: Maximum number of records per batch chunk.
 
-    Yields
-    ------
-    list[dict[str, Any]]
-        Chunked batch of records.
+    Yields:
+        Chunked batch of records as a list of dictionaries.
     """
     total = len(records)
     for offset in range(0, total, batch_size):
@@ -53,16 +48,11 @@ def chunk_dataframe(df: Any, batch_size: int = 50_000) -> Iterator[list[dict[str
 
     Leverages zero-copy slicing for Polars DataFrames to avoid unnecessary memory copies.
 
-    Parameters
-    ----------
-    df : Any
-        Polars DataFrame, LazyFrame, PyArrow Table, or pandas DataFrame.
-    batch_size : int, default=50_000
-        Maximum number of records per batch chunk.
+    Args:
+        df: Polars DataFrame, LazyFrame, PyArrow Table, or pandas DataFrame.
+        batch_size: Maximum number of records per batch chunk.
 
-    Yields
-    ------
-    list[dict[str, Any]]
+    Yields:
         Chunked batch of records formatted as list of dictionaries.
     """
     # Polars DataFrame
@@ -100,23 +90,31 @@ def chunk_dataframe(df: Any, batch_size: int = 50_000) -> Iterator[list[dict[str
         yield from chunk_records(df, batch_size=batch_size)
         return
 
-    msg = f"Unsupported DataFrame/data structure for bulk ingestion: {type(df)}"
+    msg = f"Unsupported data type for chunking: {type(df)}"
     raise TypeError(msg)
 
 
-@dataclass(frozen=True)
+@dataclass
 class BulkIngestionBatch:
-    """A single compiled batch statement with parameters."""
+    """Represents a single executable batch chunk within a bulk ingestion plan."""
 
+    batch_index: int
     statement: str
     parameters: dict[str, Any]
-    batch_index: int
-    batch_size: int
+    record_count: int
 
 
-@dataclass(frozen=True)
+@dataclass
 class BulkIngestionPlan:
-    """A compiled bulk ingestion execution plan."""
+    """Execution plan for high-throughput bulk ingestion transactions.
+
+    Attributes:
+        statement: The parameterized bulk query statement.
+        total_records: Total number of rows/records to ingest.
+        batch_size: Chunk size per batch transaction.
+        dialect: Target query dialect string ('cypher', 'iso_gql').
+        batches_data: Pre-sliced list of record chunks.
+    """
 
     statement: str
     total_records: int
@@ -125,18 +123,22 @@ class BulkIngestionPlan:
     batches_data: list[list[dict[str, Any]]]
 
     def __iter__(self) -> Iterator[BulkIngestionBatch]:
-        """Iterate over prepared batch queries."""
-        for idx, batch_rows in enumerate(self.batches_data):
+        """Iterates over executable batch descriptors."""
+        for idx, chunk in enumerate(self.batches_data):
             yield BulkIngestionBatch(
-                statement=self.statement,
-                parameters={"batch": batch_rows},
                 batch_index=idx,
-                batch_size=len(batch_rows),
+                statement=self.statement,
+                parameters={"batch": chunk},
+                record_count=len(chunk),
             )
+
+    def __len__(self) -> int:
+        """Returns the total number of batches in this plan."""
+        return len(self.batches_data)
 
     @property
     def num_batches(self) -> int:
-        """Total number of batches in this plan."""
+        """Returns the total number of batches in this plan."""
         return len(self.batches_data)
 
 
@@ -148,25 +150,18 @@ def create_bulk_create_plan(
 ) -> BulkIngestionPlan:
     """Creates a high-performance bulk creation execution plan.
 
-    Parameters
-    ----------
-    model : type[Node]
-        The Voyager OGM Node class.
-    data : list[dict[str, Any]] | pl.DataFrame
-        Records or DataFrame to ingest.
-    batch_size : int, default=50_000
-        Number of entities per batch transaction.
-    dialect : str, default="cypher"
-        Target graph query dialect ('cypher', 'iso_gql').
+    Args:
+        model: The Voyager OGM Node class.
+        data: Records or DataFrame to ingest.
+        batch_size: Number of entities per batch transaction.
+        dialect: Target graph query dialect ('cypher', 'iso_gql').
 
-    Returns
-    -------
-    BulkIngestionPlan
+    Returns:
         The generated execution plan with chunked parameter batches.
     """
     labels = getattr(model, "__labels__", [model.__name__])
     label = labels[0] if labels else model.__name__
-    fields = getattr(model, "__fields__", {})
+    fields = getattr(model, "_schema_fields", getattr(model, "__fields__", {}))
     properties = list(fields.keys())
 
     batches = list(chunk_dataframe(data, batch_size=batch_size))
@@ -202,27 +197,19 @@ def create_bulk_merge_plan(
 ) -> BulkIngestionPlan:
     """Creates a high-performance idempotent bulk upsert (MERGE) execution plan.
 
-    Parameters
-    ----------
-    model : type[Node]
-        The Voyager OGM Node class.
-    key_field : str
-        The unique identifier field name to match on.
-    data : list[dict[str, Any]] | pl.DataFrame
-        Records or DataFrame to upsert.
-    batch_size : int, default=50_000
-        Number of entities per batch transaction.
-    dialect : str, default="cypher"
-        Target graph query dialect ('cypher', 'iso_gql').
+    Args:
+        model: The Voyager OGM Node class.
+        key_field: The unique identifier field name to match on.
+        data: Records or DataFrame to upsert.
+        batch_size: Number of entities per batch transaction.
+        dialect: Target graph query dialect ('cypher', 'iso_gql').
 
-    Returns
-    -------
-    BulkIngestionPlan
+    Returns:
         The generated execution plan with chunked parameter batches.
     """
     labels = getattr(model, "__labels__", [model.__name__])
     label = labels[0] if labels else model.__name__
-    fields = getattr(model, "__fields__", {})
+    fields = getattr(model, "_schema_fields", getattr(model, "__fields__", {}))
     properties = [f for f in fields.keys() if f != key_field]
 
     batches = list(chunk_dataframe(data, batch_size=batch_size))
@@ -261,28 +248,17 @@ def create_bulk_create_rel_plan(
 ) -> BulkIngestionPlan:
     """Creates a high-performance bulk relationship ingestion execution plan.
 
-    Parameters
-    ----------
-    rel_model : type[Relationship] | str
-        The relationship model class or relationship type string (e.g. "KNOWS").
-    data : list[dict[str, Any]] | pl.DataFrame
-        Records containing `from_<from_key>`, `to_<to_key>`, and edge properties.
-    from_label : str
-        Source node label.
-    from_key : str
-        Source node matching property name (e.g. "id").
-    to_label : str
-        Target node label.
-    to_key : str
-        Target node matching property name (e.g. "id").
-    batch_size : int, default=50_000
-        Number of edges per batch transaction.
-    dialect : str, default="cypher"
-        Target graph query dialect ('cypher', 'iso_gql').
+    Args:
+        rel_model: The relationship model class or relationship type string (e.g. "KNOWS").
+        data: Records containing `from_<from_key>`, `to_<to_key>`, and edge properties.
+        from_label: Source node label.
+        from_key: Source node matching property name (e.g. "id").
+        to_label: Target node label.
+        to_key: Target node matching property name (e.g. "id").
+        batch_size: Number of edges per batch transaction.
+        dialect: Target graph query dialect ('cypher', 'iso_gql').
 
-    Returns
-    -------
-    BulkIngestionPlan
+    Returns:
         The generated execution plan.
     """
     if isinstance(rel_model, str):
@@ -294,24 +270,19 @@ def create_bulk_create_rel_plan(
             "__type__",
             getattr(rel_model, "__rel_type__", rel_model.__name__.upper()),
         )
-        fields = getattr(rel_model, "__fields__", {})
+        fields = getattr(rel_model, "_schema_fields", getattr(rel_model, "__fields__", {}))
         properties = list(fields.keys())
 
     batches = list(chunk_dataframe(data, batch_size=batch_size))
     total_records = sum(len(b) for b in batches)
 
-    if not properties and batches and batches[0]:
-        from_col = f"from_{from_key}"
-        to_col = f"to_{to_key}"
-        properties = [k for k in batches[0][0].keys() if k not in (from_col, to_col)]
-
     compiled = _rs_compile_bulk_create_rel(
         rel_type=rel_type,
-        properties=properties,
         from_label=from_label,
         from_key=from_key,
         to_label=to_label,
         to_key=to_key,
+        properties=properties,
         batch_param="batch",
         row_alias="row",
         dialect=dialect,

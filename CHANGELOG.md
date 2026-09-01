@@ -1,8 +1,17 @@
 # Changelog
 
-## [0.2.0-beta.1] - 2026-08-31
+## [0.2.0-alpha.1] - 2026-09-01
 
 ### Added
+- **Database Bridging System & Driver Adapters (Task 2.5)**:
+  - Core Rust `DatabaseBridge` trait, `QueryResult`, `QuerySummary`, and `MockDatabaseBridge` in `voyager-core`.
+  - Python `DatabaseBridge` and `AsyncDatabaseBridge` runtime protocols.
+  - Built-in adapters: `Neo4jBoltBridge`, `AsyncNeo4jBoltBridge` (Bolt protocol for Neo4j, Memgraph, FalkorDB), `DuckDbBridge`, `AsyncDuckDbBridge` (zero-copy Polars integration), `MockBridge`, and `AsyncMockBridge`.
+  - Dynamic `register_bridge()` and `create_bridge()` factory for third-party driver auto-detection.
+  - `Session` and `AsyncSession` execution (`execute()`, `execute_to_polars()`, `run_bulk()`).
+  - Live integration test suite verifying real Neo4j, DuckDB, official LDBC Social Network, and Canonical Movie Graph datasets.
+  - Vendor-neutral container stack (`containers/compose.yaml`) supporting Neo4j, Memgraph, Apache AGE, and FalkorDB.
+  - Enforced strict Google-style docstrings across all Python modules via Ruff rule `D` (`pydocstyle`).
 - **High-Throughput Bulk Ingestion Engine (Task 2.4)**:
   - Added `AstNode::UnwindClause` and `AstNode::Parameter` for `UNWIND $batch AS row` unrolling.
   - Implemented `compile_bulk_create`, `compile_bulk_merge`, and `compile_bulk_create_rel` in `voyager_core::bulk`.
@@ -23,7 +32,8 @@
   - Added `.to_polars()` and `.to_arrow()` methods (1,000,000 nodes streamed in 9.08 ms).
 - **Dual Licensing & CI Automation**:
   - Added formal dual-license pointer (`LICENSE`, `LICENSE-MIT`, `LICENSE-APACHE`).
-  - Added cross-platform GitHub Actions CI workflow with matrix testing (Ubuntu, macOS, Windows).
+  - Pinned GitHub Actions in CI workflow to exact 40-character commit SHAs.
+  - Added Python 3.14 to test matrix and automated Dependabot configuration.
 
 ---
 

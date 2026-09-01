@@ -73,21 +73,24 @@ class Field(Generic[_T]):
         name: str | None = None,
         unique: bool = False,
         index: bool = False,
+        primary_key: bool = False,
         type_annotation: Any = None,
     ) -> None:
         """Initializes a graph property Field descriptor.
 
         Args:
-            default: Default property value or ellipsis `...` if required.
-            name: Optional explicit property name override in the database.
-            unique: If True, indicates a unique database constraint.
-            index: If True, indicates an index constraint on the property.
-            type_annotation: Python type object or string representation.
+            default: Default fallback value for this property.
+            name: Custom database property name (defaults to attribute name).
+            unique: Whether to enforce a unique constraint.
+            index: Whether to create a search index on this property.
+            primary_key: Convenience flag setting both unique=True and index=True.
+            type_annotation: Python type annotation class.
         """
         self.default = default
         self.name = name
-        self.unique = unique
-        self.index = index
+        self.primary_key = primary_key
+        self.unique = unique or primary_key
+        self.index = index or primary_key
         if isinstance(type_annotation, str) and type_annotation in _BUILTIN_TYPES:
             self.type_annotation = _BUILTIN_TYPES[type_annotation]
         else:
