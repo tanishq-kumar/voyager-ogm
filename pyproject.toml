@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "voyager-ogm"
-version = "0.1.0a1"
+version = "0.2.0a1"
 description = "High-performance, vendor-neutral Object-Graph Mapper (OGM) with zero-copy Polars Arrow streaming"
 readme = "README.md"
 authors = [{ name = "Tanishq Kumar" }]
