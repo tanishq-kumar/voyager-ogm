@@ -7,7 +7,7 @@ name = "voyager-ogm"
 version = "0.1.0a1"
 description = "High-performance, vendor-neutral Object-Graph Mapper (OGM) with zero-copy Polars Arrow streaming"
 readme = "README.md"
-authors = [{ name = "Voyager OGM Team", email = "dev@voyager-ogm.org" }]
+authors = [{ name = "Tanishq Kumar" }]
 license = { text = "MIT OR Apache-2.0" }
 requires-python = ">=3.10"
 keywords = ["graph", "ogm", "cypher", "sql-pgq", "gql", "polars", "arrow"]
@@ -23,7 +23,9 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
-    "Topic :: Database :: Database Engines/Servers",
+    "Topic :: Database :: Front-Ends",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
     "polars>=1.0.0",
@@ -31,9 +33,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+duckdb = [
+    "duckdb>=1.0.0",
+]
+neo4j = [
+    "neo4j>=5.0.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-benchmark>=4.0.0",
+    "pytest-asyncio>=0.23.0",
+    "duckdb>=1.0.0",
+    "neo4j>=5.0.0",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "maturin>=1.7.0",
@@ -54,11 +65,19 @@ line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "UP", "B"]
-ignore = []
+select = ["E", "F", "I", "N", "W", "UP", "B", "D"]
+ignore = [
+    "D105",  # Missing docstring in magic method
+    "D107",  # Missing docstring in __init__
+]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"packages/python/tests/*" = ["D"]
+"test_data/*" = ["D"]
+"examples/*" = ["D"]
 
 [tool.pytest.ini_options]
 testpaths = ["packages/python/tests"]

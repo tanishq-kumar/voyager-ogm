@@ -1,0 +1,68 @@
+# Voyager OGM Multi-Engine Development Stack
+
+services:
+  # Neo4j Graph Database (Bolt Protocol)
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: voyager-neo4j
+    ports:
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=neo4j/voyagerpass123
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_memory_pagecache_size=256M
+      - NEO4J_dbms_memory_heap_initial__size=256M
+      - NEO4J_dbms_memory_heap_max__size=512M
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "cypher-shell -u neo4j -p voyagerpass123 'RETURN 1;' || exit 1",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # Memgraph In-Memory Graph Database (Bolt Protocol)
+  memgraph:
+    image: memgraph/memgraph:latest
+    container_name: voyager-memgraph
+    ports:
+      - "7688:7687"
+    environment:
+      - --bolt-port=7687
+      - --log-level=WARNING
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "7687"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Apache AGE Multi-Model Graph Database (PostgreSQL + Cypher/GQL Extension)
+  apache-age:
+    image: apache/age:latest
+    container_name: voyager-apache-age
+    ports:
+      - "5455:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=voyagerpass123
+      - POSTGRES_DB=voyager_graph
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d voyager_graph"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # FalkorDB Native Graph Engine (Low-Latency Cypher/GQL over Bolt)
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: voyager-falkordb
+    ports:
+      - "7689:7687"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "7687"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
