@@ -6,6 +6,19 @@ from voyager_ogm._voyager_rs import (
     generate_synthetic_stream,
     version,
 )
+from voyager_ogm.bridge import (
+    AsyncDatabaseBridge,
+    AsyncDuckDbBridge,
+    AsyncMockBridge,
+    AsyncNeo4jBoltBridge,
+    BulkExecutionResult,
+    DatabaseBridge,
+    DuckDbBridge,
+    MockBridge,
+    Neo4jBoltBridge,
+    create_bridge,
+    register_bridge,
+)
 from voyager_ogm.ingestion import (
     BulkIngestionBatch,
     BulkIngestionPlan,
@@ -26,7 +39,7 @@ from voyager_ogm.models import (
     reset_alias_counters,
 )
 from voyager_ogm.query import CompiledQuery, Query, unwind
-from voyager_ogm.session import Session
+from voyager_ogm.session import AsyncSession, Session
 from voyager_ogm.streaming import QueryResult, to_arrow, to_polars
 from voyager_ogm.transaction import SavepointContext, Transaction
 
@@ -34,12 +47,22 @@ __version__ = version()
 
 __all__ = [
     "ArrowStream",
+    "AsyncDatabaseBridge",
+    "AsyncDuckDbBridge",
+    "AsyncMockBridge",
+    "AsyncNeo4jBoltBridge",
+    "AsyncSession",
     "BoundField",
+    "BulkExecutionResult",
     "BulkIngestionBatch",
     "BulkIngestionPlan",
     "CompiledQuery",
+    "DatabaseBridge",
+    "DuckDbBridge",
     "Field",
+    "MockBridge",
     "NativeQueryBuilder",
+    "Neo4jBoltBridge",
     "Node",
     "PredicateExpr",
     "Query",
@@ -50,11 +73,13 @@ __all__ = [
     "Transaction",
     "chunk_dataframe",
     "chunk_records",
+    "create_bridge",
     "create_bulk_create_plan",
     "create_bulk_create_rel_plan",
     "create_bulk_merge_plan",
     "generate_synthetic_stream",
     "node",
+    "register_bridge",
     "relationship",
     "reset_alias_counters",
     "to_arrow",
