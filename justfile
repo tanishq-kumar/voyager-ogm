@@ -118,6 +118,18 @@ down:
 test-live:
     uv run pytest packages/python/tests/test_live_database_bridge.py packages/python/tests/test_real_world_scenarios.py -v
 
-# Run openCypher & openGQL TCK conformance test suite
+# Run openCypher TCK conformance test suite
 test-tck:
     uv run pytest packages/python/tests/test_tck_conformance.py -v
+
+# Run ISO GQL (ISO/IEC 39075:2024) conformance test suite
+test-gql:
+    uv run pytest packages/python/tests/test_gql_conformance.py -v
+
+# Run SQL:2023 PGQ and DuckPGQ conformance test suite
+test-pgq:
+    uv run pytest packages/python/tests/test_pgq_conformance.py -v
+
+# Run Apache AGE (PostgreSQL Embedded Cypher) conformance test suite
+test-age:
+    uv run pytest packages/python/tests/test_age_conformance.py -v

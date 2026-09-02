@@ -89,6 +89,8 @@ impl SqlPgqEmitter {
                 self.buffer.push_str(edge_type);
             }
 
+            self.buffer.push(']');
+
             if min_hops.is_some() || max_hops.is_some() {
                 self.buffer.push('{');
                 if let Some(min) = min_hops {
@@ -104,8 +106,8 @@ impl SqlPgqEmitter {
             }
 
             match direction {
-                Direction::Outgoing => self.buffer.push_str("]-> "),
-                Direction::Incoming | Direction::Undirected => self.buffer.push_str("]- "),
+                Direction::Outgoing => self.buffer.push_str("-> "),
+                Direction::Incoming | Direction::Undirected => self.buffer.push_str("- "),
             }
 
             self.emit_node_pattern(arena, *target_node)?;

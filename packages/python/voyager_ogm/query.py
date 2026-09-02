@@ -54,60 +54,82 @@ class Query:
         self._native = NativeQueryBuilder()
 
     @classmethod
-    def match(cls, node_or_type: Node | type[Node] | None = None) -> Query:
+    def match(
+        cls,
+        node_or_type: Node | type[Node] | str | None = None,
+        labels: list[str] | str | None = None,
+        variable: str | None = None,
+    ) -> Query:
         """Starts a standard MATCH clause.
 
         Args:
-            node_or_type: Optional Node instance or Node subclass to initialize the path.
+            node_or_type: Optional Node instance, subclass, or variable alias.
+            labels: Optional label or list of labels.
+            variable: Optional variable alias name.
 
         Returns:
             A new Query instance initialized with the MATCH clause.
-
-        Example:
-            >>> query = Query.match(Person)
         """
         q = cls()
         q._native.match()
-        if node_or_type is not None:
-            q.node(node_or_type)
+        if node_or_type is not None or labels is not None or variable is not None:
+            q.node(node_or_type, labels=labels, variable=variable)
         return q
 
     @classmethod
-    def create(cls, node_or_type: Node | type[Node] | None = None) -> Query:
+    def match_node(
+        cls,
+        variable: str | None = None,
+        labels: list[str] | str | None = None,
+    ) -> Query:
+        """Convenience factory method that begins a MATCH clause for a single node."""
+        return cls.match(variable=variable, labels=labels)
+
+    @classmethod
+    def create(
+        cls,
+        node_or_type: Node | type[Node] | str | None = None,
+        labels: list[str] | str | None = None,
+        variable: str | None = None,
+    ) -> Query:
         """Starts a CREATE mutation clause.
 
         Args:
-            node_or_type: Optional Node instance or Node subclass to initialize the path.
+            node_or_type: Optional Node instance, subclass, or variable alias.
+            labels: Optional label or list of labels.
+            variable: Optional variable alias name.
 
         Returns:
             A new Query instance initialized with the CREATE clause.
-
-        Example:
-            >>> query = Query.create(Person(name="Alice"))
         """
         q = cls()
         q._native.create()
-        if node_or_type is not None:
-            q.node(node_or_type)
+        if node_or_type is not None or labels is not None or variable is not None:
+            q.node(node_or_type, labels=labels, variable=variable)
         return q
 
     @classmethod
-    def merge(cls, node_or_type: Node | type[Node] | None = None) -> Query:
+    def merge(
+        cls,
+        node_or_type: Node | type[Node] | str | None = None,
+        labels: list[str] | str | None = None,
+        variable: str | None = None,
+    ) -> Query:
         """Starts a MERGE idempotent upsert clause.
 
         Args:
-            node_or_type: Optional Node instance or Node subclass to initialize the path.
+            node_or_type: Optional Node instance, subclass, or variable alias.
+            labels: Optional label or list of labels.
+            variable: Optional variable alias name.
 
         Returns:
             A new Query instance initialized with the MERGE clause.
-
-        Example:
-            >>> query = Query.merge(Person(id=42)).on_create_set(p.name == "Bob")
         """
         q = cls()
         q._native.merge()
-        if node_or_type is not None:
-            q.node(node_or_type)
+        if node_or_type is not None or labels is not None or variable is not None:
+            q.node(node_or_type, labels=labels, variable=variable)
+        return q
         return q
 
     @classmethod
@@ -241,44 +263,60 @@ class Query:
             self.node(node_or_type)
         return self
 
-    def add_match(self, node_or_type: Node | type[Node] | None = None) -> Query:
+    def add_match(
+        self,
+        node_or_type: Node | type[Node] | str | None = None,
+        labels: list[str] | str | None = None,
+        variable: str | None = None,
+    ) -> Query:
         """Adds a successive MATCH clause.
 
         Args:
             node_or_type: Optional Node instance or Node subclass to append.
+            labels: Optional label(s) for the node pattern.
+            variable: Optional variable alias.
 
         Returns:
             The Query instance for fluent chaining.
         """
         self._native.match()
-        if node_or_type is not None:
-            self.node(node_or_type)
+        if node_or_type is not None or labels is not None or variable is not None:
+            self.node(node_or_type, labels=labels, variable=variable)
         return self
 
-    def add_optional_match(self, node_or_type: Node | type[Node] | None = None) -> Query:
+    def add_optional_match(
+        self,
+        node_or_type: Node | type[Node] | str | None = None,
+        labels: list[str] | str | None = None,
+        variable: str | None = None,
+    ) -> Query:
         """Adds a successive OPTIONAL MATCH clause.
 
         Args:
-            node_or_type: Optional Node instance or Node subclass to append.
+            node_or_type: Optional Node instance, subclass, or variable alias.
+            labels: Optional label or list of labels.
+            variable: Optional variable alias name.
 
         Returns:
             The Query instance for fluent chaining.
         """
         self._native.optional_match()
-        if node_or_type is not None:
-            self.node(node_or_type)
+        if node_or_type is not None or labels is not None or variable is not None:
+            self.node(node_or_type, labels=labels, variable=variable)
         return self
 
     def node(
         self,
         node_or_var: Node | type[Node] | str | None = None,
         labels: list[str] | str | None = None,
+        variable: str | None = None,
     ) -> Query:
         """Appends a node pattern to the query path.
 
         Args:
             node_or_var: Node instance, Node subclass, variable alias string, or None.
             labels: Optional label or list of labels when `node_or_var` is a variable name.
+            variable: Optional variable alias name.
 
         Returns:
             The Query instance for fluent chaining.
@@ -286,6 +324,8 @@ class Query:
         Example:
             >>> query.node("p", labels=["Person", "Actor"])
         """
+        if variable is not None and node_or_var is None:
+            node_or_var = variable
         if isinstance(node_or_var, Node):
             self._native.node(node_or_var.alias, node_or_var.labels)
         elif isinstance(node_or_var, type) and issubclass(node_or_var, Node):
@@ -302,34 +342,45 @@ class Query:
         return self
 
     def _extract_rel_info(
-        self, rel: Relationship | type[Relationship] | str | list[str] | None, var: str | None
+        self,
+        rel: Relationship | type[Relationship] | str | list[str] | None,
+        var: str | None,
+        edge_type: str | list[str] | None = None,
+        variable: str | None = None,
     ) -> tuple[list[str], str | None]:
-        if isinstance(rel, Relationship):
-            return [rel.edge_type], rel.alias
-        elif isinstance(rel, type) and issubclass(rel, Relationship):
-            instance = rel()
-            return [instance.edge_type], var or instance.alias
-        elif isinstance(rel, str):
-            return [rel], var
-        elif isinstance(rel, list):
-            return rel, var
-        return [], var
+        actual_rel = rel if rel is not None else edge_type
+        actual_var = var if var is not None else variable
+        if isinstance(actual_rel, Relationship):
+            return [actual_rel.edge_type], actual_rel.alias
+        elif isinstance(actual_rel, type) and issubclass(actual_rel, Relationship):
+            instance = actual_rel()
+            return [instance.edge_type], actual_var or instance.alias
+        elif isinstance(actual_rel, str):
+            return [actual_rel], actual_var
+        elif isinstance(actual_rel, list):
+            return actual_rel, actual_var
+        return [], actual_var
 
     def to(
         self,
         rel: Relationship | type[Relationship] | str | list[str] | None = None,
         var: str | None = None,
+        *,
+        edge_type: str | list[str] | None = None,
+        variable: str | None = None,
     ) -> Query:
         """Appends an outgoing relationship traversal `-[r:TYPE]->`.
 
         Args:
             rel: Relationship model, subclass, edge type string, or list of types.
             var: Optional variable alias for the relationship edge.
+            edge_type: Keyword argument alias for `rel`.
+            variable: Keyword argument alias for `var`.
 
         Returns:
             The Query instance for fluent chaining.
         """
-        types, edge_var = self._extract_rel_info(rel, var)
+        types, edge_var = self._extract_rel_info(rel, var, edge_type=edge_type, variable=variable)
         self._native.to(types, edge_var)
         return self
 
@@ -337,17 +388,22 @@ class Query:
         self,
         rel: Relationship | type[Relationship] | str | list[str] | None = None,
         var: str | None = None,
+        *,
+        edge_type: str | list[str] | None = None,
+        variable: str | None = None,
     ) -> Query:
         """Appends an incoming relationship traversal `<-[r:TYPE]-`.
 
         Args:
             rel: Relationship model, subclass, edge type string, or list of types.
             var: Optional variable alias for the relationship edge.
+            edge_type: Keyword argument alias for `rel`.
+            variable: Keyword argument alias for `var`.
 
         Returns:
             The Query instance for fluent chaining.
         """
-        types, edge_var = self._extract_rel_info(rel, var)
+        types, edge_var = self._extract_rel_info(rel, var, edge_type=edge_type, variable=variable)
         self._native.from_edge(types, edge_var)
         return self
 
@@ -355,17 +411,22 @@ class Query:
         self,
         rel: Relationship | type[Relationship] | str | list[str] | None = None,
         var: str | None = None,
+        *,
+        edge_type: str | list[str] | None = None,
+        variable: str | None = None,
     ) -> Query:
         """Appends an undirected relationship traversal `-[r:TYPE]-`.
 
         Args:
             rel: Relationship model, subclass, edge type string, or list of types.
             var: Optional variable alias for the relationship edge.
+            edge_type: Keyword argument alias for `rel`.
+            variable: Keyword argument alias for `var`.
 
         Returns:
             The Query instance for fluent chaining.
         """
-        types, edge_var = self._extract_rel_info(rel, var)
+        types, edge_var = self._extract_rel_info(rel, var, edge_type=edge_type, variable=variable)
         self._native.edge(types, edge_var)
         return self
 
@@ -398,6 +459,8 @@ class Query:
         for pred in predicates:
             if pred.op == "eq":
                 self._native.where_eq(pred.target, pred.field, pred.value)
+            elif pred.op == "ne":
+                self._native.where_ne(pred.target, pred.field, pred.value)
             elif pred.op == "gt":
                 self._native.where_gt(pred.target, pred.field, pred.value)
             elif pred.op == "gte":
@@ -406,8 +469,16 @@ class Query:
                 self._native.where_lt(pred.target, pred.field, pred.value)
             elif pred.op == "lte":
                 self._native.where_lte(pred.target, pred.field, pred.value)
+            elif pred.op == "in":
+                self._native.where_in(pred.target, pred.field, pred.value)
+            elif pred.op == "not_in":
+                self._native.where_not_in(pred.target, pred.field, pred.value)
             elif pred.op == "contains":
                 self._native.where_contains(pred.target, pred.field, str(pred.value))
+            elif pred.op == "starts_with":
+                self._native.where_starts_with(pred.target, pred.field, str(pred.value))
+            elif pred.op == "ends_with":
+                self._native.where_ends_with(pred.target, pred.field, str(pred.value))
             else:
                 msg = f"Unsupported predicate operator: {pred.op}"
                 raise ValueError(msg)

@@ -39,6 +39,9 @@ duckdb = [
 neo4j = [
     "neo4j>=5.0.0",
 ]
+age = [
+    "psycopg[binary]>=3.1.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-benchmark>=4.0.0",
@@ -46,6 +49,7 @@ dev = [
     "pytest-xdist>=3.5.0",
     "duckdb>=1.0.0",
     "neo4j>=5.0.0",
+    "psycopg[binary]>=3.1.0",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "maturin>=1.7.0",
@@ -70,6 +74,7 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "D"]
 ignore = [
     "D105",  # Missing docstring in magic method
     "D107",  # Missing docstring in __init__
+    "E501",  # Line too long (handled by formatter)
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -79,7 +84,14 @@ convention = "google"
 "packages/python/tests/*" = ["D"]
 "test_data/*" = ["D"]
 "examples/*" = ["D"]
+"benchmarks/*" = ["D"]
 
 [tool.pytest.ini_options]
 testpaths = ["packages/python/tests"]
 python_files = ["test_*.py"]
+
+[dependency-groups]
+dev = [
+    "neomodel>=7.0.0",
+    "pydantic>=2.13.5",
+]

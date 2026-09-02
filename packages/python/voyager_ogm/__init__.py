@@ -39,6 +39,7 @@ from voyager_ogm.models import (
     reset_alias_counters,
 )
 from voyager_ogm.query import CompiledQuery, Query, load_csv, unwind
+from voyager_ogm.schema import SchemaManager
 from voyager_ogm.session import AsyncSession, Session
 from voyager_ogm.streaming import QueryResult, to_arrow, to_polars
 from voyager_ogm.transaction import SavepointContext, Transaction
@@ -69,6 +70,7 @@ __all__ = [
     "QueryResult",
     "Relationship",
     "SavepointContext",
+    "SchemaManager",
     "Session",
     "Transaction",
     "chunk_dataframe",

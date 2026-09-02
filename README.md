@@ -40,6 +40,10 @@ Voyager OGM solves four common problems in graph databases:
 
 ## Project Plan and Roadmap (6 Phases)
 
+> [!NOTE]
+> **Roadmap Agility & Scope Flexibility:**
+> The phases, milestones, and task breakdowns in this roadmap are designed to be dynamic and evolutionary. As new database capabilities, engine updates (e.g. ISO GQL revisions, Cypher 25, Apache AGE enhancements), or architectural improvements arise during development, tasks may be added, refined, removed, or partitioned into sub-phases (e.g., Phase 3.1a, 3.1b) to maintain high performance and rigorous standards compliance.
+
 ```mermaid
 gantt
     title Voyager OGM Implementation Roadmap (6 Phases)
@@ -55,17 +59,19 @@ gantt
     Two-Layer Rollbacks & Savepoints      :done, p2_2, after p2_1, 3d
     DML Mutations (CREATE, MERGE, SET)    :done, p2_3, after p2_2, 3d
     Bulk Importer (UNWIND & DataFrame)    :done, p2_4, after p2_3, 3d
-    Driver Evaluation & Bridging System   :active, p2_5, after p2_4, 3d
+    Driver Evaluation & Bridging System   :done, p2_5, after p2_4, 3d
     section Phase 3: Formal TCK Conformance (v0.3.0)
-    openCypher TCK Grammar Verification   :p3_1, after p2_5, 4d
-    openGQL / ISO:IEC 39075 TCK Harness   :p3_2, after p3_1, 3d
-    Multi-Engine Live Matrix (Neo4j/Memgraph) :p3_3, after p3_2, 3d
-    section Phase 4: TS SDK & Python Add-ons (v0.4.0)
-    TypeScript NAPI SDK Integration       :p4_1, after p3_3, 4d
+    openCypher & openGQL TCK Harness      :done, p3_1, after p2_5, 4d
+    SQL:2023 PGQ & DuckPGQ Suite          :done, p3_2, after p3_1, 3d
+    Apache AGE & PostgreSQL Cypher Suite  :done, p3_3, after p3_2, 3d
+    Multi-Engine Live Matrix              :active, p3_4, after p3_3, 3d
+    section Phase 4: TS SDK & Query Optimizers (v0.4.0)
+    TypeScript NAPI SDK Integration       :p4_1, after p3_4, 4d
     SQLAlchemy Hybrid Bridge              :p4_2, after p4_1, 3d
     Marimo Reactive WebGL Extension       :p4_3, after p4_2, 3d
+    AST Query Optimizer & Pushdown        :p4_4, after p4_3, 3d
     section Phase 5: Voyager CLI Engine (v0.5.0)
-    CLI Scaffolding & clap Integration    :p5_1, after p4_3, 2d
+    CLI Scaffolding & clap Integration    :p5_1, after p4_4, 2d
     voyager compile Command               :p5_2, after p5_1, 3d
     voyager migrate Command               :p5_3, after p5_2, 3d
     voyager introspect Command            :p5_4, after p5_3, 3d
@@ -80,28 +86,29 @@ gantt
 - [x] **Task 1.4:** Create 18 golden snapshot tests with `insta`.
 - [x] **Task 1.5:** Build Python SDK with model decorators (`@node`, `@relationship`) and type annotations.
 
-### Phase 2: Mutations, Ingestion, Streaming & Bridging (Status: In Progress)
+### Phase 2: Mutations, Ingestion, Streaming & Bridging (Status: Completed)
 - [x] **Task 2.1:** Zero-copy Apache Arrow and Polars stream ingestion (1,000,000 nodes in 9.08 ms).
 - [x] **Task 2.2:** Two-layer transaction Unit-of-Work with in-memory savepoint rollbacks.
 - [x] **Task 2.3:** DML mutation AST nodes and dialect emitters (`CREATE`, `MERGE`, `SET`, `DELETE`, `DETACH DELETE`).
 - [x] **Task 2.4:** High-throughput bulk ingestion engine (`UNWIND $batch` and Polars DataFrame importer).
-- [ ] **Task 2.5:** Database driver evaluation and query dispatch bridging layer.
+- [x] **Task 2.5:** Database driver evaluation and query dispatch bridging layer (Neo4j, Memgraph, DuckDB, Mock).
 
-### Phase 3: Formal TCK Conformance & Multi-Engine Compatibility Matrix (Status: Planned)
-- [ ] **Task 3.1:** [openCypher TCK](https://github.com/opencypher/openCypher/tree/main/tck) & [openGQL TCK](https://github.com/opengql/tck) automated syntax and grammar verification.
-- [ ] **Task 3.2:** [DuckPGQ SQLLogicTest Suite](https://github.com/cwida/duckpgq-extension/tree/main/test) for SQL:2023 `GRAPH_TABLE` standard conformance.
-- [ ] **Task 3.3:** [Apache AGE Regression Suite](https://github.com/apache/age/tree/master/regress) for PostgreSQL embedded Cypher conformance.
+### Phase 3: Formal TCK Conformance & Multi-Engine Compatibility Matrix (Status: In Progress)
+- [x] **Task 3.1:** [openCypher TCK](https://github.com/opencypher/openCypher/tree/main/tck) & [openGQL TCK](https://github.com/opengql/tck) automated syntax and grammar verification across all 18 categories and 5 query authoring styles.
+- [x] **Task 3.2:** [DuckPGQ SQLLogicTest Suite](https://github.com/cwida/duckpgq-extension/tree/main/test) for SQL:2023 `GRAPH_TABLE` standard conformance and live in-memory DuckDB Arrow/Polars extraction.
+- [x] **Task 3.3:** [Apache AGE Regression Suite](https://github.com/apache/age/tree/master/regress) for PostgreSQL embedded Cypher conformance and live database execution.
 - [ ] **Task 3.4:** Automated multi-engine live integration matrix (Neo4j, Memgraph, DuckDB DuckPGQ, PostgreSQL Apache AGE, FalkorDB, Kùzu).
 
-### Phase 4: TypeScript SDK & Python Add-ons (Status: Planned)
+### Phase 4: TypeScript SDK & Query Optimizers (Status: Planned)
 - [ ] **Task 4.1:** TypeScript SDK (`@voyager-ogm/core`) with NAPI-RS bindings.
 - [ ] **Task 4.2:** SQLAlchemy hybrid bridge connecting relational models with graph traversals.
 - [ ] **Task 4.3:** Marimo reactive notebook visual extension (`voyager_graph[marimo]`).
+- [ ] **Task 4.4:** AST Rule-Based Query Optimizer & Predicate Pushdown Pass (`(p:Person {city: $p0})` inline pattern pushdown).
 
 ### Phase 5: Voyager CLI Development (Status: Planned)
 - [ ] **Task 5.1:** Standalone CLI tool (`voyager-cli`) built with `clap`.
 - [ ] **Task 5.2:** `voyager compile`: (sqlc-style) Compiles `.cypher` / `.gql` queries into type-safe models and async functions.
-- [ ] **Task 5.3:** `voyager migrate`: Manages in-graph schema migrations (constraints, indexes, labels).
+- [ ] **Task 5.3:** `voyager migrate`: Manages in-graph schema migrations (constraints, indexes, labels, Graph Types).
 - [ ] **Task 5.4:** `voyager introspect`: Scans live database catalogs to generate model classes and query functions.
 
 ### Phase 6: Production GA Release & Multi-Registry Publishing (Status: Planned)

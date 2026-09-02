@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use voyager_core::ast::{AggregationFunc, BinaryOp, LiteralValue};
 use voyager_core::builder::QueryBuilder;
-use voyager_core::emitters::{CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
+use voyager_core::emitters::{AgeEmitter, CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
 use voyager_core::visitor::AstVisitor;
 
 fn py_to_literal(val: &Bound<'_, PyAny>) -> PyResult<LiteralValue> {
@@ -130,8 +130,36 @@ impl PyQueryBuilder {
         Ok(())
     }
 
+    fn where_ne(&mut self, var: String, prop: String, val: &Bound<'_, PyAny>) -> PyResult<()> {
+        let lit = py_to_literal(val)?;
+        self.inner.where_property(var, prop, BinaryOp::Neq, lit);
+        Ok(())
+    }
+
+    fn where_in(&mut self, var: String, prop: String, val: &Bound<'_, PyAny>) -> PyResult<()> {
+        let lit = py_to_literal(val)?;
+        self.inner.where_property(var, prop, BinaryOp::In, lit);
+        Ok(())
+    }
+
+    fn where_not_in(&mut self, var: String, prop: String, val: &Bound<'_, PyAny>) -> PyResult<()> {
+        let lit = py_to_literal(val)?;
+        self.inner.where_property(var, prop, BinaryOp::NotIn, lit);
+        Ok(())
+    }
+
     fn where_contains(&mut self, var: String, prop: String, val: String) {
         self.inner.where_contains(var, prop, val);
+    }
+
+    fn where_starts_with(&mut self, var: String, prop: String, val: String) {
+        self.inner
+            .where_property(var, prop, BinaryOp::StartsWith, LiteralValue::String(val));
+    }
+
+    fn where_ends_with(&mut self, var: String, prop: String, val: String) {
+        self.inner
+            .where_property(var, prop, BinaryOp::EndsWith, LiteralValue::String(val));
     }
 
     fn r#return(&mut self) {
@@ -300,9 +328,16 @@ impl PyQueryBuilder {
                     .visit_query(&arena, root)
                     .map_err(|e| PyValueError::new_err(e.to_string()))?
             }
+            "age" | "apache_age" | "postgres_age" => {
+                let name = graph_name.unwrap_or_else(|| "age_graph".into());
+                let mut emitter = AgeEmitter::new(name);
+                emitter
+                    .visit_query(&arena, root)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?
+            }
             other => {
                 return Err(PyValueError::new_err(format!(
-                    "Unsupported query dialect: '{other}'. Choose from 'cypher', 'sql_pgq', or 'iso_gql'."
+                    "Unsupported query dialect: '{other}'. Choose from 'cypher', 'sql_pgq', 'iso_gql', or 'apache_age'."
                 )));
             }
         };
