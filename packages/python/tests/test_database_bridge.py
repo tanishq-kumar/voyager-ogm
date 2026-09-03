@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-import duckdb
+try:
+    import duckdb
+except ImportError:
+    duckdb = None
+
 import polars as pl
 import pytest
 from voyager_ogm import (
@@ -117,6 +121,8 @@ async def test_async_session_and_async_mock_bridge():
 
 def test_duckdb_bridge_live_execution():
     """Test DuckDbBridge executing queries on a live in-memory DuckDB connection."""
+    if duckdb is None:
+        pytest.skip("duckdb is not installed in this environment")
     con = duckdb.connect(":memory:")
     con.execute("CREATE TABLE person (id INTEGER, name VARCHAR, age INTEGER);")
     con.execute("INSERT INTO person VALUES (1, 'Alice', 28), (2, 'Bob', 32);")
@@ -140,6 +146,8 @@ def test_duckdb_bridge_live_execution():
 @pytest.mark.asyncio
 async def test_async_duckdb_bridge_live_execution():
     """Test AsyncDuckDbBridge non-blocking async execution over DuckDB."""
+    if duckdb is None:
+        pytest.skip("duckdb is not installed in this environment")
     con = duckdb.connect(":memory:")
     con.execute("CREATE TABLE users (id INTEGER, username VARCHAR);")
     con.execute("INSERT INTO users VALUES (101, 'admin'), (102, 'guest');")

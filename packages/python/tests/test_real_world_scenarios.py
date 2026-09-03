@@ -9,7 +9,11 @@ Tests comprehensive query patterns on real engines:
 
 from __future__ import annotations
 
-import duckdb
+try:
+    import duckdb
+except ImportError:
+    duckdb = None
+
 import polars as pl
 import pytest
 from voyager_ogm import (
@@ -74,6 +78,8 @@ def _reset():
 
 def test_duckdb_ldbc_social_network_scenario():
     """Test LDBC Social Network graph querying and aggregation on local DuckDB."""
+    if duckdb is None:
+        pytest.skip("duckdb is not installed in this environment")
     con = duckdb.connect(":memory:")
 
     # Setup relational schema
@@ -135,6 +141,8 @@ def test_duckdb_ldbc_social_network_scenario():
 
 def test_duckdb_financial_fraud_pattern_scenario():
     """Test cyclic transaction fraud pattern matching on local DuckDB."""
+    if duckdb is None:
+        pytest.skip("duckdb is not installed in this environment")
     con = duckdb.connect(":memory:")
 
     con.execute("""

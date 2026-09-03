@@ -71,6 +71,10 @@ lint:
     uv run cargo clippy --workspace --all-targets -- -D warnings
     uv run ruff check .
 
+# Static type checking across Python using Astral ty
+typecheck:
+    uvx ty check packages/python
+
 # Full Continuous Integration (CI) verification suite
 ci: fmt-check lint test
     @echo "[PASS] Full CI verification passed with 0 errors!"
@@ -113,3 +117,23 @@ down:
 # Run live database integration tests against real running databases
 test-live:
     uv run pytest packages/python/tests/test_live_database_bridge.py packages/python/tests/test_real_world_scenarios.py -v
+
+# Run openCypher TCK conformance test suite
+test-tck:
+    uv run pytest packages/python/tests/test_tck_conformance.py -v
+
+# Run ISO GQL (ISO/IEC 39075:2024) conformance test suite
+test-gql:
+    uv run pytest packages/python/tests/test_gql_conformance.py -v
+
+# Run SQL:2023 PGQ and DuckPGQ conformance test suite
+test-pgq:
+    uv run pytest packages/python/tests/test_pgq_conformance.py -v
+
+# Run Apache AGE (PostgreSQL Embedded Cypher) conformance test suite
+test-age:
+    uv run pytest packages/python/tests/test_age_conformance.py -v
+
+# Run Multi-Engine Live Matrix integration tests (Neo4j, Memgraph, Apache AGE, DuckDB)
+test-matrix:
+    uv run pytest packages/python/tests/test_live_matrix.py -v
