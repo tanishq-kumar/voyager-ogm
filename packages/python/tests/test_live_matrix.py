@@ -285,7 +285,9 @@ class TestDuckDbLiveMatrix:
         """Verifies live execution of SQL:2023 GRAPH_TABLE compiled query on DuckDB with DuckPGQ extension."""
         conn = duckdb.connect(config={"allow_unsigned_extensions": "true"})
         try:
-            conn.execute("SET custom_extension_repository = 'http://duckpgq.s3.eu-north-1.amazonaws.com';")
+            conn.execute(
+                "SET custom_extension_repository = 'http://duckpgq.s3.eu-north-1.amazonaws.com';"
+            )
             conn.execute("FORCE INSTALL 'duckpgq';")
             conn.execute("LOAD 'duckpgq';")
         except Exception as e:
@@ -353,7 +355,9 @@ class TestDuckDbLiveMatrix:
 class TestPostgres19LiveMatrix:
     @pytest.fixture
     def pg19_conn(self):
-        conn_str = "host=localhost port=5456 user=postgres password=voyagerpass123 dbname=voyager_graph"
+        conn_str = (
+            "host=localhost port=5456 user=postgres password=voyagerpass123 dbname=voyager_graph"
+        )
         try:
             conn = psycopg.connect(conn_str, autocommit=True)
         except Exception as e:
@@ -496,4 +500,3 @@ class TestFalkorDBLiveMatrix:
 
         # 6. Cleanup
         falkor_client.query("MATCH (n) DETACH DELETE n")
-
