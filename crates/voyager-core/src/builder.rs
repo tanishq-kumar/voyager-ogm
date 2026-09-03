@@ -50,9 +50,12 @@ enum ClauseMode {
 #[derive(Debug, Default, Clone)]
 pub struct QueryBuilder {
     arena: QueryAstArena,
+    load_csv: Option<NodeHandle>,
     unwind_clauses: Vec<NodeHandle>,
     match_clauses: Vec<NodeHandle>,
+    with_clauses: Vec<NodeHandle>,
     mutation_clauses: Vec<NodeHandle>,
+    procedure_call: Option<NodeHandle>,
     clause_mode: Option<ClauseMode>,
     is_optional_match: bool,
     current_path_start: Option<NodeHandle>,
@@ -137,6 +140,60 @@ impl QueryBuilder {
             alias: alias.into(),
         });
         self.unwind_clauses.push(unwind);
+        self
+    }
+
+    /// Adds a LOAD CSV ingestion clause: `LOAD CSV [WITH HEADERS] FROM <url> AS <alias>`.
+    pub fn load_csv(
+        &mut self,
+        url: impl Into<String>,
+        with_headers: bool,
+        alias: impl Into<String>,
+    ) -> &mut Self {
+        self.flush_current_path();
+        let url_expr = self.literal(url.into());
+        let clause = self.arena.alloc(AstNode::LoadCsvClause {
+            url: url_expr,
+            with_headers,
+            alias: alias.into(),
+        });
+        self.load_csv = Some(clause);
+        self
+    }
+
+    /// Starts a database procedure call: `CALL <procedure_name>(<arguments>)`.
+    pub fn call_procedure(
+        &mut self,
+        procedure_name: impl Into<String>,
+        arguments: Vec<NodeHandle>,
+    ) -> &mut Self {
+        self.flush_current_path();
+        let name_str: String = procedure_name.into();
+        let (namespace, procedure) = if let Some(last_dot) = name_str.rfind('.') {
+            (
+                Some(name_str[..last_dot].to_string()),
+                name_str[last_dot + 1..].to_string(),
+            )
+        } else {
+            (None, name_str)
+        };
+        let call_handle = self.arena.alloc(AstNode::ProcedureCall {
+            namespace,
+            procedure,
+            arguments,
+            yield_items: vec![],
+        });
+        self.procedure_call = Some(call_handle);
+        self
+    }
+
+    /// Sets YIELD items for a procedure call: `YIELD col1, col2`.
+    pub fn yield_items(&mut self, items: Vec<String>) -> &mut Self {
+        if let Some(Ok(AstNode::ProcedureCall { yield_items, .. })) =
+            self.procedure_call.map(|h| self.arena.get_mut(h))
+        {
+            *yield_items = items;
+        }
         self
     }
 
@@ -787,6 +844,10 @@ impl QueryBuilder {
 
     /// Finalizes the AST and returns the completed arena alongside the root statement handle.
     pub fn build(mut self) -> (QueryAstArena, NodeHandle) {
+        if let Some(proc_handle) = self.procedure_call {
+            return (self.arena, proc_handle);
+        }
+
         self.flush_current_path();
 
         let return_clause = if self.projections.is_empty() {
@@ -803,8 +864,10 @@ impl QueryBuilder {
         };
 
         let root_handle = self.arena.alloc(AstNode::QueryStatement {
+            load_csv: self.load_csv,
             unwinds: self.unwind_clauses,
             matches: self.match_clauses,
+            with_clauses: self.with_clauses,
             mutations: self.mutation_clauses,
             return_clause,
         });

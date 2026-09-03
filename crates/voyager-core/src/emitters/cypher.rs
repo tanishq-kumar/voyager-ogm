@@ -155,6 +155,20 @@ impl CypherEmitter {
                 self.buffer.push_str(id);
                 Ok(())
             }
+            AstNode::NodePattern {
+                variable: Some(var),
+                ..
+            } => {
+                self.buffer.push_str(var);
+                Ok(())
+            }
+            AstNode::EdgePattern {
+                variable: Some(var),
+                ..
+            } => {
+                self.buffer.push_str(var);
+                Ok(())
+            }
             AstNode::Parameter(param) => {
                 self.buffer.push('$');
                 self.buffer.push_str(param);
@@ -209,6 +223,30 @@ impl CypherEmitter {
         }
     }
 
+    fn emit_projection_item(&mut self, arena: &QueryAstArena, proj: &ProjectionItem) -> Result<()> {
+        if let Some(func) = proj.aggregation {
+            match func {
+                AggregationFunc::Count => self.buffer.push_str("COUNT("),
+                AggregationFunc::CountDistinct => self.buffer.push_str("COUNT(DISTINCT "),
+                AggregationFunc::Sum => self.buffer.push_str("SUM("),
+                AggregationFunc::Avg => self.buffer.push_str("AVG("),
+                AggregationFunc::Min => self.buffer.push_str("MIN("),
+                AggregationFunc::Max => self.buffer.push_str("MAX("),
+                AggregationFunc::Collect => self.buffer.push_str("COLLECT("),
+            }
+            self.emit_expression(arena, proj.expression, false)?;
+            self.buffer.push(')');
+        } else {
+            self.emit_expression(arena, proj.expression, false)?;
+        }
+
+        if let Some(alias) = &proj.alias {
+            self.buffer.push_str(" AS ");
+            self.buffer.push_str(alias);
+        }
+        Ok(())
+    }
+
     fn emit_return(
         &mut self,
         arena: &QueryAstArena,
@@ -227,26 +265,7 @@ impl CypherEmitter {
             if i > 0 {
                 self.buffer.push_str(", ");
             }
-            if let Some(func) = proj.aggregation {
-                match func {
-                    AggregationFunc::Count => self.buffer.push_str("COUNT("),
-                    AggregationFunc::CountDistinct => self.buffer.push_str("COUNT(DISTINCT "),
-                    AggregationFunc::Sum => self.buffer.push_str("SUM("),
-                    AggregationFunc::Avg => self.buffer.push_str("AVG("),
-                    AggregationFunc::Min => self.buffer.push_str("MIN("),
-                    AggregationFunc::Max => self.buffer.push_str("MAX("),
-                    AggregationFunc::Collect => self.buffer.push_str("COLLECT("),
-                }
-                self.emit_expression(arena, proj.expression, false)?;
-                self.buffer.push(')');
-            } else {
-                self.emit_expression(arena, proj.expression, false)?;
-            }
-
-            if let Some(alias) = &proj.alias {
-                self.buffer.push_str(" AS ");
-                self.buffer.push_str(alias);
-            }
+            self.emit_projection_item(arena, proj)?;
         }
 
         if !order_by.is_empty() {
@@ -426,6 +445,82 @@ impl CypherEmitter {
             )))
         }
     }
+
+    fn emit_load_csv(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::LoadCsvClause {
+            url,
+            with_headers,
+            alias,
+        } = node
+        {
+            self.buffer.push_str("LOAD CSV ");
+            if *with_headers {
+                self.buffer.push_str("WITH HEADERS ");
+            }
+            self.buffer.push_str("FROM ");
+            self.emit_expression(arena, *url, false)?;
+            self.buffer.push_str(" AS ");
+            self.buffer.push_str(alias);
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected LoadCsvClause, got {node:?}"
+            )))
+        }
+    }
+
+    fn emit_with(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::WithClause {
+            distinct,
+            projections,
+            order_by,
+            skip,
+            limit,
+            where_clause,
+        } = node
+        {
+            self.buffer.push_str("WITH ");
+            if *distinct {
+                self.buffer.push_str("DISTINCT ");
+            }
+            for (i, item) in projections.iter().enumerate() {
+                if i > 0 {
+                    self.buffer.push_str(", ");
+                }
+                self.emit_projection_item(arena, item)?;
+            }
+            if !order_by.is_empty() {
+                self.buffer.push_str(" ORDER BY ");
+                for (i, &(expr_handle, is_asc)) in order_by.iter().enumerate() {
+                    if i > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.emit_expression(arena, expr_handle, false)?;
+                    if is_asc {
+                        self.buffer.push_str(" ASC");
+                    } else {
+                        self.buffer.push_str(" DESC");
+                    }
+                }
+            }
+            if let Some(s) = skip {
+                self.buffer.push_str(&format!(" SKIP {s}"));
+            }
+            if let Some(l) = limit {
+                self.buffer.push_str(&format!(" LIMIT {l}"));
+            }
+            if let Some(wh) = where_clause {
+                self.emit_where(arena, *wh)?;
+            }
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected WithClause, got {node:?}"
+            )))
+        }
+    }
 }
 
 impl AstVisitor for CypherEmitter {
@@ -437,12 +532,19 @@ impl AstVisitor for CypherEmitter {
         let root_node = arena.get(root)?;
         match root_node {
             AstNode::QueryStatement {
+                load_csv,
                 unwinds,
                 matches,
+                with_clauses,
                 mutations,
                 return_clause,
             } => {
                 let mut has_emitted = false;
+
+                if let Some(load_csv_handle) = load_csv {
+                    self.emit_load_csv(arena, *load_csv_handle)?;
+                    has_emitted = true;
+                }
 
                 for &unwind_handle in unwinds {
                     if has_emitted {
@@ -482,6 +584,14 @@ impl AstVisitor for CypherEmitter {
                             self.emit_where(arena, *wh)?;
                         }
                     }
+                }
+
+                for &with_handle in with_clauses {
+                    if has_emitted {
+                        self.buffer.push(' ');
+                    }
+                    has_emitted = true;
+                    self.emit_with(arena, with_handle)?;
                 }
 
                 for &mut_handle in mutations {

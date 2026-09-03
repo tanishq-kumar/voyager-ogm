@@ -89,6 +89,8 @@ impl SqlPgqEmitter {
                 self.buffer.push_str(edge_type);
             }
 
+            self.buffer.push(']');
+
             if min_hops.is_some() || max_hops.is_some() {
                 self.buffer.push('{');
                 if let Some(min) = min_hops {
@@ -104,8 +106,8 @@ impl SqlPgqEmitter {
             }
 
             match direction {
-                Direction::Outgoing => self.buffer.push_str("]-> "),
-                Direction::Incoming | Direction::Undirected => self.buffer.push_str("]- "),
+                Direction::Outgoing => self.buffer.push_str("-> "),
+                Direction::Incoming | Direction::Undirected => self.buffer.push_str("- "),
             }
 
             self.emit_node_pattern(arena, *target_node)?;
@@ -144,6 +146,20 @@ impl SqlPgqEmitter {
         match node {
             AstNode::Identifier(id) => {
                 self.buffer.push_str(id);
+                Ok(())
+            }
+            AstNode::NodePattern {
+                variable: Some(var),
+                ..
+            } => {
+                self.buffer.push_str(var);
+                Ok(())
+            }
+            AstNode::EdgePattern {
+                variable: Some(var),
+                ..
+            } => {
+                self.buffer.push_str(var);
                 Ok(())
             }
             AstNode::PropertyAccess { target, property } => {
@@ -257,8 +273,10 @@ impl AstVisitor for SqlPgqEmitter {
 
         let root_node = arena.get(root)?;
         if let AstNode::QueryStatement {
+            load_csv: _,
             unwinds: _,
             matches,
+            with_clauses: _,
             mutations: _,
             return_clause,
         } = root_node

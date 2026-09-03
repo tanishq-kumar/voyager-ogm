@@ -1,4 +1,4 @@
-# 󰓾 Voyager OGM: Multi-Dialect TCK Conformance Harness
+# Voyager OGM: Multi-Dialect TCK Conformance Harness
 
 This document outlines how Voyager OGM systematically verifies query compilation correctness across **openCypher**, **SQL:2023 PGQ**, **ISO GQL**, and **DuckPGQ** by directly utilizing official upstream test suites.
 

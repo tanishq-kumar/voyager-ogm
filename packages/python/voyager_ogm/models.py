@@ -214,15 +214,28 @@ class BoundField:
         return PredicateExpr(self.target_alias, self.field_name, "lt", other)
 
     def __le__(self, other: Any) -> PredicateExpr:
-        """Creates a less-than-or-equal predicate `alias.prop <= value`.
-
-        Args:
-            other: Literal comparison value.
-
-        Returns:
-            PredicateExpr with operator 'lte'.
-        """
+        """Creates a less-than-or-equal predicate `alias.prop <= value`."""
         return PredicateExpr(self.target_alias, self.field_name, "lte", other)
+
+    def __ne__(self, other: Any) -> PredicateExpr:  # type: ignore[override]
+        """Creates a not-equal predicate `alias.prop != value`."""
+        return PredicateExpr(self.target_alias, self.field_name, "ne", other)
+
+    def in_(self, values: list[Any] | tuple[Any, ...]) -> PredicateExpr:
+        """Creates an IN list membership predicate `alias.prop IN values`."""
+        return PredicateExpr(self.target_alias, self.field_name, "in", list(values))
+
+    def not_in(self, values: list[Any] | tuple[Any, ...]) -> PredicateExpr:
+        """Creates a NOT IN list membership predicate `alias.prop NOT IN values`."""
+        return PredicateExpr(self.target_alias, self.field_name, "not_in", list(values))
+
+    def startswith(self, prefix: str) -> PredicateExpr:
+        """Creates a prefix predicate `alias.prop STARTS WITH prefix`."""
+        return PredicateExpr(self.target_alias, self.field_name, "starts_with", prefix)
+
+    def endswith(self, suffix: str) -> PredicateExpr:
+        """Creates a suffix predicate `alias.prop ENDS WITH suffix`."""
+        return PredicateExpr(self.target_alias, self.field_name, "ends_with", suffix)
 
     def contains(self, substring: str) -> PredicateExpr:
         """Creates a string substring predicate `alias.prop CONTAINS value`.
@@ -234,6 +247,41 @@ class BoundField:
             PredicateExpr with operator 'contains'.
         """
         return PredicateExpr(self.target_alias, self.field_name, "contains", substring)
+
+    def count(self) -> AggregationExpr:
+        """Returns a `COUNT(alias.prop)` aggregation expression."""
+        return AggregationExpr(self.target_alias, self.field_name, "count")
+
+    def avg(self) -> AggregationExpr:
+        """Returns an `AVG(alias.prop)` aggregation expression."""
+        return AggregationExpr(self.target_alias, self.field_name, "avg")
+
+    def sum(self) -> AggregationExpr:
+        """Returns a `SUM(alias.prop)` aggregation expression."""
+        return AggregationExpr(self.target_alias, self.field_name, "sum")
+
+    def min(self) -> AggregationExpr:
+        """Returns a `MIN(alias.prop)` aggregation expression."""
+        return AggregationExpr(self.target_alias, self.field_name, "min")
+
+    def max(self) -> AggregationExpr:
+        """Returns a `MAX(alias.prop)` aggregation expression."""
+        return AggregationExpr(self.target_alias, self.field_name, "max")
+
+    def collect(self) -> AggregationExpr:
+        """Returns a `COLLECT(alias.prop)` aggregation expression."""
+        return AggregationExpr(self.target_alias, self.field_name, "collect")
+
+
+class AggregationExpr:
+    """Container for AST column aggregation expressions (e.g. COUNT, AVG)."""
+
+    def __init__(self, target: str, field: str, func: str) -> None:
+        self.target = target
+        self.target_alias = target
+        self.field = field
+        self.field_name = field
+        self.func = func
 
 
 class PredicateExpr:
@@ -384,6 +432,10 @@ class Node:
                 self._dirty_fields = {}
             self._values[name] = value
             self._dirty_fields[name] = value
+
+    def count(self) -> AggregationExpr:
+        """Returns a `COUNT(alias)` node aggregation expression."""
+        return AggregationExpr(self._alias, "*", "count")
 
     def __getattr__(self, name: str) -> BoundField:
         """Dynamically resolves unknown property names into BoundField descriptors.

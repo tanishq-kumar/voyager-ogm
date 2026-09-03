@@ -387,12 +387,40 @@ pub enum AstNode {
         /// Target handles to remove (PropertyAccess or Variable/Label handles)
         items: Vec<NodeHandle>,
     },
-    /// Complete graph query statement combining unwinds, match blocks, mutations, and projections.
+    /// LOAD CSV file ingestion clause: `LOAD CSV WITH HEADERS FROM 'file:///...' AS row`.
+    LoadCsvClause {
+        /// URL literal or parameter expression handle
+        url: NodeHandle,
+        /// Whether headers are present: `WITH HEADERS`
+        with_headers: bool,
+        /// Row variable alias (e.g. `row`)
+        alias: String,
+    },
+    /// WITH intermediate pipeline projection clause: `WITH p, count(m) AS cnt WHERE cnt > 5`.
+    WithClause {
+        /// Whether distinct: `WITH DISTINCT ...`
+        distinct: bool,
+        /// Projected column items
+        projections: Vec<ProjectionItem>,
+        /// Order by clauses: `(expression_handle, is_ascending)`
+        order_by: Vec<(NodeHandle, bool)>,
+        /// Skip / Offset count
+        skip: Option<u64>,
+        /// Limit count
+        limit: Option<u64>,
+        /// Optional WHERE filter attached directly to this WITH clause
+        where_clause: Option<NodeHandle>,
+    },
+    /// Complete graph query statement combining load csv, unwinds, match blocks, with pipelines, mutations, and projections.
     QueryStatement {
+        /// Optional LOAD CSV clause
+        load_csv: Option<NodeHandle>,
         /// Sequence of UNWIND clauses
         unwinds: Vec<NodeHandle>,
         /// Sequence of MATCH clauses
         matches: Vec<NodeHandle>,
+        /// Sequence of intermediate WITH clauses
+        with_clauses: Vec<NodeHandle>,
         /// Sequence of mutation clauses (CREATE, MERGE, SET, DELETE, REMOVE)
         mutations: Vec<NodeHandle>,
         /// Optional RETURN projection clause

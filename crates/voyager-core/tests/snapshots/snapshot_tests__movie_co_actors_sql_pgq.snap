@@ -2,4 +2,4 @@
 source: crates/voyager-core/tests/snapshot_tests.rs
 expression: pgq_res.statement
 ---
-SELECT * FROM GRAPH_TABLE (movie_graph MATCH (p IS Person) -[r IS ACTED_IN{1,2}]-> (m IS Movie) <-[d_rel IS DIRECTED]- (d IS Director) WHERE (p.age > $p0) AND (m.released = $p1) COLUMNS (p.name AS actor, m.title AS movie, d.name AS director)) ORDER BY p.name ASC LIMIT 10
+SELECT * FROM GRAPH_TABLE (movie_graph MATCH (p IS Person) -[r IS ACTED_IN]{1,2}-> (m IS Movie) <-[d_rel IS DIRECTED]- (d IS Director) WHERE (p.age > $p0) AND (m.released = $p1) COLUMNS (p.name AS actor, m.title AS movie, d.name AS director)) ORDER BY p.name ASC LIMIT 10

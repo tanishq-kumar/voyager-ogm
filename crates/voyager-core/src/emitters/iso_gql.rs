@@ -151,6 +151,20 @@ impl IsoGqlEmitter {
                 self.buffer.push_str(id);
                 Ok(())
             }
+            AstNode::NodePattern {
+                variable: Some(var),
+                ..
+            } => {
+                self.buffer.push_str(var);
+                Ok(())
+            }
+            AstNode::EdgePattern {
+                variable: Some(var),
+                ..
+            } => {
+                self.buffer.push_str(var);
+                Ok(())
+            }
             AstNode::Parameter(param) => {
                 self.buffer.push('$');
                 self.buffer.push_str(param);
@@ -205,6 +219,88 @@ impl IsoGqlEmitter {
         }
     }
 
+    fn emit_projection_item(&mut self, arena: &QueryAstArena, proj: &ProjectionItem) -> Result<()> {
+        if let Some(func) = proj.aggregation {
+            match func {
+                AggregationFunc::Count => self.buffer.push_str("COUNT("),
+                AggregationFunc::CountDistinct => self.buffer.push_str("COUNT(DISTINCT "),
+                AggregationFunc::Sum => self.buffer.push_str("SUM("),
+                AggregationFunc::Avg => self.buffer.push_str("AVG("),
+                AggregationFunc::Min => self.buffer.push_str("MIN("),
+                AggregationFunc::Max => self.buffer.push_str("MAX("),
+                AggregationFunc::Collect => self.buffer.push_str("COLLECT("),
+            }
+            self.emit_expression(arena, proj.expression, false)?;
+            self.buffer.push(')');
+        } else {
+            self.emit_expression(arena, proj.expression, false)?;
+        }
+
+        if let Some(alias) = &proj.alias {
+            self.buffer.push_str(" AS ");
+            self.buffer.push_str(alias);
+        }
+        Ok(())
+    }
+
+    fn emit_with(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::WithClause {
+            distinct,
+            projections,
+            order_by,
+            skip,
+            limit,
+            where_clause,
+        } = node
+        {
+            self.buffer.push_str("WITH ");
+            if *distinct {
+                self.buffer.push_str("DISTINCT ");
+            }
+
+            for (i, proj) in projections.iter().enumerate() {
+                if i > 0 {
+                    self.buffer.push_str(", ");
+                }
+                self.emit_projection_item(arena, proj)?;
+            }
+
+            if !order_by.is_empty() {
+                self.buffer.push_str(" ORDER BY ");
+                for (i, (order_expr, is_asc)) in order_by.iter().enumerate() {
+                    if i > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.emit_expression(arena, *order_expr, false)?;
+                    if *is_asc {
+                        self.buffer.push_str(" ASC");
+                    } else {
+                        self.buffer.push_str(" DESC");
+                    }
+                }
+            }
+
+            if let Some(s) = skip {
+                self.buffer.push_str(&format!(" OFFSET {s}"));
+            }
+
+            if let Some(l) = limit {
+                self.buffer.push_str(&format!(" LIMIT {l}"));
+            }
+
+            if let Some(wh) = where_clause {
+                self.emit_where(arena, *wh)?;
+            }
+
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected WithClause, got {node:?}"
+            )))
+        }
+    }
+
     fn emit_return(
         &mut self,
         arena: &QueryAstArena,
@@ -223,26 +319,7 @@ impl IsoGqlEmitter {
             if i > 0 {
                 self.buffer.push_str(", ");
             }
-            if let Some(func) = proj.aggregation {
-                match func {
-                    AggregationFunc::Count => self.buffer.push_str("COUNT("),
-                    AggregationFunc::CountDistinct => self.buffer.push_str("COUNT(DISTINCT "),
-                    AggregationFunc::Sum => self.buffer.push_str("SUM("),
-                    AggregationFunc::Avg => self.buffer.push_str("AVG("),
-                    AggregationFunc::Min => self.buffer.push_str("MIN("),
-                    AggregationFunc::Max => self.buffer.push_str("MAX("),
-                    AggregationFunc::Collect => self.buffer.push_str("COLLECT("),
-                }
-                self.emit_expression(arena, proj.expression, false)?;
-                self.buffer.push(')');
-            } else {
-                self.emit_expression(arena, proj.expression, false)?;
-            }
-
-            if let Some(alias) = &proj.alias {
-                self.buffer.push_str(" AS ");
-                self.buffer.push_str(alias);
-            }
+            self.emit_projection_item(arena, proj)?;
         }
 
         if !order_by.is_empty() {
@@ -419,9 +496,42 @@ impl AstVisitor for IsoGqlEmitter {
         self.param_counter = 0;
 
         let root_node = arena.get(root)?;
+        if let AstNode::ProcedureCall {
+            namespace,
+            procedure,
+            arguments,
+            yield_items,
+        } = root_node
+        {
+            self.buffer.push_str("CALL ");
+            if let Some(ns) = namespace {
+                self.buffer.push_str(ns);
+                self.buffer.push('.');
+            }
+            self.buffer.push_str(procedure);
+            self.buffer.push('(');
+            for (i, &arg) in arguments.iter().enumerate() {
+                if i > 0 {
+                    self.buffer.push_str(", ");
+                }
+                self.emit_expression(arena, arg, false)?;
+            }
+            self.buffer.push(')');
+            if !yield_items.is_empty() {
+                self.buffer.push_str(" YIELD ");
+                self.buffer.push_str(&yield_items.join(", "));
+            }
+            return Ok(CompiledQuery::new(
+                std::mem::take(&mut self.buffer),
+                std::mem::take(&mut self.parameters),
+            ));
+        }
+
         if let AstNode::QueryStatement {
+            load_csv: _,
             unwinds,
             matches,
+            with_clauses,
             mutations,
             return_clause,
         } = root_node
@@ -444,12 +554,18 @@ impl AstVisitor for IsoGqlEmitter {
 
                 let match_node = arena.get(match_handle)?;
                 if let AstNode::MatchClause {
+                    optional,
                     paths,
                     where_clause,
                     ..
                 } = match_node
                 {
-                    self.buffer.push_str("MATCH ");
+                    if *optional {
+                        self.buffer.push_str("OPTIONAL MATCH ");
+                    } else {
+                        self.buffer.push_str("MATCH ");
+                    }
+
                     for (p_idx, &path_handle) in paths.iter().enumerate() {
                         if p_idx > 0 {
                             self.buffer.push_str(", ");
@@ -461,6 +577,14 @@ impl AstVisitor for IsoGqlEmitter {
                         self.emit_where(arena, *wh)?;
                     }
                 }
+            }
+
+            for &with_handle in with_clauses {
+                if has_emitted {
+                    self.buffer.push(' ');
+                }
+                has_emitted = true;
+                self.emit_with(arena, with_handle)?;
             }
 
             for &mut_handle in mutations {

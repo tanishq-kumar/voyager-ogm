@@ -76,8 +76,10 @@ pub fn compile_bulk_create(
     }
 
     let root_handle = arena.alloc(AstNode::QueryStatement {
+        load_csv: None,
         unwinds: vec![unwind_handle],
         matches: Vec::new(),
+        with_clauses: Vec::new(),
         mutations,
         return_clause: None,
     });
@@ -174,8 +176,10 @@ pub fn compile_bulk_merge(
     });
 
     let root_handle = arena.alloc(AstNode::QueryStatement {
+        load_csv: None,
         unwinds: vec![unwind_handle],
         matches: Vec::new(),
+        with_clauses: Vec::new(),
         mutations: vec![merge_handle],
         return_clause: None,
     });
@@ -321,8 +325,10 @@ pub fn compile_bulk_create_rel(
     }
 
     let root_handle = arena.alloc(AstNode::QueryStatement {
+        load_csv: None,
         unwinds: vec![unwind_handle],
         matches: vec![match_handle],
+        with_clauses: Vec::new(),
         mutations,
         return_clause: None,
     });

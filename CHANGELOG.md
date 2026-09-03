@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.3.0-alpha.1] - 2026-09-03
+
+### Added
+- **7-Engine Multi-Database Live Integration Matrix (Task 3.4)**:
+  - Created automated live multi-engine integration test harness (`packages/python/tests/test_live_matrix.py`) accessible via `just test-matrix`.
+  - **Neo4j 5.26 (Bolt 7687):** Schema constraint DDL, UNWIND bulk batch ingestion, fluent traversal queries, zero-copy Polars DataFrame extraction, SET mutations.
+  - **Memgraph (Bolt 7688):** Live graph seeding, variable-length path traversals (1..2 hops), zero-copy Polars ingestion.
+  - **Apache AGE (PostgreSQL 5455):** Dynamic graph catalog creation, `AgeEmitter` Cypher-in-SQL table execution with JSON parameter maps (`%s`), `agtype` composite projection.
+  - **DuckDB (In-Memory Relational):** Relational graph property tables, multi-table joins, direct `.pl()` Polars streaming.
+  - **DuckDB DuckPGQ Extension:** Live `CREATE PROPERTY GRAPH` DDL, formal SQL:2023 `GRAPH_TABLE` execution with quantifier repetition, direct Polars extraction.
+  - **PostgreSQL 19 Beta 3 (Port 5456):** Relational graph schema, multi-hop recursive graph path traversals (`WITH RECURSIVE`), zero-copy Polars ingestion.
+  - **FalkorDB (Port 6379):** Native `falkordb` client execution, low-latency Cypher traversals, parameter mapping, Polars extraction.
+- **Apache AGE & PostgreSQL Embedded Cypher Conformance (Task 3.3)**:
+  - Implemented `AgeEmitter` wrapping Cypher AST in PostgreSQL `SELECT * FROM cypher('graph', $$ ... $$, %s) AS (...)`.
+  - Added `agtype` composite type projection mappings for entities, properties, and expressions.
+  - Implemented `SchemaManager` for automated openCypher constraints, B-Tree indexes, and experimental Cypher 25 / ISO GQL Graph Types (`ALTER CURRENT GRAPH TYPE`).
+  - Added modern openCypher operator chaining (`!=`, `.in_()`, `.not_in()`, `.startswith()`, `.endswith()`, `.contains()`).
+- **SQL:2023 PGQ & DuckPGQ Conformance Suite (Task 3.2)**:
+  - Validated ISO/IEC 9075-16:2023 Part 16 standard `GRAPH_TABLE` nested projections, `IS Label`, `{min,max}` quantifier brackets, and `COLUMNS(...)` syntax.
+  - Verified `GRAPH_TABLE` composability inside CTEs (`WITH ... AS (...)`) and direct subquery `JOIN`s with relational SQL tables.
+- **openCypher & openGQL Standard TCK Harness (Task 3.1)**:
+  - Integrated official openCypher and openGQL TCK specifications across all 18 standard query categories and 5 query authoring styles.
+  - 100% test pass rate across Rust `cargo-nextest` and Python `pytest` suites.
+
+---
+
 ## [0.2.0-alpha.1] - 2026-09-01
 
 ### Added

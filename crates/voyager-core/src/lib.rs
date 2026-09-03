@@ -30,7 +30,7 @@ pub use ast::{
 };
 pub use bridge::{DatabaseBridge, MockDatabaseBridge, QueryResult, QuerySummary};
 pub use builder::QueryBuilder;
-pub use emitters::{CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
+pub use emitters::{AgeEmitter, CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
 pub use error::{Error, Result};
 pub use transaction::{
     CheckpointState, EntityMutation, Savepoint, Transaction, TransactionState, UnitOfWork,

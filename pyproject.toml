@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "voyager-ogm"
-version = "0.2.0a1"
+version = "0.3.0a1"
 description = "High-performance, vendor-neutral Object-Graph Mapper (OGM) with zero-copy Polars Arrow streaming"
 readme = "README.md"
 authors = [{ name = "Tanishq Kumar" }]
@@ -34,17 +34,22 @@ dependencies = [
 
 [project.optional-dependencies]
 duckdb = [
-    "duckdb>=1.0.0",
+    "duckdb>=1.0.0; python_version < '3.14'",
 ]
 neo4j = [
     "neo4j>=5.0.0",
+]
+age = [
+    "psycopg[binary]>=3.1.0; python_version < '3.14'",
 ]
 dev = [
     "pytest>=8.0.0",
     "pytest-benchmark>=4.0.0",
     "pytest-asyncio>=0.23.0",
-    "duckdb>=1.0.0",
+    "pytest-xdist>=3.5.0",
+    "duckdb>=1.0.0; python_version < '3.14'",
     "neo4j>=5.0.0",
+    "psycopg[binary]>=3.1.0; python_version < '3.14'",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "maturin>=1.7.0",
@@ -69,6 +74,7 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "D"]
 ignore = [
     "D105",  # Missing docstring in magic method
     "D107",  # Missing docstring in __init__
+    "E501",  # Line too long (handled by formatter)
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -78,7 +84,17 @@ convention = "google"
 "packages/python/tests/*" = ["D"]
 "test_data/*" = ["D"]
 "examples/*" = ["D"]
+"benchmarks/*" = ["D"]
 
 [tool.pytest.ini_options]
 testpaths = ["packages/python/tests"]
 python_files = ["test_*.py"]
+
+[dependency-groups]
+dev = [
+    "duckdb==1.2.0; python_version < '3.14'",
+    "falkordb>=1.7.1; python_version < '3.14'",
+    "neomodel>=7.0.0; python_version < '3.14'",
+    "pydantic>=2.10.0",
+]
+
