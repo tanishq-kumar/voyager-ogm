@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "voyager-ogm"
-version = "0.2.0a1"
+version = "0.3.0a1"
 description = "High-performance, vendor-neutral Object-Graph Mapper (OGM) with zero-copy Polars Arrow streaming"
 readme = "README.md"
 authors = [{ name = "Tanishq Kumar" }]
@@ -92,6 +92,8 @@ python_files = ["test_*.py"]
 
 [dependency-groups]
 dev = [
+    "duckdb==1.2.0",
+    "falkordb>=1.7.1",
     "neomodel>=7.0.0",
     "pydantic>=2.13.5",
 ]

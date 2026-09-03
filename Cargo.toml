@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0-alpha.1"
+version = "0.3.0-alpha.1"
 edition = "2024"
 authors = ["Tanishq Kumar"]
 license = "MIT OR Apache-2.0"
@@ -18,7 +18,7 @@ categories = ["database", "compilers"]
 
 [workspace.dependencies]
 # Internal workspace crates
-voyager-core = { path = "crates/voyager-core", version = "0.2.0-alpha.1" }
+voyager-core = { path = "crates/voyager-core", version = "0.3.0-alpha.1" }
 
 # Serialization & Data
 serde = { version = "1.0", features = ["derive"] }

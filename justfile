@@ -133,3 +133,7 @@ test-pgq:
 # Run Apache AGE (PostgreSQL Embedded Cypher) conformance test suite
 test-age:
     uv run pytest packages/python/tests/test_age_conformance.py -v
+
+# Run Multi-Engine Live Matrix integration tests (Neo4j, Memgraph, Apache AGE, DuckDB)
+test-matrix:
+    uv run pytest packages/python/tests/test_live_matrix.py -v

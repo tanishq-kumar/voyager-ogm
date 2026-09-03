@@ -73,16 +73,16 @@ def _reset():
 @pytest.mark.parametrize(
     ("expr_builder", "expected_fragment", "expected_params"),
     [
-        (lambda p: p.age == 30, "(p.age = $p0)", {"p0": 30}),
-        (lambda p: p.age != 30, "(p.age != $p0)", {"p0": 30}),
-        (lambda p: p.age > 21, "(p.age > $p0)", {"p0": 21}),
-        (lambda p: p.age >= 21, "(p.age >= $p0)", {"p0": 21}),
-        (lambda p: p.age < 65, "(p.age < $p0)", {"p0": 65}),
-        (lambda p: p.age <= 65, "(p.age <= $p0)", {"p0": 65}),
-        (lambda p: p.city.in_(["London", "Paris"]), "(p.city IN $p0)", {"p0": ["London", "Paris"]}),
+        (lambda p: p.age == 30, "p.age = $p0", {"p0": 30}),
+        (lambda p: p.age != 30, "p.age != $p0", {"p0": 30}),
+        (lambda p: p.age > 21, "p.age > $p0", {"p0": 21}),
+        (lambda p: p.age >= 21, "p.age >= $p0", {"p0": 21}),
+        (lambda p: p.age < 65, "p.age < $p0", {"p0": 65}),
+        (lambda p: p.age <= 65, "p.age <= $p0", {"p0": 65}),
+        (lambda p: p.city.in_(["London", "Paris"]), "p.city IN $p0", {"p0": ["London", "Paris"]}),
         (
             lambda p: p.city.not_in(["Rome", "Tokyo"]),
-            "(p.city NOT IN $p0)",
+            "p.city NOT IN $p0",
             {"p0": ["Rome", "Tokyo"]},
         ),
         (lambda p: p.city.contains("don"), "p.city LIKE '%' || $p0 || '%'", {"p0": "don"}),
@@ -289,7 +289,7 @@ def test_live_duckdb_relational_graph_schema_and_polars():
     assert records[0]["avg_employee_age"] == 31.0
 
     # Stream into Polars DataFrame
-    df = session.fetch_polars(query)
+    df = session.execute_to_polars(query)
     assert df.shape == (2, 4)
     assert df["company"].to_list() == ["TechCorp", "BioHealth"]
     assert df["employee_count"].to_list() == [2, 1]

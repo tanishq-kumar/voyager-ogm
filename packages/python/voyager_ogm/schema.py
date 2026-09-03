@@ -214,7 +214,10 @@ class SchemaManager:
         source_node: type[Node] | str | None = None,
         target_node: type[Node] | str | None = None,
     ) -> str:
-        """Generates Cypher 25 / ISO GQL `ALTER CURRENT GRAPH TYPE ADD ...` DDL statement.
+        """[Experimental] Generates Cypher 25 / ISO GQL `ALTER CURRENT GRAPH TYPE ADD ...` DDL statement.
+
+        Note: Cypher 25 Graph Types are an experimental draft feature currently
+        previewed in Neo4j 5.26+.
 
         Supports:
         - `ALTER CURRENT GRAPH TYPE ADD NODE TYPE (:Label {prop :: TYPE, ...})`
