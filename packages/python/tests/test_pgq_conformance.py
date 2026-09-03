@@ -13,7 +13,11 @@ Ingests and validates official DuckPGQ & ISO/IEC 9075-16:2023 SQL:PGQ scenarios:
 
 from __future__ import annotations
 
-import duckdb
+try:
+    import duckdb
+except ImportError:
+    duckdb = None
+
 import pytest
 from voyager_ogm import (
     Field,
@@ -220,6 +224,8 @@ def test_pgq_aggregations_and_projections():
 
 def test_live_duckdb_relational_graph_schema_and_polars():
     """Verifies live in-memory DuckDB relational-graph workflow with zero-copy Polars export."""
+    if duckdb is None:
+        pytest.skip("duckdb is not installed in this environment")
     con = duckdb.connect(":memory:")
     session = Session(bridge=con, dialect="sql")
 

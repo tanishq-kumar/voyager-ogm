@@ -1110,7 +1110,7 @@ name = "psycopg"
 version = "3.3.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version != '3.13.*'" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/72/73/8fb739d0f6bba247b9b93c9840c402a4f88545be5f1d4b02b23366371c00/psycopg-3.3.5.tar.gz", hash = "sha256:d0a3d9ccf5788af054cbd745278cb02401b5c312aeaafbf2c6144460aec47da4", size = 166508, upload-time = "2026-08-31T22:45:43.151Z" }
@@ -1695,7 +1695,7 @@ name = "redis"
 version = "8.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "async-timeout", marker = "python_full_version < '3.11.3'" },
+    { name = "async-timeout", marker = "python_full_version < '3.11.3' or python_full_version >= '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a8/99/604f0b666d4c616d891cf77ebb9db6bb21601344c051aebf1b72b9ff915f/redis-8.1.0.tar.gz", hash = "sha256:6e1a19beef9225c83efd689c7e6b7da2d5215b1f42cd13b7fc3714d0a09c7b25", size = 5254356, upload-time = "2026-07-30T08:51:00.269Z" }
 wheels = [
@@ -1890,14 +1890,14 @@ dependencies = [
 
 [package.optional-dependencies]
 age = [
-    { name = "psycopg", extra = ["binary"] },
+    { name = "psycopg", extra = ["binary"], marker = "python_full_version < '3.14'" },
 ]
 dev = [
-    { name = "duckdb" },
+    { name = "duckdb", marker = "python_full_version < '3.14'" },
     { name = "maturin" },
     { name = "mypy" },
     { name = "neo4j" },
-    { name = "psycopg", extra = ["binary"] },
+    { name = "psycopg", extra = ["binary"], marker = "python_full_version < '3.14'" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-benchmark" },
@@ -1905,7 +1905,7 @@ dev = [
     { name = "ruff" },
 ]
 duckdb = [
-    { name = "duckdb" },
+    { name = "duckdb", marker = "python_full_version < '3.14'" },
 ]
 marimo = [
     { name = "anywidget" },
@@ -1917,25 +1917,25 @@ neo4j = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "duckdb" },
-    { name = "falkordb" },
-    { name = "neomodel" },
+    { name = "duckdb", marker = "python_full_version < '3.14'" },
+    { name = "falkordb", marker = "python_full_version < '3.14'" },
+    { name = "neomodel", marker = "python_full_version < '3.14'" },
     { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "anywidget", marker = "extra == 'marimo'", specifier = ">=0.9.0" },
-    { name = "duckdb", marker = "extra == 'dev'", specifier = ">=1.0.0" },
-    { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.0.0" },
+    { name = "duckdb", marker = "python_full_version < '3.14' and extra == 'dev'", specifier = ">=1.0.0" },
+    { name = "duckdb", marker = "python_full_version < '3.14' and extra == 'duckdb'", specifier = ">=1.0.0" },
     { name = "marimo", marker = "extra == 'marimo'", specifier = ">=0.10.0" },
     { name = "maturin", marker = "extra == 'dev'", specifier = ">=1.7.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13.0" },
     { name = "neo4j", marker = "extra == 'dev'", specifier = ">=5.0.0" },
     { name = "neo4j", marker = "extra == 'neo4j'", specifier = ">=5.0.0" },
     { name = "polars", specifier = ">=1.0.0" },
-    { name = "psycopg", extras = ["binary"], marker = "extra == 'age'", specifier = ">=3.1.0" },
-    { name = "psycopg", extras = ["binary"], marker = "extra == 'dev'", specifier = ">=3.1.0" },
+    { name = "psycopg", extras = ["binary"], marker = "python_full_version < '3.14' and extra == 'age'", specifier = ">=3.1.0" },
+    { name = "psycopg", extras = ["binary"], marker = "python_full_version < '3.14' and extra == 'dev'", specifier = ">=3.1.0" },
     { name = "pyarrow", specifier = ">=15.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
@@ -1947,10 +1947,10 @@ provides-extras = ["duckdb", "neo4j", "age", "dev", "marimo"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "duckdb", specifier = "==1.2.0" },
-    { name = "falkordb", specifier = ">=1.7.1" },
-    { name = "neomodel", specifier = ">=7.0.0" },
-    { name = "pydantic", specifier = ">=2.13.5" },
+    { name = "duckdb", marker = "python_full_version < '3.14'", specifier = "==1.2.0" },
+    { name = "falkordb", marker = "python_full_version < '3.14'", specifier = ">=1.7.1" },
+    { name = "neomodel", marker = "python_full_version < '3.14'", specifier = ">=7.0.0" },
+    { name = "pydantic", specifier = ">=2.10.0" },
 ]
 
 [[package]]

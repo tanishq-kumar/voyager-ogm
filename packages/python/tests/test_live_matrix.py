@@ -12,9 +12,18 @@ from __future__ import annotations
 
 import json
 
-import duckdb
+try:
+    import duckdb
+except ImportError:
+    duckdb = None
+
 import polars as pl
-import psycopg
+
+try:
+    import psycopg
+except ImportError:
+    psycopg = None
+
 import pytest
 from neo4j import GraphDatabase
 from voyager_ogm import (
@@ -191,6 +200,8 @@ class TestMemgraphLiveMatrix:
 class TestApacheAgeLiveMatrix:
     @pytest.fixture
     def age_conn(self):
+        if psycopg is None:
+            pytest.skip("psycopg is not installed in this environment")
         conn_str = (
             "host=localhost port=5455 user=postgres password=voyagerpass123 dbname=voyager_graph"
         )
@@ -257,6 +268,8 @@ class TestApacheAgeLiveMatrix:
 class TestDuckDbLiveMatrix:
     @pytest.fixture
     def duck_conn(self):
+        if duckdb is None:
+            pytest.skip("duckdb is not installed in this environment")
         conn = duckdb.connect(":memory:")
         yield conn
         conn.close()
@@ -283,6 +296,8 @@ class TestDuckDbLiveMatrix:
 
     def test_duckdb_live_duckpgq_graph_table_execution(self):
         """Verifies live execution of SQL:2023 GRAPH_TABLE compiled query on DuckDB with DuckPGQ extension."""
+        if duckdb is None:
+            pytest.skip("duckdb is not installed in this environment")
         conn = duckdb.connect(config={"allow_unsigned_extensions": "true"})
         try:
             conn.execute(
@@ -355,6 +370,8 @@ class TestDuckDbLiveMatrix:
 class TestPostgres19LiveMatrix:
     @pytest.fixture
     def pg19_conn(self):
+        if psycopg is None:
+            pytest.skip("psycopg is not installed in this environment")
         conn_str = (
             "host=localhost port=5456 user=postgres password=voyagerpass123 dbname=voyager_graph"
         )
