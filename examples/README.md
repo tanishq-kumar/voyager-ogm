@@ -1,12 +1,12 @@
-# 󰓾 Voyager OGM: Code Examples
+# Voyager OGM Code Examples
 
-Runnable, production-grade examples demonstrating the different query building and entity modeling approaches across **Rust** and **Python**.
+Code examples showing query building and entity modeling patterns in Rust and Python.
 
 ---
 
-## 🦀 Rust Examples (`crates/voyager-core/examples/`)
+## Rust Examples (`crates/voyager-core/examples/`)
 
-Run all Rust examples with:
+Run the Rust examples with:
 ```bash
 just examples-rust
 # or
@@ -15,30 +15,30 @@ cargo run --example <example_name>
 
 | Example File | Approach | Description |
 | :--- | :--- | :--- |
-| [`01_step_by_step_chaining.rs`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/crates/voyager-core/examples/01_step_by_step_chaining.rs) | **Step-by-Step Path Chaining** | Multi-hop traversal chaining (`.node().to().hops().node().from().node()`) matching Memgraph/openCypher mental model. |
-| [`02_semantic_shortcuts.rs`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/crates/voyager-core/examples/02_semantic_shortcuts.rs) | **Semantic Shortcuts** | Concise directional navigation (`.node_label()`, `.out_edge()`, `.where_contains()`, `.order_by_desc()`). |
-| [`03_single_call_pattern.rs`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/crates/voyager-core/examples/03_single_call_pattern.rs) | **Combined 1-Hop Pattern** | Compact 1-hop pattern definitions (`.node().to_edge()`). |
-| [`04_expression_tree_builder.rs`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/crates/voyager-core/examples/04_expression_tree_builder.rs) | **Nested Expression Trees** | Complex boolean predicate trees (`AND`, `OR`, `XOR`, regex, property comparisons). |
-| [`05_direct_arena_allocation.rs`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/crates/voyager-core/examples/05_direct_arena_allocation.rs) | **Direct AST Allocation** | Direct `QueryAstArena` handle allocation for compiler writers and transpiler authors. |
+| [`01_step_by_step_chaining.rs`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/crates/voyager-core/examples/01_step_by_step_chaining.rs) | **Step-by-Step Path Chaining** | Multi-hop traversal chaining with fluent methods. |
+| [`02_semantic_shortcuts.rs`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/crates/voyager-core/examples/02_semantic_shortcuts.rs) | **Semantic Shortcuts** | Directional navigation with `.node_label()`, `.out_edge()`, and `.order_by_desc()`. |
+| [`03_single_call_pattern.rs`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/crates/voyager-core/examples/03_single_call_pattern.rs) | **Combined 1-Hop Pattern** | 1-hop pattern definitions with `.node().to_edge()`. |
+| [`04_expression_tree_builder.rs`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/crates/voyager-core/examples/04_expression_tree_builder.rs) | **Nested Expression Trees** | Boolean predicate trees with `AND`, `OR`, `XOR`, and property comparisons. |
+| [`05_direct_arena_allocation.rs`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/crates/voyager-core/examples/05_direct_arena_allocation.rs) | **Direct AST Allocation** | Direct AST allocation using `QueryAstArena`. |
 
 ---
 
-## 🐍 Python Tutorial Series: Beginner to Advanced (`examples/python/`)
+## Python Examples (`examples/python/`)
 
-Run all Python tutorials with:
+Run the Python examples with:
 ```bash
 just examples-python
 # or
-uv run python examples/python/<tutorial_name>.py
+uv run python examples/python/<example_name>.py
 ```
 
-| Level | Tutorial File | Concepts & Graph Topologies | Description |
+| Level | File | Concept | Description |
 | :---: | :--- | :--- | :--- |
-| 🟢 **L1** | [`01_beginner_hello_graph.py`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/examples/python/01_beginner_hello_graph.py) | **"Hello Graph!" Single Node CRUD** | Pure Python type annotations (`@node class Person:`), auto-aliasing, basic `.where()`, `.return_()`. |
-| 🟡 **L2** | [`02_intermediate_relationships.py`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/examples/python/02_intermediate_relationships.py) | **Nodes, Edges & Multi-Hop Paths** | Connecting nodes `(Actor)-[ACTED_IN]->(Movie)<-[DIRECTED]-(Director)` with edge properties and aliases. |
-| 🟠 **L3** | [`03_advanced_multihop_aggregations.py`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/examples/python/03_advanced_multihop_aggregations.py) | **Variable Paths & Graph Metrics** | Variable length bounds (`.hops(1, 3)`), `DISTINCT` deduplication, `order_by_desc()`, `skip()` pagination. |
-| 🔴 **L4** | [`04_data_science_polars_streaming.py`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/examples/python/04_data_science_polars_streaming.py) | **Zero-Copy Arrow & Polars Ingestion** | Streaming 100,000 graph nodes directly into Polars DataFrame via `__arrow_c_stream__` in < 2ms. |
-| 🟣 **L5** | [`05_enterprise_multi_dialect.py`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/examples/python/05_enterprise_multi_dialect.py) | **Universal Multi-Dialect Compilation** | Compiling ONE graph AST simultaneously into **openCypher 9/25**, **SQL:2023 PGQ**, and **ISO GQL 2024**. |
-| 🔵 **L6** | [`06_sqlalchemy_hybrid_bridge.py`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/examples/python/06_sqlalchemy_hybrid_bridge.py) | **SQLAlchemy Native Property Graph & Hybrid** | 4-Pillar integration: `PropertyGraph.from_metadata()`, `graph_table()` FromClause, `as_cte()`, and `graph_relationship()`. |
-| 🌐 **L7** | [`07_marimo_graphrag_demo.py`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/examples/python/07_marimo_graphrag_demo.py) | **Marimo Reactive GraphRAG Notebook** | Interactive WebGL/Canvas force-directed visualizer with reactive dataset selector and downstream Polars tables. |
-| 📓 **L8** | [`08_jupyter_vscode_graph_demo.ipynb`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/examples/python/08_jupyter_vscode_graph_demo.ipynb) | **Jupyter & VS Code Interactive Explorer** | Multi-query notebook with CSV, Dict, and Polars DataFrame ingestion, Entity Inspector sidebar, and records table. |
+| 1 | [`01_beginner_hello_graph.py`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/examples/python/01_beginner_hello_graph.py) | **Single Node Operations** | Model definition with `@node`, auto-aliasing, and filtering. |
+| 2 | [`02_intermediate_relationships.py`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/examples/python/02_intermediate_relationships.py) | **Relationship Traversals** | Connecting nodes with edge patterns, aliases, and property filters. |
+| 3 | [`03_advanced_multihop_aggregations.py`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/examples/python/03_advanced_multihop_aggregations.py) | **Variable Paths & Aggregation** | Variable-length hops (`.hops(1, 3)`), `DISTINCT`, sorting, and pagination. |
+| 4 | [`04_data_science_polars_streaming.py`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/examples/python/04_data_science_polars_streaming.py) | **Columnar Streaming** | Stream node records directly into Polars DataFrames using the Arrow C interface. |
+| 5 | [`05_enterprise_multi_dialect.py`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/examples/python/05_enterprise_multi_dialect.py) | **Multi-Dialect Compilation** | Compile a single AST into openCypher, SQL:2023 PGQ, and ISO GQL. |
+| 6 | [`06_sqlalchemy_hybrid_bridge.py`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/examples/python/06_sqlalchemy_hybrid_bridge.py) | **SQLAlchemy Integration** | Relational-to-graph bridging via `PropertyGraph`, `graph_table()`, and CTE transpilation. |
+| 7 | [`07_marimo_graphrag_demo.py`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/examples/python/07_marimo_graphrag_demo.py) | **Marimo Notebook** | Interactive graph visualization in Marimo notebook cells. |
+| 8 | [`08_jupyter_vscode_graph_demo.ipynb`](file:///C:/Users/supri/Documents/github/voyager/voyager-ogm/examples/python/08_jupyter_vscode_graph_demo.ipynb) | **VS Code / Jupyter Notebook** | Interactive graph explorer in VS Code and Jupyter notebooks. |
