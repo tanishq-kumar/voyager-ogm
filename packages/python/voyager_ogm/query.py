@@ -52,8 +52,8 @@ class Query:
     def __init__(self) -> None:
         """Initializes a new query builder with an underlying Rust AST arena."""
         self._native = NativeQueryBuilder()
-        self._optimize = False
-        self._optimization_level = "standard"
+        self._optimize: bool | None = None
+        self._optimization_level: str | None = None
 
     @classmethod
     def match(
@@ -747,8 +747,23 @@ class Query:
         Example:
             >>> compiled = query.compile("cypher", optimize=True)
         """
-        opt = self._optimize if optimize is None else optimize
-        opt_level = self._optimization_level if optimization_level is None else optimization_level
+        from voyager_ogm.config import get_config
+
+        cfg = get_config()
+        if optimize is not None:
+            opt = optimize
+        elif self._optimize is not None:
+            opt = self._optimize
+        else:
+            opt = cfg.optimize
+
+        if optimization_level is not None:
+            opt_level = optimization_level
+        elif self._optimization_level is not None:
+            opt_level = self._optimization_level
+        else:
+            opt_level = cfg.optimization_level
+
         res = self._native.compile(
             dialect,
             graph_name,
