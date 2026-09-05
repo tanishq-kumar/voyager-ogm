@@ -51,13 +51,13 @@ fn test_compile_bulk_merge_cypher_and_gql() {
         compile_bulk_merge("Person", "id", &props, "batch", "row", "cypher").unwrap();
     assert_eq!(
         cypher_query.statement,
-        "UNWIND $batch AS row MERGE (_person_0:Person {_person_0.id = row.id}) ON CREATE SET _person_0.name = row.name, _person_0.age = row.age, _person_0.updated_at = row.updated_at ON MATCH SET _person_0.name = row.name, _person_0.age = row.age, _person_0.updated_at = row.updated_at"
+        "UNWIND $batch AS row MERGE (_person_0:Person {id: row.id}) ON CREATE SET _person_0.name = row.name, _person_0.age = row.age, _person_0.updated_at = row.updated_at ON MATCH SET _person_0.name = row.name, _person_0.age = row.age, _person_0.updated_at = row.updated_at"
     );
 
     let gql_query = compile_bulk_merge("Person", "id", &props, "batch", "row", "iso_gql").unwrap();
     assert_eq!(
         gql_query.statement,
-        "UNWIND $batch AS row UPSERT (_person_0:Person {_person_0.id = row.id}) SET _person_0.name = row.name, _person_0.age = row.age, _person_0.updated_at = row.updated_at, _person_0.name = row.name, _person_0.age = row.age, _person_0.updated_at = row.updated_at"
+        "UNWIND $batch AS row UPSERT (_person_0:Person {id: row.id}) SET _person_0.name = row.name, _person_0.age = row.age, _person_0.updated_at = row.updated_at, _person_0.name = row.name, _person_0.age = row.age, _person_0.updated_at = row.updated_at"
     );
 }
 
@@ -71,6 +71,6 @@ fn test_compile_bulk_create_relationships() {
 
     assert_eq!(
         query.statement,
-        "UNWIND $batch AS row MATCH (_from_person_0:Person {_from_person_0.user_id = row.from_user_id}), (_to_person_0:Person {_to_person_0.user_id = row.to_user_id}) CREATE (_from_person_0)-[_knows_0:KNOWS]->(_to_person_0) SET _knows_0.since = row.since, _knows_0.weight = row.weight"
+        "UNWIND $batch AS row MATCH (_from_person_0:Person {user_id: row.from_user_id}), (_to_person_0:Person {user_id: row.to_user_id}) CREATE (_from_person_0)-[_knows_0:KNOWS]->(_to_person_0) SET _knows_0.since = row.since, _knows_0.weight = row.weight"
     );
 }

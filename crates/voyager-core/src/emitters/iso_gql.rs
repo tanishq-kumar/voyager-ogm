@@ -1,7 +1,8 @@
 //! ISO/IEC 39075:2024 Graph Query Language (GQL) Standard Emitter.
 
 use crate::ast::{
-    AggregationFunc, AstNode, Direction, LiteralValue, NodeHandle, ProjectionItem, QueryAstArena,
+    AggregationFunc, AstNode, BinaryOp, Direction, LiteralValue, NodeHandle, ProjectionItem,
+    QueryAstArena,
 };
 use crate::error::{Error, Result};
 use crate::visitor::{AstVisitor, CompiledQuery};
@@ -23,6 +24,34 @@ impl IsoGqlEmitter {
             parameters: HashMap::new(),
             buffer: String::with_capacity(256),
         }
+    }
+
+    fn emit_pattern_predicate(
+        &mut self,
+        arena: &QueryAstArena,
+        pred_handle: NodeHandle,
+    ) -> Result<()> {
+        let pred_node = arena.get(pred_handle)?;
+        if let AstNode::BinaryExpression {
+            left,
+            op: BinaryOp::Eq,
+            right,
+        } = pred_node
+        {
+            let left_node = arena.get(*left)?;
+            if let AstNode::PropertyAccess { property, .. } = left_node {
+                self.buffer.push_str(property);
+                self.buffer.push_str(": ");
+                self.emit_expression(arena, *right, false)?;
+                return Ok(());
+            } else if let AstNode::Identifier(ident) = left_node {
+                self.buffer.push_str(ident);
+                self.buffer.push_str(": ");
+                self.emit_expression(arena, *right, false)?;
+                return Ok(());
+            }
+        }
+        self.emit_expression(arena, pred_handle, false)
     }
 
     fn emit_node_pattern(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
@@ -51,7 +80,7 @@ impl IsoGqlEmitter {
                     if i > 0 {
                         self.buffer.push_str(", ");
                     }
-                    self.emit_expression(arena, pred_handle, false)?;
+                    self.emit_pattern_predicate(arena, pred_handle)?;
                 }
                 self.buffer.push('}');
             }
