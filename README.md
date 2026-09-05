@@ -118,7 +118,7 @@ gantt
 
 - [x] **Task 4.1:** SQLAlchemy hybrid bridge connecting relational models with graph traversals (`HybridSession`, `as_cte()`, `sync_table_to_graph`).
 - [x] **Task 4.2:** Interactive Graph Viewer & Studio (`voyager_ogm.viewer` supporting Marimo and VS Code interactive `.ipynb` notebooks).
-- [x] **Task 4.3:** Multi-Database Batch Identity Map & Active Record Data Mapper Fusion (`Session.flush()`, `Node.save()`, `weakref` memory management).
+- [x] **Task 4.3:** [Experimental] Multi-Database Batch Identity Map & Active Record Data Mapper Fusion (`Session.flush()`, `Node.save()`, `weakref` memory management).
 - [ ] **Task 4.4:** AST Rule-Based Query Optimizer & Predicate Pushdown Pass (`(p:Person {city: $p0})` inline pattern pushdown).
 
 ### Phase 5: TypeScript SDK (`@voyager-ogm/core`) (Status: Planned)

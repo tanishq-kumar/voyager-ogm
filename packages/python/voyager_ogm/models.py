@@ -407,11 +407,11 @@ class Node:
             session.register(self)
 
     def _attach_session(self, session: Any) -> None:
-        """Attaches a session via weak reference for Active Record `.save()` ergonomics."""
+        """[Experimental] Attaches a session via weak reference for Active Record `.save()` ergonomics."""
         self._session_ref = weakref.ref(session)
 
     def save(self, session: Any = None, key_field: str = "id") -> Any:
-        """Persists dirty property changes to the database using Active Record ergonomics.
+        """[Experimental] Persists dirty property changes to the database using Active Record ergonomics.
 
         Technique: Active Record + Data Mapper Fusion
         --------------------------------------------
@@ -462,7 +462,25 @@ class Node:
         return result
 
     async def async_save(self, session: Any = None, key_field: str = "id") -> Any:
-        """Asynchronously persists dirty property changes to the database."""
+        """[Experimental] Asynchronously persists dirty property changes to the database using Active Record ergonomics.
+
+        Technique: Active Record + Data Mapper Fusion
+        --------------------------------------------
+        Combines the intuitive convenience of Active Record (`await entity.async_save()`) with
+        the clean architecture of Data Mapper (the entity contains zero database dialect or
+        connection logic, delegating persistence to the active AsyncSession).
+
+        Args:
+            session: Explicit AsyncSession to persist through. If omitted, uses the session
+                attached during initialization or registration.
+            key_field: Unique primary key property name (defaults to 'id').
+
+        Returns:
+            BulkExecutionResult if flushed, or None if no dirty fields were pending.
+
+        Raises:
+            RuntimeError: If no session is passed and no session was previously attached.
+        """
         active_session = session
         if active_session is None and self._session_ref is not None:
             active_session = self._session_ref()
