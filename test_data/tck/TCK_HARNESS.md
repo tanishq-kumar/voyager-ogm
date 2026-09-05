@@ -1,88 +1,38 @@
-# Voyager OGM: Multi-Dialect TCK Conformance Harness
+# Voyager OGM: Multi-Dialect Conformance Architecture
 
-This document outlines how Voyager OGM systematically verifies query compilation correctness across **openCypher**, **SQL:2023 PGQ**, **ISO GQL**, and **DuckPGQ** by directly utilizing official upstream test suites.
-
----
-
-## 🎯 Verification Architecture
-
-```mermaid
-flowchart TD
-    subgraph UpstreamSuites ["1. Official Upstream Test Suites"]
-        OC["<b>openCypher TCK</b><br>(Gherkin <code>.feature</code> files)"]
-        PGQ["<b>SQL:2023 PGQ / DuckPGQ</b><br>(<code>sqllogictest</code> <code>.test</code> files)"]
-        GQL["<b>ISO GQL Conformance</b><br>(ISO/IEC 39075:2024 Scenarios)"]
-    end
-
-    subgraph ParserHarness ["2. Voyager OGM TCK Harness Engine"]
-        GherkinParser["Gherkin Feature Parser"]
-        SqlLogicParser["SQLLogicTest Parser"]
-        ASTVerifier["AST Model & Arena Validator"]
-        
-        OC --> GherkinParser
-        GQL --> GherkinParser
-        PGQ --> SqlLogicParser
-        
-        GherkinParser --> ASTVerifier
-        SqlLogicParser --> ASTVerifier
-    end
-
-    subgraph EmitterValidation ["3. Multi-Dialect Emission & Snapshot Validation"]
-        E1["<code>CypherEmitter</code>"]
-        E2["<code>SqlPgqEmitter</code>"]
-        E3["<code>IsoGqlEmitter</code>"]
-        
-        ASTVerifier --> E1
-        ASTVerifier --> E2
-        ASTVerifier --> E3
-        
-        E1 --> Snap["<code>cargo insta</code> Snapshots & Parameter Matching"]
-        E2 --> Snap
-        E3 --> Snap
-    end
-
-    subgraph LiveExecution ["4. Live Database Execution Engine (CI)"]
-        Neo4jTest["Neo4j / Memgraph Container"]
-        DuckDBTest["DuckDB DuckPGQ Native Engine"]
-        
-        Snap --> Neo4jTest
-        Snap --> DuckDBTest
-        
-        Neo4jTest --> ResultCheck["Assert Exact Upstream Table Results"]
-        DuckDBTest --> ResultCheck
-    end
-```
+This document describes how Voyager OGM validates query compilation across **openCypher**, **SQL:2023 PGQ**, **ISO GQL**, and **Apache AGE** using test suites based on standard specifications.
 
 ---
 
-## 🛡️ 3-Stage Correctness Verification Pipeline
+## 3-Layer Verification Pipeline
 
-### Stage 1: Syntax & Semantic Normalization
-* The harness parses the official query string and background graph setup from the `.feature` and `.test` files.
-* The test runner compiles the query via Voyager OGM's `QueryAstArena` and ensures all clauses (`MATCH`, `WHERE`, `RETURN`, `ORDER BY`, `LIMIT`) are correctly constructed.
+### Layer 1: Table-Driven Conformance Tests
+- Implemented in Rust (`crates/voyager-core/tests/tck_conformance_tests.rs`, `gql_conformance_tests.rs`, `pgq_conformance_tests.rs`, `age_conformance_tests.rs`) and Python (`packages/python/tests/`).
+- Validates query structure and parameter binding across operators, traversal hops, mutations, and bulk operations.
 
-### Stage 2: Byte-for-Byte Snapshot Verification (`cargo insta`)
-* For every official TCK scenario, Voyager OGM emits:
-  1. Parameterized Dialect Query String (e.g. `$p0, $p1` for Cypher/GQL, `:p0, :p1` for SQL:2023 PGQ).
-  2. Extracted `ParameterMap` containing extracted literals.
-* Snapshots are compared against golden baselines to ensure zero dialect regressions.
+### Layer 2: Golden Snapshot Regression (`cargo insta`)
+- Compares emitted query strings and parameter maps against verified baseline files in `crates/voyager-core/tests/snapshots/`.
+- Ensures zero syntax regressions across AST changes.
 
-### Stage 3: Live Upstream Result Validation
-* In CI, the emitted query and parameters are executed against:
-  - **Neo4j / Memgraph** for openCypher scenarios.
-  - **DuckDB + DuckPGQ** for SQL:2023 PGQ scenarios.
-* The resulting tabular output is compared against the official `Then the result should be:` table.
+### Layer 3: Live 6-Engine Integration Matrix
+- Runs compiled queries and parameters against live database containers via `just test-matrix`:
+  - **Neo4j 5.26** (Bolt protocol)
+  - **Memgraph** (Bolt protocol)
+  - **Apache AGE** (PostgreSQL extension with `agtype`)
+  - **DuckDB & DuckPGQ** (`GRAPH_TABLE` with zero-copy Polars export)
+  - **PostgreSQL 19 Beta 3** (Recursive SQL queries)
+  - **FalkorDB** (Low-latency Cypher queries)
 
 ---
 
-## 📋 Dialect Support Matrix
+## Dialect Support Matrix
 
-| Clause / Feature | openCypher TCK | SQL:2023 PGQ | ISO GQL (2024) | DuckPGQ |
+| Clause / Feature | openCypher | SQL:2023 PGQ & DuckPGQ | ISO GQL (2024) | Apache AGE |
 | :--- | :--- | :--- | :--- | :--- |
-| **Node Filtering (`WHERE`)** | ✅ `(p:Person WHERE p.age > 21)` | ✅ `(p:Person WHERE p.age > 21)` | ✅ `(p:Person WHERE p.age > 21)` | ✅ Inlined in `MATCH` |
-| **Edge Traversal** | ✅ `(a)-[:KNOWS]->(b)` | ✅ `(a) -[:knows]-> (b)` | ✅ `(a) -[:KNOWS]-> (b)` | ✅ `(a) -[k:knows]-> (b)` |
-| **Variable Hops** | ✅ `[:KNOWS*1..3]` | ✅ `-[k:knows]->{1,3}` | ✅ `-[k:KNOWS]->{1,3}` | ✅ `-[k:knows]->{1,3}` |
-| **Undirected Edges** | ✅ `(a)-[:KNOWS]-(b)` | ✅ `(a) -[:knows]- (b)` | ✅ `(a) ~[:KNOWS]~ (b)` | ✅ `(a) -[:knows]- (b)` |
-| **Aggregations** | ✅ `count(p), avg(p.age)` | ✅ `COUNT(p.id), AVG(p.age)` | ✅ `count(p), avg(p.age)` | ✅ `COUNT(p.id), AVG(...)` |
-| **Distinct Projections** | ✅ `RETURN DISTINCT p.name` | ✅ `SELECT DISTINCT gt.name` | ✅ `RETURN DISTINCT p.name` | ✅ `SELECT DISTINCT ...` |
-| **Pagination** | ✅ `SKIP 10 LIMIT 5` | ✅ `OFFSET 10 ROWS FETCH NEXT 5 ROWS` / `LIMIT 5 OFFSET 10` | ✅ `OFFSET 10 LIMIT 5` | ✅ `LIMIT 5 OFFSET 10` |
+| **Node Filtering (`WHERE`)** | `(p:Person WHERE p.age > 21)` | `(p:Person WHERE p.age > 21)` | `(p:Person WHERE p.age > 21)` | `(p:Person) WHERE p.age > 21` |
+| **Edge Traversal** | `(a)-[:KNOWS]->(b)` | `(a) -[:knows]-> (b)` | `(a) -[:KNOWS]-> (b)` | `(a)-[:KNOWS]->(b)` |
+| **Variable Hops** | `[:KNOWS*1..3]` | `-[k:knows]->{1,3}` | `-[k:KNOWS]->{1,3}` | `[:KNOWS*1..3]` |
+| **Undirected Edges** | `(a)-[:KNOWS]-(b)` | `(a) -[:knows]- (b)` | `(a) ~[:KNOWS]~ (b)` | `(a)-[:KNOWS]-(b)` |
+| **Aggregations** | `count(p), avg(p.age)` | `COUNT(p.id), AVG(p.age)` | `count(p), avg(p.age)` | `count(p), avg(p.age)` |
+| **Distinct Projections** | `RETURN DISTINCT p.name` | `SELECT DISTINCT gt.name` | `RETURN DISTINCT p.name` | `RETURN DISTINCT p.name` |
+| **Pagination** | `SKIP 10 LIMIT 5` | `LIMIT 5 OFFSET 10` | `OFFSET 10 LIMIT 5` | `SKIP 10 LIMIT 5` |

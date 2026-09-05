@@ -1,9 +1,8 @@
-"""Voyager Graph Studio & Universal Notebook Viewer.
+"""Voyager Notebook Graph Viewer.
 
-Universal interactive graph network and tabular records visualizer for:
-- Marimo
-- JupyterLab & Jupyter Notebook
-- VS Code Interactive Notebooks
+Interactive graph network and tabular records visualizer for:
+- Marimo notebooks
+- VS Code Interactive Notebooks (.ipynb)
 - Standalone Web / HTML dashboards
 """
 

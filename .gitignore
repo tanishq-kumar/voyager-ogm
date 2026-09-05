@@ -35,6 +35,7 @@ wheels/
 .coverage.*
 coverage.xml
 *.lcov
+__marimo__/
 # Node / TypeScript
 node_modules/
 npm-debug.log*

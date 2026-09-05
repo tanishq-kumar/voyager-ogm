@@ -4,9 +4,9 @@ Core AST compiler, optimizer, and multi-dialect emitters for Voyager OGM.
 
 ---
 
-## 🎨 5 Query Building Approaches
+## Query Authoring Approaches
 
-### 1. Step-by-Step Path Chaining (Memgraph GQLAlchemy / openCypher)
+### 1. Step-by-Step Path Chaining
 ```rust
 let mut builder = QueryBuilder::new();
 builder
@@ -21,7 +21,7 @@ builder
     .field("m", "title", Some("movie"));
 ```
 
-### 2. Semantic Traversal Shortcuts (`out_edge`, `in_edge`, `field`)
+### 2. Directional Traversal Methods
 ```rust
 let mut builder = QueryBuilder::new();
 builder
@@ -34,7 +34,7 @@ builder
     .limit(10);
 ```
 
-### 3. Combined Edge & Target Node Pattern (`to_edge`)
+### 3. Combined Pattern Builder
 ```rust
 let mut builder = QueryBuilder::new();
 builder
@@ -44,7 +44,7 @@ builder
     .field("target", "name", Some("followed_user"));
 ```
 
-### 4. Custom Predicate Expression Trees (Nested AND / OR / XOR)
+### 4. Expression Tree Filtering
 ```rust
 let mut builder = QueryBuilder::new();
 let age_gt = builder.binary_expr(builder.prop("p", "age"), BinaryOp::Gt, builder.literal(18));
@@ -59,7 +59,7 @@ builder
     .field("p", "name", Some("name"));
 ```
 
-### 5. Low-Level Direct AST Allocation (`QueryAstArena`)
+### 5. Direct AST Allocation (`QueryAstArena`)
 ```rust
 let mut arena = QueryAstArena::new();
 let node = arena.alloc(AstNode::NodePattern {
