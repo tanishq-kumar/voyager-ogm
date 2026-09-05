@@ -1766,7 +1766,9 @@ age = [
     { name = "psycopg", extra = ["binary"], marker = "python_full_version < '3.14'" },
 ]
 dev = [
+    { name = "anywidget" },
     { name = "duckdb", marker = "python_full_version < '3.14'" },
+    { name = "marimo" },
     { name = "maturin" },
     { name = "mypy" },
     { name = "neo4j" },
@@ -1777,6 +1779,7 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "sqlalchemy" },
+    { name = "traitlets" },
 ]
 duckdb = [
     { name = "duckdb", marker = "python_full_version < '3.14'" },
@@ -1787,6 +1790,7 @@ neo4j = [
 notebook = [
     { name = "anywidget" },
     { name = "marimo" },
+    { name = "traitlets" },
 ]
 sqlalchemy = [
     { name = "sqlalchemy" },
@@ -1794,18 +1798,23 @@ sqlalchemy = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "anywidget" },
     { name = "duckdb", marker = "python_full_version < '3.14'" },
     { name = "falkordb", marker = "python_full_version < '3.14'" },
+    { name = "marimo" },
     { name = "neomodel", marker = "python_full_version < '3.14'" },
     { name = "pydantic" },
+    { name = "traitlets" },
     { name = "ty" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "anywidget", marker = "extra == 'dev'", specifier = ">=0.9.0" },
     { name = "anywidget", marker = "extra == 'notebook'", specifier = ">=0.9.0" },
     { name = "duckdb", marker = "python_full_version < '3.14' and extra == 'dev'", specifier = ">=1.0.0" },
     { name = "duckdb", marker = "python_full_version < '3.14' and extra == 'duckdb'", specifier = ">=1.0.0" },
+    { name = "marimo", marker = "extra == 'dev'", specifier = ">=0.10.0" },
     { name = "marimo", marker = "extra == 'notebook'", specifier = ">=0.10.0" },
     { name = "maturin", marker = "extra == 'dev'", specifier = ">=1.7.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13.0" },
@@ -1822,15 +1831,20 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
     { name = "sqlalchemy", marker = "extra == 'dev'", specifier = ">=2.0.0" },
     { name = "sqlalchemy", marker = "extra == 'sqlalchemy'", specifier = ">=2.0.0" },
+    { name = "traitlets", marker = "extra == 'dev'", specifier = ">=5.0.0" },
+    { name = "traitlets", marker = "extra == 'notebook'", specifier = ">=5.0.0" },
 ]
 provides-extras = ["duckdb", "neo4j", "age", "sqlalchemy", "dev", "notebook"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "anywidget", specifier = ">=0.9.0" },
     { name = "duckdb", marker = "python_full_version < '3.14'", specifier = "==1.2.0" },
     { name = "falkordb", marker = "python_full_version < '3.14'", specifier = ">=1.7.1" },
+    { name = "marimo", specifier = ">=0.10.0" },
     { name = "neomodel", marker = "python_full_version < '3.14'", specifier = ">=7.0.0" },
     { name = "pydantic", specifier = ">=2.10.0" },
+    { name = "traitlets", specifier = ">=5.0.0" },
     { name = "ty", specifier = ">=0.0.78" },
 ]
 

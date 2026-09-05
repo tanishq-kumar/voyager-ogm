@@ -53,6 +53,9 @@ dev = [
     "neo4j>=5.0.0",
     "psycopg[binary]>=3.1.0; python_version < '3.14'",
     "sqlalchemy>=2.0.0",
+    "marimo>=0.10.0",
+    "anywidget>=0.9.0",
+    "traitlets>=5.0.0",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "maturin>=1.7.0",
@@ -60,6 +63,7 @@ dev = [
 notebook = [
     "marimo>=0.10.0",
     "anywidget>=0.9.0",
+    "traitlets>=5.0.0",
 ]
 
 [tool.maturin]
@@ -100,6 +104,9 @@ dev = [
     "falkordb>=1.7.1; python_version < '3.14'",
     "neomodel>=7.0.0; python_version < '3.14'",
     "pydantic>=2.10.0",
+    "marimo>=0.10.0",
+    "anywidget>=0.9.0",
+    "traitlets>=5.0.0",
     "ty>=0.0.78",
 ]
 
