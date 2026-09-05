@@ -1,4 +1,4 @@
-"""Universal interactive GraphViewer widget for Jupyter, VS Code, Marimo, and web runtimes."""
+"""Interactive GraphViewer widget for Marimo, VS Code notebooks, and web runtimes."""
 
 from __future__ import annotations
 
