@@ -126,7 +126,7 @@ def test_session_bulk_upsert_merge():
     plan = session.bulk_upsert(Person, data, key_field="id", batch_size=50_000)
 
     assert plan.statement == (
-        "UNWIND $batch AS row MERGE (_person_0:Person {_person_0.id = row.id}) "
+        "UNWIND $batch AS row MERGE (_person_0:Person {id: row.id}) "
         "ON CREATE SET _person_0.name = row.name, _person_0.age = row.age "
         "ON MATCH SET _person_0.name = row.name, _person_0.age = row.age"
     )
@@ -156,8 +156,8 @@ def test_session_bulk_create_relationships():
 
     assert plan.statement == (
         "UNWIND $batch AS row "
-        "MATCH (_from_person_0:Person {_from_person_0.id = row.from_id}), "
-        "(_to_person_0:Person {_to_person_0.id = row.to_id}) "
+        "MATCH (_from_person_0:Person {id: row.from_id}), "
+        "(_to_person_0:Person {id: row.to_id}) "
         "CREATE (_from_person_0)-[_follows_0:FOLLOWS]->(_to_person_0) "
         "SET _follows_0.since = row.since"
     )

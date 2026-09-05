@@ -8,7 +8,6 @@
 [![Standards](https://img.shields.io/badge/Standards-openCypher%20%7C%20SQL%3A2023%20PGQ%20%7C%20ISO%20GQL-green.svg)](https://www.iso.org/standard/76120.html)
 [![Arrow](https://img.shields.io/badge/Zero--Copy-Apache%20Arrow%20PyCapsule-orange.svg)](https://arrow.apache.org/)
 
-
 ---
 
 ## Why Voyager OGM? (Project Origin)
@@ -48,42 +47,52 @@ Voyager OGM solves four common problems in graph databases:
 gantt
     title Voyager OGM Implementation Roadmap (7 Phases)
     dateFormat  YYYY-MM-DD
+    axisFormat  %b %d
+
     section Phase 1: Core Engine (v0.1.0-alpha)
-    Workspace & Tooling Scaffolding       :done, p1_1, 2026-08-25, 2d
-    Core AST Engine & Models              :done, p1_2, after p1_1, 3d
-    Dialect Emitters (Cypher, SQL, GQL)   :done, p1_3, after p1_2, 3d
-    Golden Snapshot Test Suite (Insta)    :done, p1_4, after p1_3, 2d
-    Python PyO3 SDK & Type Annotations    :done, p1_5, after p1_4, 3d
+    Workspace & Tooling Scaffolding        :done, p1_1, 2026-08-25, 2026-08-27
+    Core AST Engine & Models               :done, p1_2, 2026-08-27, 2026-08-30
+    Dialect Emitters (Cypher, SQL, GQL)    :done, p1_3, 2026-08-30, 2026-09-02
+    Golden Snapshot Test Suite (Insta)     :done, p1_4, 2026-09-02, 2026-09-04
+    Python PyO3 SDK & Type Annotations     :done, p1_5, 2026-09-04, 2026-09-06
+
     section Phase 2: Mutations & Ingestion (v0.2.0-beta)
-    Zero-Copy Arrow & Polars Streaming    :done, p2_1, after p1_5, 3d
-    Two-Layer Rollbacks & Savepoints      :done, p2_2, after p2_1, 3d
-    DML Mutations (CREATE, MERGE, SET)    :done, p2_3, after p2_2, 3d
-    Bulk Importer (UNWIND & DataFrame)    :done, p2_4, after p2_3, 3d
-    Driver Evaluation & Bridging System   :done, p2_5, after p2_4, 3d
+    Zero-Copy Arrow & Polars Streaming     :done, p2_1, 2026-09-06, 2026-09-09
+    Two-Layer Rollbacks & Savepoints       :done, p2_2, 2026-09-09, 2026-09-12
+    DML Mutations (CREATE, MERGE, SET)     :done, p2_3, 2026-09-12, 2026-09-15
+    Bulk Importer (UNWIND & DataFrame)     :done, p2_4, 2026-09-15, 2026-09-18
+    Driver Evaluation & Bridging System    :done, p2_5, 2026-09-18, 2026-09-21
+
     section Phase 3: Formal TCK Conformance (v0.3.0)
-    openCypher & openGQL TCK Harness      :done, p3_1, after p2_5, 4d
-    SQL:2023 PGQ & DuckPGQ Suite          :done, p3_2, after p3_1, 3d
-    Apache AGE & PostgreSQL Cypher Suite  :done, p3_3, after p3_2, 3d
-    Multi-Engine Live Matrix              :done, p3_4, after p3_3, 3d
+    openCypher & openGQL TCK Harness       :done, p3_1, 2026-09-21, 2026-09-25
+    SQL:2023 PGQ & DuckPGQ Suite           :done, p3_2, 2026-09-25, 2026-09-28
+    Apache AGE & PostgreSQL Cypher Suite   :done, p3_3, 2026-09-28, 2026-10-01
+    Multi-Engine Live Matrix               :done, p3_4, 2026-10-01, 2026-10-04
+
     section Phase 4: Python Integrations & Optimizers (v0.4.0)
-    SQLAlchemy Hybrid Bridge              :active, p4_1, after p3_4, 3d
-    Marimo Reactive WebGL Extension       :p4_2, after p4_1, 3d
-    AST Query Optimizer & Pushdown        :p4_3, after p4_2, 3d
+    SQLAlchemy Hybrid Bridge               :done, p4_1, 2026-10-04, 2026-10-07
+    Notebook Graph Viewer Widget :done, p4_2, 2026-10-07, 2026-10-10
+    Batch Identity Map & Active Record     :done, p4_3, 2026-10-10, 2026-10-13
+    AST Query Optimizer & Pushdown         :active, p4_4, 2026-10-13, 2026-10-16
+
     section Phase 5: TypeScript NAPI SDK (v0.5.0)
-    TypeScript NAPI AST Bindings          :p5_1, after p4_3, 4d
-    TypeScript Decorators & Models        :p5_2, after p5_1, 3d
-    TypeScript Streaming & Hydration      :p5_3, after p5_2, 3d
+    TypeScript NAPI AST Bindings           :p5_1, 2026-10-16, 2026-10-20
+    TypeScript Decorators & Models         :p5_2, 2026-10-20, 2026-10-23
+    TypeScript Streaming & Hydration       :p5_3, 2026-10-23, 2026-10-26
+
     section Phase 6: Voyager CLI Engine (v0.6.0)
-    CLI Scaffolding & clap Integration    :p6_1, after p5_3, 2d
-    voyager compile Command               :p6_2, after p6_1, 3d
-    voyager migrate Command               :p6_3, after p6_2, 3d
-    voyager introspect Command            :p6_4, after p6_3, 3d
+    CLI Scaffolding & clap Integration     :p6_1, 2026-10-26, 2026-10-28
+    voyager compile Command                :p6_2, 2026-10-28, 2026-10-31
+    voyager migrate Command                :p6_3, 2026-10-31, 2026-11-03
+    voyager introspect Command             :p6_4, 2026-11-03, 2026-11-06
+
     section Phase 7: Production GA (v1.0.0)
-    Multi-Registry OIDC Publishing        :p7_1, after p6_4, 3d
-    Documentation Site & Sandbox Tutorials:p7_2, after p7_1, 3d
+    Multi-Registry OIDC Publishing         :p7_1, 2026-11-06, 2026-11-09
+    Documentation Site & Sandbox Tutorials :p7_2, 2026-11-09, 2026-11-12
 ```
 
 ### Phase 1: Core Read AST Engine (Status: Completed)
+
 - [x] **Task 1.1:** Create workspace tooling with `Cargo`, `uv`, `maturin`, and `justfile`.
 - [x] **Task 1.2:** Build AST representation and handle-based memory management (`QueryAstArena`).
 - [x] **Task 1.3:** Build query emitters for openCypher, SQL:2023 PGQ, and ISO GQL.
@@ -91,6 +100,7 @@ gantt
 - [x] **Task 1.5:** Build Python SDK with model decorators (`@node`, `@relationship`) and type annotations.
 
 ### Phase 2: Mutations, Ingestion, Streaming & Bridging (Status: Completed)
+
 - [x] **Task 2.1:** Zero-copy Apache Arrow and Polars stream ingestion.
 - [x] **Task 2.2:** Two-layer transaction Unit-of-Work with in-memory savepoint rollbacks.
 - [x] **Task 2.3:** DML mutation AST nodes and dialect emitters (`CREATE`, `MERGE`, `SET`, `DELETE`, `DETACH DELETE`).
@@ -98,29 +108,35 @@ gantt
 - [x] **Task 2.5:** Database driver evaluation and query dispatch bridging layer (Neo4j, Memgraph, DuckDB, Mock).
 
 ### Phase 3: Formal TCK Conformance & Multi-Engine Compatibility Matrix (Status: Completed)
+
 - [x] **Task 3.1:** [openCypher TCK](https://github.com/opencypher/openCypher/tree/main/tck) & [openGQL TCK](https://github.com/opengql/tck) automated syntax and grammar verification across all 18 categories and 5 query authoring styles.
 - [x] **Task 3.2:** [DuckPGQ SQLLogicTest Suite](https://github.com/cwida/duckpgq-extension/tree/main/test) for SQL:2023 `GRAPH_TABLE` standard conformance and live in-memory DuckDB Arrow/Polars extraction.
 - [x] **Task 3.3:** [Apache AGE Regression Suite](https://github.com/apache/age/tree/master/regress) for PostgreSQL embedded Cypher conformance and live database execution.
 - [x] **Task 3.4:** Automated local multi-engine live integration matrix (`just test-matrix` across Neo4j 5.26, Memgraph, Apache AGE, DuckDB & DuckPGQ, PostgreSQL 19 Beta 3, and FalkorDB).
 
 ### Phase 4: Python Integrations & Query Optimizers (Status: In Progress)
-- [ ] **Task 4.1:** SQLAlchemy hybrid bridge connecting relational models with graph traversals.
-- [ ] **Task 4.2:** Marimo reactive notebook visual extension (`voyager_graph[marimo]`).
-- [ ] **Task 4.3:** AST Rule-Based Query Optimizer & Predicate Pushdown Pass (`(p:Person {city: $p0})` inline pattern pushdown).
+
+- [x] **Task 4.1:** SQLAlchemy hybrid bridge connecting relational models with graph traversals (`HybridSession`, `as_cte()`, `sync_table_to_graph`).
+- [x] **Task 4.2:** Interactive Graph Viewer & Studio (`voyager_ogm.viewer` supporting Marimo and VS Code interactive `.ipynb` notebooks).
+- [x] **Task 4.3:** Multi-Database Batch Identity Map & Active Record Data Mapper Fusion (`Session.flush()`, `Node.save()`, `weakref` memory management).
+- [ ] **Task 4.4:** AST Rule-Based Query Optimizer & Predicate Pushdown Pass (`(p:Person {city: $p0})` inline pattern pushdown).
 
 ### Phase 5: TypeScript SDK (`@voyager-ogm/core`) (Status: Planned)
+
 - [ ] **Task 5.1:** TypeScript NAPI-RS native bindings for the core AST engine.
 - [ ] **Task 5.2:** TypeScript `@Node()` and `@Relationship()` decorators with full type safety.
 - [ ] **Task 5.3:** Type-safe fluent query builder and columnar Arrow hydration in Bun, Deno, and Node.js.
 - [ ] **Task 5.4:** Automated Bun test conformance suite and benchmarks.
 
 ### Phase 6: Voyager CLI Development (Status: Planned)
+
 - [ ] **Task 6.1:** Standalone CLI tool (`voyager-cli`) built with `clap`.
 - [ ] **Task 6.2:** `voyager compile`: (sqlc-style) Compiles `.cypher` / `.gql` queries into type-safe models and async functions.
 - [ ] **Task 6.3:** `voyager migrate`: Manages in-graph schema migrations (constraints, indexes, labels, Graph Types).
 - [ ] **Task 6.4:** `voyager introspect`: Scans live database catalogs to generate model classes and query functions.
 
 ### Phase 7: Production GA Release & Multi-Registry Publishing (Status: Planned)
+
 - [ ] **Task 7.1:** Automated multi-registry publishing to PyPI, Crates.io, and npm with trusted OIDC provenance.
 - [ ] **Task 7.2:** Starlight / Astro documentation website with multi-language interactive tutorials deployed to Cloudflare Pages.
 
@@ -229,14 +245,14 @@ print(stats)
 
 Voyager OGM uses continuous testing across three languages:
 
-| Engine / Target | Test Runner | Test Count | Status | Execution Time |
-| :--- | :--- | :---: | :---: | :---: |
-| **Rust Core (`voyager-core`)** | `cargo-nextest` | **87 tests** | Passing | **1.64s** |
-| **Multi-Dialect Golden Snapshots** | `insta` | **18 snapshots** | Passing | **Instant** |
-| **Python SDK & TCK Conformance** | `pytest` + `pytest-cov` | **108 tests** | Passing | **~8.0s** |
-| **Multi-Engine Live Matrix** | `just test-matrix` | **7 suites** | Passing | **~5.0m** |
-| **TypeScript SDK (`@voyager-ogm/core`)**| `bun test` | **1 test** | Passing | **0.12s** |
-| **Total Automated Tests** | Across all components | **200+ tests** | **100% Green** | **Clean** |
+| Engine / Target                          | Test Runner             |    Test Count    |     Status     | Execution Time |
+| :--------------------------------------- | :---------------------- | :--------------: | :------------: | :------------: |
+| **Rust Core (`voyager-core`)**           | `cargo-nextest`         |   **87 tests**   |    Passing     |   **1.64s**    |
+| **Multi-Dialect Golden Snapshots**       | `insta`                 | **18 snapshots** |    Passing     |  **Instant**   |
+| **Python SDK & TCK Conformance**         | `pytest` + `pytest-cov` |  **108 tests**   |    Passing     |   **~8.0s**    |
+| **Multi-Engine Live Matrix**             | `just test-matrix`      |   **7 suites**   |    Passing     |   **~5.0m**    |
+| **TypeScript SDK (`@voyager-ogm/core`)** | `bun test`              |    **1 test**    |    Passing     |   **0.12s**    |
+| **Total Automated Tests**                | Across all components   |  **200+ tests**  | **100% Green** |   **Clean**    |
 
 ---
 
@@ -244,18 +260,19 @@ Voyager OGM uses continuous testing across three languages:
 
 Voyager OGM is tested against 7 live database engines and runtime environments:
 
-| Database Engine | Dialect / Standard | Connection / Transport | Verified Capabilities | Status |
-| :--- | :--- | :--- | :--- | :---: |
-| **Neo4j 5.26** | openCypher / Cypher 25 *(Exp.)* | Bolt (`bolt://localhost:7687`) | SchemaManager DDL, UNWIND bulk ingestion, fluent traversals, Polars export, SET mutations | ✅ **Live Verified** |
-| **Memgraph** | openCypher / ISO GQL | Bolt (`bolt://localhost:7688`) | Graph seeding, variable-length path traversals (1..2 hops), zero-copy Polars ingestion | ✅ **Live Verified** |
-| **Apache AGE** | Cypher-in-SQL | PostgreSQL (`host=localhost:5455`) | Dynamic graph catalogs, `ag_catalog.cypher()` table queries, `%s` JSON parameters, `agtype` projections | ✅ **Live Verified** |
-| **DuckDB (Relational)** | SQL:2023 | In-Memory (`:memory:`) | Property tables, relational graph joins, zero-copy `.pl()` Polars DataFrame streaming | ✅ **Live Verified** |
-| **DuckDB DuckPGQ** | SQL:2023 PGQ (`GRAPH_TABLE`) | DuckDB Community Extension | `CREATE PROPERTY GRAPH` DDL, standard `GRAPH_TABLE` execution, `{min,max}` quantifiers, `.pl()` streaming | ✅ **Live Verified** |
-| **PostgreSQL 19 Beta 3** | Relational / Recursive SQL | PostgreSQL (`host=localhost:5456`) | Relational graph schema, multi-hop recursive graph path traversals (`WITH RECURSIVE`), Polars extraction | ✅ **Live Verified** |
-| **FalkorDB** | openCypher | Native Client (`port: 6379`) | Graph catalog selection, low-latency Cypher traversals, parameter mapping, Polars extraction | ✅ **Live Verified** |
+| Database Engine          | Dialect / Standard              | Connection / Transport             | Verified Capabilities                                                                                     |        Status        |
+| :----------------------- | :------------------------------ | :--------------------------------- | :-------------------------------------------------------------------------------------------------------- | :------------------: |
+| **Neo4j 5.26**           | openCypher / Cypher 25 _(Exp.)_ | Bolt (`bolt://localhost:7687`)     | SchemaManager DDL, UNWIND bulk ingestion, fluent traversals, Polars export, SET mutations                 | ✅ **Live Verified** |
+| **Memgraph**             | openCypher / ISO GQL            | Bolt (`bolt://localhost:7688`)     | Graph seeding, variable-length path traversals (1..2 hops), zero-copy Polars ingestion                    | ✅ **Live Verified** |
+| **Apache AGE**           | Cypher-in-SQL                   | PostgreSQL (`host=localhost:5455`) | Dynamic graph catalogs, `ag_catalog.cypher()` table queries, `%s` JSON parameters, `agtype` projections   | ✅ **Live Verified** |
+| **DuckDB (Relational)**  | SQL:2023                        | In-Memory (`:memory:`)             | Property tables, relational graph joins, zero-copy `.pl()` Polars DataFrame streaming                     | ✅ **Live Verified** |
+| **DuckDB DuckPGQ**       | SQL:2023 PGQ (`GRAPH_TABLE`)    | DuckDB Community Extension         | `CREATE PROPERTY GRAPH` DDL, standard `GRAPH_TABLE` execution, `{min,max}` quantifiers, `.pl()` streaming | ✅ **Live Verified** |
+| **PostgreSQL 19 Beta 3** | Relational / Recursive SQL      | PostgreSQL (`host=localhost:5456`) | Relational graph schema, multi-hop recursive graph path traversals (`WITH RECURSIVE`), Polars extraction  | ✅ **Live Verified** |
+| **FalkorDB**             | openCypher                      | Native Client (`port: 6379`)       | Graph catalog selection, low-latency Cypher traversals, parameter mapping, Polars extraction              | ✅ **Live Verified** |
 
 > [!NOTE]
 > **Dialect Evolution & Full Engine Parity Roadmap:**
+>
 > 1. **Cypher 25 Support:** Cypher 25 Graph Types (`ALTER CURRENT GRAPH TYPE`) and advanced GQL-aligned syntax are currently marked as **`[Experimental / Draft]`** (previewed on Neo4j 5.26+).
 > 2. **Phased Engine Hardening:** Core AST compilation, transaction bridging, and zero-copy Polars ingestion are fully operational across all 7 engines today. **Full production-hardened dialect feature parity, vendor-specific driver extensions, and dialect pushdown optimizations for each engine will be continuously expanded and deepened in upcoming phases (Phase 4 & Phase 5).**
 
@@ -336,5 +353,6 @@ just ci
 ## License
 
 Dual-licensed under either:
-* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-* MIT License ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+- MIT License ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)

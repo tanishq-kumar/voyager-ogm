@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 import threading
+import weakref
 from collections import defaultdict
 from typing import Any, ClassVar, Generic, TypeVar
 
@@ -391,13 +392,107 @@ class Node:
         Args:
             alias: Optional explicit variable alias. If omitted, an auto-alias
                 (e.g. `_person_0`) is deterministically generated.
-            **values: Property key-value pairs.
+            **values: Property key-value pairs, or optional `session` reference.
         """
         label = self.__labels__[0] if self.__labels__ else self.__class__.__name__
         self._alias = alias or _get_next_alias(label)
         self._bound_fields: dict[str, BoundField] = {}
+        session = values.pop("session", None)
+        self._session_ref: weakref.ref[Any] | None = (
+            weakref.ref(session) if session is not None else None
+        )
         self._values: dict[str, Any] = dict(values)
         self._dirty_fields: dict[str, Any] = dict(values)
+        if session is not None and getattr(session, "identity_map_enabled", False):
+            session.register(self)
+
+    def _attach_session(self, session: Any) -> None:
+        """Attaches a session via weak reference for Active Record `.save()` ergonomics."""
+        self._session_ref = weakref.ref(session)
+
+    def save(self, session: Any = None, key_field: str = "id") -> Any:
+        """Persists dirty property changes to the database using Active Record ergonomics.
+
+        Technique: Active Record + Data Mapper Fusion
+        --------------------------------------------
+        Combines the intuitive convenience of Active Record (`entity.save()`) with the
+        clean architecture of Data Mapper (the entity contains zero database dialect or
+        connection logic, delegating persistence to the active Session).
+
+        Args:
+            session: Explicit Session to persist through. If omitted, uses the session
+                attached during initialization or registration.
+            key_field: Unique primary key property name (defaults to 'id').
+
+        Returns:
+            BulkExecutionResult if flushed, or None if no dirty fields were pending.
+
+        Raises:
+            RuntimeError: If no session is passed and no session was previously attached.
+        """
+        active_session = session
+        if active_session is None and self._session_ref is not None:
+            active_session = self._session_ref()
+
+        if active_session is None:
+            msg = (
+                f"Cannot save {self.__class__.__name__}: No active Session attached. "
+                "Pass session explicitly: node.save(session=session) or register with session first."
+            )
+            raise RuntimeError(msg)
+
+        if session is not None:
+            self._attach_session(session)
+
+        if not self._dirty_fields:
+            return None
+
+        record = dict(self._dirty_fields)
+        primary_val = self.get(key_field)
+        if primary_val is not None:
+            record[key_field] = primary_val
+
+        plan = active_session.bulk_upsert(
+            model=self.__class__,
+            data=[record],
+            key_field=key_field,
+        )
+        result = active_session.run_bulk(plan)
+        self.clear_dirty()
+        return result
+
+    async def async_save(self, session: Any = None, key_field: str = "id") -> Any:
+        """Asynchronously persists dirty property changes to the database."""
+        active_session = session
+        if active_session is None and self._session_ref is not None:
+            active_session = self._session_ref()
+
+        if active_session is None:
+            msg = (
+                f"Cannot save {self.__class__.__name__}: No active AsyncSession attached. "
+                "Pass session explicitly: await node.async_save(session=session) or register first."
+            )
+            raise RuntimeError(msg)
+
+        if session is not None:
+            self._attach_session(session)
+
+        if not self._dirty_fields:
+            return None
+
+        record = dict(self._dirty_fields)
+        primary_val = self.get(key_field)
+        if primary_val is not None:
+            record[key_field] = primary_val
+
+        plan = active_session.bulk_upsert(
+            model=self.__class__,
+            data=[record],
+            key_field=key_field,
+        )
+        result = await active_session.run_bulk(plan)
+        self.clear_dirty()
+        return result
 
     @property
     def alias(self) -> str:

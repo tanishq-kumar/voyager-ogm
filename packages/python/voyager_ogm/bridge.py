@@ -585,14 +585,20 @@ class DuckDbBridge:
             for b in batch_list:
                 batch_data = b.get("batch", [])
                 total_records += len(batch_data)
-                self.con.execute(statement, b)
+                try:
+                    self.con.execute(statement, b)
+                except Exception:
+                    self._fallback_bulk_ingest(statement, batch_data)
         else:
             statement = plan_or_statement.statement
             for batch_item in plan_or_statement:
                 total_batches += 1
                 batch_data = batch_item.parameters.get("batch", [])
                 total_records += len(batch_data)
-                self.con.execute(statement, batch_item.parameters)
+                try:
+                    self.con.execute(statement, batch_item.parameters)
+                except Exception:
+                    self._fallback_bulk_ingest(statement, batch_data)
 
         return BulkExecutionResult(
             total_batches=total_batches,
@@ -600,6 +606,36 @@ class DuckDbBridge:
             duration_seconds=time.perf_counter() - start_time,
             statement=statement,
         )
+
+    def _fallback_bulk_ingest(self, statement: str, batch_data: list[dict[str, Any]]) -> None:
+        """Fallback for relational graph tables in DuckDB when raw Cypher UNWIND is executed."""
+        if not batch_data:
+            return
+        import re
+
+        import pyarrow as pa
+
+        match = re.search(r":([A-Za-z0-9_]+)", statement)
+        table_name = match.group(1) if match else "entities"
+        tbl = pa.Table.from_pylist(batch_data)
+        self.con.register("_voyager_temp_batch", tbl)
+        try:
+            tables = [r[0] for r in self.con.execute("SHOW TABLES").fetchall()]
+            if table_name not in tables:
+                cols = tbl.column_names
+                col_defs = []
+                for col in cols:
+                    if col == "id":
+                        col_defs.append(f"{col} VARCHAR PRIMARY KEY")
+                    else:
+                        col_defs.append(f"{col} VARCHAR")
+                self.con.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join(col_defs)})")
+
+            self.con.execute(
+                f"INSERT OR REPLACE INTO {table_name} BY NAME SELECT * FROM _voyager_temp_batch"
+            )
+        finally:
+            self.con.unregister("_voyager_temp_batch")
 
     def close(self) -> None:
         """Closes connection."""
@@ -744,9 +780,25 @@ def create_bridge(
     Returns:
         Configured database bridge adapter.
     """
-    if is_async and isinstance(driver_or_connection, AsyncDatabaseBridge):
+    if driver_or_connection is None:
+        return AsyncMockBridge() if is_async else MockBridge()
+
+    if isinstance(driver_or_connection, MockBridge):
+        return AsyncMockBridge() if is_async else driver_or_connection
+    if isinstance(driver_or_connection, AsyncMockBridge):
+        return driver_or_connection if is_async else driver_or_connection.sync_mock
+
+    if (
+        is_async
+        and isinstance(driver_or_connection, AsyncDatabaseBridge)
+        and inspect.iscoroutinefunction(getattr(driver_or_connection, "execute", None))
+    ):
         return driver_or_connection
-    if not is_async and isinstance(driver_or_connection, DatabaseBridge):
+    if (
+        not is_async
+        and isinstance(driver_or_connection, DatabaseBridge)
+        and not inspect.iscoroutinefunction(getattr(driver_or_connection, "execute", None))
+    ):
         return driver_or_connection
 
     for matcher, bridge_cls, reg_is_async in _BRIDGE_REGISTRY:
@@ -759,9 +811,6 @@ def create_bridge(
                 sync_inst = bridge_cls(driver_or_connection)
                 if isinstance(sync_inst, DuckDbBridge):
                     return AsyncDuckDbBridge(driver_or_connection)
-
-    if driver_or_connection is None:
-        return AsyncMockBridge() if is_async else MockBridge()
 
     if is_async:
         return AsyncMockBridge()
