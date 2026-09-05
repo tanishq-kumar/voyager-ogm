@@ -1,10 +1,10 @@
 //! # Voyager OGM Core Engine (`voyager-core`)
 //!
-//! Voyager OGM is a high-performance, vendor-neutral Object-Graph Mapper (OGM)
+//! Voyager OGM is a vendor-neutral Object-Graph Mapper (OGM)
 //! and AST query compiler implemented in pure safe Rust.
 //!
 //! ## Modules
-//! - [`ast`]: 32-bit integer handle memory arena and AST node definitions.
+//! - [`ast`]: AST node definitions and handle-based memory management.
 //! - [`builder`]: Ergonomic fluent query builder API.
 //! - [`emitters`]: Multi-dialect query string emitters (openCypher, SQL:2023 PGQ, ISO GQL).
 //! - [`visitor`]: AST Visitor trait and compilation result containers.

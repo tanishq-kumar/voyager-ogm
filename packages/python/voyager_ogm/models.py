@@ -169,7 +169,7 @@ class BoundField:
         self.target_alias = target_alias
         self.field_name = field_name
 
-    def __eq__(self, other: Any) -> PredicateExpr:  # type: ignore[override]
+    def __eq__(self, other: Any) -> Any:
         """Creates an equality predicate `alias.prop = value`.
 
         Args:
@@ -217,7 +217,7 @@ class BoundField:
         """Creates a less-than-or-equal predicate `alias.prop <= value`."""
         return PredicateExpr(self.target_alias, self.field_name, "lte", other)
 
-    def __ne__(self, other: Any) -> PredicateExpr:  # type: ignore[override]
+    def __ne__(self, other: Any) -> Any:
         """Creates a not-equal predicate `alias.prop != value`."""
         return PredicateExpr(self.target_alias, self.field_name, "ne", other)
 
@@ -309,7 +309,7 @@ class PredicateExpr:
         self.value = value
 
 
-def _process_type_annotations(cls: type) -> dict[str, Field]:
+def _process_type_annotations(cls: Any) -> dict[str, Field]:
     """Extracts type annotations and injects Field descriptors automatically.
 
     Args:
@@ -346,7 +346,7 @@ def _process_type_annotations(cls: type) -> dict[str, Field]:
             setattr(cls, attr_name, field_desc)
             fields_map[attr_name] = field_desc
 
-    cls._schema_fields = fields_map  # type: ignore[attr-defined]
+    cls._schema_fields = fields_map
     return fields_map
 
 
