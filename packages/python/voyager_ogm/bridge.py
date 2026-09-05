@@ -717,7 +717,9 @@ register_bridge(_is_duckdb_conn, DuckDbBridge, is_async=False)
 
 
 @overload
-def create_bridge(driver_or_connection: Any, is_async: Literal[False] = False) -> DatabaseBridge: ...
+def create_bridge(
+    driver_or_connection: Any, is_async: Literal[False] = False
+) -> DatabaseBridge: ...
 
 
 @overload

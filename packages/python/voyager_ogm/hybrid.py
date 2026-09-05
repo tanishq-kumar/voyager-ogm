@@ -480,6 +480,7 @@ class AsyncHybridSession:
     async def commit(self) -> None:
         """Asynchronously commits both relational and graph transactions."""
         import inspect
+
         commit_sa = getattr(self.sa, "commit", None)
         if callable(commit_sa):
             res = commit_sa()
@@ -494,6 +495,7 @@ class AsyncHybridSession:
     async def rollback(self) -> None:
         """Asynchronously rolls back both relational and graph transactions."""
         import inspect
+
         rollback_sa = getattr(self.sa, "rollback", None)
         if callable(rollback_sa):
             res = rollback_sa()

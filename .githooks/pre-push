@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+set -e
+
+echo "[pre-push] Running Voyager test verification before push..."
+
+# 1. Rust test suite
+echo "[pre-push] 1/2 Running Rust tests (cargo nextest)..."
+cargo nextest run --workspace --all-targets
+
+# 2. Python test suite
+echo "[pre-push] 2/2 Running Python tests (pytest)..."
+uv run pytest
+
+echo "[pre-push] All tests passed! Proceeding with git push."

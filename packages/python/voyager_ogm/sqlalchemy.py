@@ -529,6 +529,7 @@ class GraphRelationshipProperty:
 
         pk_col = getattr(target_cls, "id", self.target_key)
         from typing import cast
+
         stmt = (
             select(cast(Any, target_cls))
             .join(cte, pk_col == cte.c.target_id)
