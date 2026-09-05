@@ -274,13 +274,26 @@ impl AstVisitor for SqlPgqEmitter {
         let root_node = arena.get(root)?;
         if let AstNode::QueryStatement {
             load_csv: _,
-            unwinds: _,
+            unwinds,
             matches,
             with_clauses: _,
-            mutations: _,
+            mutations,
             return_clause,
         } = root_node
         {
+            if !mutations.is_empty() {
+                return Err(Error::UnsupportedFeature {
+                    dialect: "sql_pgq".to_string(),
+                    feature: "DML mutations (CREATE, MERGE, SET, DELETE) - GRAPH_TABLE is a read-only query operator".to_string(),
+                });
+            }
+            if !unwinds.is_empty() {
+                return Err(Error::UnsupportedFeature {
+                    dialect: "sql_pgq".to_string(),
+                    feature: "UNWIND clauses - GRAPH_TABLE is a read-only query operator"
+                        .to_string(),
+                });
+            }
             self.buffer.push_str("SELECT * FROM GRAPH_TABLE (");
             self.buffer.push_str(&self.graph_name);
             self.buffer.push_str(" MATCH ");

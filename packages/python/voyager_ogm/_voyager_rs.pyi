@@ -49,7 +49,13 @@ class NativeQueryBuilder:
         self, procedure_name: str, args: list[Any], kwargs: dict[str, Any]
     ) -> None: ...
     def yield_items(self, items: list[str]) -> None: ...
-    def compile(self, dialect: str = "cypher", graph_name: str | None = None) -> dict[str, Any]: ...
+    def compile(
+        self,
+        dialect: str = "cypher",
+        graph_name: str | None = None,
+        optimize: bool = False,
+        optimization_level: str = "standard",
+    ) -> dict[str, Any]: ...
 
 class NativeTransaction:
     """Native Unit-of-Work transaction with dirty arena state rollback."""

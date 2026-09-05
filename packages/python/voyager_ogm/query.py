@@ -52,6 +52,8 @@ class Query:
     def __init__(self) -> None:
         """Initializes a new query builder with an underlying Rust AST arena."""
         self._native = NativeQueryBuilder()
+        self._optimize = False
+        self._optimization_level = "standard"
 
     @classmethod
     def match(
@@ -700,12 +702,41 @@ class Query:
         self._native.skip(count)
         return self
 
-    def compile(self, dialect: str = "cypher", graph_name: str | None = None) -> CompiledQuery:
+    def optimize(self, level: str = "standard") -> Query:
+        """Enables rule-based AST query optimization.
+
+        Hoists single-node equality filters into inline pattern property maps
+        (`(p:Person {city: $p0})`), simplifies boolean expressions, and prunes
+        unreferenced intermediate variables.
+
+        Args:
+            level: Optimization level ('none', 'standard', 'aggressive'). Defaults to 'standard'.
+
+        Returns:
+            The Query instance for fluent chaining.
+
+        Example:
+            >>> query = Query.match(p).where(p.city == "NY").optimize()
+            >>> compiled = query.compile("cypher")
+        """
+        self._optimize = True
+        self._optimization_level = level
+        return self
+
+    def compile(
+        self,
+        dialect: str = "cypher",
+        graph_name: str | None = None,
+        optimize: bool | None = None,
+        optimization_level: str | None = None,
+    ) -> CompiledQuery:
         """Compiles the AST query into a parameterized dialect query statement.
 
         Args:
             dialect: Target dialect name ('cypher', 'sql_pgq', 'iso_gql').
             graph_name: Optional graph table name for SQL:2023 PGQ queries.
+            optimize: Optional override to enable/disable AST optimization.
+            optimization_level: Optional override for optimization level ('none', 'standard', 'aggressive').
 
         Returns:
             CompiledQuery containing the parameterized statement and parameter map.
@@ -714,9 +745,16 @@ class Query:
             ValueError: If the requested dialect is unsupported.
 
         Example:
-            >>> compiled = query.compile("sql_pgq", graph_name="social_graph")
+            >>> compiled = query.compile("cypher", optimize=True)
         """
-        res = self._native.compile(dialect, graph_name)
+        opt = self._optimize if optimize is None else optimize
+        opt_level = self._optimization_level if optimization_level is None else optimization_level
+        res = self._native.compile(
+            dialect,
+            graph_name,
+            optimize=opt,
+            optimization_level=opt_level,
+        )
         return CompiledQuery(statement=res["statement"], parameters=res["parameters"])
 
     def execute(self, session: Any, parameters: dict[str, Any] | None = None) -> Any:

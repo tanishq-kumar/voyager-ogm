@@ -241,3 +241,27 @@ fn test_pgq_all_aggregations_and_pagination() {
     assert!(res.statement.contains("ARRAY_AGG(p.name) AS all_names"));
     assert!(res.statement.contains("LIMIT 25 OFFSET 10"));
 }
+
+#[test]
+fn test_pgq_rejects_mutations_and_unwinds() {
+    use voyager_core::builder::QueryBuilder;
+    use voyager_core::emitters::sql_pgq::SqlPgqEmitter;
+    use voyager_core::visitor::AstVisitor;
+
+    // 1. Mutation rejection test
+    let mut builder = QueryBuilder::new();
+    builder.create().node(Some("p"), vec!["Person"]);
+    let (arena, root) = builder.build();
+    let mut pgq = SqlPgqEmitter::new("test_graph");
+    let err = pgq.visit_query(&arena, root).unwrap_err();
+    assert!(err.to_string().contains("DML mutations"));
+
+    // 2. UNWIND rejection test
+    let mut builder = QueryBuilder::new();
+    builder.unwind_param("batch", "row");
+    builder.match_node(Some("p"), vec!["Person"]);
+    let (arena, root) = builder.build();
+    let mut pgq = SqlPgqEmitter::new("test_graph");
+    let err = pgq.visit_query(&arena, root).unwrap_err();
+    assert!(err.to_string().contains("UNWIND"));
+}

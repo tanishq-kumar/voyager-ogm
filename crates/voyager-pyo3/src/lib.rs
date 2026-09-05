@@ -6,6 +6,7 @@ use pyo3::types::{PyDict, PyList};
 use voyager_core::ast::{AggregationFunc, BinaryOp, LiteralValue};
 use voyager_core::builder::QueryBuilder;
 use voyager_core::emitters::{AgeEmitter, CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
+use voyager_core::optimizer::{AstOptimizer, OptimizationLevel};
 use voyager_core::visitor::AstVisitor;
 
 fn py_to_literal(val: &Bound<'_, PyAny>) -> PyResult<LiteralValue> {
@@ -300,14 +301,25 @@ impl PyQueryBuilder {
         self.inner.yield_items(items);
     }
 
-    #[pyo3(signature = (dialect="cypher", graph_name=None))]
+    #[pyo3(signature = (dialect="cypher", graph_name=None, optimize=false, optimization_level="standard"))]
     fn compile<'py>(
         &self,
         dialect: &str,
         graph_name: Option<String>,
+        optimize: bool,
+        optimization_level: &str,
         py: Python<'py>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let (arena, root) = self.inner.clone().build();
+        let (mut arena, root) = self.inner.clone().build();
+
+        if optimize {
+            let opt_level = OptimizationLevel::from_str_opt(optimization_level);
+            let optimizer = AstOptimizer::new(opt_level);
+            optimizer
+                .optimize(&mut arena, root)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        }
+
         let compiled = match dialect.to_lowercase().as_str() {
             "cypher" | "opencypher" | "neo4j" | "memgraph" => {
                 let mut emitter = CypherEmitter::new();

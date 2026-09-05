@@ -21,6 +21,7 @@ pub mod builder;
 pub mod bulk;
 pub mod emitters;
 pub mod error;
+pub mod optimizer;
 pub mod transaction;
 pub mod visitor;
 
@@ -32,6 +33,7 @@ pub use bridge::{DatabaseBridge, MockDatabaseBridge, QueryResult, QuerySummary};
 pub use builder::QueryBuilder;
 pub use emitters::{AgeEmitter, CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
 pub use error::{Error, Result};
+pub use optimizer::{AstOptimizer, OptimizationLevel};
 pub use transaction::{
     CheckpointState, EntityMutation, Savepoint, Transaction, TransactionState, UnitOfWork,
 };
