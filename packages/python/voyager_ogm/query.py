@@ -1,7 +1,7 @@
-"""Voyager OGM High-Level Fluent Query Builder.
+"""Voyager OGM Fluent Query Builder.
 
 Provides an intuitive, fluent query interface that generates multi-dialect
-graph queries (openCypher, SQL:2023 PGQ, ISO GQL) backed by a 32-bit Rust AST arena.
+graph queries (openCypher, SQL:2023 PGQ, ISO GQL) backed by a native Rust AST engine.
 """
 
 from __future__ import annotations
@@ -129,7 +129,6 @@ class Query:
         q._native.merge()
         if node_or_type is not None or labels is not None or variable is not None:
             q.node(node_or_type, labels=labels, variable=variable)
-        return q
         return q
 
     @classmethod
@@ -719,6 +718,37 @@ class Query:
         """
         res = self._native.compile(dialect, graph_name)
         return CompiledQuery(statement=res["statement"], parameters=res["parameters"])
+
+    def execute(self, session: Any, parameters: dict[str, Any] | None = None) -> Any:
+        """Executes this query against a Voyager Session or database bridge.
+
+        Args:
+            session: Voyager Session or database bridge instance.
+            parameters: Optional additional runtime parameters.
+
+        Returns:
+            ExecutionResult containing rows, SQLAlchemy mappings/scalars access, and graph entity extraction.
+
+        Example:
+            >>> result = query.execute(session)
+            >>> rows = result.mappings().all()
+            >>> viewer = result.show()
+        """
+        return session.execute(self, parameters=parameters)
+
+    def show(self, session: Any | None = None, **kwargs: Any) -> Any:
+        """Visualizes this query in an interactive notebook GraphViewer widget.
+
+        Args:
+            session: Optional Voyager Session or DatabaseBridge to execute against.
+            **kwargs: Additional styling or layout options passed to GraphViewer.
+
+        Returns:
+            Interactive GraphViewer component.
+        """
+        from voyager_ogm.viewer import GraphViewer
+
+        return GraphViewer.from_query(self, session=session, **kwargs)
 
 
 def unwind(batch_param: str, alias: str = "row") -> Query:

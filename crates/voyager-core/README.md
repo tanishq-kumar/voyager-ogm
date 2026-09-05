@@ -1,6 +1,6 @@
 # voyager-core
 
-Core 32-bit arena AST compiler, optimizer, and multi-dialect emitters for Voyager OGM.
+Core AST compiler, optimizer, and multi-dialect emitters for Voyager OGM.
 
 ---
 
@@ -59,7 +59,7 @@ builder
     .field("p", "name", Some("name"));
 ```
 
-### 5. Low-Level Direct Arena Allocation (`QueryAstArena`)
+### 5. Low-Level Direct AST Allocation (`QueryAstArena`)
 ```rust
 let mut arena = QueryAstArena::new();
 let node = arena.alloc(AstNode::NodePattern {
@@ -77,11 +77,3 @@ let root = arena.alloc(AstNode::QueryStatement {
     return_clause: None,
 });
 ```
-
----
-
-## ⚡ Performance Benchmarks
-
-* **Single Node Allocation**: `~9.10 ns`
-* **10-Hop AST Query Assembly**: `~7.53 µs`
-* **Memory Footprint**: `NodeHandle` is 4 bytes (sub-32 byte / node).

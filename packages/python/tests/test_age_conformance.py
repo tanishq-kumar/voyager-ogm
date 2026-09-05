@@ -277,7 +277,7 @@ def test_live_apache_age_database_execution():
         import psycopg
 
         con = psycopg.connect(
-            "host=localhost port=5455 user=postgres password=voyagerpass123 dbname=voyager_graph",
+            "host=127.0.0.1 port=5455 user=postgres password=voyagerpass123 dbname=voyager_graph",
             autocommit=True,
             connect_timeout=3,
         )

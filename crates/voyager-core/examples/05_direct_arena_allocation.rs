@@ -1,4 +1,4 @@
-//! Approach 5: Low-Level Direct Memory Arena Allocation (`QueryAstArena`)
+//! Approach 5: Low-Level Direct AST Allocation (`QueryAstArena`)
 //!
 //! Run with: `cargo run --example 05_direct_arena_allocation`
 
@@ -7,11 +7,11 @@ use voyager_core::emitters::IsoGqlEmitter;
 use voyager_core::visitor::AstVisitor;
 
 fn main() {
-    println!("=== Voyager OGM (Rust) - Approach 5: Low-Level 32-bit AST Arena Allocation ===\n");
+    println!("=== Voyager OGM (Rust) - Approach 5: Low-Level AST Node Allocation ===\n");
 
     let mut arena = QueryAstArena::new();
 
-    // 1. Allocate NodePattern in the 32-bit arena: (p:Person:Developer)
+    // 1. Allocate NodePattern in the AST arena: (p:Person:Developer)
     let node_handle = arena.alloc(AstNode::NodePattern {
         variable: Some("p".into()),
         labels: vec!["Person".into(), "Developer".into()],

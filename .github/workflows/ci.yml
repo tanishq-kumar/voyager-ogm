@@ -48,7 +48,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install Dev Dependencies
-        run: uv sync --extra dev
+        run: uv sync --all-extras --all-groups
 
       - name: Check Rust Formatting
         run: cargo fmt --all --check
@@ -57,10 +57,13 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Check Python Formatting (Ruff)
-        run: uv run --extra dev ruff format --check .
+        run: uv run --all-extras ruff format --check .
 
       - name: Run Python Linters (Ruff)
-        run: uv run --extra dev ruff check .
+        run: uv run --all-extras ruff check .
+
+      - name: Check Python Types (ty)
+        run: uv run --all-extras ty check packages/python/voyager_ogm
 
   # =========================================================================
   # 2. Rust Core Engine Test Matrix
@@ -107,7 +110,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -133,13 +136,13 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install Dev Dependencies
-        run: uv sync --extra dev --python ${{ matrix.python-version }}
+        run: uv sync --all-extras --python ${{ matrix.python-version }}
 
       - name: Build Native Python Extension (maturin develop)
-        run: uv run --extra dev --python ${{ matrix.python-version }} maturin develop --uv
+        run: uv run --all-extras --python ${{ matrix.python-version }} maturin develop --uv
 
       - name: Run Pytest Suite
-        run: uv run --extra dev --python ${{ matrix.python-version }} pytest
+        run: uv run --all-extras --python ${{ matrix.python-version }} pytest
 
   # =========================================================================
   # 4. Consolidated CI Gate (Required Status Check for Branch Protection)

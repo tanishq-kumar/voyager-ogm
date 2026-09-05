@@ -64,7 +64,7 @@ class MatrixFollows(Relationship):
 class TestNeo4jLiveMatrix:
     @pytest.fixture
     def neo4j_driver(self):
-        uri = "bolt://localhost:7687"
+        uri = "bolt://127.0.0.1:7687"
         auth = ("neo4j", "voyagerpass123")
         try:
             driver = GraphDatabase.driver(uri, auth=auth)
@@ -137,7 +137,7 @@ class TestNeo4jLiveMatrix:
 class TestMemgraphLiveMatrix:
     @pytest.fixture
     def memgraph_driver(self):
-        uri = "bolt://localhost:7688"
+        uri = "bolt://127.0.0.1:7688"
         auth = ("", "")
         try:
             driver = GraphDatabase.driver(uri, auth=auth)
@@ -203,7 +203,7 @@ class TestApacheAgeLiveMatrix:
         if psycopg is None:
             pytest.skip("psycopg is not installed in this environment")
         conn_str = (
-            "host=localhost port=5455 user=postgres password=voyagerpass123 dbname=voyager_graph"
+            "host=127.0.0.1 port=5455 user=postgres password=voyagerpass123 dbname=voyager_graph"
         )
         try:
             conn = psycopg.connect(conn_str, autocommit=True)
@@ -373,7 +373,7 @@ class TestPostgres19LiveMatrix:
         if psycopg is None:
             pytest.skip("psycopg is not installed in this environment")
         conn_str = (
-            "host=localhost port=5456 user=postgres password=voyagerpass123 dbname=voyager_graph"
+            "host=127.0.0.1 port=5456 user=postgres password=voyagerpass123 dbname=voyager_graph"
         )
         try:
             conn = psycopg.connect(conn_str, autocommit=True)
@@ -471,7 +471,7 @@ class TestFalkorDBLiveMatrix:
         try:
             from falkordb import FalkorDB
 
-            db = FalkorDB(host="localhost", port=6379)
+            db = FalkorDB(host="127.0.0.1", port=6379)
             g = db.select_graph("voyager_matrix_graph")
             g.query("RETURN 1")
         except Exception as e:

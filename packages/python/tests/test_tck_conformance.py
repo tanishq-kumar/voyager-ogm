@@ -30,7 +30,7 @@ from voyager_ogm import (
 try:
     from neo4j import GraphDatabase
 
-    test_driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "voyagerpass123"))
+    test_driver = GraphDatabase.driver("bolt://127.0.0.1:7687", auth=("neo4j", "voyagerpass123"))
     test_driver.verify_connectivity()
     test_driver.close()
     NEO4J_ONLINE = True
@@ -114,7 +114,7 @@ def neo4j_session():
         yield None
         return
 
-    driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "voyagerpass123"))
+    driver = GraphDatabase.driver("bolt://127.0.0.1:7687", auth=("neo4j", "voyagerpass123"))
     session = Session(bridge=driver, dialect="cypher")
     try:
         session.execute("MATCH (n) DETACH DELETE n")

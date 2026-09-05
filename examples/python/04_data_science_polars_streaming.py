@@ -1,7 +1,7 @@
 """Level 4: Data Engineering - Zero-Copy Polars & Arrow Ingestion.
 
 Learn how to stream hundreds of thousands of graph entities directly into
-a high-performance Polars DataFrame with ZERO intermediate Python object allocations.
+a Polars DataFrame with ZERO intermediate Python object allocations.
 
 Run with: `uv run python examples/python/04_data_science_polars_streaming.py`
 """

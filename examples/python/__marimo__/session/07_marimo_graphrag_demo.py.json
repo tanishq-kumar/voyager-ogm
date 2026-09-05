@@ -1,0 +1,72 @@
+{
+  "version": "1",
+  "metadata": {
+    "marimo_version": "0.24.0",
+    "script_metadata_hash": null
+  },
+  "cells": [
+    {
+      "id": "Hbol",
+      "code_hash": "e9368e90851759425f014046a35e4ab9",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "MJUe",
+      "code_hash": "c84ffc662ec537c25927ecb09449d9e4",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/html": "<div style='display: flex;flex: 1;flex-direction: column;justify-content: flex-start;align-items: normal;flex-wrap: nowrap;gap: 0.5rem'><span class=\"markdown prose dark:prose-invert contents\"><h1 id=\"voyager-ogm-reactive-graph-records-explorer\">Voyager OGM: Reactive Graph &amp; Records Explorer</h1></span><span class=\"markdown prose dark:prose-invert contents\"><span class=\"paragraph\">Switch between multiple datasets (CSV, DataFrames, Dictionaries) and inspect graph structures interactively.</span></span><marimo-ui-element object-id='Hbol-0' random-id='20e487db-b80c-971a-2d46-eb66388aeaf1'><marimo-dropdown data-initial-value='[&quot;AI &amp; GraphRAG Pipeline&quot;]' data-label='&quot;&#92;u003cspan class=&#92;&quot;markdown prose dark:prose-invert contents&#92;&quot;&#92;u003e&#92;u003cspan class=&#92;&quot;paragraph&#92;&quot;&#92;u003e\u26a1 Select Active Graph Dataset:&#92;u003c/span&#92;u003e&#92;u003c/span&#92;u003e&quot;' data-options='[&quot;AI &amp; GraphRAG Pipeline&quot;,&quot;Microservices &amp; Cloud Infrastructure&quot;,&quot;Enterprise Org Hierarchy&quot;]' data-allow-select-none='false' data-searchable='false' data-full-width='false' data-disabled='false'></marimo-dropdown></marimo-ui-element></div>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "vblA",
+      "code_hash": "5465f84467f1ab732dba07cdac039d4b",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/html": "<marimo-ui-element object-id='vblA-0' random-id='e3f94d2a-14d5-1429-9240-f0d9c555f7bf'><marimo-anywidget data-initial-value='{&quot;model_id&quot;:&quot;1fe4edb0d51f49c1b785e24d6e1574d2&quot;}' data-label='null' data-model-id='&quot;1fe4edb0d51f49c1b785e24d6e1574d2&quot;'></marimo-anywidget></marimo-ui-element>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "bkHC",
+      "code_hash": "e00f3d38748ed2675919b39c84ee4b6e",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "lEQa",
+      "code_hash": "c874cebe5c98152c082d3165483ce2d1",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "PKri",
+      "code_hash": "7593a773cf4ddeee4c91d4130d29b697",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "Xref",
+      "code_hash": null,
+      "outputs": [],
+      "console": []
+    }
+  ]
+}

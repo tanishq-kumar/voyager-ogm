@@ -84,10 +84,10 @@ def test_live_neo4j_schema_ddl_creation():
     try:
         from neo4j import GraphDatabase
 
-        driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "voyagerpass123"))
+        driver = GraphDatabase.driver("bolt://127.0.0.1:7687", auth=("neo4j", "voyagerpass123"))
         driver.verify_connectivity()
     except Exception:
-        pytest.skip("Neo4j database not reachable on bolt://localhost:7687")
+        pytest.skip("Neo4j database not reachable on bolt://127.0.0.1:7687")
 
     session = Session(bridge=driver, dialect="cypher")
 

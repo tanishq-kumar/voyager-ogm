@@ -1,6 +1,6 @@
 [package]
 name = "voyager-core"
-description = "Core 32-bit arena AST compiler, optimizer, and multi-dialect emitters for Voyager OGM"
+description = "Core AST compiler, optimizer, and multi-dialect emitters for Voyager OGM"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
