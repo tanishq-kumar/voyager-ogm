@@ -71,14 +71,12 @@ class SchemaManager:
             for prop_name, field_def in fields.items():
                 db_name = getattr(field_def, "name", None) or prop_name
 
-                # Primary Key / Unique Constraint
                 if getattr(field_def, "unique", False) or getattr(field_def, "primary_key", False):
                     c_name = f"constraint_{primary_label.lower()}_{db_name}_unique"
                     statements.append(
                         f"CREATE CONSTRAINT {c_name} IF NOT EXISTS FOR (n:{primary_label}) REQUIRE n.{db_name} IS UNIQUE"
                     )
 
-                # Index
                 if getattr(field_def, "index", False) and not (
                     getattr(field_def, "unique", False) or getattr(field_def, "primary_key", False)
                 ):
@@ -87,7 +85,6 @@ class SchemaManager:
                         f"CREATE INDEX {i_name} IF NOT EXISTS FOR (n:{primary_label}) ON (n.{db_name})"
                     )
 
-                # Property Type Constraint (Graph Types in Neo4j 5+ Enterprise)
                 if include_type_constraints:
                     type_ann = getattr(field_def, "type_annotation", None)
                     if type_ann and type_ann in _PYTHON_TO_NEO4J_TYPES:

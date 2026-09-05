@@ -12,12 +12,11 @@ import inspect
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, overload, runtime_checkable
 
 import polars as pl
 
-if TYPE_CHECKING:
-    from voyager_ogm.ingestion import BulkIngestionPlan
+from voyager_ogm.ingestion import BulkIngestionPlan
 
 
 @dataclass
@@ -219,21 +218,21 @@ class MockBridge:
         total_records = 0
         total_batches = 0
 
-        if hasattr(plan_or_statement, "statement") and hasattr(plan_or_statement, "__iter__"):
-            statement = plan_or_statement.statement
-            for batch_item in plan_or_statement:
-                total_batches += 1
-                batch_data = batch_item.parameters.get("batch", [])
-                total_records += len(batch_data)
-                self.executed_queries.append((statement, batch_item.parameters))
-        else:
-            statement = str(plan_or_statement)
+        if isinstance(plan_or_statement, str):
+            statement = plan_or_statement
             batch_list = batches or []
             total_batches = len(batch_list)
             for b in batch_list:
                 batch_data = b.get("batch", [])
                 total_records += len(batch_data)
                 self.executed_queries.append((statement, b))
+        else:
+            statement = plan_or_statement.statement
+            for batch_item in plan_or_statement:
+                total_batches += 1
+                batch_data = batch_item.parameters.get("batch", [])
+                total_records += len(batch_data)
+                self.executed_queries.append((statement, batch_item.parameters))
 
         return BulkExecutionResult(
             total_batches=total_batches,
@@ -382,21 +381,21 @@ class Neo4jBoltBridge:
         session_kwargs = {"database": self.database} if self.database else {}
 
         with self.driver.session(**session_kwargs) as session:
-            if hasattr(plan_or_statement, "statement") and hasattr(plan_or_statement, "__iter__"):
-                statement = plan_or_statement.statement
-                for batch_item in plan_or_statement:
-                    total_batches += 1
-                    batch_data = batch_item.parameters.get("batch", [])
-                    total_records += len(batch_data)
-                    session.run(statement, batch_item.parameters)
-            else:
-                statement = str(plan_or_statement)
+            if isinstance(plan_or_statement, str):
+                statement = plan_or_statement
                 batch_list = batches or []
                 total_batches = len(batch_list)
                 for b in batch_list:
                     batch_data = b.get("batch", [])
                     total_records += len(batch_data)
                     session.run(statement, b)
+            else:
+                statement = plan_or_statement.statement
+                for batch_item in plan_or_statement:
+                    total_batches += 1
+                    batch_data = batch_item.parameters.get("batch", [])
+                    total_records += len(batch_data)
+                    session.run(statement, batch_item.parameters)
 
         return BulkExecutionResult(
             total_batches=total_batches,
@@ -479,21 +478,21 @@ class AsyncNeo4jBoltBridge:
         session_kwargs = {"database": self.database} if self.database else {}
 
         async with self.driver.session(**session_kwargs) as session:
-            if hasattr(plan_or_statement, "statement") and hasattr(plan_or_statement, "__iter__"):
-                statement = plan_or_statement.statement
-                for batch_item in plan_or_statement:
-                    total_batches += 1
-                    batch_data = batch_item.parameters.get("batch", [])
-                    total_records += len(batch_data)
-                    await session.run(statement, batch_item.parameters)
-            else:
-                statement = str(plan_or_statement)
+            if isinstance(plan_or_statement, str):
+                statement = plan_or_statement
                 batch_list = batches or []
                 total_batches = len(batch_list)
                 for b in batch_list:
                     batch_data = b.get("batch", [])
                     total_records += len(batch_data)
                     await session.run(statement, b)
+            else:
+                statement = plan_or_statement.statement
+                for batch_item in plan_or_statement:
+                    total_batches += 1
+                    batch_data = batch_item.parameters.get("batch", [])
+                    total_records += len(batch_data)
+                    await session.run(statement, batch_item.parameters)
 
         return BulkExecutionResult(
             total_batches=total_batches,
@@ -579,21 +578,21 @@ class DuckDbBridge:
         total_records = 0
         total_batches = 0
 
-        if hasattr(plan_or_statement, "statement") and hasattr(plan_or_statement, "__iter__"):
-            statement = plan_or_statement.statement
-            for batch_item in plan_or_statement:
-                total_batches += 1
-                batch_data = batch_item.parameters.get("batch", [])
-                total_records += len(batch_data)
-                self.con.execute(statement, batch_item.parameters)
-        else:
-            statement = str(plan_or_statement)
+        if isinstance(plan_or_statement, str):
+            statement = plan_or_statement
             batch_list = batches or []
             total_batches = len(batch_list)
             for b in batch_list:
                 batch_data = b.get("batch", [])
                 total_records += len(batch_data)
                 self.con.execute(statement, b)
+        else:
+            statement = plan_or_statement.statement
+            for batch_item in plan_or_statement:
+                total_batches += 1
+                batch_data = batch_item.parameters.get("batch", [])
+                total_records += len(batch_data)
+                self.con.execute(statement, batch_item.parameters)
 
         return BulkExecutionResult(
             total_batches=total_batches,
@@ -668,10 +667,6 @@ class AsyncDuckDbBridge:
         await asyncio.to_thread(self.sync_bridge.close)
 
 
-# =========================================================================
-# Dynamic Bridge Registry and Factory
-# =========================================================================
-
 _BRIDGE_REGISTRY: list[tuple[Callable[[Any], bool], type, bool]] = []
 
 
@@ -701,7 +696,6 @@ def register_bridge(
     _BRIDGE_REGISTRY.insert(0, (matcher, bridge_class, is_async))
 
 
-# Register built-in driver detectors
 def _is_neo4j_sync_driver(obj: Any) -> bool:
     type_name = f"{type(obj).__module__}.{type(obj).__qualname__}"
     return "neo4j" in type_name and "Async" not in type_name and hasattr(obj, "session")
@@ -722,6 +716,22 @@ register_bridge(_is_neo4j_async_driver, AsyncNeo4jBoltBridge, is_async=True)
 register_bridge(_is_duckdb_conn, DuckDbBridge, is_async=False)
 
 
+@overload
+def create_bridge(
+    driver_or_connection: Any, is_async: Literal[False] = False
+) -> DatabaseBridge: ...
+
+
+@overload
+def create_bridge(driver_or_connection: Any, is_async: Literal[True]) -> AsyncDatabaseBridge: ...
+
+
+@overload
+def create_bridge(
+    driver_or_connection: Any, is_async: bool
+) -> DatabaseBridge | AsyncDatabaseBridge: ...
+
+
 def create_bridge(
     driver_or_connection: Any, is_async: bool = False
 ) -> DatabaseBridge | AsyncDatabaseBridge:
@@ -734,18 +744,15 @@ def create_bridge(
     Returns:
         Configured database bridge adapter.
     """
-    # 1. If already implements bridge protocol
     if is_async and isinstance(driver_or_connection, AsyncDatabaseBridge):
         return driver_or_connection
     if not is_async and isinstance(driver_or_connection, DatabaseBridge):
         return driver_or_connection
 
-    # 2. Check dynamic registry matching the requested async/sync mode
     for matcher, bridge_cls, reg_is_async in _BRIDGE_REGISTRY:
         if reg_is_async == is_async and matcher(driver_or_connection):
             return bridge_cls(driver_or_connection)
 
-    # 3. Fallback: wrap sync DuckDB bridge with AsyncDuckDbBridge if async was requested
     if is_async:
         for matcher, bridge_cls, reg_is_async in _BRIDGE_REGISTRY:
             if not reg_is_async and matcher(driver_or_connection):
@@ -753,11 +760,9 @@ def create_bridge(
                 if isinstance(sync_inst, DuckDbBridge):
                     return AsyncDuckDbBridge(driver_or_connection)
 
-    # 3. Default fallback to MockBridge if None or unrecognized
     if driver_or_connection is None:
         return AsyncMockBridge() if is_async else MockBridge()
 
-    # Duck typing wrapper for generic objects
     if is_async:
         return AsyncMockBridge()
     return MockBridge()

@@ -1,6 +1,6 @@
 # Voyager OGM
 
-**High-Performance, Multi-Dialect Object-Graph Mapper (OGM) and Query Compiler**
+**Multi-Dialect Object-Graph Mapper (OGM) and Query Compiler**
 
 [![CI](https://github.com/tanishq-kumar/voyager-ogm/actions/workflows/ci.yml/badge.svg)](https://github.com/tanishq-kumar/voyager-ogm/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
@@ -33,7 +33,7 @@ Voyager OGM solves four common problems in graph databases:
 
 1. **Slow Object Hydration:** It uses the **Apache Arrow C Data Interface** (`__arrow_c_stream__`). It streams graph data directly into **Polars DataFrames** without intermediate Python object copies. See [Zero-Copy Polars Streaming](#zero-copy-polars-streaming).
 2. **Dialect Lock-In:** It compiles one query AST into **openCypher**, **SQL:2023 PGQ** (`GRAPH_TABLE`), and **ISO GQL** (ISO/IEC 39075:2024).
-3. **Memory Overhead:** It uses a 32-bit handle memory arena (`NodeHandle(u32)`). Node handles use only 4 bytes of memory.
+3. **Memory Management:** It uses a compact handle-based AST representation (`NodeHandle`) with safe, automatic memory reclamation.
 4. **Transaction Safety:** It uses a two-layer Unit of Work. It rolls back in-memory changes and AST allocations automatically if a database query fails.
 
 ---
@@ -42,7 +42,7 @@ Voyager OGM solves four common problems in graph databases:
 
 > [!NOTE]
 > **Roadmap Agility & Scope Flexibility:**
-> The phases, milestones, and task breakdowns in this roadmap are designed to be dynamic and evolutionary. As new database capabilities, engine updates (e.g. ISO GQL revisions, Cypher 25, Apache AGE enhancements), or architectural improvements arise during development, tasks may be added, refined, removed, or partitioned into sub-phases (e.g., Phase 3.1a, 3.1b) to maintain high performance and rigorous standards compliance.
+> The phases, milestones, and task breakdowns in this roadmap are designed to be dynamic and evolutionary. As new database capabilities, engine updates (e.g. ISO GQL revisions, Cypher 25, Apache AGE enhancements), or architectural improvements arise during development, tasks may be added, refined, removed, or partitioned into sub-phases (e.g., Phase 3.1a, 3.1b) to maintain rigorous standards compliance and feature completeness.
 
 ```mermaid
 gantt
@@ -50,7 +50,7 @@ gantt
     dateFormat  YYYY-MM-DD
     section Phase 1: Core Engine (v0.1.0-alpha)
     Workspace & Tooling Scaffolding       :done, p1_1, 2026-08-25, 2d
-    32-bit Memory Arena & AST Models      :done, p1_2, after p1_1, 3d
+    Core AST Engine & Models              :done, p1_2, after p1_1, 3d
     Dialect Emitters (Cypher, SQL, GQL)   :done, p1_3, after p1_2, 3d
     Golden Snapshot Test Suite (Insta)    :done, p1_4, after p1_3, 2d
     Python PyO3 SDK & Type Annotations    :done, p1_5, after p1_4, 3d
@@ -85,16 +85,16 @@ gantt
 
 ### Phase 1: Core Read AST Engine (Status: Completed)
 - [x] **Task 1.1:** Create workspace tooling with `Cargo`, `uv`, `maturin`, and `justfile`.
-- [x] **Task 1.2:** Build 32-bit handle memory arena (`QueryAstArena`) with zero memory fragmentation.
+- [x] **Task 1.2:** Build AST representation and handle-based memory management (`QueryAstArena`).
 - [x] **Task 1.3:** Build query emitters for openCypher, SQL:2023 PGQ, and ISO GQL.
 - [x] **Task 1.4:** Create 18 golden snapshot tests with `insta`.
 - [x] **Task 1.5:** Build Python SDK with model decorators (`@node`, `@relationship`) and type annotations.
 
 ### Phase 2: Mutations, Ingestion, Streaming & Bridging (Status: Completed)
-- [x] **Task 2.1:** Zero-copy Apache Arrow and Polars stream ingestion (1,000,000 nodes in 9.08 ms).
+- [x] **Task 2.1:** Zero-copy Apache Arrow and Polars stream ingestion.
 - [x] **Task 2.2:** Two-layer transaction Unit-of-Work with in-memory savepoint rollbacks.
 - [x] **Task 2.3:** DML mutation AST nodes and dialect emitters (`CREATE`, `MERGE`, `SET`, `DELETE`, `DETACH DELETE`).
-- [x] **Task 2.4:** High-throughput bulk ingestion engine (`UNWIND $batch` and Polars DataFrame importer).
+- [x] **Task 2.4:** Bulk ingestion engine (`UNWIND $batch` and Polars DataFrame importer).
 - [x] **Task 2.5:** Database driver evaluation and query dispatch bridging layer (Neo4j, Memgraph, DuckDB, Mock).
 
 ### Phase 3: Formal TCK Conformance & Multi-Engine Compatibility Matrix (Status: Completed)
@@ -225,29 +225,6 @@ print(stats)
 
 ---
 
-## Performance Benchmarks
-
-> [!CAUTION]
-> **DISCLAIMER**: The following benchmark metrics are preliminary synthetic microbenchmarks measured on local developer hardware during early development. They are not independently verified and do not reflect all production environments, network latencies, or database workloads. They serve only as internal engineering reference points to guide AST compiler design.
-
-### Query Compilation Latency (Microseconds)
-
-| Benchmark Target | Pure Rust (`voyager-core`) | Python C-Bridge (`_voyager_rs`) | Python High-Level (`Query`) |
-| :--- | :---: | :---: | :---: |
-| **1-Hop MATCH Query** | **1.15 µs** | **4.87 µs** | **13.87 µs** |
-| **10-Hop Traversal Query** | **6.59 µs** | **28.79 µs** | **70.03 µs** |
-
-### Hydration Speed (1,000,000 Entities)
-
-| Hydration Method | Dataset Size | Mean Latency | Throughput | vs Python Objects |
-| :--- | :--- | :--- | :--- | :---: |
-| **Voyager `to_arrow()`** | 1,000,000 Nodes | **14.68 µs** | **68.1M nodes/s** | **~1,000x faster** |
-| **Voyager `to_polars()`** | 100,000 Nodes | **1.53 ms** | **65.0M nodes/s** | **~100x faster** |
-| **Voyager `to_polars()`** | 1,000,000 Nodes | **11.77 ms** | **84.9M nodes/s** | **~130x faster** |
-| *Standard Python Objects* | 10,000 Nodes | *12.65 ms* | *0.8M nodes/s* | *Baseline* |
-
----
-
 ## Test Suite and Quality Matrix
 
 Voyager OGM uses continuous testing across three languages:
@@ -288,11 +265,11 @@ Voyager OGM is tested against 7 live database engines and runtime environments:
 
 Voyager OGM validates its core query compiler and memory engine through five layers:
 
-1. **Memory Arena & Handle Integrity**: Verifies zero-leak allocation, mutable updates, and automatic garbage-free reclamation across 100+ hop traversals.
+1. **AST & Handle Integrity**: Verifies allocation, mutable updates, and automatic reclamation across multi-hop traversals.
 2. **Deterministic Golden Snapshots (`insta`)**: Locks in exact string emissions across openCypher, SQL:2023 PGQ, and ISO GQL for real-world graph patterns (LDBC Social Network, Movie Graph, aggregations, and APOC vendor procedures).
 3. **Transaction Rollback & Chaos Tests**: Guarantees zero memory leaks and state rollbacks across 500 aborted transactions and nested savepoints.
-4. **Zero-Copy Columnar Streaming**: Microbenchmarked streaming of 1,000,000 Arrow records into Polars DataFrames in ~9 ms.
-5. **Bulk Ingestion Verification**: Verifies batch generation (`UNWIND $batch AS row`) and zero-copy chunking across 100,000 Polars DataFrame rows in ~83 ms.
+4. **Zero-Copy Columnar Streaming**: Validates streaming of Arrow record batches directly into Polars DataFrames without intermediate Python allocations.
+5. **Bulk Ingestion Verification**: Verifies batch generation (`UNWIND $batch AS row`) and zero-copy chunking across 100,000 Polars DataFrame rows.
 
 ### Multi-Standard Conformance & Correctness Verification (Phase 3)
 

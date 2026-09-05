@@ -77,6 +77,6 @@
 - **Golden Snapshot Regression Suite**:
   - Integrated `insta` golden snapshot testing across 18 real-world graph query patterns (LDBC Social Network, Movie Graph, aggregations, APOC procedure calls).
 - **Python SDK (`voyager-ogm`)**:
-  - PyO3 C-extensions bridging Rust core with Python 3.10+.
+  - PyO3 C-extensions bridging Rust core with Python 3.11+.
   - Typed entity models: `@node`, `@relationship`, `Node`, `Relationship`, and `Field[T]` descriptors.
   - Constructor auto-aliasing (`p = Person()` -> `_person_0`) and fluent query compiler.

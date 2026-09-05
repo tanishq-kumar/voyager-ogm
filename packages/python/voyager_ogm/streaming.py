@@ -60,7 +60,7 @@ class QueryResult:
         return reader.read_all()
 
     def to_polars(self) -> pl.DataFrame:
-        """Zero-copy ingestion directly into a high-performance Polars DataFrame.
+        """Zero-copy ingestion directly into a Polars DataFrame.
 
         Consumes the stream via the `__arrow_c_stream__` PyCapsule protocol.
 

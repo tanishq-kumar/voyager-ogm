@@ -55,7 +55,6 @@ def chunk_dataframe(df: Any, batch_size: int = 50_000) -> Iterator[list[dict[str
     Yields:
         Chunked batch of records formatted as list of dictionaries.
     """
-    # Polars DataFrame
     if hasattr(df, "iter_slices") and hasattr(df, "to_dicts"):
         total_rows = len(df)
         for offset in range(0, total_rows, batch_size):
@@ -63,13 +62,11 @@ def chunk_dataframe(df: Any, batch_size: int = 50_000) -> Iterator[list[dict[str
             yield slice_df.to_dicts()
         return
 
-    # Polars LazyFrame
     if hasattr(df, "collect"):
         collected = df.collect()
         yield from chunk_dataframe(collected, batch_size=batch_size)
         return
 
-    # PyArrow Table
     if hasattr(df, "to_pylist") and hasattr(df, "slice"):
         total_rows = df.num_rows
         for offset in range(0, total_rows, batch_size):
@@ -77,7 +74,6 @@ def chunk_dataframe(df: Any, batch_size: int = 50_000) -> Iterator[list[dict[str
             yield slice_tbl.to_pylist()
         return
 
-    # Pandas DataFrame
     if hasattr(df, "to_dict") and hasattr(df, "iloc"):
         total_rows = len(df)
         for offset in range(0, total_rows, batch_size):
@@ -85,7 +81,6 @@ def chunk_dataframe(df: Any, batch_size: int = 50_000) -> Iterator[list[dict[str
             yield slice_df.to_dict(orient="records")
         return
 
-    # Fallback for sequence of dicts
     if isinstance(df, Sequence):
         yield from chunk_records(df, batch_size=batch_size)
         return
@@ -153,7 +148,7 @@ def create_bulk_create_plan(
     batch_size: int = 50_000,
     dialect: str = "cypher",
 ) -> BulkIngestionPlan:
-    """Creates a high-performance bulk creation execution plan.
+    """Creates a bulk creation execution plan.
 
     Args:
         model: The Voyager OGM Node class.
@@ -172,7 +167,6 @@ def create_bulk_create_plan(
     batches = list(chunk_dataframe(data, batch_size=batch_size))
     total_records = sum(len(b) for b in batches)
 
-    # If no fields were explicitly defined on model, infer from first record
     if not properties and batches and batches[0]:
         properties = list(batches[0][0].keys())
 
@@ -200,7 +194,7 @@ def create_bulk_merge_plan(
     batch_size: int = 50_000,
     dialect: str = "cypher",
 ) -> BulkIngestionPlan:
-    """Creates a high-performance idempotent bulk upsert (MERGE) execution plan.
+    """Creates an idempotent bulk upsert (MERGE) execution plan.
 
     Args:
         model: The Voyager OGM Node class.
@@ -251,7 +245,7 @@ def create_bulk_create_rel_plan(
     batch_size: int = 50_000,
     dialect: str = "cypher",
 ) -> BulkIngestionPlan:
-    """Creates a high-performance bulk relationship ingestion execution plan.
+    """Creates a bulk relationship ingestion execution plan.
 
     Args:
         rel_model: The relationship model class or relationship type string (e.g. "KNOWS").
