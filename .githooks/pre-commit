@@ -4,19 +4,24 @@ set -e
 echo "[pre-commit] Running Voyager multi-setup verification..."
 
 # 1. Rust formatting check
-echo "[pre-commit] 1/4 Checking Rust formatting (cargo fmt)..."
-cargo fmt --check
+echo "[pre-commit] 1/5 Checking Rust formatting (cargo fmt)..."
+cargo fmt --all --check
 
-# 2. Python linting check
-echo "[pre-commit] 2/4 Checking Python linting (ruff check)..."
+# 2. Rust clippy linter check
+echo "[pre-commit] 2/5 Checking Rust clippy (cargo clippy)..."
+cargo clippy --workspace --all-targets -- -D warnings
+
+# 3. Python linting check
+echo "[pre-commit] 3/5 Checking Python linting (ruff check)..."
 uv run ruff check .
 
-# 3. Python formatting check
-echo "[pre-commit] 3/4 Checking Python formatting (ruff format)..."
+# 4. Python formatting check
+echo "[pre-commit] 4/5 Checking Python formatting (ruff format)..."
 uv run ruff format --check .
 
-# 4. Python static typecheck
-echo "[pre-commit] 4/4 Checking Python types (ty check)..."
+# 5. Python static typecheck
+echo "[pre-commit] 5/5 Checking Python types (ty check)..."
 uv run ty check packages/python/voyager_ogm
 
 echo "[pre-commit] All checks passed cleanly!"
+

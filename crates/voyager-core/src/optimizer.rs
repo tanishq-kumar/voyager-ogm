@@ -225,21 +225,17 @@ impl AstOptimizer {
             let right_node = arena.get(*right)?;
 
             // Case A: Left is `PropertyAccess`, right is literal/param
-            if let AstNode::PropertyAccess { target, .. } = left_node {
-                if self.is_literal_or_param(right_node) {
-                    if let Some(var) = self.resolve_variable_name(arena, *target)? {
-                        return Ok(Some(var));
-                    }
-                }
+            if let AstNode::PropertyAccess { target, .. } = left_node
+                && self.is_literal_or_param(right_node)
+            {
+                return self.resolve_variable_name(arena, *target);
             }
 
             // Case B: Right is `PropertyAccess`, left is literal/param
-            if let AstNode::PropertyAccess { target, .. } = right_node {
-                if self.is_literal_or_param(left_node) {
-                    if let Some(var) = self.resolve_variable_name(arena, *target)? {
-                        return Ok(Some(var));
-                    }
-                }
+            if let AstNode::PropertyAccess { target, .. } = right_node
+                && self.is_literal_or_param(left_node)
+            {
+                return self.resolve_variable_name(arena, *target);
             }
         }
         Ok(None)
@@ -408,10 +404,12 @@ impl AstOptimizer {
 
             for &match_h in matches {
                 let match_node = arena.get(match_h)?;
-                if let AstNode::MatchClause { where_clause, .. } = match_node {
-                    if let Some(wh) = where_clause {
-                        self.collect_expr_vars(arena, *wh, used_vars)?;
-                    }
+                if let AstNode::MatchClause {
+                    where_clause: Some(wh),
+                    ..
+                } = match_node
+                {
+                    self.collect_expr_vars(arena, *wh, used_vars)?;
                 }
             }
 
