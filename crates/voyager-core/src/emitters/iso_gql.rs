@@ -468,7 +468,10 @@ impl IsoGqlEmitter {
 
     fn emit_delete(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
         let node = arena.get(handle)?;
-        if let AstNode::DeleteClause { targets, .. } = node {
+        if let AstNode::DeleteClause { detach: _, targets } = node {
+            // Note on ISO/IEC 39075:2024 (GQL Standard):
+            // Unlike openCypher which uses `DETACH DELETE`, ISO GQL specifies unified `DELETE <targets>`
+            // where cascade or constraint enforcement is handled at the schema/engine level.
             self.buffer.push_str("DELETE ");
             for (i, &t) in targets.iter().enumerate() {
                 if i > 0 {
