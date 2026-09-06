@@ -40,12 +40,15 @@ Voyager OGM addresses four common challenges in graph database development:
 | Phase                                         | Scope                                                                                                                                              | Target Version |     Status     |
 | :-------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------- | :------------: | :------------: |
 | **Phase 1: Core Read AST Engine**             | Handle-based AST (`QueryAstArena`), multi-dialect emitters (openCypher, SQL:2023 PGQ, ISO GQL), PyO3 Python SDK                                    | `v0.1.0-alpha` |  ✅ Completed  |
-| **Phase 2: Mutations, Ingestion & Streaming** | DML mutations, 2-layer rollback transaction UoW, Bulk `UNWIND $batch`, Zero-copy Arrow/Polars streaming, Database bridging                         | `v0.2.0-beta`  |  ✅ Completed  |
-| **Phase 3: Multi-Dialect Syntax Conformance** | Standard openCypher, ISO GQL, DuckPGQ & Apache AGE syntax test suites, 6-engine live integration matrix | `v0.3.0` | ✅ Completed |
-| **Phase 4: Python Integrations & Optimizers** | SQLAlchemy hybrid bridge, Interactive Notebook Graph Viewer (`voyager_ogm.viewer`), Multi-database batch Identity Map, AST predicate pushdown pass | `v0.4.0` | 🔄 In Progress |
-| **Phase 5: TypeScript SDK** | NAPI-RS native bindings, `@Node` / `@Relationship` decorators, fluent query builder, Arrow streaming | `v0.5.0` | 🚧 Planned |
-| **Phase 6: Voyager CLI Engine** | Standalone CLI (`clap`), `voyager compile`, `voyager migrate`, `voyager introspect` | `v0.6.0` | 🚧 Planned |
-| **Phase 7: Production GA Release** | Multi-registry publishing with OIDC provenance (Documentation site to follow post-Phase 7) | `v1.0.0` | 🚧 Planned |
+| **Phase 2: Mutations, Ingestion & Streaming** | DML mutations, 2-layer rollback transaction UoW, Bulk `UNWIND $batch`, Zero-copy Arrow/Polars streaming, Database bridging                         | `v0.2.0-alpha` |  ✅ Completed  |
+| **Phase 3: Multi-Dialect Syntax Conformance** | Standard openCypher, ISO GQL, DuckPGQ & Apache AGE syntax test suites, 6-engine live integration matrix | `v0.3.0-alpha` | ✅ Completed |
+| **Phase 4: Python Integrations & Optimizers** | SQLAlchemy hybrid bridge, Interactive Notebook Graph Viewer (`voyager_ogm.viewer`), Multi-database batch Identity Map, AST predicate pushdown pass | `v0.4.0-alpha` | ✅ Completed |
+| **Phase 4A: Core Hardening & Rich Expressions** | Rich function AST (`toLower`, `coalesce`), arithmetic trees, `CASE WHEN`, branching diamond patterns, batched FFI | `v0.4.5-alpha` | 🚧 Planned |
+| **Phase 4B: Native Async Rust Network Engine** | Standalone `voyager-net`, Tokio async driver, wire-to-Arrow zero-copy streaming, dual backend (`backend="native"`) | `v0.4.6-alpha` | 🚧 Planned |
+| **Phase 5: TypeScript SDK** | NAPI-RS native bindings, `@Node` / `@Relationship` decorators, fluent query builder, Arrow streaming | `v0.5.0-alpha` | 🚧 Planned |
+| **Phase 6: Voyager CLI Engine & Polish** | Standalone CLI (`clap`), `voyager compile`, `voyager migrate`, `voyager introspect`, final ergonomics & developer polish | `v0.6.0-alpha` | 🚧 Planned |
+| **Phase 7: Beta Release & Ecosystem Registry** | Multi-registry publishing (PyPI, Crates.io, npm) with OIDC provenance, public beta testing, security audit | `v0.7.0-beta` | 🚧 Planned |
+| **Production GA Milestone** | Production-hardened General Availability (GA) release, documentation site & ecosystem stability | `v1.0.0` | 🎯 Future GA |
 
 ### Phase 1: Core Read AST Engine (Status: Completed)
 
@@ -70,12 +73,24 @@ Voyager OGM addresses four common challenges in graph database development:
 - [x] **Task 3.3:** Apache AGE regression tests for PostgreSQL embedded Cypher (`cypher()`) execution and `agtype` mappings.
 - [x] **Task 3.4:** Automated local multi-engine live integration matrix (`just test-matrix` across Neo4j 5.26, Memgraph, Apache AGE, DuckDB & DuckPGQ, PostgreSQL 19 Beta 3, and FalkorDB).
 
-### Phase 4: Python Integrations & Query Optimizers (Status: In Progress)
+### Phase 4: Python Integrations & Query Optimizers (Status: Completed)
 
 - [x] **Task 4.1:** SQLAlchemy hybrid bridge connecting relational models with graph traversals (`HybridSession`, `as_cte()`, `sync_table_to_graph`).
 - [x] **Task 4.2:** Interactive Graph Viewer Widget (`voyager_ogm.viewer` supporting Marimo, VS Code interactive `.ipynb` notebooks, and standalone HTML).
 - [x] **Task 4.3:** [Experimental] Multi-Database Batch Identity Map & Active Record Data Mapper Fusion (`Session.flush()`, `Node.save()`, `weakref` memory management).
-- [ ] **Task 4.4:** AST Rule-Based Query Optimizer & Predicate Pushdown Pass (`(p:Person {city: $p0})` inline pattern pushdown).
+- [x] **Task 4.4:** AST Rule-Based Query Optimizer & Predicate Pushdown Pass (`(p:Person {city: $p0})` inline pattern pushdown).
+
+### Phase 4A: Core Hardening & Rich Expression Engine (`voyager-core`) (Status: Planned)
+
+- [ ] **Task 4A.1:** Rich Expression, Arithmetic & Function AST Engine (`toLower`, `coalesce`, arithmetic trees, `CASE WHEN`, list/pattern comprehensions).
+- [ ] **Task 4A.2:** Branching Graph Topologies, Diamond Patterns & Subqueries (`MATCH p1, p2`, existential `WHERE EXISTS`, scalar `COUNT`).
+- [ ] **Task 4A.3:** Batched High-Throughput FFI Serialization Layer (single-trip AST handoff across PyO3/NAPI).
+
+### Phase 4B: Native Asynchronous Rust Network Engine (`voyager-net`) (Status: Planned)
+
+- [ ] **Task 4B.1:** Tokio Async Database Driver & Connection Pooling Engine (native Bolt, Postgres wire, Redis RESP parsers in safe Rust).
+- [ ] **Task 4B.2:** Direct Wire-to-Arrow Zero-Copy Stream Deserialization (zero GIL contention, stream binary socket buffers directly into Arrow).
+- [ ] **Task 4B.3:** Dual Pluggable Backend Architecture (`backend="native"` for peak speed vs `bridge=driver` for Python/JS ecosystem interop).
 
 ### Phase 5: TypeScript SDK (`@voyager-ogm/core`) (Status: Planned)
 
@@ -84,19 +99,21 @@ Voyager OGM addresses four common challenges in graph database development:
 - [ ] **Task 5.3:** Type-safe fluent query builder and columnar Arrow hydration in Bun, Deno, and Node.js.
 - [ ] **Task 5.4:** Automated Bun test conformance suite and benchmarks.
 
-### Phase 6: Voyager CLI Development (Status: Planned)
+### Phase 6: Voyager CLI Engine & Developer Polish (Status: Planned)
 
 - [ ] **Task 6.1:** Standalone CLI tool (`voyager-cli`) built with `clap`.
 - [ ] **Task 6.2:** `voyager compile`: (sqlc-style) Compiles `.cypher` / `.gql` queries into type-safe models and async functions.
 - [ ] **Task 6.3:** `voyager migrate`: Manages in-graph schema migrations (constraints, indexes, labels, Graph Types).
 - [ ] **Task 6.4:** `voyager introspect`: Scans live database catalogs to generate model classes and query functions.
+- [ ] **Task 6.5:** Final API ergonomics polish, deprecation cleanups, and end-to-end DX verification.
 
-### Phase 7: Production GA Release & Multi-Registry Publishing (Status: Planned)
+### Phase 7: Beta Release & Multi-Registry Publishing (Status: Planned)
 
-- [ ] **Task 7.1:** Automated multi-registry publishing to PyPI, Crates.io, and npm with trusted OIDC provenance.
+- [ ] **Task 7.1:** Automated multi-registry publishing to PyPI (`voyager-ogm`), Crates.io (`voyager-core`, `voyager-cli`), and npm (`@voyager-ogm/core`) with trusted OIDC provenance.
+- [ ] **Task 7.2:** Public Beta release testing, issue triage, and security audit.
 
 > [!NOTE]
-> A comprehensive documentation website and multi-language interactive tutorials will be developed after the Phase 7 GA release.
+> The **`v1.0.0` Production GA Milestone** will follow the Phase 7 Beta period, accompanied by a comprehensive documentation website and multi-language interactive tutorials.
 
 ---
 

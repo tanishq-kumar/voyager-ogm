@@ -19,6 +19,7 @@ from voyager_ogm.bridge import (
     create_bridge,
     register_bridge,
 )
+from voyager_ogm.config import VoyagerConfig, configure, get_config, reset_config
 from voyager_ogm.hybrid import AsyncHybridSession, HybridQuery, HybridSession
 from voyager_ogm.ingestion import (
     BulkIngestionBatch,
@@ -100,15 +101,18 @@ __all__ = [
     "SchemaManager",
     "Session",
     "Transaction",
+    "VoyagerConfig",
     "as_cte",
     "chunk_dataframe",
     "chunk_records",
+    "configure",
     "create_bridge",
     "create_bulk_create_plan",
     "create_bulk_create_rel_plan",
     "create_bulk_merge_plan",
     "explore",
     "generate_synthetic_stream",
+    "get_config",
     "graph_relationship",
     "graph_table",
     "load_csv",
@@ -116,6 +120,7 @@ __all__ = [
     "register_bridge",
     "relationship",
     "reset_alias_counters",
+    "reset_config",
     "show",
     "to_arrow",
     "to_polars",
