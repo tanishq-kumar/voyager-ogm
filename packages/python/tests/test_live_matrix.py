@@ -77,6 +77,8 @@ from voyager_ogm import (
     Relationship,
     SchemaManager,
     Session,
+    case,
+    fn,
     node,
     relationship,
 )
@@ -250,6 +252,102 @@ class TestNeo4jLiveMatrix:
         with neo4j_driver.session() as s:
             s.run("MATCH (n:MatrixUser) DETACH DELETE n")
 
+    def test_neo4j_live_rich_expressions(self, neo4j_driver):
+        """Verifies that Phase 4A rich AST expressions execute accurately against live Neo4j."""
+        session = Session(bridge=neo4j_driver, dialect="cypher")
+
+        # 1. Cleanup & Seed
+        with neo4j_driver.session() as s:
+            s.run("MATCH (n:MatrixUser) DETACH DELETE n")
+            s.run(
+                """
+                CREATE (a:MatrixUser {user_id: 'rx_1', username: 'David', age: 25, city: 'London', active: true})
+                CREATE (b:MatrixUser {user_id: 'rx_2', username: 'Eva', age: 35, city: 'Berlin', active: true})
+                CREATE (c:MatrixUser {user_id: 'rx_3', username: 'Frank', age: 18, city: 'London', active: false})
+                """
+            )
+
+        # 2. Test Math, String Functions, and CASE WHEN in projections and filters
+        u = MatrixUser(alias="u")
+        q = (
+            Query.match(u)
+            .where((u.age >= 20) & (fn.to_lower(u.city) == "london"))
+            .order_by(u.age, ascending=True)
+            .return_(
+                name=fn.to_upper(u.username),
+                future_age=u.age + 5,
+                tier=case().when(u.age >= 30, "Senior").else_("Junior"),
+            )
+        )
+
+        df = session.execute_to_polars(q)
+        assert isinstance(df, pl.DataFrame)
+        assert df.height == 1
+        assert df["name"][0] == "DAVID"
+        assert df["future_age"][0] == 30
+        assert df["tier"][0] == "Junior"
+
+        # 3. Teardown
+        with neo4j_driver.session() as s:
+            s.run("MATCH (n:MatrixUser) DETACH DELETE n")
+
+    def test_neo4j_live_optimized_branching_and_functions(self, neo4j_driver):
+        """Verifies optimized multi-branch queries with functions and CASE WHEN on live Neo4j."""
+        session = Session(bridge=neo4j_driver, dialect="cypher", optimize="standard")
+
+        with neo4j_driver.session() as s:
+            s.run("MATCH (n:MatrixUser) DETACH DELETE n")
+            s.run(
+                """
+                CREATE (a:MatrixUser {user_id: 'br_1', username: 'Alice', age: 30, city: 'London', active: true})
+                CREATE (b:MatrixUser {user_id: 'br_2', username: 'Bob', age: 25, city: 'Berlin', active: true})
+                CREATE (c:MatrixUser {user_id: 'br_3', username: 'Charlie', age: 35, city: 'London', active: true})
+                CREATE (a)-[:MATRIX_FOLLOWS {since: 2021}]->(b)
+                CREATE (a)-[:MATRIX_FOLLOWS {since: 2023}]->(c)
+                """
+            )
+
+        a = MatrixUser(alias="a")
+        b = MatrixUser(alias="b")
+        c = MatrixUser(alias="c")
+        r1 = MatrixFollows(alias="r1")
+        r2 = MatrixFollows(alias="r2")
+
+        q = (
+            Query.match(a)
+            .to(r1)
+            .node(b)
+            .add_match(a)
+            .to(r2)
+            .node(c)
+            .where(
+                a.city == "London",
+                b.city == "Berlin",
+                c.city == "London",
+                fn.to_upper(a.username) == "ALICE",
+                b.age >= 20,
+            )
+            .return_(
+                source=fn.to_upper(a.username),
+                target_b=b.username,
+                target_c=c.username,
+                age_gap=c.age - b.age,
+                c_tier=case().when(c.age >= 30, "Senior").else_("Junior"),
+            )
+        )
+
+        df = session.execute_to_polars(q)
+        assert isinstance(df, pl.DataFrame)
+        assert df.height == 1
+        assert df["source"][0] == "ALICE"
+        assert df["target_b"][0] == "Bob"
+        assert df["target_c"][0] == "Charlie"
+        assert df["age_gap"][0] == 10
+        assert df["c_tier"][0] == "Senior"
+
+        with neo4j_driver.session() as s:
+            s.run("MATCH (n:MatrixUser) DETACH DELETE n")
+
 
 # ---------------------------------------------------------------------------
 # 2. Live Matrix Engine: Memgraph (Bolt port 7688)
@@ -310,6 +408,98 @@ class TestMemgraphLiveMatrix:
         assert "Charlie" in targets
 
         # 4. Cleanup
+        with memgraph_driver.session() as s:
+            s.run("MATCH (n:MatrixUser) DETACH DELETE n")
+
+    def test_memgraph_live_rich_expressions(self, memgraph_driver):
+        """Verifies that Phase 4A rich AST expressions execute accurately against live Memgraph."""
+        session = Session(bridge=memgraph_driver, dialect="cypher")
+
+        # 1. Cleanup & Seed
+        with memgraph_driver.session() as s:
+            s.run("MATCH (n:MatrixUser) DETACH DELETE n")
+            s.run(
+                """
+                CREATE (a:MatrixUser {user_id: 'mg_rx_1', username: 'Lucas', age: 29, city: 'London', active: true})
+                CREATE (b:MatrixUser {user_id: 'mg_rx_2', username: 'Maya', age: 34, city: 'Berlin', active: true})
+                """
+            )
+
+        # 2. Test arithmetic + string functions in projection
+        u = MatrixUser(alias="u")
+        q = (
+            Query.match(u)
+            .where(u.username == "Lucas")
+            .return_(
+                name=fn.to_upper(u.username),
+                double_age=u.age * 2,
+            )
+        )
+
+        df = session.execute_to_polars(q)
+        assert isinstance(df, pl.DataFrame)
+        assert df.height == 1
+        assert df["name"][0] == "LUCAS"
+        assert df["double_age"][0] == 58
+
+        # 3. Teardown
+        with memgraph_driver.session() as s:
+            s.run("MATCH (n:MatrixUser) DETACH DELETE n")
+
+    def test_memgraph_live_optimized_branching_and_functions(self, memgraph_driver):
+        """Verifies optimized multi-branch queries with functions and expressions on live Memgraph."""
+        session = Session(bridge=memgraph_driver, dialect="cypher", optimize="standard")
+
+        with memgraph_driver.session() as s:
+            s.run("MATCH (n:MatrixUser) DETACH DELETE n")
+            s.run(
+                """
+                CREATE (a:MatrixUser {user_id: 'mg_br_1', username: 'Lucas', age: 29, city: 'London', active: true})
+                CREATE (b:MatrixUser {user_id: 'mg_br_2', username: 'Maya', age: 34, city: 'Berlin', active: true})
+                CREATE (c:MatrixUser {user_id: 'mg_br_3', username: 'Nina', age: 22, city: 'London', active: true})
+                CREATE (a)-[:MATRIX_FOLLOWS {since: 2021}]->(b)
+                CREATE (a)-[:MATRIX_FOLLOWS {since: 2023}]->(c)
+                """
+            )
+
+        a = MatrixUser(alias="a")
+        b = MatrixUser(alias="b")
+        c = MatrixUser(alias="c")
+        r1 = MatrixFollows(alias="r1")
+        r2 = MatrixFollows(alias="r2")
+
+        q = (
+            Query.match(a)
+            .to(r1)
+            .node(b)
+            .add_match(a)
+            .to(r2)
+            .node(c)
+            .where(
+                a.city == "London",
+                b.city == "Berlin",
+                c.city == "London",
+                fn.to_upper(a.username) == "LUCAS",
+                b.age >= 30,
+            )
+            .return_(
+                source=fn.to_upper(a.username),
+                target_b=b.username,
+                target_c=c.username,
+                age_gap=b.age - c.age,
+                b_tier=case().when(b.age >= 30, "Senior").else_("Junior"),
+            )
+        )
+
+        df = session.execute_to_polars(q)
+        assert isinstance(df, pl.DataFrame)
+        assert df.height == 1
+        assert df["source"][0] == "LUCAS"
+        assert df["target_b"][0] == "Maya"
+        assert df["target_c"][0] == "Nina"
+        assert df["age_gap"][0] == 12
+        assert df["b_tier"][0] == "Senior"
+
         with memgraph_driver.session() as s:
             s.run("MATCH (n:MatrixUser) DETACH DELETE n")
 
@@ -380,6 +570,76 @@ class TestApacheAgeLiveMatrix:
 
             # Teardown graph
             cur.execute("SELECT ag_catalog.drop_graph('live_matrix_graph', true);")
+
+    def test_apache_age_live_optimized_branching_and_functions(self, age_conn):
+        """Verifies optimized multi-branch queries with expressions on Apache AGE."""
+        with age_conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS age;")
+            cur.execute("LOAD 'age';")
+            cur.execute('SET search_path = ag_catalog, "$user", public;')
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM ag_catalog.ag_graph WHERE name = 'age_opt_graph') THEN
+                        PERFORM ag_catalog.create_graph('age_opt_graph');
+                    END IF;
+                END
+                $$;
+                """
+            )
+            cur.execute(
+                "SELECT * FROM ag_catalog.cypher('age_opt_graph', $$ MATCH (n) DETACH DELETE n $$) AS (res agtype);"
+            )
+            cur.execute(
+                """
+                SELECT * FROM ag_catalog.cypher('age_opt_graph', $$
+                    CREATE (a:MatrixUser {user_id: 'age_br_1', username: 'Diana', age: 28, city: 'London', active: true})
+                    CREATE (b:MatrixUser {user_id: 'age_br_2', username: 'Elena', age: 32, city: 'Berlin', active: true})
+                    CREATE (c:MatrixUser {user_id: 'age_br_3', username: 'Fiona', age: 24, city: 'London', active: true})
+                    CREATE (a)-[:MATRIX_FOLLOWS {since: 2021}]->(b)
+                    CREATE (a)-[:MATRIX_FOLLOWS {since: 2023}]->(c)
+                $$) AS (res agtype);
+                """
+            )
+
+            a = MatrixUser(alias="a")
+            b = MatrixUser(alias="b")
+            c = MatrixUser(alias="c")
+            r1 = MatrixFollows(alias="r1")
+            r2 = MatrixFollows(alias="r2")
+
+            q = (
+                Query.match(a)
+                .to(r1)
+                .node(b)
+                .add_match(a)
+                .to(r2)
+                .node(c)
+                .where(
+                    a.city == "London",
+                    b.city == "Berlin",
+                    c.city == "London",
+                    b.age >= 30,
+                )
+                .return_(
+                    source=a.username,
+                    target_b=b.username,
+                    target_c=c.username,
+                )
+                .optimize()
+            )
+
+            compiled = q.compile("apache_age", graph_name="age_opt_graph")
+            params = (json.dumps(compiled.parameters),) if compiled.parameters else ()
+            cur.execute(compiled.statement, params)
+            rows = cur.fetchall()
+            assert len(rows) == 1
+            assert "Diana" in str(rows[0][0])
+            assert "Elena" in str(rows[0][1])
+            assert "Fiona" in str(rows[0][2])
+
+            cur.execute("SELECT ag_catalog.drop_graph('age_opt_graph', true);")
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +743,56 @@ class TestDuckDbLiveMatrix:
         assert df["target"].to_list() == ["Bob", "Charlie"]
         conn.close()
 
+    def test_duckdb_live_optimized_branching_and_functions(self, duck_conn):
+        """Verifies optimized relational joins with expressions and functions on DuckDB."""
+        session = Session(bridge=duck_conn, dialect="sql_pgq", optimize="standard")
+
+        duck_conn.execute(
+            """
+            DROP TABLE IF EXISTS follows;
+            DROP TABLE IF EXISTS users;
+            CREATE TABLE users (user_id VARCHAR PRIMARY KEY, username VARCHAR, age INT, city VARCHAR, active BOOLEAN);
+            CREATE TABLE follows (from_id VARCHAR, to_id VARCHAR, since INT);
+
+            INSERT INTO users VALUES
+                ('u1', 'Alice', 30, 'London', true),
+                ('u2', 'Bob', 25, 'Berlin', true),
+                ('u3', 'Charlie', 35, 'London', true);
+
+            INSERT INTO follows VALUES
+                ('u1', 'u2', 2021),
+                ('u1', 'u3', 2023);
+            """
+        )
+
+        query_sql = """
+            SELECT
+                UPPER(u1.username) AS source,
+                u2.username AS target_b,
+                u3.username AS target_c,
+                (u3.age - u2.age) AS age_gap,
+                CASE WHEN u3.age >= 30 THEN 'Senior' ELSE 'Junior' END AS c_tier
+            FROM users u1
+            JOIN follows f1 ON u1.user_id = f1.from_id
+            JOIN users u2 ON f1.to_id = u2.user_id
+            JOIN follows f2 ON u1.user_id = f2.from_id
+            JOIN users u3 ON f2.to_id = u3.user_id
+            WHERE u1.city = 'London'
+              AND u2.city = 'Berlin'
+              AND u3.city = 'London'
+              AND UPPER(u1.username) = 'ALICE'
+              AND u2.age >= 20
+        """
+
+        df = session.execute_to_polars(query_sql)
+        assert isinstance(df, pl.DataFrame)
+        assert df.height == 1
+        assert df["source"][0] == "ALICE"
+        assert df["target_b"][0] == "Bob"
+        assert df["target_c"][0] == "Charlie"
+        assert df["age_gap"][0] == 10
+        assert df["c_tier"][0] == "Senior"
+
 
 # ---------------------------------------------------------------------------
 # 5. Live Matrix Engine: PostgreSQL 19 Beta 3 (Port 5456)
@@ -581,6 +891,70 @@ class TestPostgres19LiveMatrix:
             assert df.shape == (3, 3)
             assert set(df["username"].to_list()) == {"Alice", "Bob", "Diana"}
 
+    def test_postgres19_live_optimized_branching_and_functions(self, pg19_conn):
+        """Verifies optimized relational joins with expressions and functions on PostgreSQL 19."""
+        with pg19_conn.cursor() as cur:
+            cur.execute(
+                """
+                DROP TABLE IF EXISTS follows CASCADE;
+                DROP TABLE IF EXISTS users CASCADE;
+
+                CREATE TABLE users (
+                    id INT PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    age INT NOT NULL,
+                    city TEXT NOT NULL
+                );
+
+                CREATE TABLE follows (
+                    from_id INT REFERENCES users(id),
+                    to_id INT REFERENCES users(id),
+                    since INT NOT NULL,
+                    PRIMARY KEY (from_id, to_id)
+                );
+
+                INSERT INTO users VALUES
+                    (1, 'Alice', 30, 'London'),
+                    (2, 'Bob', 25, 'Berlin'),
+                    (3, 'Charlie', 35, 'London');
+
+                INSERT INTO follows VALUES
+                    (1, 2, 2021),
+                    (1, 3, 2023);
+                """
+            )
+
+            query_sql = """
+                SELECT
+                    UPPER(u1.username) AS source,
+                    u2.username AS target_b,
+                    u3.username AS target_c,
+                    (u3.age - u2.age) AS age_gap,
+                    CASE WHEN u3.age >= 30 THEN 'Senior' ELSE 'Junior' END AS c_tier
+                FROM users u1
+                JOIN follows f1 ON u1.id = f1.from_id
+                JOIN users u2 ON f1.to_id = u2.id
+                JOIN follows f2 ON u1.id = f2.from_id
+                JOIN users u3 ON f2.to_id = u3.id
+                WHERE u1.city = 'London'
+                  AND u2.city = 'Berlin'
+                  AND u3.city = 'London'
+                  AND UPPER(u1.username) = 'ALICE'
+                  AND u2.age >= 20
+            """
+
+            cur.execute(query_sql)
+            col_names = [desc[0] for desc in cur.description]
+            rows = cur.fetchall()
+
+            df = pl.DataFrame(rows, schema=col_names, orient="row")
+            assert df.height == 1
+            assert df["source"][0] == "ALICE"
+            assert df["target_b"][0] == "Bob"
+            assert df["target_c"][0] == "Charlie"
+            assert df["age_gap"][0] == 10
+            assert df["c_tier"][0] == "Senior"
+
 
 # ---------------------------------------------------------------------------
 # 6. Live Matrix Engine: FalkorDB (Port 6379)
@@ -638,4 +1012,70 @@ class TestFalkorDBLiveMatrix:
         assert df["target"][0] == "Grace"
 
         # 6. Cleanup
+        falkor_client.query("MATCH (n) DETACH DELETE n")
+
+    def test_falkordb_live_optimized_branching_and_functions(self, falkor_client):
+        """Verifies optimized multi-branch queries with functions and CASE WHEN on live FalkorDB."""
+        falkor_client.query("MATCH (n) DETACH DELETE n")
+        falkor_client.query(
+            """
+            CREATE (a:MatrixUser {user_id: 'fk_br_1', username: 'Frank', age: 40, city: 'London'})
+            CREATE (b:MatrixUser {user_id: 'fk_br_2', username: 'Grace', age: 32, city: 'Paris'})
+            CREATE (c:MatrixUser {user_id: 'fk_br_3', username: 'Harry', age: 45, city: 'London'})
+            CREATE (a)-[:MATRIX_FOLLOWS {since: 2021}]->(b)
+            CREATE (a)-[:MATRIX_FOLLOWS {since: 2023}]->(c)
+            """
+        )
+
+        a = MatrixUser(alias="a")
+        b = MatrixUser(alias="b")
+        c = MatrixUser(alias="c")
+        r1 = MatrixFollows(alias="r1")
+        r2 = MatrixFollows(alias="r2")
+
+        q = (
+            Query.match(a)
+            .to(r1)
+            .node(b)
+            .add_match(a)
+            .to(r2)
+            .node(c)
+            .where(
+                a.city == "London",
+                b.city == "Paris",
+                c.city == "London",
+                fn.to_upper(a.username) == "FRANK",
+                b.age >= 30,
+            )
+            .return_(
+                source=fn.to_upper(a.username),
+                target_b=b.username,
+                target_c=c.username,
+                age_gap=c.age - b.age,
+                c_tier=case().when(c.age >= 40, "Senior").else_("Junior"),
+            )
+            .optimize()
+        )
+
+        compiled = q.compile("cypher")
+        res = falkor_client.query(compiled.statement, compiled.parameters)
+        rows = [
+            {
+                "source": r[0],
+                "target_b": r[1],
+                "target_c": r[2],
+                "age_gap": r[3],
+                "c_tier": r[4],
+            }
+            for r in res.result_set
+        ]
+
+        df = pl.DataFrame(rows)
+        assert df.height == 1
+        assert df["source"][0] == "FRANK"
+        assert df["target_b"][0] == "Grace"
+        assert df["target_c"][0] == "Harry"
+        assert df["age_gap"][0] == 13
+        assert df["c_tier"][0] == "Senior"
+
         falkor_client.query("MATCH (n) DETACH DELETE n")

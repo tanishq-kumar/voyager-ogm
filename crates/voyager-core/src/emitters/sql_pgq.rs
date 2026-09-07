@@ -2,7 +2,7 @@
 
 use crate::ast::{
     AggregationFunc, AstNode, BinaryOp, Direction, LiteralValue, NodeHandle, ProjectionItem,
-    QueryAstArena,
+    QueryAstArena, UnaryOp,
 };
 use crate::error::{Error, Result};
 use crate::visitor::{AstVisitor, CompiledQuery};
@@ -208,6 +208,86 @@ impl SqlPgqEmitter {
                 if nested {
                     self.buffer.push(')');
                 }
+                Ok(())
+            }
+            AstNode::UnaryExpression { op, operand } => match op {
+                UnaryOp::Not => {
+                    self.buffer.push_str("NOT (");
+                    self.emit_expression(arena, *operand, false)?;
+                    self.buffer.push(')');
+                    Ok(())
+                }
+                UnaryOp::Neg => {
+                    self.buffer.push('-');
+                    self.emit_expression(arena, *operand, true)
+                }
+                UnaryOp::IsNull => {
+                    self.emit_expression(arena, *operand, true)?;
+                    self.buffer.push_str(" IS NULL");
+                    Ok(())
+                }
+                UnaryOp::IsNotNull => {
+                    self.emit_expression(arena, *operand, true)?;
+                    self.buffer.push_str(" IS NOT NULL");
+                    Ok(())
+                }
+            },
+            AstNode::FunctionCall { name, arguments } => {
+                self.buffer.push_str(name);
+                self.buffer.push('(');
+                for (i, &arg) in arguments.iter().enumerate() {
+                    if i > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.emit_expression(arena, arg, false)?;
+                }
+                self.buffer.push(')');
+                Ok(())
+            }
+            AstNode::CaseExpression {
+                operand,
+                when_then_branches,
+                else_branch,
+            } => {
+                self.buffer.push_str("CASE");
+                if let Some(op) = operand {
+                    self.buffer.push(' ');
+                    self.emit_expression(arena, *op, false)?;
+                }
+                for (when_expr, then_expr) in when_then_branches {
+                    self.buffer.push_str(" WHEN ");
+                    self.emit_expression(arena, *when_expr, false)?;
+                    self.buffer.push_str(" THEN ");
+                    self.emit_expression(arena, *then_expr, false)?;
+                }
+                if let Some(else_expr) = else_branch {
+                    self.buffer.push_str(" ELSE ");
+                    self.emit_expression(arena, *else_expr, false)?;
+                }
+                self.buffer.push_str(" END");
+                Ok(())
+            }
+            AstNode::ExistsSubquery { subquery } => {
+                self.buffer.push_str("EXISTS (");
+                self.emit_expression(arena, *subquery, false)?;
+                self.buffer.push(')');
+                Ok(())
+            }
+            AstNode::CountSubquery { subquery } => {
+                self.buffer.push_str("COUNT (");
+                self.emit_expression(arena, *subquery, false)?;
+                self.buffer.push(')');
+                Ok(())
+            }
+            AstNode::ListLiteral(items) => {
+                self.buffer.push('[');
+                for (i, &item) in items.iter().enumerate() {
+                    if i > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.emit_expression(arena, item, false)?;
+                }
+                self.buffer.push(']');
                 Ok(())
             }
             other => Err(Error::AstInvariantViolation(format!(

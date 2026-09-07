@@ -2,8 +2,8 @@
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
-use voyager_core::ast::{AggregationFunc, BinaryOp, LiteralValue};
+use pyo3::types::{PyDict, PyList, PyTuple};
+use voyager_core::ast::{AggregationFunc, BinaryOp, Direction, LiteralValue, NodeHandle, UnaryOp};
 use voyager_core::builder::QueryBuilder;
 use voyager_core::emitters::{AgeEmitter, CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
 use voyager_core::optimizer::{AstOptimizer, OptimizationLevel};
@@ -32,6 +32,482 @@ fn py_to_literal(val: &Bound<'_, PyAny>) -> PyResult<LiteralValue> {
             val.get_type()
         )))
     }
+}
+
+fn parse_binary_op(s: &str) -> PyResult<BinaryOp> {
+    match s.to_ascii_lowercase().as_str() {
+        "=" | "eq" => Ok(BinaryOp::Eq),
+        "!=" | "ne" | "neq" | "<>" => Ok(BinaryOp::Neq),
+        "<" | "lt" => Ok(BinaryOp::Lt),
+        "<=" | "lte" | "le" => Ok(BinaryOp::Lte),
+        ">" | "gt" => Ok(BinaryOp::Gt),
+        ">=" | "gte" | "ge" => Ok(BinaryOp::Gte),
+        "in" => Ok(BinaryOp::In),
+        "not_in" | "not in" => Ok(BinaryOp::NotIn),
+        "contains" => Ok(BinaryOp::Contains),
+        "starts_with" | "startswith" => Ok(BinaryOp::StartsWith),
+        "ends_with" | "endswith" => Ok(BinaryOp::EndsWith),
+        "=~" | "regex" => Ok(BinaryOp::RegexMatch),
+        "and" | "&" => Ok(BinaryOp::And),
+        "or" | "|" => Ok(BinaryOp::Or),
+        "xor" | "^" => Ok(BinaryOp::Xor),
+        "+" | "add" => Ok(BinaryOp::Add),
+        "-" | "sub" => Ok(BinaryOp::Sub),
+        "*" | "mul" => Ok(BinaryOp::Mul),
+        "/" | "div" => Ok(BinaryOp::Div),
+        "%" | "mod" => Ok(BinaryOp::Mod),
+        other => Err(PyValueError::new_err(format!(
+            "Unknown binary operator: '{other}'"
+        ))),
+    }
+}
+
+fn parse_unary_op(s: &str) -> PyResult<UnaryOp> {
+    match s.to_ascii_lowercase().as_str() {
+        "not" | "~" => Ok(UnaryOp::Not),
+        "-" | "neg" => Ok(UnaryOp::Neg),
+        "is_null" | "is null" => Ok(UnaryOp::IsNull),
+        "is_not_null" | "is not null" => Ok(UnaryOp::IsNotNull),
+        other => Err(PyValueError::new_err(format!(
+            "Unknown unary operator: '{other}'"
+        ))),
+    }
+}
+
+fn py_to_node_handle(builder: &mut QueryBuilder, val: &Bound<'_, PyAny>) -> PyResult<NodeHandle> {
+    if let Ok(tuple) = val.downcast::<PyTuple>() {
+        if tuple.is_empty() {
+            return Err(PyValueError::new_err("Empty expression tuple"));
+        }
+        let tag: String = tuple.get_item(0)?.extract()?;
+        match tag.as_str() {
+            "prop" => {
+                let var: String = tuple.get_item(1)?.extract()?;
+                let prop: String = tuple.get_item(2)?.extract()?;
+                Ok(builder.prop(var, prop))
+            }
+            "ident" => {
+                let name: String = tuple.get_item(1)?.extract()?;
+                Ok(builder.ident(name))
+            }
+            "param" => {
+                let name: String = tuple.get_item(1)?.extract()?;
+                Ok(builder.param(name))
+            }
+            "lit" => {
+                let lit = py_to_literal(&tuple.get_item(1)?)?;
+                Ok(builder.literal(lit))
+            }
+            "bin" => {
+                let op_str: String = tuple.get_item(1)?.extract()?;
+                let op = parse_binary_op(&op_str)?;
+                let left = py_to_node_handle(builder, &tuple.get_item(2)?)?;
+                let right = py_to_node_handle(builder, &tuple.get_item(3)?)?;
+                Ok(builder.binary_expr(left, op, right))
+            }
+            "unary" => {
+                let op_str: String = tuple.get_item(1)?.extract()?;
+                let op = parse_unary_op(&op_str)?;
+                let operand = py_to_node_handle(builder, &tuple.get_item(2)?)?;
+                Ok(builder.unary_expr(op, operand))
+            }
+            "fn" => {
+                let name: String = tuple.get_item(1)?.extract()?;
+                let args_py = tuple.get_item(2)?;
+                let args_list = args_py.downcast::<PyList>()?;
+                let mut arg_handles = Vec::with_capacity(args_list.len());
+                for arg in args_list {
+                    arg_handles.push(py_to_node_handle(builder, &arg)?);
+                }
+                Ok(builder.function(name, arg_handles))
+            }
+            "case" => {
+                let op_item = tuple.get_item(1)?;
+                let operand = if op_item.is_none() {
+                    None
+                } else {
+                    Some(py_to_node_handle(builder, &op_item)?)
+                };
+                let branches_list = tuple.get_item(2)?.downcast::<PyList>()?.clone();
+                let mut branches = Vec::with_capacity(branches_list.len());
+                for item in &branches_list {
+                    let branch_tuple = item.downcast::<PyTuple>()?;
+                    let w = py_to_node_handle(builder, &branch_tuple.get_item(0)?)?;
+                    let t = py_to_node_handle(builder, &branch_tuple.get_item(1)?)?;
+                    branches.push((w, t));
+                }
+                let else_item = tuple.get_item(3)?;
+                let else_branch = if else_item.is_none() {
+                    None
+                } else {
+                    Some(py_to_node_handle(builder, &else_item)?)
+                };
+                Ok(builder.case_when(operand, branches, else_branch))
+            }
+            "list_comp" => {
+                let var: String = tuple.get_item(1)?.extract()?;
+                let list_h = py_to_node_handle(builder, &tuple.get_item(2)?)?;
+                let wh_item = tuple.get_item(3)?;
+                let where_filter = if wh_item.is_none() {
+                    None
+                } else {
+                    Some(py_to_node_handle(builder, &wh_item)?)
+                };
+                let map_item = tuple.get_item(4)?;
+                let map_expr = if map_item.is_none() {
+                    None
+                } else {
+                    Some(py_to_node_handle(builder, &map_item)?)
+                };
+                Ok(builder.list_comprehension(var, list_h, where_filter, map_expr))
+            }
+            "pattern_comp" => {
+                let path_spec = tuple.get_item(1)?;
+                let path_h = build_path_from_py(builder, &path_spec)?;
+                let wh_item = tuple.get_item(2)?;
+                let where_filter = if wh_item.is_none() {
+                    None
+                } else {
+                    Some(py_to_node_handle(builder, &wh_item)?)
+                };
+                let proj_h = py_to_node_handle(builder, &tuple.get_item(3)?)?;
+                Ok(builder.pattern_comprehension(path_h, where_filter, proj_h))
+            }
+            "exists" => {
+                let sub_spec = tuple.get_item(1)?;
+                let sub_h = build_subquery_from_py(builder, &sub_spec)?;
+                Ok(builder.exists_subquery(sub_h))
+            }
+            "count" => {
+                let sub_spec = tuple.get_item(1)?;
+                let sub_h = build_subquery_from_py(builder, &sub_spec)?;
+                Ok(builder.count_subquery(sub_h))
+            }
+            "list" => {
+                let items_list = tuple.get_item(1)?.downcast::<PyList>()?.clone();
+                let mut item_handles = Vec::with_capacity(items_list.len());
+                for item in &items_list {
+                    item_handles.push(py_to_node_handle(builder, &item)?);
+                }
+                Ok(builder.list_literal(item_handles))
+            }
+            other => Err(PyValueError::new_err(format!(
+                "Unknown expression tuple tag: '{other}'"
+            ))),
+        }
+    } else if let Ok(lit) = py_to_literal(val) {
+        Ok(builder.literal(lit))
+    } else {
+        Err(PyValueError::new_err(format!(
+            "Cannot convert Python object to AST node handle: {}",
+            val.get_type()
+        )))
+    }
+}
+
+fn parse_direction(dir_str: &str) -> Direction {
+    match dir_str.to_ascii_lowercase().as_str() {
+        "out" | "outgoing" | "->" => Direction::Outgoing,
+        "in" | "incoming" | "<-" => Direction::Incoming,
+        _ => Direction::Undirected,
+    }
+}
+
+fn build_path_steps_into_builder(
+    builder: &mut QueryBuilder,
+    steps: &Bound<'_, PyList>,
+) -> PyResult<()> {
+    for step in steps {
+        let tuple = step.downcast::<PyTuple>()?;
+        let tag: String = tuple.get_item(0)?.extract()?;
+        match tag.as_str() {
+            "node" => {
+                let var: Option<String> = tuple.get_item(1)?.extract()?;
+                let labels: Vec<String> = tuple.get_item(2)?.extract()?;
+                builder.node(var, labels);
+            }
+            "edge" => {
+                let dir_str: String = tuple.get_item(1)?.extract()?;
+                let dir = parse_direction(&dir_str);
+                let edge_types: Vec<String> = tuple.get_item(2)?.extract()?;
+                let var: Option<String> = tuple.get_item(3)?.extract()?;
+                let min_hops: Option<u32> = tuple.get_item(4)?.extract()?;
+                let max_hops: Option<u32> = tuple.get_item(5)?.extract()?;
+                match dir {
+                    Direction::Outgoing => builder.to(edge_types, var),
+                    Direction::Incoming => builder.from(edge_types, var),
+                    Direction::Undirected => builder.edge(edge_types, var),
+                };
+                if min_hops.is_some() || max_hops.is_some() {
+                    let min = min_hops.unwrap_or(1);
+                    let max = max_hops.unwrap_or(min);
+                    builder.hops(min, max);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn build_path_from_py(builder: &mut QueryBuilder, spec: &Bound<'_, PyAny>) -> PyResult<NodeHandle> {
+    if let Ok(list) = spec.downcast::<PyList>() {
+        let list_cloned = list.clone();
+        let sub_h = builder.subquery(move |q| {
+            let _ = build_path_steps_into_builder(q, &list_cloned);
+        });
+        Ok(sub_h)
+    } else {
+        py_to_node_handle(builder, spec)
+    }
+}
+
+fn build_subquery_from_py(
+    builder: &mut QueryBuilder,
+    spec: &Bound<'_, PyAny>,
+) -> PyResult<NodeHandle> {
+    if let Ok(dict) = spec.downcast::<PyDict>() {
+        let dict_cloned = dict.clone();
+        let sub_h = builder.subquery(move |q| {
+            let _ = build_query_from_spec_internal(q, &dict_cloned);
+        });
+        Ok(sub_h)
+    } else if let Ok(list) = spec.downcast::<PyList>() {
+        let list_cloned = list.clone();
+        let sub_h = builder.subquery(move |q| {
+            q.r#match();
+            let _ = build_path_steps_into_builder(q, &list_cloned);
+        });
+        Ok(sub_h)
+    } else {
+        py_to_node_handle(builder, spec)
+    }
+}
+
+#[allow(clippy::collapsible_if)]
+fn build_query_from_spec_internal(
+    builder: &mut QueryBuilder,
+    spec: &Bound<'_, PyDict>,
+) -> PyResult<()> {
+    if let Some(load_csv_item) = spec.get_item("load_csv")? {
+        if !load_csv_item.is_none() {
+            let tuple = load_csv_item.downcast::<PyTuple>()?;
+            let url: String = tuple.get_item(0)?.extract()?;
+            let with_headers: bool = tuple.get_item(1)?.extract()?;
+            let alias: String = tuple.get_item(2)?.extract()?;
+            builder.load_csv(url, with_headers, alias);
+        }
+    }
+
+    if let Some(unwinds_item) = spec.get_item("unwinds")? {
+        if let Ok(unwinds_list) = unwinds_item.downcast::<PyList>() {
+            for item in unwinds_list {
+                let tuple = item.downcast::<PyTuple>()?;
+                let param_name: String = tuple.get_item(0)?.extract()?;
+                let alias: String = tuple.get_item(1)?.extract()?;
+                builder.unwind_param(param_name, alias);
+            }
+        }
+    }
+
+    if let Some(matches_item) = spec.get_item("matches")? {
+        if let Ok(matches_list) = matches_item.downcast::<PyList>() {
+            for m in matches_list {
+                let m_dict = m.downcast::<PyDict>()?;
+                let is_optional: bool = m_dict
+                    .get_item("optional")?
+                    .map(|v| v.extract().unwrap_or(false))
+                    .unwrap_or(false);
+                if is_optional {
+                    builder.optional_match();
+                } else {
+                    builder.r#match();
+                }
+
+                if let Some(paths_item) = m_dict.get_item("paths")? {
+                    if let Ok(paths_list) = paths_item.downcast::<PyList>() {
+                        for (p_idx, p_steps) in paths_list.iter().enumerate() {
+                            if p_idx > 0 {
+                                builder.pattern();
+                            }
+                            if let Ok(steps_list) = p_steps.downcast::<PyList>() {
+                                build_path_steps_into_builder(builder, steps_list)?;
+                            }
+                        }
+                    }
+                }
+
+                if let Some(where_item) = m_dict.get_item("where")? {
+                    if !where_item.is_none() {
+                        if let Ok(wh_list) = where_item.downcast::<PyList>() {
+                            for wh in wh_list {
+                                let h = py_to_node_handle(builder, &wh)?;
+                                builder.where_expr(h);
+                            }
+                        } else {
+                            let h = py_to_node_handle(builder, &where_item)?;
+                            builder.where_expr(h);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(mutations_item) = spec.get_item("mutations")? {
+        if let Ok(mutations_list) = mutations_item.downcast::<PyList>() {
+            for mut_item in mutations_list {
+                let tuple = mut_item.downcast::<PyTuple>()?;
+                let tag: String = tuple.get_item(0)?.extract()?;
+                match tag.as_str() {
+                    "create" => {
+                        builder.create();
+                        let paths_list = tuple.get_item(1)?.downcast::<PyList>()?.clone();
+                        for (p_idx, p_steps) in paths_list.iter().enumerate() {
+                            if p_idx > 0 {
+                                builder.pattern();
+                            }
+                            if let Ok(steps_list) = p_steps.downcast::<PyList>() {
+                                build_path_steps_into_builder(builder, steps_list)?;
+                            }
+                        }
+                    }
+                    "merge" => {
+                        builder.merge();
+                        let path_steps = tuple.get_item(1)?.downcast::<PyList>()?.clone();
+                        build_path_steps_into_builder(builder, &path_steps)?;
+                        if let Ok(on_creates) = tuple.get_item(2)?.downcast::<PyList>() {
+                            for item in on_creates {
+                                let s_tuple = item.downcast::<PyTuple>()?;
+                                let var: String = s_tuple.get_item(0)?.extract()?;
+                                let prop: String = s_tuple.get_item(1)?.extract()?;
+                                let val_h = py_to_node_handle(builder, &s_tuple.get_item(2)?)?;
+                                builder.on_create_set_expr(var, prop, val_h);
+                            }
+                        }
+                        if let Ok(on_matches) = tuple.get_item(3)?.downcast::<PyList>() {
+                            for item in on_matches {
+                                let s_tuple = item.downcast::<PyTuple>()?;
+                                let var: String = s_tuple.get_item(0)?.extract()?;
+                                let prop: String = s_tuple.get_item(1)?.extract()?;
+                                let val_h = py_to_node_handle(builder, &s_tuple.get_item(2)?)?;
+                                builder.on_match_set_expr(var, prop, val_h);
+                            }
+                        }
+                    }
+                    "set" => {
+                        let var: String = tuple.get_item(1)?.extract()?;
+                        let prop: String = tuple.get_item(2)?.extract()?;
+                        let val_h = py_to_node_handle(builder, &tuple.get_item(3)?)?;
+                        builder.set_property_expr(var, prop, val_h);
+                    }
+                    "delete" => {
+                        let detach: bool = tuple.get_item(1)?.extract()?;
+                        let targets: Vec<String> = tuple.get_item(2)?.extract()?;
+                        if detach {
+                            builder.detach_delete(targets);
+                        } else {
+                            builder.delete(targets);
+                        }
+                    }
+                    "remove" => {
+                        let var: String = tuple.get_item(1)?.extract()?;
+                        let prop: String = tuple.get_item(2)?.extract()?;
+                        builder.remove_property(var, prop);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    if let Some(proj_item) = spec.get_item("projections")? {
+        if let Ok(proj_list) = proj_item.downcast::<PyList>() {
+            if !proj_list.is_empty() {
+                builder.r#return();
+                for item in proj_list {
+                    let tuple = item.downcast::<PyTuple>()?;
+                    let tag: String = tuple.get_item(0)?.extract()?;
+                    match tag.as_str() {
+                        "field" => {
+                            let var: String = tuple.get_item(1)?.extract()?;
+                            let prop: String = tuple.get_item(2)?.extract()?;
+                            let alias: Option<String> = tuple.get_item(3)?.extract()?;
+                            builder.field(var, prop, alias);
+                        }
+                        "agg" => {
+                            let var: String = tuple.get_item(1)?.extract()?;
+                            let prop: String = tuple.get_item(2)?.extract()?;
+                            let func_str: String = tuple.get_item(3)?.extract()?;
+                            let alias: Option<String> = tuple.get_item(4)?.extract()?;
+                            let agg = match func_str.to_lowercase().as_str() {
+                                "count" => AggregationFunc::Count,
+                                "count_distinct" => AggregationFunc::CountDistinct,
+                                "sum" => AggregationFunc::Sum,
+                                "avg" => AggregationFunc::Avg,
+                                "min" => AggregationFunc::Min,
+                                "max" => AggregationFunc::Max,
+                                "collect" => AggregationFunc::Collect,
+                                _ => AggregationFunc::Count,
+                            };
+                            if prop == "*" || prop.is_empty() {
+                                let expr = builder.ident(var);
+                                builder.select_aggregate(expr, agg, alias);
+                            } else {
+                                builder.select_property_aggregate(var, prop, agg, alias);
+                            }
+                        }
+                        "expr" => {
+                            let expr_spec = tuple.get_item(1)?;
+                            let alias: Option<String> = tuple.get_item(2)?.extract()?;
+                            let h = py_to_node_handle(builder, &expr_spec)?;
+                            builder.select_expr(h, alias);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(distinct_item) = spec.get_item("distinct")? {
+        if let Ok(distinct) = distinct_item.extract::<bool>() {
+            if distinct {
+                builder.distinct(true);
+            }
+        }
+    }
+
+    if let Some(order_item) = spec.get_item("order_by")? {
+        if let Ok(order_list) = order_item.downcast::<PyList>() {
+            for item in order_list {
+                let tuple = item.downcast::<PyTuple>()?;
+                if let Ok(var) = tuple.get_item(0)?.extract::<String>() {
+                    let prop: String = tuple.get_item(1)?.extract()?;
+                    let asc: bool = tuple.get_item(2)?.extract()?;
+                    builder.order_by_property(var, prop, asc);
+                } else {
+                    let expr_h = py_to_node_handle(builder, &tuple.get_item(0)?)?;
+                    let asc: bool = tuple.get_item(1)?.extract()?;
+                    builder.order_by(expr_h, asc);
+                }
+            }
+        }
+    }
+
+    if let Some(skip_item) = spec.get_item("skip")? {
+        if let Ok(skip) = skip_item.extract::<u64>() {
+            builder.skip(skip);
+        }
+    }
+
+    if let Some(limit_item) = spec.get_item("limit")? {
+        if let Ok(limit) = limit_item.extract::<u64>() {
+            builder.limit(limit);
+        }
+    }
+
+    Ok(())
 }
 
 fn literal_to_py<'py>(lit: &LiteralValue, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -76,6 +552,10 @@ impl PyQueryBuilder {
         self.inner.optional_match();
     }
 
+    fn pattern(&mut self) {
+        self.inner.pattern();
+    }
+
     #[pyo3(signature = (variable=None, labels=vec![]))]
     fn node(&mut self, variable: Option<String>, labels: Vec<String>) {
         self.inner.node(variable, labels);
@@ -99,6 +579,24 @@ impl PyQueryBuilder {
 
     fn hops(&mut self, min: u32, max: u32) {
         self.inner.hops(min, max);
+    }
+
+    fn where_expr(&mut self, expr: &Bound<'_, PyAny>) -> PyResult<()> {
+        let h = py_to_node_handle(&mut self.inner, expr)?;
+        self.inner.where_expr(h);
+        Ok(())
+    }
+
+    #[pyo3(signature = (expr, alias=None))]
+    fn select_expr(&mut self, expr: &Bound<'_, PyAny>, alias: Option<String>) -> PyResult<()> {
+        let h = py_to_node_handle(&mut self.inner, expr)?;
+        self.inner.select_expr(h, alias);
+        Ok(())
+    }
+
+    #[pyo3(signature = (expr, alias=None))]
+    fn custom_expr(&mut self, expr: &Bound<'_, PyAny>, alias: Option<String>) -> PyResult<()> {
+        self.select_expr(expr, alias)
     }
 
     fn where_eq(&mut self, var: String, prop: String, val: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -263,6 +761,12 @@ impl PyQueryBuilder {
         }
     }
 
+    fn order_by_expr(&mut self, expr: &Bound<'_, PyAny>, ascending: bool) -> PyResult<()> {
+        let h = py_to_node_handle(&mut self.inner, expr)?;
+        self.inner.order_by(h, ascending);
+        Ok(())
+    }
+
     fn distinct(&mut self) {
         self.inner.distinct(true);
     }
@@ -406,6 +910,75 @@ impl PyArrowStream {
 fn generate_synthetic_stream(count: usize) -> PyResult<PyArrowStream> {
     let batch = voyager_core::arrow::GraphBatchBuilder::generate_synthetic_nodes(count);
     Ok(PyArrowStream { batch })
+}
+
+/// Compiles a query spec dictionary directly into a target dialect query with parameters in a single FFI call.
+#[pyfunction]
+#[pyo3(signature = (spec, dialect="cypher", graph_name=None, optimize=false, optimization_level="standard"))]
+fn compile_query_from_spec<'py>(
+    py: Python<'py>,
+    spec: &Bound<'py, PyDict>,
+    dialect: &str,
+    graph_name: Option<String>,
+    optimize: bool,
+    optimization_level: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let mut builder = QueryBuilder::new();
+    build_query_from_spec_internal(&mut builder, spec)?;
+    let (mut arena, root) = builder.build();
+
+    if optimize {
+        let opt_level = OptimizationLevel::from_str_opt(optimization_level);
+        let optimizer = AstOptimizer::new(opt_level);
+        optimizer
+            .optimize(&mut arena, root)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    }
+
+    let compiled = match dialect.to_lowercase().as_str() {
+        "cypher" | "opencypher" | "neo4j" | "memgraph" => {
+            let mut emitter = CypherEmitter::new();
+            emitter
+                .visit_query(&arena, root)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?
+        }
+        "sql_pgq" | "pgq" | "duckpgq" | "sql" => {
+            let name = graph_name.unwrap_or_else(|| "graph_table".into());
+            let mut emitter = SqlPgqEmitter::new(name);
+            emitter
+                .visit_query(&arena, root)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?
+        }
+        "iso_gql" | "gql" => {
+            let mut emitter = IsoGqlEmitter::new();
+            emitter
+                .visit_query(&arena, root)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?
+        }
+        "age" | "apache_age" | "postgres_age" => {
+            let name = graph_name.unwrap_or_else(|| "age_graph".into());
+            let mut emitter = AgeEmitter::new(name);
+            emitter
+                .visit_query(&arena, root)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?
+        }
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "Unsupported query dialect: '{other}'. Choose from 'cypher', 'sql_pgq', 'iso_gql', or 'apache_age'."
+            )));
+        }
+    };
+
+    let dict = PyDict::new(py);
+    dict.set_item("statement", compiled.statement)?;
+
+    let params_dict = PyDict::new(py);
+    for (k, v) in compiled.parameters {
+        params_dict.set_item(k, literal_to_py(&v, py)?)?;
+    }
+    dict.set_item("parameters", params_dict)?;
+
+    Ok(dict)
 }
 
 /// Returns the native Voyager OGM engine version string.
@@ -621,6 +1194,7 @@ fn compile_bulk_create_rel<'py>(
 fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(generate_synthetic_stream, m)?)?;
+    m.add_function(wrap_pyfunction!(compile_query_from_spec, m)?)?;
     m.add_function(wrap_pyfunction!(compile_bulk_create, m)?)?;
     m.add_function(wrap_pyfunction!(compile_bulk_merge, m)?)?;
     m.add_function(wrap_pyfunction!(compile_bulk_create_rel, m)?)?;

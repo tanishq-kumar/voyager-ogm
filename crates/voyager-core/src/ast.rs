@@ -63,6 +63,31 @@ impl fmt::Display for Direction {
     }
 }
 
+/// Unary operators for boolean negation, arithmetic inversion, and null checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum UnaryOp {
+    /// Logical NOT (`NOT`)
+    Not,
+    /// Arithmetic negation (`-`)
+    Neg,
+    /// IS NULL check (`IS NULL`)
+    IsNull,
+    /// IS NOT NULL check (`IS NOT NULL`)
+    IsNotNull,
+}
+
+impl fmt::Display for UnaryOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Not => write!(f, "NOT"),
+            Self::Neg => write!(f, "-"),
+            Self::IsNull => write!(f, "IS NULL"),
+            Self::IsNotNull => write!(f, "IS NOT NULL"),
+        }
+    }
+}
+
 /// Binary operators for filters and arithmetic expressions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -97,6 +122,16 @@ pub enum BinaryOp {
     Or,
     /// Logical exclusion (`XOR`)
     Xor,
+    /// Addition (`+`)
+    Add,
+    /// Subtraction (`-`)
+    Sub,
+    /// Multiplication (`*`)
+    Mul,
+    /// Division (`/`)
+    Div,
+    /// Modulo / Remainder (`%`)
+    Mod,
 }
 
 impl fmt::Display for BinaryOp {
@@ -117,6 +152,11 @@ impl fmt::Display for BinaryOp {
             Self::And => write!(f, "AND"),
             Self::Or => write!(f, "OR"),
             Self::Xor => write!(f, "XOR"),
+            Self::Add => write!(f, "+"),
+            Self::Sub => write!(f, "-"),
+            Self::Mul => write!(f, "*"),
+            Self::Div => write!(f, "/"),
+            Self::Mod => write!(f, "%"),
         }
     }
 }
@@ -280,7 +320,7 @@ pub enum AstNode {
         /// Sequence of connected edge pattern handles
         edges: Vec<NodeHandle>,
     },
-    /// Binary expression (e.g. `left = right`, `age > 21`, `a AND b`).
+    /// Binary expression (e.g. `left = right`, `age > 21`, `a + b`, `a AND b`).
     BinaryExpression {
         /// Left-hand operand handle
         left: NodeHandle,
@@ -289,6 +329,61 @@ pub enum AstNode {
         /// Right-hand operand handle
         right: NodeHandle,
     },
+    /// Unary expression (e.g. `NOT p.active`, `-p.score`, `p.name IS NOT NULL`).
+    UnaryExpression {
+        /// Operator
+        op: UnaryOp,
+        /// Operand handle
+        operand: NodeHandle,
+    },
+    /// Scalar, string, or temporal function call (e.g. `toLower(p.name)`, `coalesce(a, b)`, `datetime()`).
+    FunctionCall {
+        /// Function name (e.g. "toLower", "toUpper", "trim", "split", "coalesce", "size", "head", "tail", "datetime", "date.truncate", "duration")
+        name: String,
+        /// Arguments expression handles
+        arguments: Vec<NodeHandle>,
+    },
+    /// Conditional CASE expression: `CASE [operand] WHEN w1 THEN t1 ... [ELSE e] END`.
+    CaseExpression {
+        /// Optional operand for simple case: `CASE p.status WHEN 'A' THEN 1 ...`
+        operand: Option<NodeHandle>,
+        /// List of `(WHEN condition, THEN result)` branches
+        when_then_branches: Vec<(NodeHandle, NodeHandle)>,
+        /// Optional `ELSE default_expr` branch
+        else_branch: Option<NodeHandle>,
+    },
+    /// List comprehension: `[x IN list WHERE x > 5 | x * 2]`.
+    ListComprehension {
+        /// Iteration variable name (e.g. "x")
+        variable: String,
+        /// Source list expression handle
+        list_expression: NodeHandle,
+        /// Optional WHERE filter predicate handle
+        where_filter: Option<NodeHandle>,
+        /// Optional mapping/projection expression handle
+        map_expression: Option<NodeHandle>,
+    },
+    /// Pattern comprehension: `[(u)-[:FRIENDS_WITH]->(f) WHERE f.age > 20 | f.name]`.
+    PatternComprehension {
+        /// Path pattern handle (NodePattern or PathChain)
+        path: NodeHandle,
+        /// Optional WHERE filter predicate handle
+        where_filter: Option<NodeHandle>,
+        /// Projection expression handle
+        projection: NodeHandle,
+    },
+    /// Existential subquery block: `EXISTS { MATCH (u)-[:POSTED]->(p) WHERE p.views > 100 }`.
+    ExistsSubquery {
+        /// Target subquery handle (PathChain, MatchClause, or QueryStatement)
+        subquery: NodeHandle,
+    },
+    /// Scalar subquery count block: `COUNT { (u)-[:FOLLOWS]->() }`.
+    CountSubquery {
+        /// Target subquery handle (PathChain, MatchClause, or QueryStatement)
+        subquery: NodeHandle,
+    },
+    /// Explicit list literal of expressions: `[expr1, expr2, ...]`.
+    ListLiteral(Vec<NodeHandle>),
     /// Property access: `target.property_name` (e.g. `p.age`).
     PropertyAccess {
         /// Variable / Target handle
@@ -506,5 +601,17 @@ impl QueryAstArena {
         if checkpoint < self.nodes.len() {
             self.nodes.truncate(checkpoint);
         }
+    }
+
+    /// Returns a mutable slice of all nodes currently stored in the arena.
+    #[inline(always)]
+    pub fn nodes_mut(&mut self) -> &mut [AstNode] {
+        &mut self.nodes
+    }
+
+    /// Consumes the arena, returning the underlying node vector.
+    #[inline(always)]
+    pub fn into_nodes(self) -> Vec<AstNode> {
+        self.nodes
     }
 }
