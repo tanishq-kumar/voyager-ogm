@@ -2,7 +2,7 @@
 
 use crate::ast::{
     AggregationFunc, AstNode, BinaryOp, Direction, LiteralValue, NodeHandle, ProjectionItem,
-    QueryAstArena,
+    QueryAstArena, UnaryOp,
 };
 use crate::error::{Error, Result};
 use crate::visitor::{AstVisitor, CompiledQuery};
@@ -39,15 +39,26 @@ impl CypherEmitter {
         } = pred_node
         {
             let left_node = arena.get(*left)?;
+            let right_node = arena.get(*right)?;
             if let AstNode::PropertyAccess { property, .. } = left_node {
                 self.buffer.push_str(property);
                 self.buffer.push_str(": ");
                 self.emit_expression(arena, *right, false)?;
                 return Ok(());
+            } else if let AstNode::PropertyAccess { property, .. } = right_node {
+                self.buffer.push_str(property);
+                self.buffer.push_str(": ");
+                self.emit_expression(arena, *left, false)?;
+                return Ok(());
             } else if let AstNode::Identifier(ident) = left_node {
                 self.buffer.push_str(ident);
                 self.buffer.push_str(": ");
                 self.emit_expression(arena, *right, false)?;
+                return Ok(());
+            } else if let AstNode::Identifier(ident) = right_node {
+                self.buffer.push_str(ident);
+                self.buffer.push_str(": ");
+                self.emit_expression(arena, *left, false)?;
                 return Ok(());
             }
         }
@@ -166,6 +177,24 @@ impl CypherEmitter {
                 }
                 Ok(())
             }
+            AstNode::MatchClause { paths, .. } if !paths.is_empty() => {
+                for (p_idx, &p) in paths.iter().enumerate() {
+                    if p_idx > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.emit_path(arena, p)?;
+                }
+                Ok(())
+            }
+            AstNode::QueryStatement { matches, .. } if !matches.is_empty() => {
+                for (m_idx, &m) in matches.iter().enumerate() {
+                    if m_idx > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.emit_path(arena, m)?;
+                }
+                Ok(())
+            }
             other => Err(Error::AstInvariantViolation(format!(
                 "Expected PathChain or NodePattern, got {other:?}"
             ))),
@@ -233,10 +262,172 @@ impl CypherEmitter {
                 }
                 Ok(())
             }
+            AstNode::UnaryExpression { op, operand } => match op {
+                UnaryOp::Not => {
+                    self.buffer.push_str("NOT (");
+                    self.emit_expression(arena, *operand, false)?;
+                    self.buffer.push(')');
+                    Ok(())
+                }
+                UnaryOp::Neg => {
+                    self.buffer.push('-');
+                    self.emit_expression(arena, *operand, true)
+                }
+                UnaryOp::IsNull => {
+                    self.emit_expression(arena, *operand, true)?;
+                    self.buffer.push_str(" IS NULL");
+                    Ok(())
+                }
+                UnaryOp::IsNotNull => {
+                    self.emit_expression(arena, *operand, true)?;
+                    self.buffer.push_str(" IS NOT NULL");
+                    Ok(())
+                }
+            },
+            AstNode::FunctionCall { name, arguments } => {
+                self.buffer.push_str(name);
+                self.buffer.push('(');
+                for (i, &arg) in arguments.iter().enumerate() {
+                    if i > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.emit_expression(arena, arg, false)?;
+                }
+                self.buffer.push(')');
+                Ok(())
+            }
+            AstNode::CaseExpression {
+                operand,
+                when_then_branches,
+                else_branch,
+            } => {
+                self.buffer.push_str("CASE");
+                if let Some(op) = operand {
+                    self.buffer.push(' ');
+                    self.emit_expression(arena, *op, false)?;
+                }
+                for (when_expr, then_expr) in when_then_branches {
+                    self.buffer.push_str(" WHEN ");
+                    self.emit_expression(arena, *when_expr, false)?;
+                    self.buffer.push_str(" THEN ");
+                    self.emit_expression(arena, *then_expr, false)?;
+                }
+                if let Some(else_expr) = else_branch {
+                    self.buffer.push_str(" ELSE ");
+                    self.emit_expression(arena, *else_expr, false)?;
+                }
+                self.buffer.push_str(" END");
+                Ok(())
+            }
+            AstNode::ListComprehension {
+                variable,
+                list_expression,
+                where_filter,
+                map_expression,
+            } => {
+                self.buffer.push('[');
+                self.buffer.push_str(variable);
+                self.buffer.push_str(" IN ");
+                self.emit_expression(arena, *list_expression, false)?;
+                if let Some(wh) = where_filter {
+                    self.buffer.push_str(" WHERE ");
+                    self.emit_expression(arena, *wh, false)?;
+                }
+                if let Some(map) = map_expression {
+                    self.buffer.push_str(" | ");
+                    self.emit_expression(arena, *map, false)?;
+                }
+                self.buffer.push(']');
+                Ok(())
+            }
+            AstNode::PatternComprehension {
+                path,
+                where_filter,
+                projection,
+            } => {
+                self.buffer.push('[');
+                self.emit_path(arena, *path)?;
+                if let Some(wh) = where_filter {
+                    self.buffer.push_str(" WHERE ");
+                    self.emit_expression(arena, *wh, false)?;
+                }
+                self.buffer.push_str(" | ");
+                self.emit_expression(arena, *projection, false)?;
+                self.buffer.push(']');
+                Ok(())
+            }
+            AstNode::ExistsSubquery { subquery } => {
+                self.buffer.push_str("EXISTS { ");
+                self.emit_subquery_body(arena, *subquery)?;
+                self.buffer.push_str(" }");
+                Ok(())
+            }
+            AstNode::CountSubquery { subquery } => {
+                self.buffer.push_str("COUNT { ");
+                self.emit_subquery_body(arena, *subquery)?;
+                self.buffer.push_str(" }");
+                Ok(())
+            }
+            AstNode::ListLiteral(items) => {
+                self.buffer.push('[');
+                for (i, &item) in items.iter().enumerate() {
+                    if i > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.emit_expression(arena, item, false)?;
+                }
+                self.buffer.push(']');
+                Ok(())
+            }
             other => Err(Error::AstInvariantViolation(format!(
                 "Unsupported expression node: {other:?}"
             ))),
         }
+    }
+
+    fn emit_subquery_body(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
+        let node = arena.get(handle)?;
+        match node {
+            AstNode::NodePattern { .. } | AstNode::PathChain { .. } => {
+                self.buffer.push_str("MATCH ");
+                self.emit_path(arena, handle)?;
+            }
+            AstNode::MatchClause {
+                optional,
+                paths,
+                where_clause,
+            } => {
+                if *optional {
+                    self.buffer.push_str("OPTIONAL MATCH ");
+                } else {
+                    self.buffer.push_str("MATCH ");
+                }
+                for (p_idx, &path_handle) in paths.iter().enumerate() {
+                    if p_idx > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.emit_path(arena, path_handle)?;
+                }
+                if let Some(wh) = where_clause {
+                    self.emit_where(arena, *wh)?;
+                }
+            }
+            AstNode::QueryStatement { .. } => {
+                let mut nested_emitter = CypherEmitter::new();
+                nested_emitter.param_counter = self.param_counter;
+                let compiled = nested_emitter.visit_query(arena, handle)?;
+                self.buffer.push_str(&compiled.statement);
+                self.param_counter = nested_emitter.param_counter;
+                self.parameters.extend(compiled.parameters);
+            }
+            AstNode::WhereClause { .. } => {
+                self.emit_where(arena, handle)?;
+            }
+            _ => {
+                self.emit_expression(arena, handle, false)?;
+            }
+        }
+        Ok(())
     }
 
     fn emit_where(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {

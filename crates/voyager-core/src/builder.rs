@@ -26,7 +26,7 @@
 
 use crate::ast::{
     AggregationFunc, AstNode, BinaryOp, Direction, LiteralValue, NodeHandle, ProjectionItem,
-    QueryAstArena,
+    QueryAstArena, UnaryOp,
 };
 
 #[derive(Debug, Clone)]
@@ -60,6 +60,7 @@ pub struct QueryBuilder {
     is_optional_match: bool,
     current_path_start: Option<NodeHandle>,
     current_edges: Vec<NodeHandle>,
+    current_match_paths: Vec<NodeHandle>,
     pending_edge: Option<PendingEdge>,
     current_where_predicates: Vec<NodeHandle>,
     current_on_create_set: Vec<NodeHandle>,
@@ -103,11 +104,114 @@ impl QueryBuilder {
         })
     }
 
-    /// Allocates a binary comparison or logical expression.
+    /// Allocates a binary comparison, math, or logical expression.
     #[inline(always)]
     pub fn binary_expr(&mut self, left: NodeHandle, op: BinaryOp, right: NodeHandle) -> NodeHandle {
         self.arena
             .alloc(AstNode::BinaryExpression { left, op, right })
+    }
+
+    /// Allocates an arithmetic binary math expression.
+    #[inline(always)]
+    pub fn math_expr(&mut self, left: NodeHandle, op: BinaryOp, right: NodeHandle) -> NodeHandle {
+        self.binary_expr(left, op, right)
+    }
+
+    /// Allocates a unary expression (`NOT`, `-`, `IS NULL`, `IS NOT NULL`).
+    #[inline(always)]
+    pub fn unary_expr(&mut self, op: UnaryOp, operand: NodeHandle) -> NodeHandle {
+        self.arena.alloc(AstNode::UnaryExpression { op, operand })
+    }
+
+    /// Allocates a logical negation expression: `NOT (operand)`.
+    #[inline(always)]
+    pub fn not_expr(&mut self, operand: NodeHandle) -> NodeHandle {
+        self.unary_expr(UnaryOp::Not, operand)
+    }
+
+    /// Allocates an arithmetic negation expression: `-operand`.
+    #[inline(always)]
+    pub fn neg_expr(&mut self, operand: NodeHandle) -> NodeHandle {
+        self.unary_expr(UnaryOp::Neg, operand)
+    }
+
+    /// Allocates an `IS NULL` check expression.
+    #[inline(always)]
+    pub fn is_null_expr(&mut self, operand: NodeHandle) -> NodeHandle {
+        self.unary_expr(UnaryOp::IsNull, operand)
+    }
+
+    /// Allocates an `IS NOT NULL` check expression.
+    #[inline(always)]
+    pub fn is_not_null_expr(&mut self, operand: NodeHandle) -> NodeHandle {
+        self.unary_expr(UnaryOp::IsNotNull, operand)
+    }
+
+    /// Allocates a scalar, string, or temporal function call: `name(args...)`.
+    pub fn function(&mut self, name: impl Into<String>, arguments: Vec<NodeHandle>) -> NodeHandle {
+        self.arena.alloc(AstNode::FunctionCall {
+            name: name.into(),
+            arguments,
+        })
+    }
+
+    /// Allocates a conditional CASE WHEN expression: `CASE [operand] WHEN ... THEN ... [ELSE ...] END`.
+    pub fn case_when(
+        &mut self,
+        operand: Option<NodeHandle>,
+        when_then_branches: Vec<(NodeHandle, NodeHandle)>,
+        else_branch: Option<NodeHandle>,
+    ) -> NodeHandle {
+        self.arena.alloc(AstNode::CaseExpression {
+            operand,
+            when_then_branches,
+            else_branch,
+        })
+    }
+
+    /// Allocates a list comprehension: `[x IN list WHERE ... | ...]`.
+    pub fn list_comprehension(
+        &mut self,
+        variable: impl Into<String>,
+        list_expression: NodeHandle,
+        where_filter: Option<NodeHandle>,
+        map_expression: Option<NodeHandle>,
+    ) -> NodeHandle {
+        self.arena.alloc(AstNode::ListComprehension {
+            variable: variable.into(),
+            list_expression,
+            where_filter,
+            map_expression,
+        })
+    }
+
+    /// Allocates a pattern comprehension: `[(path) WHERE ... | ...]`.
+    pub fn pattern_comprehension(
+        &mut self,
+        path: NodeHandle,
+        where_filter: Option<NodeHandle>,
+        projection: NodeHandle,
+    ) -> NodeHandle {
+        self.arena.alloc(AstNode::PatternComprehension {
+            path,
+            where_filter,
+            projection,
+        })
+    }
+
+    /// Allocates an existential subquery block: `EXISTS { MATCH ... }`.
+    pub fn exists_subquery(&mut self, subquery: NodeHandle) -> NodeHandle {
+        self.arena.alloc(AstNode::ExistsSubquery { subquery })
+    }
+
+    /// Allocates a scalar subquery count block: `COUNT { ... }`.
+    pub fn count_subquery(&mut self, subquery: NodeHandle) -> NodeHandle {
+        self.arena.alloc(AstNode::CountSubquery { subquery })
+    }
+
+    /// Allocates a list literal of expression handles: `[expr1, expr2, ...]`.
+    pub fn list_literal(&mut self, items: Vec<NodeHandle>) -> NodeHandle {
+        self.arena.alloc(AstNode::ListLiteral(items))
     }
 
     /// Allocates an explicit named parameter node: `$param_name`.
@@ -423,6 +527,24 @@ impl QueryBuilder {
         self.node(None::<String>, vec![label])
     }
 
+    /// Convenient variable-only node shortcut without labels: `(variable)`.
+    #[inline(always)]
+    pub fn node_var(&mut self, variable: impl Into<String>) -> &mut Self {
+        self.node(Some(variable), Vec::<String>::new())
+    }
+
+    /// Alias for [`Self::node_var`].
+    #[inline(always)]
+    pub fn node_alias(&mut self, variable: impl Into<String>) -> &mut Self {
+        self.node_var(variable)
+    }
+
+    /// Convenient anonymous, unlabelled node shortcut: `()`.
+    #[inline(always)]
+    pub fn node_empty(&mut self) -> &mut Self {
+        self.node(None::<String>, Vec::<String>::new())
+    }
+
     /// Chains an **outgoing** relationship traversal: `(current)-[r:TYPE]->(next_node)`.
     pub fn to(
         &mut self,
@@ -437,6 +559,12 @@ impl QueryBuilder {
             max_hops: None,
         });
         self
+    }
+
+    /// Chains an **outgoing** relationship traversal without variable alias: `(current)-[:TYPE]->(next_node)`.
+    #[inline(always)]
+    pub fn to_types(&mut self, edge_types: Vec<impl Into<String>>) -> &mut Self {
+        self.to(edge_types, None::<String>)
     }
 
     /// Alias for [`Self::to`] representing an outgoing edge.
@@ -463,6 +591,12 @@ impl QueryBuilder {
             max_hops: None,
         });
         self
+    }
+
+    /// Chains an **incoming** relationship traversal without variable alias: `(current)<-[:TYPE]-(next_node)`.
+    #[inline(always)]
+    pub fn from_types(&mut self, edge_types: Vec<impl Into<String>>) -> &mut Self {
+        self.from(edge_types, None::<String>)
     }
 
     /// Alias for [`Self::from`] representing an incoming edge.
@@ -537,6 +671,12 @@ impl QueryBuilder {
     /// Fluent alias for [`Self::where_predicate`].
     #[inline(always)]
     pub fn r#where(&mut self, predicate: NodeHandle) -> &mut Self {
+        self.where_predicate(predicate)
+    }
+
+    /// Fluent alias for [`Self::where_predicate`].
+    #[inline(always)]
+    pub fn where_expr(&mut self, predicate: NodeHandle) -> &mut Self {
         self.where_predicate(predicate)
     }
 
@@ -675,6 +815,16 @@ impl QueryBuilder {
         self
     }
 
+    /// Fluent alias for [`Self::select_expr`].
+    #[inline(always)]
+    pub fn custom_expr(
+        &mut self,
+        expression: NodeHandle,
+        alias: Option<impl Into<String>>,
+    ) -> &mut Self {
+        self.select_expr(expression, alias)
+    }
+
     /// Appends a property column projection directly: `var.prop AS alias`.
     pub fn select_property(
         &mut self,
@@ -763,6 +913,20 @@ impl QueryBuilder {
         self.order_by_property(var, prop, false)
     }
 
+    /// Starts an additional branching path pattern within the current MATCH or CREATE clause: `MATCH p1, p2`.
+    pub fn pattern(&mut self) -> &mut Self {
+        if let Some(start_node) = self.current_path_start.take() {
+            let path_handle = if self.current_edges.is_empty() {
+                start_node
+            } else {
+                let edges = std::mem::take(&mut self.current_edges);
+                self.arena.alloc(AstNode::PathChain { start_node, edges })
+            };
+            self.current_match_paths.push(path_handle);
+        }
+        self
+    }
+
     /// Sets query result limit.
     pub fn limit(&mut self, limit: u64) -> &mut Self {
         self.limit = Some(limit);
@@ -776,6 +940,7 @@ impl QueryBuilder {
     }
 
     fn flush_current_path(&mut self) {
+        let mut paths = std::mem::take(&mut self.current_match_paths);
         if let Some(start_node) = self.current_path_start.take() {
             let path_handle = if self.current_edges.is_empty() {
                 start_node
@@ -783,19 +948,20 @@ impl QueryBuilder {
                 let edges = std::mem::take(&mut self.current_edges);
                 self.arena.alloc(AstNode::PathChain { start_node, edges })
             };
+            paths.push(path_handle);
+        }
 
+        if !paths.is_empty() {
             match self.clause_mode {
                 Some(ClauseMode::Create) => {
-                    let create_handle = self.arena.alloc(AstNode::CreateClause {
-                        paths: vec![path_handle],
-                    });
+                    let create_handle = self.arena.alloc(AstNode::CreateClause { paths });
                     self.mutation_clauses.push(create_handle);
                 }
                 Some(ClauseMode::Merge) => {
                     let on_create_set = std::mem::take(&mut self.current_on_create_set);
                     let on_match_set = std::mem::take(&mut self.current_on_match_set);
                     let merge_handle = self.arena.alloc(AstNode::MergeClause {
-                        path: path_handle,
+                        path: paths[0],
                         on_create_set,
                         on_match_set,
                     });
@@ -826,7 +992,7 @@ impl QueryBuilder {
 
                     let match_handle = self.arena.alloc(AstNode::MatchClause {
                         optional: self.is_optional_match,
-                        paths: vec![path_handle],
+                        paths,
                         where_clause,
                     });
 
@@ -873,6 +1039,250 @@ impl QueryBuilder {
         });
 
         (self.arena, root_handle)
+    }
+
+    /// Imports nodes from an external arena into this builder's arena, remapping all internal handles.
+    pub fn import_subarena(
+        &mut self,
+        mut sub_arena: QueryAstArena,
+        sub_root: NodeHandle,
+    ) -> NodeHandle {
+        let offset = self.arena.len() as u32;
+        for node in sub_arena.nodes_mut() {
+            remap_ast_node(node, offset);
+        }
+        for node in sub_arena.into_nodes() {
+            self.arena.alloc(node);
+        }
+        remap_handle(sub_root, offset)
+    }
+
+    /// Helper to build and import an isolated subquery, path pattern, or nested statement into this builder.
+    pub fn subquery<F>(&mut self, f: F) -> NodeHandle
+    where
+        F: FnOnce(&mut QueryBuilder),
+    {
+        let mut sub = QueryBuilder::new();
+        f(&mut sub);
+        let (sub_arena, sub_handle) = sub.build();
+        self.import_subarena(sub_arena, sub_handle)
+    }
+}
+
+fn remap_handle(h: NodeHandle, offset: u32) -> NodeHandle {
+    if h.is_null() {
+        h
+    } else {
+        NodeHandle(h.0 + offset)
+    }
+}
+
+fn remap_ast_node(node: &mut AstNode, offset: u32) {
+    match node {
+        AstNode::NodePattern { predicates, .. } => {
+            for p in predicates {
+                *p = remap_handle(*p, offset);
+            }
+        }
+        AstNode::EdgePattern {
+            predicates,
+            target_node,
+            ..
+        } => {
+            for p in predicates {
+                *p = remap_handle(*p, offset);
+            }
+            *target_node = remap_handle(*target_node, offset);
+        }
+        AstNode::PathChain { start_node, edges } => {
+            *start_node = remap_handle(*start_node, offset);
+            for e in edges {
+                *e = remap_handle(*e, offset);
+            }
+        }
+        AstNode::BinaryExpression { left, right, .. } => {
+            *left = remap_handle(*left, offset);
+            *right = remap_handle(*right, offset);
+        }
+        AstNode::UnaryExpression { operand, .. } => {
+            *operand = remap_handle(*operand, offset);
+        }
+        AstNode::FunctionCall { arguments, .. } => {
+            for arg in arguments {
+                *arg = remap_handle(*arg, offset);
+            }
+        }
+        AstNode::CaseExpression {
+            operand,
+            when_then_branches,
+            else_branch,
+        } => {
+            if let Some(op) = operand {
+                *op = remap_handle(*op, offset);
+            }
+            for (w, t) in when_then_branches {
+                *w = remap_handle(*w, offset);
+                *t = remap_handle(*t, offset);
+            }
+            if let Some(el) = else_branch {
+                *el = remap_handle(*el, offset);
+            }
+        }
+        AstNode::ListComprehension {
+            list_expression,
+            where_filter,
+            map_expression,
+            ..
+        } => {
+            *list_expression = remap_handle(*list_expression, offset);
+            if let Some(wh) = where_filter {
+                *wh = remap_handle(*wh, offset);
+            }
+            if let Some(map) = map_expression {
+                *map = remap_handle(*map, offset);
+            }
+        }
+        AstNode::PatternComprehension {
+            path,
+            where_filter,
+            projection,
+        } => {
+            *path = remap_handle(*path, offset);
+            if let Some(wh) = where_filter {
+                *wh = remap_handle(*wh, offset);
+            }
+            *projection = remap_handle(*projection, offset);
+        }
+        AstNode::ExistsSubquery { subquery } | AstNode::CountSubquery { subquery } => {
+            *subquery = remap_handle(*subquery, offset);
+        }
+        AstNode::ListLiteral(items) => {
+            for item in items {
+                *item = remap_handle(*item, offset);
+            }
+        }
+        AstNode::PropertyAccess { target, .. } => {
+            *target = remap_handle(*target, offset);
+        }
+        AstNode::UnwindClause { expression, .. } => {
+            *expression = remap_handle(*expression, offset);
+        }
+        AstNode::WhereClause { root_predicate } => {
+            *root_predicate = remap_handle(*root_predicate, offset);
+        }
+        AstNode::MatchClause {
+            paths,
+            where_clause,
+            ..
+        } => {
+            for p in paths {
+                *p = remap_handle(*p, offset);
+            }
+            if let Some(wh) = where_clause {
+                *wh = remap_handle(*wh, offset);
+            }
+        }
+        AstNode::ReturnClause {
+            projections,
+            order_by,
+            ..
+        } => {
+            for proj in projections {
+                proj.expression = remap_handle(proj.expression, offset);
+            }
+            for (expr, _) in order_by {
+                *expr = remap_handle(*expr, offset);
+            }
+        }
+        AstNode::ProcedureCall { arguments, .. } => {
+            for arg in arguments {
+                *arg = remap_handle(*arg, offset);
+            }
+        }
+        AstNode::CreateClause { paths } => {
+            for p in paths {
+                *p = remap_handle(*p, offset);
+            }
+        }
+        AstNode::MergeClause {
+            path,
+            on_create_set,
+            on_match_set,
+        } => {
+            *path = remap_handle(*path, offset);
+            for item in on_create_set {
+                *item = remap_handle(*item, offset);
+            }
+            for item in on_match_set {
+                *item = remap_handle(*item, offset);
+            }
+        }
+        AstNode::SetClause { items } => {
+            for item in items {
+                *item = remap_handle(*item, offset);
+            }
+        }
+        AstNode::SetItem { target, value, .. } => {
+            *target = remap_handle(*target, offset);
+            *value = remap_handle(*value, offset);
+        }
+        AstNode::DeleteClause { targets, .. } => {
+            for t in targets {
+                *t = remap_handle(*t, offset);
+            }
+        }
+        AstNode::RemoveClause { items } => {
+            for item in items {
+                *item = remap_handle(*item, offset);
+            }
+        }
+        AstNode::LoadCsvClause { url, .. } => {
+            *url = remap_handle(*url, offset);
+        }
+        AstNode::WithClause {
+            projections,
+            order_by,
+            where_clause,
+            ..
+        } => {
+            for proj in projections {
+                proj.expression = remap_handle(proj.expression, offset);
+            }
+            for (expr, _) in order_by {
+                *expr = remap_handle(*expr, offset);
+            }
+            if let Some(wh) = where_clause {
+                *wh = remap_handle(*wh, offset);
+            }
+        }
+        AstNode::QueryStatement {
+            load_csv,
+            unwinds,
+            matches,
+            with_clauses,
+            mutations,
+            return_clause,
+        } => {
+            if let Some(lc) = load_csv {
+                *lc = remap_handle(*lc, offset);
+            }
+            for u in unwinds {
+                *u = remap_handle(*u, offset);
+            }
+            for m in matches {
+                *m = remap_handle(*m, offset);
+            }
+            for w in with_clauses {
+                *w = remap_handle(*w, offset);
+            }
+            for mut_item in mutations {
+                *mut_item = remap_handle(*mut_item, offset);
+            }
+            if let Some(rc) = return_clause {
+                *rc = remap_handle(*rc, offset);
+            }
+        }
+        AstNode::Literal(_) | AstNode::Identifier(_) | AstNode::Parameter(_) => {}
     }
 }
 

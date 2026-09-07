@@ -79,9 +79,22 @@ typecheck:
 ci: fmt-check lint test
     @echo "[PASS] Full CI verification passed with 0 errors!"
 
+# Pre-commit hook recipe (formatting, linting, and type checking)
+pre-commit: fmt-check lint typecheck
+    @echo "[PASS] Pre-commit checks passed cleanly!"
+
+# Pre-push hook recipe (runs full test matrix and captures benchmark snapshots)
+pre-push: test bench-save
+    @echo "[PASS] Pre-push verification and benchmark capture complete!"
+
 # Run benchmarks
 bench:
     uv run cargo bench --workspace
+
+# Run Python & Rust hydration/compilation benchmarks and dynamically save JSON results
+bench-save name="":
+    uv run python scripts/save_benchmarks.py {{name}}
+
 
 # Run all Rust code examples
 examples-rust:
