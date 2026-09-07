@@ -90,8 +90,8 @@ impl AstOptimizer {
             }
         };
 
-        for match_handle in match_handles {
-            self.optimize_match_clause(arena, match_handle)?;
+        for (idx, &match_handle) in match_handles.iter().enumerate() {
+            self.optimize_match_clause(arena, match_handle, &match_handles[..=idx])?;
         }
 
         for mut_handle in mutation_handles {
@@ -105,16 +105,18 @@ impl AstOptimizer {
         &self,
         arena: &mut QueryAstArena,
         match_handle: NodeHandle,
+        candidate_matches: &[NodeHandle],
     ) -> Result<()> {
-        let (paths, where_clause) = {
+        let (paths, where_clause, is_optional) = {
             let match_node = arena.get(match_handle)?;
             if let AstNode::MatchClause {
                 paths,
                 where_clause,
+                optional,
                 ..
             } = match_node
             {
-                (paths.clone(), *where_clause)
+                (paths.clone(), *where_clause, *optional)
             } else {
                 return Ok(());
             }
@@ -130,7 +132,7 @@ impl AstOptimizer {
                 if let Some(target_var) =
                     self.extract_single_node_equality_var(arena, conjunct_handle)?
                 {
-                    // Try to hoist this equality into a matching node pattern in this match clause
+                    // 1. Try to hoist this equality into a matching node pattern in this match clause
                     let mut hoisted = false;
                     for &path_handle in &paths {
                         if self.hoist_predicate_to_path(
@@ -141,6 +143,41 @@ impl AstOptimizer {
                         )? {
                             hoisted = true;
                             break;
+                        }
+                    }
+
+                    // 2. If not found in current match clause and this is NOT an OPTIONAL MATCH,
+                    // check preceding non-optional match clauses in the query statement
+                    if !hoisted && !is_optional {
+                        for &prev_match_h in candidate_matches.iter().rev().skip(1) {
+                            let (prev_paths, prev_optional) = {
+                                let prev_node = arena.get(prev_match_h)?;
+                                if let AstNode::MatchClause {
+                                    paths, optional, ..
+                                } = prev_node
+                                {
+                                    (paths.clone(), *optional)
+                                } else {
+                                    (Vec::new(), true)
+                                }
+                            };
+
+                            if !prev_optional {
+                                for &prev_path in &prev_paths {
+                                    if self.hoist_predicate_to_path(
+                                        arena,
+                                        prev_path,
+                                        &target_var,
+                                        conjunct_handle,
+                                    )? {
+                                        hoisted = true;
+                                        break;
+                                    }
+                                }
+                                if hoisted {
+                                    break;
+                                }
+                            }
                         }
                     }
 
@@ -224,16 +261,16 @@ impl AstOptimizer {
             let left_node = arena.get(*left)?;
             let right_node = arena.get(*right)?;
 
-            // Case A: Left is `PropertyAccess`, right is literal/param
+            // Case A: Left is `PropertyAccess`, right is constant/literal/parameter expression
             if let AstNode::PropertyAccess { target, .. } = left_node
-                && self.is_literal_or_param(right_node)
+                && self.is_constant_expression(arena, *right)?
             {
                 return self.resolve_variable_name(arena, *target);
             }
 
-            // Case B: Right is `PropertyAccess`, left is literal/param
+            // Case B: Right is `PropertyAccess`, left is constant/literal/parameter expression
             if let AstNode::PropertyAccess { target, .. } = right_node
-                && self.is_literal_or_param(left_node)
+                && self.is_constant_expression(arena, *left)?
             {
                 return self.resolve_variable_name(arena, *target);
             }
@@ -241,8 +278,36 @@ impl AstOptimizer {
         Ok(None)
     }
 
-    fn is_literal_or_param(&self, node: &AstNode) -> bool {
-        matches!(node, AstNode::Literal(_) | AstNode::Parameter(_))
+    /// Returns true if the expression is a constant expression (literals, parameters,
+    /// or deterministic functions/operations over literals and parameters) with no graph variable references.
+    fn is_constant_expression(&self, arena: &QueryAstArena, handle: NodeHandle) -> Result<bool> {
+        let node = arena.get(handle)?;
+        match node {
+            AstNode::Literal(_) | AstNode::Parameter(_) => Ok(true),
+            AstNode::FunctionCall { arguments, .. } => {
+                for &arg in arguments {
+                    if !self.is_constant_expression(arena, arg)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            AstNode::UnaryExpression { operand, .. } => {
+                self.is_constant_expression(arena, *operand)
+            }
+            AstNode::BinaryExpression { left, right, .. } => Ok(self
+                .is_constant_expression(arena, *left)?
+                && self.is_constant_expression(arena, *right)?),
+            AstNode::ListLiteral(items) => {
+                for &item in items {
+                    if !self.is_constant_expression(arena, item)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 
     fn resolve_variable_name(
@@ -454,6 +519,62 @@ impl AstOptimizer {
             AstNode::BinaryExpression { left, right, .. } => {
                 self.collect_expr_vars(arena, *left, used_vars)?;
                 self.collect_expr_vars(arena, *right, used_vars)?;
+            }
+            AstNode::UnaryExpression { operand, .. } => {
+                self.collect_expr_vars(arena, *operand, used_vars)?;
+            }
+            AstNode::FunctionCall { arguments, .. } => {
+                for &arg in arguments {
+                    self.collect_expr_vars(arena, arg, used_vars)?;
+                }
+            }
+            AstNode::CaseExpression {
+                operand,
+                when_then_branches,
+                else_branch,
+            } => {
+                if let Some(op) = operand {
+                    self.collect_expr_vars(arena, *op, used_vars)?;
+                }
+                for (when_expr, then_expr) in when_then_branches {
+                    self.collect_expr_vars(arena, *when_expr, used_vars)?;
+                    self.collect_expr_vars(arena, *then_expr, used_vars)?;
+                }
+                if let Some(else_expr) = else_branch {
+                    self.collect_expr_vars(arena, *else_expr, used_vars)?;
+                }
+            }
+            AstNode::ListComprehension {
+                list_expression,
+                where_filter,
+                map_expression,
+                ..
+            } => {
+                self.collect_expr_vars(arena, *list_expression, used_vars)?;
+                if let Some(wh) = where_filter {
+                    self.collect_expr_vars(arena, *wh, used_vars)?;
+                }
+                if let Some(map) = map_expression {
+                    self.collect_expr_vars(arena, *map, used_vars)?;
+                }
+            }
+            AstNode::PatternComprehension {
+                where_filter,
+                projection,
+                ..
+            } => {
+                if let Some(wh) = where_filter {
+                    self.collect_expr_vars(arena, *wh, used_vars)?;
+                }
+                self.collect_expr_vars(arena, *projection, used_vars)?;
+            }
+            AstNode::ExistsSubquery { subquery } | AstNode::CountSubquery { subquery } => {
+                self.collect_expr_vars(arena, *subquery, used_vars)?;
+            }
+            AstNode::ListLiteral(items) => {
+                for &item in items {
+                    self.collect_expr_vars(arena, item, used_vars)?;
+                }
             }
             AstNode::WhereClause { root_predicate } => {
                 self.collect_expr_vars(arena, *root_predicate, used_vars)?;

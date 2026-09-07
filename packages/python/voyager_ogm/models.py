@@ -12,6 +12,8 @@ import weakref
 from collections import defaultdict
 from typing import Any, ClassVar, Generic, TypeVar
 
+from voyager_ogm.expressions import BinaryExpr, Expression, PropExpr, to_expression
+
 _T = TypeVar("_T")
 
 # Thread-local alias counter for deterministic auto-aliasing
@@ -71,6 +73,7 @@ class Field(Generic[_T]):
         self,
         default: Any = ...,
         *,
+        default_factory: Any = None,
         name: str | None = None,
         unique: bool = False,
         index: bool = False,
@@ -81,13 +84,19 @@ class Field(Generic[_T]):
 
         Args:
             default: Default fallback value for this property.
+            default_factory: Zero-argument callable producing a default value.
             name: Custom database property name (defaults to attribute name).
             unique: Whether to enforce a unique constraint.
             index: Whether to create a search index on this property.
             primary_key: Convenience flag setting both unique=True and index=True.
             type_annotation: Python type annotation class.
         """
-        self.default = default
+        self.default = (
+            default
+            if default is not ...
+            else (default_factory() if callable(default_factory) else ...)
+        )
+        self.default_factory = default_factory
         self.name = name
         self.primary_key = primary_key
         self.unique = unique or primary_key
@@ -149,11 +158,11 @@ class Field(Generic[_T]):
         return BoundField(alias, self.name)
 
 
-class BoundField:
+class BoundField(Expression):
     """A field bound to a specific node or relationship alias instance.
 
-    Overloads comparison operators (`==`, `>`, `<`, `>=`, `<=`, `.contains()`)
-    to produce AST `PredicateExpr` objects for query building.
+    Overloads comparison, arithmetic, and boolean operators to produce AST `Expression`
+    and `PredicateExpr` objects for query building.
 
     Attributes:
         target_alias: Variable alias of the node or edge (e.g. 'p', 'm').
@@ -169,84 +178,60 @@ class BoundField:
         """
         self.target_alias = target_alias
         self.field_name = field_name
+        self.target = target_alias
+        self.field = field_name
 
-    def __eq__(self, other: Any) -> Any:
-        """Creates an equality predicate `alias.prop = value`.
+    def to_spec(self) -> tuple[str, str, str]:
+        """Returns the AST property specification tuple `('prop', var, prop)`."""
+        return ("prop", self.target_alias, self.field_name)
 
-        Args:
-            other: Literal comparison value.
+    def __repr__(self) -> str:
+        return f"{self.target_alias}.{self.field_name}"
 
-        Returns:
-            PredicateExpr with operator 'eq'.
-        """
+    def __eq__(self, other: Any) -> PredicateExpr:  # type: ignore[override]
+        """Creates an equality predicate `alias.prop = value`."""
         return PredicateExpr(self.target_alias, self.field_name, "eq", other)
 
     def __gt__(self, other: Any) -> PredicateExpr:
-        """Creates a greater-than predicate `alias.prop > value`.
-
-        Args:
-            other: Literal comparison value.
-
-        Returns:
-            PredicateExpr with operator 'gt'.
-        """
+        """Creates a greater-than predicate `alias.prop > value`."""
         return PredicateExpr(self.target_alias, self.field_name, "gt", other)
 
     def __ge__(self, other: Any) -> PredicateExpr:
-        """Creates a greater-than-or-equal predicate `alias.prop >= value`.
-
-        Args:
-            other: Literal comparison value.
-
-        Returns:
-            PredicateExpr with operator 'gte'.
-        """
+        """Creates a greater-than-or-equal predicate `alias.prop >= value`."""
         return PredicateExpr(self.target_alias, self.field_name, "gte", other)
 
     def __lt__(self, other: Any) -> PredicateExpr:
-        """Creates a less-than predicate `alias.prop < value`.
-
-        Args:
-            other: Literal comparison value.
-
-        Returns:
-            PredicateExpr with operator 'lt'.
-        """
+        """Creates a less-than predicate `alias.prop < value`."""
         return PredicateExpr(self.target_alias, self.field_name, "lt", other)
 
     def __le__(self, other: Any) -> PredicateExpr:
         """Creates a less-than-or-equal predicate `alias.prop <= value`."""
         return PredicateExpr(self.target_alias, self.field_name, "lte", other)
 
-    def __ne__(self, other: Any) -> Any:
+    def __ne__(self, other: Any) -> PredicateExpr:  # type: ignore[override]
         """Creates a not-equal predicate `alias.prop != value`."""
         return PredicateExpr(self.target_alias, self.field_name, "ne", other)
 
-    def in_(self, values: list[Any] | tuple[Any, ...]) -> PredicateExpr:
+    def in_(self, other: Any) -> PredicateExpr:
         """Creates an IN list membership predicate `alias.prop IN values`."""
-        return PredicateExpr(self.target_alias, self.field_name, "in", list(values))
+        val_list = list(other) if isinstance(other, (list, tuple, set)) else other
+        return PredicateExpr(self.target_alias, self.field_name, "in", val_list)
 
-    def not_in(self, values: list[Any] | tuple[Any, ...]) -> PredicateExpr:
+    def not_in(self, other: Any) -> PredicateExpr:
         """Creates a NOT IN list membership predicate `alias.prop NOT IN values`."""
-        return PredicateExpr(self.target_alias, self.field_name, "not_in", list(values))
+        val_list = list(other) if isinstance(other, (list, tuple, set)) else other
+        return PredicateExpr(self.target_alias, self.field_name, "not_in", val_list)
 
-    def startswith(self, prefix: str) -> PredicateExpr:
+    def startswith(self, prefix: Any) -> PredicateExpr:
         """Creates a prefix predicate `alias.prop STARTS WITH prefix`."""
         return PredicateExpr(self.target_alias, self.field_name, "starts_with", prefix)
 
-    def endswith(self, suffix: str) -> PredicateExpr:
+    def endswith(self, suffix: Any) -> PredicateExpr:
         """Creates a suffix predicate `alias.prop ENDS WITH suffix`."""
         return PredicateExpr(self.target_alias, self.field_name, "ends_with", suffix)
 
-    def contains(self, substring: str) -> PredicateExpr:
-        """Creates a string substring predicate `alias.prop CONTAINS value`.
-
-        Args:
-            substring: Substring to search for.
-
-        Returns:
-            PredicateExpr with operator 'contains'.
-        """
+    def contains(self, substring: Any) -> PredicateExpr:
+        """Creates a string substring predicate `alias.prop CONTAINS value`."""
         return PredicateExpr(self.target_alias, self.field_name, "contains", substring)
 
     def count(self) -> AggregationExpr:
@@ -274,7 +259,7 @@ class BoundField:
         return AggregationExpr(self.target_alias, self.field_name, "collect")
 
 
-class AggregationExpr:
+class AggregationExpr(Expression):
     """Container for AST column aggregation expressions (e.g. COUNT, AVG)."""
 
     def __init__(self, target: str, field: str, func: str) -> None:
@@ -284,8 +269,15 @@ class AggregationExpr:
         self.field_name = field
         self.func = func
 
+    def to_spec(self) -> tuple[str, str, str, str, None]:
+        """Converts this aggregation into an AST spec descriptor tuple."""
+        return ("agg", self.target, self.field, self.func, None)
 
-class PredicateExpr:
+    def __repr__(self) -> str:
+        return f"{self.func.upper()}({self.target}.{self.field})"
+
+
+class PredicateExpr(BinaryExpr):
     """Container for AST predicate conditions.
 
     Attributes:
@@ -305,9 +297,24 @@ class PredicateExpr:
             value: Right-hand comparison value.
         """
         self.target = target
+        self.target_alias = target
         self.field = field
+        self.field_name = field
         self.op = op
         self.value = value
+        super().__init__(PropExpr(target, field), op, to_expression(value))
+
+    def to_spec(self) -> tuple[str, str, Any, Any]:
+        """Converts to native AST binary expression tuple."""
+        return (
+            "bin",
+            self.op,
+            ("prop", self.target, self.field),
+            to_expression(self.value).to_spec(),
+        )
+
+    def __repr__(self) -> str:
+        return f"({self.target}.{self.field} {self.op} {self.value!r})"
 
 
 def _process_type_annotations(cls: Any) -> dict[str, Field]:
@@ -615,7 +622,9 @@ class Relationship:
                 (e.g. `_acted_in_0`) is generated.
             **values: Edge property key-value pairs.
         """
-        rel_type = self.__type__ or self.__class__.__name__.upper()
+        rel_type = (
+            getattr(self, "__edge_type__", None) or self.__type__ or self.__class__.__name__.upper()
+        )
         self._alias = alias or _get_next_alias(rel_type)
         self._bound_fields: dict[str, BoundField] = {}
         self._values = values
@@ -628,7 +637,9 @@ class Relationship:
     @property
     def edge_type(self) -> str:
         """Returns the relationship type name (e.g. 'FOLLOWS', 'ACTED_IN')."""
-        return self.__type__ or self.__class__.__name__.upper()
+        return (
+            getattr(self, "__edge_type__", None) or self.__type__ or self.__class__.__name__.upper()
+        )
 
     def __getattr__(self, name: str) -> BoundField:
         """Dynamically resolves unknown edge property names into BoundField descriptors.
