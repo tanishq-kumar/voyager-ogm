@@ -1754,7 +1754,7 @@ wheels = [
 
 [[package]]
 name = "voyager-ogm"
-version = "0.3.0a1"
+version = "0.4.5a1"
 source = { editable = "." }
 dependencies = [
     { name = "polars" },
