@@ -3,8 +3,21 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".githooks/**"
+      - "LICENSE*"
+      - "benchmarks/**"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".githooks/**"
+      - "LICENSE*"
+      - "benchmarks/**"
+
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

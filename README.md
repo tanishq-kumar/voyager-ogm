@@ -43,11 +43,11 @@ Voyager OGM addresses four common challenges in graph database development:
 | **Phase 2: Mutations, Ingestion & Streaming** | DML mutations, 2-layer rollback transaction UoW, Bulk `UNWIND $batch`, Zero-copy Arrow/Polars streaming, Database bridging                         | `v0.2.0-alpha` |  ✅ Completed  |
 | **Phase 3: Multi-Dialect Syntax Conformance** | Standard openCypher, ISO GQL, DuckPGQ & Apache AGE syntax test suites, 6-engine live integration matrix | `v0.3.0-alpha` | ✅ Completed |
 | **Phase 4: Python Integrations & Optimizers** | SQLAlchemy hybrid bridge, Interactive Notebook Graph Viewer (`voyager_ogm.viewer`), Multi-database batch Identity Map, AST predicate pushdown pass | `v0.4.0-alpha` | ✅ Completed |
-| **Phase 4A: Core Hardening & Rich Expressions** | Rich function AST (`toLower`, `coalesce`), arithmetic trees, `CASE WHEN`, branching diamond patterns, batched FFI | `v0.4.5-alpha` | 🚧 Planned |
-| **Phase 4B: Native Async Rust Network Engine** | Standalone `voyager-net`, Tokio async driver, wire-to-Arrow zero-copy streaming, dual backend (`backend="native"`) | `v0.4.6-alpha` | 🚧 Planned |
-| **Phase 5: TypeScript SDK** | NAPI-RS native bindings, `@Node` / `@Relationship` decorators, fluent query builder, Arrow streaming | `v0.5.0-alpha` | 🚧 Planned |
-| **Phase 6: Voyager CLI Engine & Polish** | Standalone CLI (`clap`), `voyager compile`, `voyager migrate`, `voyager introspect`, final ergonomics & developer polish | `v0.6.0-alpha` | 🚧 Planned |
-| **Phase 7: Beta Release & Ecosystem Registry** | Multi-registry publishing (PyPI, Crates.io, npm) with OIDC provenance, public beta testing, security audit | `v0.7.0-beta` | 🚧 Planned |
+| **Phase 4A: Core Hardening & Rich Expressions** | Rich function AST (`toLower`, `coalesce`), arithmetic trees, `CASE WHEN`, branching diamond patterns, batched FFI | `v0.4.5-alpha` | ✅ Completed |
+| **Phase 4B: Native Async Rust Network Engine** | Standalone `voyager-net`, Tokio async driver, wire-to-Arrow zero-copy streaming, dual backend (`backend="native"`) | `v0.4.6-alpha` | 🔄 In Progress |
+| **Phase 5: TypeScript SDK** | NAPI-RS native bindings, `@Node` / `@Relationship` decorators, fluent query builder, Arrow streaming | `v0.5.0-alpha` | 📋 Planned |
+| **Phase 6: Voyager CLI Engine & Polish** | Standalone CLI (`clap`), `voyager compile`, `voyager migrate`, `voyager introspect`, final ergonomics & developer polish | `v0.6.0-alpha` | 📋 Planned |
+| **Phase 7: Beta Release & Ecosystem Registry** | Multi-registry publishing (PyPI, Crates.io, npm) with OIDC provenance, public beta testing, security audit | `v0.7.0-beta` | 📋 Planned |
 | **Production GA Milestone** | Production-hardened General Availability (GA) release, documentation site & ecosystem stability | `v1.0.0` | 🎯 Future GA |
 
 ### Phase 1: Core Read AST Engine (Status: Completed)
@@ -80,13 +80,14 @@ Voyager OGM addresses four common challenges in graph database development:
 - [x] **Task 4.3:** [Experimental] Multi-Database Batch Identity Map & Active Record Data Mapper Fusion (`Session.flush()`, `Node.save()`, `weakref` memory management).
 - [x] **Task 4.4:** AST Rule-Based Query Optimizer & Predicate Pushdown Pass (`(p:Person {city: $p0})` inline pattern pushdown).
 
-### Phase 4A: Core Hardening & Rich Expression Engine (`voyager-core`) (Status: Planned)
+### Phase 4A: Core Hardening & Rich Expression Engine (`voyager-core`) (Status: Completed)
 
-- [ ] **Task 4A.1:** Rich Expression, Arithmetic & Function AST Engine (`toLower`, `coalesce`, arithmetic trees, `CASE WHEN`, list/pattern comprehensions).
-- [ ] **Task 4A.2:** Branching Graph Topologies, Diamond Patterns & Subqueries (`MATCH p1, p2`, existential `WHERE EXISTS`, scalar `COUNT`).
-- [ ] **Task 4A.3:** Batched High-Throughput FFI Serialization Layer (single-trip AST handoff across PyO3/NAPI).
+- [x] **Task 4A.1:** Rich Expression, Arithmetic & Function AST Engine (`toLower`, `toUpper`, `trim`, `split`, `coalesce`, `size`, arithmetic trees `+ - * / %`, `CASE WHEN`, temporal `datetime()`, list/pattern comprehensions).
+- [x] **Task 4A.2:** Branching Graph Topologies, Diamond Patterns & Subqueries (`MATCH p1, p2`, existential `WHERE EXISTS`, scalar `COUNT`).
+- [x] **Task 4A.3:** Batched High-Throughput FFI Serialization Layer (`compile_query_from_spec` single-trip handoff across PyO3 yielding a 3.0x speedup).
+- [x] **Formal Grammar Specification:** State transition machine and grammar specification formally defined in [`docs/voyager-fluent.md`](docs/voyager-fluent.md).
 
-### Phase 4B: Native Asynchronous Rust Network Engine (`voyager-net`) (Status: Planned)
+### Phase 4B: Native Asynchronous Rust Network Engine (`voyager-net`) (Status: In Progress)
 
 - [ ] **Task 4B.1:** Tokio Async Database Driver & Connection Pooling Engine (native Bolt, Postgres wire, Redis RESP parsers in safe Rust).
 - [ ] **Task 4B.2:** Direct Wire-to-Arrow Zero-Copy Stream Deserialization (zero GIL contention, stream binary socket buffers directly into Arrow).
