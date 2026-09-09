@@ -18,6 +18,7 @@ pub mod engine;
 pub mod error;
 pub mod mock;
 pub mod pool;
+pub mod postgres;
 pub mod uri;
 
 // Re-exports
@@ -33,4 +34,10 @@ pub use engine::{
 pub use error::{NetError, Result};
 pub use mock::{MockConnection, MockConnectionFactory, MockEngine};
 pub use pool::{ConnectionPool, PoolMetricsSnapshot, PooledConnection};
+pub use postgres::{
+    AgeEdge, AgePath, AgeValue, AgeVertex, AuthenticationRequest, BackendMessage, FieldDescription,
+    FrontendMessage, PgDiagnostic, PostgresConnection, PostgresTransaction, ScramClient,
+    StartupMessage, TransactionStatus, clean_agtype_string, compute_md5_password, parse_agtype,
+    rows_to_record_batch,
+};
 pub use uri::{DatabaseProtocol, ParsedUri};
