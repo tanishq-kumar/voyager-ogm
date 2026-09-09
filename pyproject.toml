@@ -75,6 +75,7 @@ python-source = "packages/python"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = ["tests/conformance", "test_data/conformance"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "D"]
