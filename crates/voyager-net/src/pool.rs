@@ -58,9 +58,16 @@ struct PoolInner<C: AsyncConnection> {
 }
 
 /// Generic, thread-safe asynchronous connection pool.
-#[derive(Clone)]
 pub struct ConnectionPool<C: AsyncConnection + 'static> {
     inner: Arc<PoolInner<C>>,
+}
+
+impl<C: AsyncConnection + 'static> Clone for ConnectionPool<C> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 impl<C: AsyncConnection + 'static> ConnectionPool<C> {

@@ -225,10 +225,16 @@ impl ParsedUri {
         })
     }
 
-    /// Returns the socket address format `host:port`.
+    /// Returns the socket address format `host:port` (or `[host]:port` for IPv6).
     pub fn socket_addr(&self) -> String {
         match self.port {
-            Some(p) => format!("{}:{}", self.host, p),
+            Some(p) => {
+                if self.host.contains(':') && !self.host.starts_with('[') {
+                    format!("[{}]:{}", self.host, p)
+                } else {
+                    format!("{}:{}", self.host, p)
+                }
+            }
             None => self.host.clone(),
         }
     }
