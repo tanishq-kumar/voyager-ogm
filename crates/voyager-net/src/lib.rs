@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod bolt;
 pub mod config;
 pub mod engine;
 pub mod error;
@@ -20,6 +21,10 @@ pub mod pool;
 pub mod uri;
 
 // Re-exports
+pub use bolt::{
+    BoltConnection, BoltNode, BoltPath, BoltRelationship, BoltRequest, BoltResponse,
+    BoltStubServer, BoltUnboundRelationship, BoltValue, BoltVersion, PackStream,
+};
 pub use config::{Auth, ConnectionConfig, PoolConfig, TlsMode};
 pub use engine::{
     AsyncConnection, AsyncEngine, AsyncTransaction, ConnectionFactory, FnConnectionFactory,
