@@ -44,6 +44,10 @@ pub enum NetError {
     #[error("Transaction error: {0}")]
     TransactionError(String),
 
+    /// Query or command execution error returned by the database engine.
+    #[error("Execution error: {0}")]
+    ExecutionError(String),
+
     /// Underlying I/O error from network sockets.
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
