@@ -19,6 +19,7 @@ pub mod error;
 pub mod mock;
 pub mod pool;
 pub mod postgres;
+pub mod redis;
 pub mod uri;
 
 // Re-exports
@@ -39,5 +40,9 @@ pub use postgres::{
     FrontendMessage, PgDiagnostic, PostgresConnection, PostgresTransaction, ScramClient,
     StartupMessage, TransactionStatus, clean_agtype_string, compute_md5_password, parse_agtype,
     rows_to_record_batch,
+};
+pub use redis::{
+    FalkorNode, FalkorQueryResult, FalkorRelationship, FalkorStatistics, RedisConnection,
+    RedisTransaction, RespCodec, RespValue,
 };
 pub use uri::{DatabaseProtocol, ParsedUri};

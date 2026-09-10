@@ -241,6 +241,9 @@ def test_live_neo4j_ldbc_multihop_and_aggregations():
     driver = GraphDatabase.driver("bolt://127.0.0.1:7687", auth=("neo4j", "voyagerpass123"))
 
     try:
+        with driver.session() as s:
+            s.run("MATCH (n:Person) DETACH DELETE n").consume()
+
         session = Session(bridge=driver, dialect="cypher")
 
         # 1. Seed LDBC graph data
@@ -279,5 +282,5 @@ def test_live_neo4j_ldbc_multihop_and_aggregations():
     finally:
         # Clean up database
         with driver.session() as s:
-            s.run("MATCH (n:Person) DETACH DELETE n")
+            s.run("MATCH (n:Person) DETACH DELETE n").consume()
         driver.close()

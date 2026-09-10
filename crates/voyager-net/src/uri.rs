@@ -146,12 +146,12 @@ impl ParsedUri {
             "postgresql+s" | "postgres+s" | "age+s" => {
                 (DatabaseProtocol::Postgres, TlsMode::Required)
             }
-            "redis" | "falkordb" => (DatabaseProtocol::Redis, TlsMode::Disabled),
-            "rediss" | "falkordbs" => (DatabaseProtocol::Redis, TlsMode::Required),
+            "redis" | "falkordb" | "valkey" => (DatabaseProtocol::Redis, TlsMode::Disabled),
+            "rediss" | "falkordbs" | "valkeys" => (DatabaseProtocol::Redis, TlsMode::Required),
             "duckdb" => (DatabaseProtocol::DuckDb, TlsMode::Disabled),
             other => {
                 return Err(NetError::InvalidUri(format!(
-                    "Unsupported database URI scheme '{}'. Supported schemes: bolt://, neo4j://, memgraph://, postgresql://, age://, redis://, falkordb://, duckdb://",
+                    "Unsupported database URI scheme '{}'. Supported schemes: bolt://, neo4j://, memgraph://, postgresql://, age://, redis://, falkordb://, valkey://, duckdb://",
                     other
                 )));
             }
