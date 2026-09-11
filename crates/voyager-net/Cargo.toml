@@ -7,6 +7,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+autobenches = false
 
 [dependencies]
 voyager-core = { workspace = true, features = ["serde", "arrow"] }

@@ -12,6 +12,9 @@ use voyager_net::redis::transaction::format_cypher_with_params;
 
 #[tokio::main]
 async fn main() {
+    if std::env::args().any(|arg| arg == "--list") {
+        return;
+    }
     println!("=========================================================================");
     println!("     VOYAGER-NET: SECURITY HARDENING PERFORMANCE OVERHEAD BENCHMARK      ");
     println!("=========================================================================");

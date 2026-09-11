@@ -103,6 +103,9 @@ impl BenchmarkMetrics {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().any(|arg| arg == "--list") {
+        return Ok(());
+    }
     println!(
         "=========================================================================================================================="
     );
