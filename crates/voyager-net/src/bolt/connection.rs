@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use bytes::BytesMut;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -14,7 +15,7 @@ use tracing::debug;
 
 use super::messages::{BoltRequest, BoltResponse};
 use super::packstream::BoltValue;
-use super::stream::{encode_chunks, read_message_frame, write_message_frame};
+use super::stream::{encode_chunks, read_message_frame_buffered, write_message_frame};
 use crate::config::{Auth, ConnectionConfig};
 use crate::engine::{AsyncConnection, QueryResult, QuerySummary};
 use crate::error::{NetError, Result};
@@ -43,6 +44,7 @@ pub struct BoltVersion {
 /// Physical asynchronous Bolt connection managing socket I/O, PackStream framing, and state.
 pub struct BoltConnection<S: AsyncRead + AsyncWrite + Unpin + Send + Sync = TcpStream> {
     stream: S,
+    read_buf: BytesMut,
     version: BoltVersion,
     is_valid: bool,
     in_transaction: bool,
@@ -51,21 +53,39 @@ pub struct BoltConnection<S: AsyncRead + AsyncWrite + Unpin + Send + Sync = TcpS
     pub last_bookmark: Option<String>,
     /// Last execution metadata received from RUN and PULL responses.
     pub last_metadata: Option<HashMap<String, BoltValue>>,
+    /// Client-side execution timeout for individual queries.
+    pub query_timeout: Option<Duration>,
 }
 
 impl BoltConnection<TcpStream> {
     /// Establishes a new physical TCP connection to the target Bolt endpoint and performs handshake/auth.
     pub async fn connect(config: &ConnectionConfig) -> Result<Self> {
         let uri = ParsedUri::parse(&config.uri)?;
+        if config.tls != crate::config::TlsMode::Disabled
+            || uri.tls != crate::config::TlsMode::Disabled
+        {
+            return Err(NetError::TlsError(format!(
+                "TLS encryption requested for Bolt endpoint '{}', but native TLS transport is not enabled. Plaintext downgrade rejected.",
+                uri.host
+            )));
+        }
         let addr = uri.socket_addr();
 
         debug!("Connecting to Bolt server at {}", addr);
-        let stream = timeout(config.connect_timeout, TcpStream::connect(&addr))
-            .await
-            .map_err(|_| NetError::Timeout(format!("Connection to {} timed out", addr)))?
-            .map_err(|e| {
-                NetError::ConnectionFailed(format!("Failed to connect to {}: {}", addr, e))
-            })?;
+        match timeout(config.connect_timeout, Self::connect_raw(config, &uri)).await {
+            Ok(res) => res,
+            Err(_) => Err(NetError::Timeout(format!(
+                "Connection or handshake to Bolt server at {} timed out after {:?}",
+                addr, config.connect_timeout
+            ))),
+        }
+    }
+
+    async fn connect_raw(config: &ConnectionConfig, uri: &ParsedUri) -> Result<Self> {
+        let addr = uri.socket_addr();
+        let stream = TcpStream::connect(&addr).await.map_err(|e| {
+            NetError::ConnectionFailed(format!("Failed to connect to {}: {}", addr, e))
+        })?;
 
         // Disable Nagle's algorithm to eliminate 40-200ms delayed-ACK packet stalls
         let _ = stream.set_nodelay(true);
@@ -117,12 +137,14 @@ impl BoltConnection<TcpStream> {
 
         let mut conn = Self {
             stream,
+            read_buf: BytesMut::with_capacity(65536),
             version,
             is_valid: true,
             in_transaction: false,
             server_agent: None,
             last_bookmark: None,
             last_metadata: None,
+            query_timeout: config.query_timeout,
         };
 
         let is_v51_or_higher = version.major > 5 || (version.major == 5 && version.minor >= 1);
@@ -232,12 +254,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync> BoltConnection<S> {
     pub fn from_stream(stream: S, version: BoltVersion) -> Self {
         Self {
             stream,
+            read_buf: BytesMut::with_capacity(65536),
             version,
             is_valid: true,
             in_transaction: false,
             server_agent: None,
             last_bookmark: None,
             last_metadata: None,
+            query_timeout: None,
         }
     }
 
@@ -249,6 +273,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync> BoltConnection<S> {
     /// Returns the server agent string if reported by the database server.
     pub fn server_agent(&self) -> Option<&str> {
         self.server_agent.as_deref()
+    }
+
+    /// Returns the active query timeout.
+    pub fn query_timeout(&self) -> Option<Duration> {
+        self.query_timeout
+    }
+
+    /// Sets the query timeout for this connection.
+    pub fn set_query_timeout(&mut self, timeout: Option<Duration>) {
+        self.query_timeout = timeout;
     }
 
     /// Sends an encoded `BoltRequest` message frame over the stream.
@@ -264,7 +298,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync> BoltConnection<S> {
 
     /// Receives and decodes a single `BoltResponse` message from the stream.
     pub async fn receive_response(&mut self) -> Result<BoltResponse> {
-        let mut frame_bytes = read_message_frame(&mut self.stream).await?;
+        let mut frame_bytes =
+            read_message_frame_buffered(&mut self.stream, &mut self.read_buf).await?;
         BoltResponse::decode(&mut frame_bytes)
     }
 
@@ -471,14 +506,55 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync> BoltConnection<S> {
         if let Some(meta) = tx_meta {
             extra.insert("tx_metadata".to_string(), BoltValue::Map(meta));
         }
-        if let Some(timeout) = timeout_ms {
-            extra.insert("tx_timeout".to_string(), BoltValue::Integer(timeout));
-        }
+        let effective_timeout = match timeout_ms {
+            Some(timeout) if timeout > 0 => {
+                extra.insert("tx_timeout".to_string(), BoltValue::Integer(timeout));
+                Some(Duration::from_millis(timeout as u64))
+            }
+            _ => {
+                if let Some(to) = self.query_timeout {
+                    extra.insert(
+                        "tx_timeout".to_string(),
+                        BoltValue::Integer(to.as_millis() as i64),
+                    );
+                    Some(to)
+                } else {
+                    None
+                }
+            }
+        };
         if let Some(bms) = bookmarks {
             let bm_vals: Vec<BoltValue> = bms.into_iter().map(BoltValue::String).collect();
             extra.insert("bookmarks".to_string(), BoltValue::List(bm_vals));
         }
 
+        if let Some(to) = effective_timeout {
+            match timeout(to, self.execute_raw_records_inner(query, params, extra)).await {
+                Ok(res) => res,
+                Err(_) => {
+                    self.is_valid = false;
+                    Err(NetError::Timeout(format!(
+                        "Query execution timed out after {:?}",
+                        to
+                    )))
+                }
+            }
+        } else {
+            self.execute_raw_records_inner(query, params, extra).await
+        }
+    }
+
+    async fn execute_raw_records_inner(
+        &mut self,
+        query: &str,
+        params: &HashMap<String, BoltValue>,
+        extra: HashMap<String, BoltValue>,
+    ) -> Result<(
+        Vec<String>,
+        Vec<Vec<BoltValue>>,
+        QuerySummary,
+        Option<(String, String)>,
+    )> {
         // 1. Pipeline RUN + PULL
         let run_req = BoltRequest::Run {
             query: query.to_string(),
@@ -487,12 +563,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync> BoltConnection<S> {
         };
         let pull_req = BoltRequest::pull_all();
 
-        let mut write_buf = BytesMut::new();
-        let mut run_payload = BytesMut::new();
+        let mut write_buf = BytesMut::with_capacity(1024);
+        let mut run_payload = BytesMut::with_capacity(512);
         run_req.encode(&mut run_payload);
         encode_chunks(&run_payload, &mut write_buf);
 
-        let mut pull_payload = BytesMut::new();
+        let mut pull_payload = BytesMut::with_capacity(64);
         pull_req.encode(&mut pull_payload);
         encode_chunks(&pull_payload, &mut write_buf);
 
@@ -705,11 +781,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync> BoltConnection<S> {
             }
         }
     }
-}
 
-#[async_trait]
-impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncConnection for BoltConnection<S> {
-    async fn execute(
+    /// Inner execution routine for `AsyncConnection::execute` with pre-allocated buffers.
+    async fn execute_inner(
         &mut self,
         query: &str,
         params: &HashMap<String, serde_json::Value>,
@@ -726,17 +800,28 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncConnection for BoltCo
             .map(|(k, v)| (k.clone(), BoltValue::from(v)))
             .collect();
 
-        // 1. Pipeline RUN + PULL in a single write buffer
-        let run_req = BoltRequest::run(query, bolt_params, None);
+        let mut extra = HashMap::new();
+        if let Some(to) = self.query_timeout {
+            extra.insert(
+                "tx_timeout".to_string(),
+                BoltValue::Integer(to.as_millis() as i64),
+            );
+        }
+
+        // 1. Pipeline RUN + PULL in a single pre-allocated write buffer
+        let run_req = BoltRequest::Run {
+            query: query.to_string(),
+            params: bolt_params,
+            extra,
+        };
         let pull_req = BoltRequest::pull_all();
 
-        let mut write_buf = BytesMut::new();
-
-        let mut run_payload = BytesMut::new();
+        let mut write_buf = BytesMut::with_capacity(1024);
+        let mut run_payload = BytesMut::with_capacity(512);
         run_req.encode(&mut run_payload);
         encode_chunks(&run_payload, &mut write_buf);
 
-        let mut pull_payload = BytesMut::new();
+        let mut pull_payload = BytesMut::with_capacity(64);
         pull_req.encode(&mut pull_payload);
         encode_chunks(&pull_payload, &mut write_buf);
 
@@ -820,6 +905,30 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncConnection for BoltCo
         };
 
         Ok(QueryResult::new(columns, batches, summary))
+    }
+}
+
+#[async_trait]
+impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncConnection for BoltConnection<S> {
+    async fn execute(
+        &mut self,
+        query: &str,
+        params: &HashMap<String, serde_json::Value>,
+    ) -> Result<QueryResult> {
+        if let Some(to) = self.query_timeout {
+            match timeout(to, self.execute_inner(query, params)).await {
+                Ok(res) => res,
+                Err(_) => {
+                    self.is_valid = false;
+                    Err(NetError::Timeout(format!(
+                        "Query execution timed out after {:?}",
+                        to
+                    )))
+                }
+            }
+        } else {
+            self.execute_inner(query, params).await
+        }
     }
 
     async fn ping(&mut self) -> Result<()> {

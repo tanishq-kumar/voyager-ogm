@@ -37,10 +37,12 @@ def _is_neo4j_online() -> bool:
     if not NEO4J_AVAILABLE:
         return False
     try:
-        driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
-        driver.verify_connectivity()
-        driver.close()
-        return True
+        from voyager_ogm import NativeClient
+
+        c = NativeClient(f"{NEO4J_URI}?connect_timeout=2", min_idle=1, max_size=2)
+        online = c.ping_sync()
+        c.close()
+        return online
     except Exception:
         return False
 

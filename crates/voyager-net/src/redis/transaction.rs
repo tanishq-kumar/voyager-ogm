@@ -193,11 +193,16 @@ pub fn format_cypher_with_params(
         return query.to_string();
     }
 
+    let mut keys: Vec<&String> = params.keys().collect();
+    keys.sort();
+
     let mut parts = Vec::with_capacity(params.len());
-    for (k, v) in params {
+    for k in keys {
+        let v = &params[k];
         match v {
             serde_json::Value::String(s) => {
-                parts.push(format!("{}=\"{}\"", k, s.replace('\"', "\\\"")));
+                let escaped = s.replace('\\', "\\\\").replace('\"', "\\\"");
+                parts.push(format!("{}=\"{}\"", k, escaped));
             }
             serde_json::Value::Number(n) => {
                 parts.push(format!("{}={}", k, n));
@@ -209,7 +214,9 @@ pub fn format_cypher_with_params(
                 parts.push(format!("{}=null", k));
             }
             other => {
-                parts.push(format!("{}={}", k, other));
+                let raw = other.to_string();
+                let escaped = raw.replace('\\', "\\\\").replace('\"', "\\\"");
+                parts.push(format!("{}=\"{}\"", k, escaped));
             }
         }
     }

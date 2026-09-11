@@ -172,3 +172,67 @@ async fn test_mock_engine_end_to_end() {
 
     engine.ping().await.expect("Engine ping failed");
 }
+
+#[tokio::test]
+async fn test_pool_async_tx_rollback_on_drop() {
+    let factory = Arc::new(MockConnectionFactory::new());
+    let config = PoolConfig::new().with_max_size(2);
+    let pool = ConnectionPool::new(config, factory.clone());
+
+    let reset_counter;
+    {
+        let mut conn = pool.acquire().await.expect("Acquire failed");
+        conn.in_transaction = true;
+        reset_counter = conn.reset_count.clone();
+        assert_eq!(reset_counter.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // conn drops here while in_transaction is true
+    }
+
+    // Give background tokio::spawn task time to run reset()
+    sleep(Duration::from_millis(50)).await;
+
+    // Verify reset() was invoked immediately in the background
+    assert_eq!(reset_counter.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(pool.idle_count(), 1);
+
+    // Re-acquire connection; verify transaction state was cleanly rolled back
+    let conn2 = pool.acquire().await.expect("Re-acquire failed");
+    assert!(!conn2.is_in_transaction());
+}
+
+#[tokio::test]
+async fn test_pool_direct_waiter_handover() {
+    let factory = Arc::new(MockConnectionFactory::new());
+    // Pool capacity 1
+    let config = PoolConfig::new()
+        .with_max_size(1)
+        .with_acquire_timeout(Duration::from_millis(500));
+    let pool = ConnectionPool::new(config, factory.clone());
+
+    let conn1 = pool.acquire().await.expect("First acquire failed");
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+
+    let pool_clone = pool.clone();
+    let waiter_handle = tokio::spawn(async move {
+        // This will block waiting in the saturated direct waiter queue
+        let conn_received = pool_clone.acquire().await.expect("Waiter acquire failed");
+        assert!(conn_received.is_valid());
+        // Verify no extra connection was created
+        conn_received
+    });
+
+    // Small delay to ensure waiter task has entered the waiter queue
+    sleep(Duration::from_millis(20)).await;
+
+    // Drop conn1: this triggers direct handover to the waiter!
+    drop(conn1);
+
+    let conn_from_waiter = waiter_handle.await.expect("Waiter task panicked");
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(factory.created_count(), 1); // Exactly 1 connection created; handed over directly
+
+    drop(conn_from_waiter);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 1);
+}

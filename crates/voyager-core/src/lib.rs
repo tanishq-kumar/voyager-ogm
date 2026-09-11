@@ -19,6 +19,7 @@ pub mod ast;
 pub mod bridge;
 pub mod builder;
 pub mod bulk;
+pub mod cache;
 pub mod emitters;
 pub mod error;
 pub mod optimizer;
@@ -31,6 +32,7 @@ pub use ast::{
 };
 pub use bridge::{DatabaseBridge, MockDatabaseBridge, QueryResult, QuerySummary};
 pub use builder::QueryBuilder;
+pub use cache::{CacheMetrics, CompiledQueryCache, global_query_cache};
 pub use emitters::{AgeEmitter, CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
 pub use error::{Error, Result};
 pub use optimizer::{AstOptimizer, OptimizationLevel};

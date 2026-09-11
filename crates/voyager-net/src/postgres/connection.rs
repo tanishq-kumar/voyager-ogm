@@ -25,11 +25,35 @@ pub struct PostgresConnection {
     secret_key: i32,
     transaction_status: TransactionStatus,
     is_age_initialized: bool,
+    query_timeout: Option<std::time::Duration>,
 }
 
 impl PostgresConnection {
     /// Asynchronously establishes a new connection to PostgreSQL / Apache AGE based on the parsed URI.
     pub async fn connect(uri: &ParsedUri) -> Result<Self> {
+        if uri.tls != crate::config::TlsMode::Disabled {
+            return Err(NetError::TlsError(format!(
+                "TLS encryption requested for PostgreSQL endpoint '{}', but native TLS transport is not enabled. Plaintext downgrade rejected.",
+                uri.host
+            )));
+        }
+        let timeout_secs = uri
+            .params
+            .get("connect_timeout")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(5);
+        let timeout_dur = std::time::Duration::from_secs(timeout_secs);
+        match tokio::time::timeout(timeout_dur, Self::connect_raw(uri)).await {
+            Ok(res) => res,
+            Err(_) => Err(NetError::Timeout(format!(
+                "Connection or handshake to PostgreSQL host at {} timed out after {:?}",
+                uri.socket_addr(),
+                timeout_dur
+            ))),
+        }
+    }
+
+    async fn connect_raw(uri: &ParsedUri) -> Result<Self> {
         let socket_addr = uri.socket_addr();
         let stream = TcpStream::connect(&socket_addr).await.map_err(|e| {
             NetError::ConnectionFailed(format!(
@@ -41,6 +65,13 @@ impl PostgresConnection {
         // Optimize latency: disable Nagle's algorithm
         let _ = stream.set_nodelay(true);
 
+        let query_timeout = uri
+            .params
+            .get("query_timeout")
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(std::time::Duration::from_secs)
+            .or(Some(std::time::Duration::from_secs(30)));
+
         let mut conn = Self {
             stream,
             uri: uri.clone(),
@@ -49,6 +80,7 @@ impl PostgresConnection {
             secret_key: 0,
             transaction_status: TransactionStatus::Idle,
             is_age_initialized: false,
+            query_timeout,
         };
 
         // Perform protocol handshake & authentication
@@ -200,6 +232,23 @@ impl PostgresConnection {
 
     /// Executes a simple query string via PostgreSQL Simple Query Protocol (`'Q'`).
     pub async fn execute_simple(&mut self, query: &str) -> Result<QueryResult> {
+        if let Some(to) = self.query_timeout {
+            match tokio::time::timeout(to, self.execute_simple_inner(query)).await {
+                Ok(res) => res,
+                Err(_) => {
+                    self.transaction_status = TransactionStatus::FailedTransaction;
+                    Err(NetError::Timeout(format!(
+                        "Query execution timed out after {:?}",
+                        to
+                    )))
+                }
+            }
+        } else {
+            self.execute_simple_inner(query).await
+        }
+    }
+
+    async fn execute_simple_inner(&mut self, query: &str) -> Result<QueryResult> {
         let start_time = Instant::now();
         write_frontend_message(&mut self.stream, &FrontendMessage::Query(query.to_string()))
             .await?;
@@ -265,6 +314,16 @@ impl PostgresConnection {
         Ok(QueryResult::new(columns, batches, summary))
     }
 
+    /// Returns the active query timeout.
+    pub fn query_timeout(&self) -> Option<std::time::Duration> {
+        self.query_timeout
+    }
+
+    /// Sets the query timeout for this connection.
+    pub fn set_query_timeout(&mut self, timeout: Option<std::time::Duration>) {
+        self.query_timeout = timeout;
+    }
+
     /// Returns the active transaction status reported by PostgreSQL.
     pub fn transaction_status(&self) -> TransactionStatus {
         self.transaction_status
@@ -281,6 +340,39 @@ impl PostgresConnection {
     }
 }
 
+/// Helper function to interpolate parameters into a PostgreSQL / Apache AGE query string.
+///
+/// Parameter keys are sorted by descending length to prevent prefix collisions
+/// (e.g. `$p1` accidentally matching and corrupting `$p10`).
+pub fn format_postgres_query(query: &str, params: &HashMap<String, serde_json::Value>) -> String {
+    if params.is_empty() {
+        return query.to_string();
+    }
+
+    let mut q = query.to_string();
+
+    // Sort parameter keys by descending length to prevent prefix collisions ($p10 before $p1)
+    let mut sorted_keys: Vec<&String> = params.keys().collect();
+    sorted_keys.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+
+    for k in sorted_keys {
+        let v = &params[k];
+        let json_repr = match v {
+            serde_json::Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+            serde_json::Value::Null => "NULL".to_string(),
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            other => {
+                let s = other.to_string();
+                s.replace('\'', "''")
+            }
+        };
+        let placeholder = format!("${}", k);
+        q = q.replace(&placeholder, &json_repr);
+    }
+    q
+}
+
 #[async_trait]
 impl AsyncConnection for PostgresConnection {
     async fn execute(
@@ -288,24 +380,7 @@ impl AsyncConnection for PostgresConnection {
         query: &str,
         params: &HashMap<String, serde_json::Value>,
     ) -> Result<QueryResult> {
-        // If params are provided and query uses parameters, format or substitute parameters
-        let formatted_query = if !params.is_empty() {
-            let mut q = query.to_string();
-            // Handle $param_name or %s substitutions if present
-            for (k, v) in params {
-                let json_repr = match v {
-                    serde_json::Value::String(s) => format!("'{}'", s.replace('\'', "''")),
-                    serde_json::Value::Null => "NULL".to_string(),
-                    other => other.to_string(),
-                };
-                let placeholder = format!("${}", k);
-                q = q.replace(&placeholder, &json_repr);
-            }
-            q
-        } else {
-            query.to_string()
-        };
-
+        let formatted_query = format_postgres_query(query, params);
         self.execute_simple(&formatted_query).await
     }
 

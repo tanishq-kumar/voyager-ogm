@@ -59,11 +59,13 @@ criterion = { version = "0.5", features = ["html_reports"] }
 
 # Python FFI
 pyo3 = { version = "0.23", features = ["extension-module", "abi3-py311", "generate-import-lib"] }
+pyo3-async-runtimes = { version = "0.23", features = ["tokio-runtime"] }
 pyo3-polars = "0.18"
 
 [profile.dev]
 # Line tables only: preserves stack trace file:line locations while reducing .pdb sizes by ~75%
 debug = 1
+opt-level = 2
 
 [profile.release]
 opt-level = 3

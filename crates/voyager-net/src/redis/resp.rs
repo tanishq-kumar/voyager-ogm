@@ -14,6 +14,9 @@ use crate::error::{NetError, Result};
 /// Maximum recursion depth allowed when parsing nested aggregate structures (Arrays, Maps, Sets).
 pub const MAX_RESP_DEPTH: usize = 128;
 
+/// Maximum allowed collection length for Arrays, Maps, Sets, and Pushes to prevent allocation bombs.
+pub const MAX_RESP_COLLECTION_LEN: usize = 1_000_000;
+
 /// A parsed value according to the Redis Serialization Protocol (RESP2 & RESP3).
 #[derive(Debug, Clone, PartialEq)]
 pub enum RespValue {
@@ -470,7 +473,13 @@ fn parse_resp_slice(src: &[u8], depth: usize) -> Result<Option<(RespValue, usize
                 }
 
                 let num_elements = len as usize;
-                let mut elements = Vec::with_capacity(num_elements);
+                if num_elements > MAX_RESP_COLLECTION_LEN {
+                    return Err(NetError::ProtocolError(format!(
+                        "Array length {} exceeds maximum permitted collection size of {}",
+                        num_elements, MAX_RESP_COLLECTION_LEN
+                    )));
+                }
+                let mut elements = Vec::with_capacity(num_elements.min(1024));
                 let mut offset = hdr_consumed;
 
                 for _ in 0..num_elements {
@@ -659,8 +668,14 @@ fn parse_resp_slice(src: &[u8], depth: usize) -> Result<Option<(RespValue, usize
                 let num_pairs = len_str.parse::<usize>().map_err(|e| {
                     NetError::ProtocolError(format!("Malformed map length '{}': {}", len_str, e))
                 })?;
+                if num_pairs > MAX_RESP_COLLECTION_LEN {
+                    return Err(NetError::ProtocolError(format!(
+                        "Map length {} exceeds maximum permitted collection size of {}",
+                        num_pairs, MAX_RESP_COLLECTION_LEN
+                    )));
+                }
 
-                let mut pairs = Vec::with_capacity(num_pairs);
+                let mut pairs = Vec::with_capacity(num_pairs.min(1024));
                 let mut offset = hdr_consumed;
 
                 for _ in 0..num_pairs {
@@ -704,8 +719,14 @@ fn parse_resp_slice(src: &[u8], depth: usize) -> Result<Option<(RespValue, usize
                 let num_items = len_str.parse::<usize>().map_err(|e| {
                     NetError::ProtocolError(format!("Malformed set length '{}': {}", len_str, e))
                 })?;
+                if num_items > MAX_RESP_COLLECTION_LEN {
+                    return Err(NetError::ProtocolError(format!(
+                        "Set length {} exceeds maximum permitted collection size of {}",
+                        num_items, MAX_RESP_COLLECTION_LEN
+                    )));
+                }
 
-                let mut items = Vec::with_capacity(num_items);
+                let mut items = Vec::with_capacity(num_items.min(1024));
                 let mut offset = hdr_consumed;
 
                 for _ in 0..num_items {
@@ -734,8 +755,14 @@ fn parse_resp_slice(src: &[u8], depth: usize) -> Result<Option<(RespValue, usize
                 let num_items = len_str.parse::<usize>().map_err(|e| {
                     NetError::ProtocolError(format!("Malformed push length '{}': {}", len_str, e))
                 })?;
+                if num_items > MAX_RESP_COLLECTION_LEN {
+                    return Err(NetError::ProtocolError(format!(
+                        "Push length {} exceeds maximum permitted collection size of {}",
+                        num_items, MAX_RESP_COLLECTION_LEN
+                    )));
+                }
 
-                let mut items = Vec::with_capacity(num_items);
+                let mut items = Vec::with_capacity(num_items.min(1024));
                 let mut offset = hdr_consumed;
 
                 for _ in 0..num_items {

@@ -24,11 +24,35 @@ pub struct RedisConnection {
     default_graph: String,
     in_transaction: bool,
     is_valid: bool,
+    query_timeout: Option<std::time::Duration>,
 }
 
 impl RedisConnection {
     /// Asynchronously establishes a new connection to Redis / FalkorDB based on the parsed URI.
     pub async fn connect(uri: &ParsedUri) -> Result<Self> {
+        if uri.tls != crate::config::TlsMode::Disabled {
+            return Err(NetError::TlsError(format!(
+                "TLS encryption requested for Redis/FalkorDB endpoint '{}', but native TLS transport is not enabled. Plaintext downgrade rejected.",
+                uri.host
+            )));
+        }
+        let timeout_secs = uri
+            .params
+            .get("connect_timeout")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(5);
+        let timeout_dur = std::time::Duration::from_secs(timeout_secs);
+        match tokio::time::timeout(timeout_dur, Self::connect_raw(uri)).await {
+            Ok(res) => res,
+            Err(_) => Err(NetError::Timeout(format!(
+                "Connection or handshake to Redis/FalkorDB host at {} timed out after {:?}",
+                uri.socket_addr(),
+                timeout_dur
+            ))),
+        }
+    }
+
+    async fn connect_raw(uri: &ParsedUri) -> Result<Self> {
         let socket_addr = uri.socket_addr();
         let stream = TcpStream::connect(&socket_addr).await.map_err(|e| {
             NetError::ConnectionFailed(format!(
@@ -49,6 +73,13 @@ impl RedisConnection {
             "voyager_graph".to_string()
         };
 
+        let query_timeout = uri
+            .params
+            .get("query_timeout")
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(std::time::Duration::from_secs)
+            .or(Some(std::time::Duration::from_secs(30)));
+
         let mut conn = Self {
             stream,
             uri: uri.clone(),
@@ -58,6 +89,7 @@ impl RedisConnection {
             default_graph,
             in_transaction: false,
             is_valid: true,
+            query_timeout,
         };
 
         // Perform protocol handshake & authentication
@@ -186,8 +218,35 @@ impl RedisConnection {
         self.in_transaction = in_tx;
     }
 
+    /// Returns the active query timeout.
+    pub fn query_timeout(&self) -> Option<std::time::Duration> {
+        self.query_timeout
+    }
+
+    /// Sets the query timeout for this connection.
+    pub fn set_query_timeout(&mut self, timeout: Option<std::time::Duration>) {
+        self.query_timeout = timeout;
+    }
+
     /// Executes an arbitrary raw Redis / Valkey command and returns the raw [`RespValue`].
     pub async fn execute_raw(&mut self, args: &[&str]) -> Result<RespValue> {
+        if let Some(to) = self.query_timeout {
+            match tokio::time::timeout(to, self.execute_raw_inner(args)).await {
+                Ok(res) => res,
+                Err(_) => {
+                    self.is_valid = false;
+                    Err(NetError::Timeout(format!(
+                        "Redis command timed out after {:?}",
+                        to
+                    )))
+                }
+            }
+        } else {
+            self.execute_raw_inner(args).await
+        }
+    }
+
+    async fn execute_raw_inner(&mut self, args: &[&str]) -> Result<RespValue> {
         write_command(&mut self.stream, args).await?;
         read_resp_value(&mut self.stream, &mut self.buffer).await
     }

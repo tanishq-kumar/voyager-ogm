@@ -179,6 +179,8 @@ pub enum LiteralValue {
     ParameterRef(String),
     /// Array/List of literal values
     List(Vec<LiteralValue>),
+    /// Key-value property map literal
+    Map(Vec<(String, LiteralValue)>),
 }
 
 impl fmt::Display for LiteralValue {
@@ -199,6 +201,16 @@ impl fmt::Display for LiteralValue {
                     write!(f, "{item}")?;
                 }
                 write!(f, "]")
+            }
+            Self::Map(m) => {
+                write!(f, "{{")?;
+                for (i, (k, v)) in m.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{k}: {v}")?;
+                }
+                write!(f, "}}")
             }
         }
     }

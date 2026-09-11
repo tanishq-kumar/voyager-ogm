@@ -610,7 +610,14 @@ impl PackStream {
     }
 
     fn decode_list_payload(len: usize, buf: &mut Bytes) -> Result<BoltValue> {
-        let mut list = Vec::with_capacity(len);
+        if len > buf.remaining() {
+            return Err(NetError::ProtocolError(format!(
+                "List length {} exceeds available buffer bytes {}",
+                len,
+                buf.remaining()
+            )));
+        }
+        let mut list = Vec::with_capacity(len.min(1024));
         for _ in 0..len {
             list.push(Self::decode(buf)?);
         }
@@ -618,7 +625,14 @@ impl PackStream {
     }
 
     fn decode_map_payload(size: usize, buf: &mut Bytes) -> Result<BoltValue> {
-        let mut map = HashMap::with_capacity(size);
+        if size.saturating_mul(2) > buf.remaining() {
+            return Err(NetError::ProtocolError(format!(
+                "Map size {} exceeds available buffer bytes {}",
+                size,
+                buf.remaining()
+            )));
+        }
+        let mut map = HashMap::with_capacity(size.min(1024));
         for _ in 0..size {
             let key = match Self::decode(buf)? {
                 BoltValue::String(s) => s,
@@ -642,7 +656,14 @@ impl PackStream {
             ));
         }
         let tag = buf.get_u8();
-        let mut fields = Vec::with_capacity(num_fields);
+        if num_fields > buf.remaining() {
+            return Err(NetError::ProtocolError(format!(
+                "Structure field count {} exceeds available buffer bytes {}",
+                num_fields,
+                buf.remaining()
+            )));
+        }
+        let mut fields = Vec::with_capacity(num_fields.min(1024));
         for _ in 0..num_fields {
             fields.push(Self::decode(buf)?);
         }

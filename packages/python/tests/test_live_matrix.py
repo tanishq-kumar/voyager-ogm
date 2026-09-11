@@ -113,7 +113,12 @@ class TestNeo4jLiveMatrix:
         uri = "bolt://127.0.0.1:7687"
         auth = ("neo4j", "voyagerpass123")
         try:
-            driver = GraphDatabase.driver(uri, auth=auth)
+            from voyager_ogm import NativeClient
+
+            c = NativeClient(f"{uri}?connect_timeout=2", min_idle=1, max_size=2)
+            c.ping_sync()
+            c.close()
+            driver = GraphDatabase.driver(uri, auth=auth, connection_timeout=2.0)
             driver.verify_connectivity()
         except Exception as e:
             pytest.skip(f"Neo4j container not available on port 7687: {e}")
@@ -360,7 +365,12 @@ class TestMemgraphLiveMatrix:
         uri = "bolt://127.0.0.1:7688"
         auth = ("", "")
         try:
-            driver = GraphDatabase.driver(uri, auth=auth)
+            from voyager_ogm import NativeClient
+
+            c = NativeClient(f"{uri}?connect_timeout=2", min_idle=1, max_size=2)
+            c.ping_sync()
+            c.close()
+            driver = GraphDatabase.driver(uri, auth=auth, connection_timeout=2.0)
             driver.verify_connectivity()
         except Exception as e:
             pytest.skip(f"Memgraph container not available on port 7688: {e}")
