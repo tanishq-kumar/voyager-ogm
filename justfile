@@ -61,7 +61,7 @@ test-snapshot:
 
 # Run Python SDK tests with pytest
 test-python:
-    uv run pytest
+    uv run pytest --benchmark-skip
 
 # Run TypeScript SDK tests with bun test
 test-ts:
