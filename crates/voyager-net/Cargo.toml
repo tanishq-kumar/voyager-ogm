@@ -32,4 +32,25 @@ base64 = { workspace = true }
 hex = { workspace = true }
 
 [dev-dependencies]
+neo4rs = "0.8.0"
 tokio = { workspace = true, features = ["test-util", "macros"] }
+
+[[bench]]
+name = "bench_security_overhead"
+harness = false
+
+[[bench]]
+name = "bench_driver_vs_voyager_net"
+harness = false
+
+[[bench]]
+name = "bench_1m_driver_vs_voyager"
+harness = false
+
+[[bench]]
+name = "bench_live_bolt"
+harness = false
+
+[[bench]]
+name = "bench_jumbo_payloads"
+harness = false

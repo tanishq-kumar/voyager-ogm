@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+use crate::uri::ParsedUri;
+
 /// Authentication schemes supported by database wire protocols.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Auth {
@@ -120,6 +122,8 @@ pub struct ConnectionConfig {
     pub tls: TlsMode,
     /// Physical TCP socket connection timeout. Default is 10s.
     pub connect_timeout: Duration,
+    /// Maximum execution timeout for any single query on the wire. Default is 30s.
+    pub query_timeout: Option<Duration>,
     /// Asynchronous connection pool settings.
     pub pool: PoolConfig,
 }
@@ -132,18 +136,40 @@ impl Default for ConnectionConfig {
             database: None,
             tls: TlsMode::Disabled,
             connect_timeout: Duration::from_secs(10),
+            query_timeout: Some(Duration::from_secs(30)),
             pool: PoolConfig::default(),
         }
     }
 }
 
 impl ConnectionConfig {
-    /// Creates a connection config from a URI string.
+    /// Creates a connection config from a URI string, extracting credentials, database, and timeout parameters.
     pub fn from_uri(uri: impl Into<String>) -> Self {
-        Self {
-            uri: uri.into(),
+        let uri_str = uri.into();
+        let mut config = Self {
+            uri: uri_str.clone(),
             ..Default::default()
+        };
+        if let Ok(parsed) = ParsedUri::parse(&uri_str) {
+            config.auth = parsed.auth;
+            config.database = parsed.database;
+            config.tls = parsed.tls;
+            if let Some(t) = parsed
+                .params
+                .get("connect_timeout")
+                .and_then(|s| s.parse::<u64>().ok())
+            {
+                config.connect_timeout = Duration::from_secs(t);
+            }
+            if let Some(t) = parsed
+                .params
+                .get("query_timeout")
+                .and_then(|s| s.parse::<u64>().ok())
+            {
+                config.query_timeout = Some(Duration::from_secs(t));
+            }
         }
+        config
     }
 
     /// Sets basic username and password authentication.
@@ -159,6 +185,12 @@ impl ConnectionConfig {
     /// Sets the target database or graph name.
     pub fn with_database(mut self, database: impl Into<String>) -> Self {
         self.database = Some(database.into());
+        self
+    }
+
+    /// Sets the query execution timeout.
+    pub fn with_query_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.query_timeout = timeout;
         self
     }
 

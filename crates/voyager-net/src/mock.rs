@@ -25,12 +25,16 @@ pub struct MockConnection {
     pub in_transaction: bool,
     /// If true, calls to `ping()` will return an error to simulate liveness failure.
     pub fail_ping: bool,
+    /// If true, calls to `reset()` will return an error to simulate reset failure.
+    pub fail_reset: bool,
     /// If true, calls to `execute()` will return an error to simulate query execution failure.
     pub fail_execute: bool,
     /// Shared log of executed queries and parameter maps.
     pub executed_queries: ExecutedQueryLog,
     /// Queue of canned query results to return sequentially on calls to `execute()`.
     pub canned_results: CannedResultQueue,
+    /// Counter tracking number of times `reset()` was invoked.
+    pub reset_count: Arc<AtomicUsize>,
 }
 
 impl MockConnection {
@@ -40,10 +44,17 @@ impl MockConnection {
             is_valid: true,
             in_transaction: false,
             fail_ping: false,
+            fail_reset: false,
             fail_execute: false,
             executed_queries: Arc::new(Mutex::new(Vec::new())),
             canned_results: Arc::new(Mutex::new(VecDeque::new())),
+            reset_count: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Returns the number of times `reset()` was called on this connection.
+    pub fn reset_count(&self) -> usize {
+        self.reset_count.load(Ordering::SeqCst)
     }
 
     /// Queues a canned query result to be returned on the next execution.
@@ -101,6 +112,13 @@ impl AsyncConnection for MockConnection {
     }
 
     async fn reset(&mut self) -> Result<()> {
+        self.reset_count.fetch_add(1, Ordering::SeqCst);
+        if self.fail_reset {
+            self.is_valid = false;
+            return Err(NetError::ConnectionFailed(
+                "Mock connection reset failed".to_string(),
+            ));
+        }
         self.in_transaction = false;
         Ok(())
     }

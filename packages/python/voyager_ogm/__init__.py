@@ -3,7 +3,9 @@
 from voyager_ogm import expressions, fn
 from voyager_ogm._voyager_rs import (
     ArrowStream,
+    NativeClient,
     NativeQueryBuilder,
+    NativeQueryResult,
     generate_synthetic_stream,
     version,
 )
@@ -131,7 +133,9 @@ __all__ = [
     "LiteralExpr",
     "MappingsResult",
     "MockBridge",
+    "NativeClient",
     "NativeQueryBuilder",
+    "NativeQueryResult",
     "Neo4jBoltBridge",
     "Node",
     "ParamExpr",

@@ -134,6 +134,37 @@ pub trait AsyncConnection: Send + Sync {
     async fn close(&mut self) -> Result<()>;
 }
 
+#[async_trait]
+impl AsyncConnection for Box<dyn AsyncConnection> {
+    async fn execute(
+        &mut self,
+        query: &str,
+        params: &HashMap<String, serde_json::Value>,
+    ) -> Result<QueryResult> {
+        (**self).execute(query, params).await
+    }
+
+    async fn ping(&mut self) -> Result<()> {
+        (**self).ping().await
+    }
+
+    async fn reset(&mut self) -> Result<()> {
+        (**self).reset().await
+    }
+
+    fn is_valid(&self) -> bool {
+        (**self).is_valid()
+    }
+
+    fn is_in_transaction(&self) -> bool {
+        (**self).is_in_transaction()
+    }
+
+    async fn close(&mut self) -> Result<()> {
+        (**self).close().await
+    }
+}
+
 /// Abstract asynchronous database transaction.
 #[async_trait]
 pub trait AsyncTransaction: Send + Sync {

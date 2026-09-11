@@ -31,9 +31,9 @@ class Person(Node):
 # ============================================================
 def test_bench_100k_nodes_to_polars(benchmark: Any) -> None:
     """Benchmark zero-copy ingestion of 100,000 graph nodes into Polars DataFrame."""
-    stream = generate_synthetic_stream(100_000)
 
     def run():
+        stream = generate_synthetic_stream(100_000)
         df = to_polars(stream)
         return df.height
 
@@ -43,9 +43,9 @@ def test_bench_100k_nodes_to_polars(benchmark: Any) -> None:
 
 def test_bench_1m_nodes_to_polars(benchmark: Any) -> None:
     """Benchmark zero-copy ingestion of 1,000,000 graph nodes into Polars DataFrame."""
-    stream = generate_synthetic_stream(1_000_000)
 
     def run():
+        stream = generate_synthetic_stream(1_000_000)
         df = to_polars(stream)
         return df.height
 
@@ -55,9 +55,9 @@ def test_bench_1m_nodes_to_polars(benchmark: Any) -> None:
 
 def test_bench_1m_nodes_to_arrow(benchmark: Any) -> None:
     """Benchmark zero-copy ingestion of 1,000,000 graph nodes into PyArrow Table."""
-    stream = generate_synthetic_stream(1_000_000)
 
     def run():
+        stream = generate_synthetic_stream(1_000_000)
         tbl = to_arrow(stream)
         return tbl.num_rows
 

@@ -13,7 +13,8 @@ pub use packstream::{
     BoltNode, BoltPath, BoltRelationship, BoltUnboundRelationship, BoltValue, PackStream,
 };
 pub use stream::{
-    DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE, encode_chunks, read_message_frame, write_message_frame,
+    DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE, encode_chunks, read_message_frame,
+    read_message_frame_buffered, write_message_frame,
 };
 pub use stub_server::BoltStubServer;
 pub use testkit::TestkitBackend;
