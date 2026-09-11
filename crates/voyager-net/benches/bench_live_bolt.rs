@@ -215,6 +215,9 @@ async fn setup_dataset(conn: &mut BoltConnection<TcpStream>) -> voyager_net::Res
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().any(|arg| arg == "--list") {
+        return Ok(());
+    }
     let config = ConnectionConfig::from_uri(NEO4J_URI).with_auth(NEO4J_USER, NEO4J_PASS);
 
     // Connect initial connection for seeding
