@@ -3,132 +3,38 @@
 **Multi-Dialect Object-Graph Mapper (OGM) and Query Compiler**
 
 [![CI](https://github.com/tanishq-kumar/voyager-ogm/actions/workflows/ci.yml/badge.svg)](https://github.com/tanishq-kumar/voyager-ogm/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/tanishq-kumar/voyager-ogm?color=orange&label=Release)](https://github.com/tanishq-kumar/voyager-ogm/releases)
 [![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
-[![Changelog](https://img.shields.io/badge/Changelog-Keep%20a%20Changelog-informational.svg)](CHANGELOG.md)
 [![Standards](https://img.shields.io/badge/Standards-openCypher%20%7C%20SQL%3A2023%20PGQ%20%7C%20ISO%20GQL-green.svg)](https://www.iso.org/standard/76120.html)
 [![Arrow](https://img.shields.io/badge/Zero--Copy-Apache%20Arrow%20PyCapsule-orange.svg)](https://arrow.apache.org/)
 
 ---
 
-## Why Voyager OGM?
+## Why I Built Voyager
 
-I started Voyager after facing real vendor lock-in pain migrating between Neo4j, Memgraph, and PostgreSQL AGE. In the relational world, ORMs like SQLAlchemy allow teams to switch backends with minimal friction. In the graph ecosystem, every vendor has subtle dialect differences, proprietary driver APIs, and hydration bottlenecks.
+I started Voyager after facing real vendor lock-in and performance bottlenecks migrating between graph databases like Neo4j, Memgraph, and PostgreSQL Apache AGE.
 
-After building an initial prototype in 2025, I dedicated focused time to turn it into a production-targeting toolkit. The goal is simple: **write one graph query, run it anywhere**.
+In the relational world, tools like SQLAlchemy make switching databases relatively straightforward. In the graph ecosystem, every database uses a slightly different dialect, custom driver protocols, and slow object serialization.
 
-Voyager is engineered in safe Rust to provide a high-performance, memory-efficient core, exposed to Python (`PyO3`) with zero-copy Apache Arrow streaming, with TypeScript (`NAPI-RS`) support planned.
+I wanted a single tool that lets me:
 
----
+1. **Write one graph query and compile it to any dialect** (openCypher, SQL:2023 PGQ, ISO GQL).
+2. **Eliminate Python object hydration bottlenecks** by streaming data directly into Polars via Apache Arrow.
+3. **Optimize queries automatically** with a compiler pass before sending them to the database.
 
-## Overview
-
-Voyager OGM is a graph database toolkit written in safe Rust with bindings for Python (`PyO3`) and planned bindings for TypeScript (`NAPI-RS`).
-
-To start writing code immediately, jump to [Local Development Setup](#local-development-and-code-usage) or inspect the available [Developer Commands](#developer-commands).
-
-Voyager OGM addresses four common challenges in graph database development:
-
-1. **Slow Object Hydration:** Leverages the **Apache Arrow C Data Interface** (`__arrow_c_stream__`) to stream graph query records directly into **Polars DataFrames** without intermediate Python object instantiation overhead. See [Zero-Copy Polars Streaming](#zero-copy-polars-streaming).
-2. **Dialect Lock-In:** Compiles a single unified query AST into **openCypher**, **SQL:2023 PGQ** (`GRAPH_TABLE`), and **ISO GQL** (ISO/IEC 39075:2024).
-3. **Memory Safety & Efficiency:** Uses a compact handle-based AST arena (`NodeHandle`) with automatic memory reclamation.
-4. **Transaction Safety:** Features a two-layer Unit of Work with nested in-memory savepoints that automatically rolls back uncommitted mutations and AST allocations if a query fails.
+I am developing Voyager in safe Rust with native Python (`PyO3`) bindings, with planned bindings for TypeScript (`NAPI-RS`).
 
 ---
 
-## Project Plan & Roadmap (7 Phases)
+## Key Features
 
-| Phase                                         | Scope                                                                                                                                              | Target Version |     Status     |
-| :-------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------- | :------------: | :------------: |
-| **Phase 1: Core Read AST Engine**             | Handle-based AST (`QueryAstArena`), multi-dialect emitters (openCypher, SQL:2023 PGQ, ISO GQL), PyO3 Python SDK                                    | `v0.1.0-alpha` |  ✅ Completed  |
-| **Phase 2: Mutations, Ingestion & Streaming** | DML mutations, 2-layer rollback transaction UoW, Bulk `UNWIND $batch`, Zero-copy Arrow/Polars streaming, Database bridging                         | `v0.2.0-alpha` |  ✅ Completed  |
-| **Phase 3: Multi-Dialect Syntax Conformance** | Standard openCypher, ISO GQL, DuckPGQ & Apache AGE syntax test suites, 6-engine live integration matrix | `v0.3.0-alpha` | ✅ Completed |
-| **Phase 4: Python Integrations & Optimizers** | SQLAlchemy hybrid bridge, Interactive Notebook Graph Viewer (`voyager_ogm.viewer`), Multi-database batch Identity Map, AST predicate pushdown pass | `v0.4.0-alpha` | ✅ Completed |
-| **Phase 4A: Core Hardening & Rich Expressions** | Rich function AST (`toLower`, `coalesce`), arithmetic trees, `CASE WHEN`, branching diamond patterns, batched FFI | `v0.4.5-alpha` | ✅ Completed |
-| **Phase 4B: Native Async Rust Network Engine** | Standalone `voyager-net`, Tokio async driver, wire-to-Arrow zero-copy streaming, dual backend (`backend="native"`) | `v0.4.6-alpha` | 🔄 In Progress |
-| **Phase 5: TypeScript SDK** | NAPI-RS native bindings, `@Node` / `@Relationship` decorators, fluent query builder, Arrow streaming | `v0.5.0-alpha` | 📋 Planned |
-| **Phase 6: Voyager CLI Engine & Polish** | Standalone CLI (`clap`), `voyager compile`, `voyager migrate`, `voyager introspect`, final ergonomics & developer polish | `v0.6.0-alpha` | 📋 Planned |
-| **Phase 7: Beta Release & Ecosystem Registry** | Multi-registry publishing (PyPI, Crates.io, npm) with OIDC provenance, public beta testing, security audit | `v0.7.0-beta` | 📋 Planned |
-| **Production GA Milestone** | Production-hardened General Availability (GA) release, documentation site & ecosystem stability | `v1.0.0` | 🎯 Future GA |
+### 1. Multi-Dialect Query Compilation
 
-### Phase 1: Core Read AST Engine (Status: Completed)
+Define models with Python type annotations and build queries once. Voyager compiles the abstract syntax tree (AST) into the exact dialect required by your database:
 
-- [x] **Task 1.1:** Create workspace tooling with `Cargo`, `uv`, `maturin`, and `justfile`.
-- [x] **Task 1.2:** Build AST representation and handle-based memory management (`QueryAstArena`).
-- [x] **Task 1.3:** Build query emitters for openCypher, SQL:2023 PGQ, and ISO GQL.
-- [x] **Task 1.4:** Create 18 golden snapshot tests with `insta`.
-- [x] **Task 1.5:** Build Python SDK with model decorators (`@node`, `@relationship`) and type annotations.
-
-### Phase 2: Mutations, Ingestion, Streaming & Bridging (Status: Completed)
-
-- [x] **Task 2.1:** Zero-copy Apache Arrow and Polars stream ingestion.
-- [x] **Task 2.2:** Two-layer transaction Unit-of-Work with in-memory savepoint rollbacks.
-- [x] **Task 2.3:** DML mutation AST nodes and dialect emitters (`CREATE`, `MERGE`, `SET`, `DELETE`, `DETACH DELETE`).
-- [x] **Task 2.4:** Bulk ingestion engine (`UNWIND $batch` and Polars DataFrame importer).
-- [x] **Task 2.5:** Database driver evaluation and query dispatch bridging layer (Neo4j, Memgraph, DuckDB, Mock).
-
-### Phase 3: Multi-Dialect Syntax Conformance & Integration Matrix (Status: Completed)
-
-- [x] **Task 3.1:** openCypher & openGQL syntax conformance tests (based on official openCypher and ISO GQL specifications).
-- [x] **Task 3.2:** SQL:2023 PGQ & DuckPGQ syntax tests for `GRAPH_TABLE` standard emission and in-memory DuckDB Polars extraction.
-- [x] **Task 3.3:** Apache AGE regression tests for PostgreSQL embedded Cypher (`cypher()`) execution and `agtype` mappings.
-- [x] **Task 3.4:** Automated local multi-engine live integration matrix (`just test-matrix` across Neo4j 5.26, Memgraph, Apache AGE, DuckDB & DuckPGQ, PostgreSQL 19 Beta 3, and FalkorDB).
-
-### Phase 4: Python Integrations & Query Optimizers (Status: Completed)
-
-- [x] **Task 4.1:** SQLAlchemy hybrid bridge connecting relational models with graph traversals (`HybridSession`, `as_cte()`, `sync_table_to_graph`).
-- [x] **Task 4.2:** Interactive Graph Viewer Widget (`voyager_ogm.viewer` supporting Marimo, VS Code interactive `.ipynb` notebooks, and standalone HTML).
-- [x] **Task 4.3:** [Experimental] Multi-Database Batch Identity Map & Active Record Data Mapper Fusion (`Session.flush()`, `Node.save()`, `weakref` memory management).
-- [x] **Task 4.4:** AST Rule-Based Query Optimizer & Predicate Pushdown Pass (`(p:Person {city: $p0})` inline pattern pushdown).
-
-### Phase 4A: Core Hardening & Rich Expression Engine (`voyager-core`) (Status: Completed)
-
-- [x] **Task 4A.1:** Rich Expression, Arithmetic & Function AST Engine (`toLower`, `toUpper`, `trim`, `split`, `coalesce`, `size`, arithmetic trees `+ - * / %`, `CASE WHEN`, temporal `datetime()`, list/pattern comprehensions).
-- [x] **Task 4A.2:** Branching Graph Topologies, Diamond Patterns & Subqueries (`MATCH p1, p2`, existential `WHERE EXISTS`, scalar `COUNT`).
-- [x] **Task 4A.3:** Batched High-Throughput FFI Serialization Layer (`compile_query_from_spec` single-trip handoff across PyO3 yielding a 3.0x speedup).
-- [x] **Formal Grammar Specification:** State transition machine and grammar specification formally defined in [`docs/voyager-fluent.md`](docs/voyager-fluent.md).
-
-### Phase 4B: Native Asynchronous Rust Network Engine (`voyager-net`) (Status: In Progress)
-
-- [ ] **Task 4B.1:** Tokio Async Database Driver & Connection Pooling Engine (native Bolt, Postgres wire, Redis RESP parsers in safe Rust).
-- [ ] **Task 4B.2:** Direct Wire-to-Arrow Zero-Copy Stream Deserialization (zero GIL contention, stream binary socket buffers directly into Arrow).
-- [ ] **Task 4B.3:** Dual Pluggable Backend Architecture (`backend="native"` for peak speed vs `bridge=driver` for Python/JS ecosystem interop).
-
-### Phase 5: TypeScript SDK (`@voyager-ogm/core`) (Status: Planned)
-
-- [ ] **Task 5.1:** TypeScript NAPI-RS native bindings for the core AST engine.
-- [ ] **Task 5.2:** TypeScript `@Node()` and `@Relationship()` decorators with full type safety.
-- [ ] **Task 5.3:** Type-safe fluent query builder and columnar Arrow hydration in Bun, Deno, and Node.js.
-- [ ] **Task 5.4:** Automated Bun test conformance suite and benchmarks.
-
-### Phase 6: Voyager CLI Engine & Developer Polish (Status: Planned)
-
-- [ ] **Task 6.1:** Standalone CLI tool (`voyager-cli`) built with `clap`.
-- [ ] **Task 6.2:** `voyager compile`: (sqlc-style) Compiles `.cypher` / `.gql` queries into type-safe models and async functions.
-- [ ] **Task 6.3:** `voyager migrate`: Manages in-graph schema migrations (constraints, indexes, labels, Graph Types).
-- [ ] **Task 6.4:** `voyager introspect`: Scans live database catalogs to generate model classes and query functions.
-- [ ] **Task 6.5:** Final API ergonomics polish, deprecation cleanups, and end-to-end DX verification.
-
-### Phase 7: Beta Release & Multi-Registry Publishing (Status: Planned)
-
-- [ ] **Task 7.1:** Automated multi-registry publishing to PyPI (`voyager-ogm`), Crates.io (`voyager-core`, `voyager-cli`), and npm (`@voyager-ogm/core`) with trusted OIDC provenance.
-- [ ] **Task 7.2:** Public Beta release testing, issue triage, and security audit.
-
-> [!NOTE]
-> The **`v1.0.0` Production GA Milestone** will follow the Phase 7 Beta period, accompanied by a comprehensive documentation website and multi-language interactive tutorials.
-
----
-
-## Local Development and Code Usage
-
-To build and run Voyager OGM locally from source:
-
-### Step 1: Build the Local Python Extension
-
-```bash
-uv run maturin develop
-```
-
-### Step 2: Define Models with Python Type Hints
+- **openCypher**: Neo4j, Memgraph, FalkorDB, AWS Neptune.
+- **SQL:2023 PGQ (`GRAPH_TABLE`)**: DuckDB DuckPGQ, PostgreSQL.
+- **ISO GQL (ISO/IEC 39075:2024)**: The official international graph query standard.
 
 ```python
 from voyager_ogm import Node, Relationship, Query, node, relationship
@@ -149,11 +55,8 @@ class WorksAt:
 @node(label="Company")
 class Company:
     name: str
-```
 
-### Step 3: Build and Compile a Query
 
-```python
 p = Person()
 c = Company()
 w = WorksAt()
@@ -168,7 +71,7 @@ query = (
     .limit(10)
 )
 
-# 1. Compile to openCypher (Neo4j, Memgraph, TigerGraph)
+# 1. Compile to openCypher (Neo4j, Memgraph, FalkorDB)
 cypher = query.compile("cypher")
 print(cypher.statement)
 # MATCH (_person_0:Person)-[_worksat_0:WORKS_AT]->(_company_0:Company)
@@ -176,32 +79,28 @@ print(cypher.statement)
 # RETURN _person_0.name, _person_0.age, _company_0.name AS company_name
 # ORDER BY _person_0.name ASC LIMIT 10
 
-# 2. Compile to SQL:2023 PGQ (DuckDB, PostgreSQL 19)
+# 2. Compile to SQL:2023 PGQ (DuckDB, PostgreSQL)
 pgq = query.compile("sql_pgq", graph_name="corp_graph")
 print(pgq.statement)
 
-# 3. Compile to ISO/IEC 39075:2024 GQL
+# 3. Compile to ISO GQL
 gql = query.compile("iso_gql")
 print(gql.statement)
 ```
 
----
+### 2. Zero-Copy Apache Arrow & Polars Streaming
 
-## Zero-Copy Polars Streaming
-
-Voyager OGM streams graph data into Polars without Python object conversion overhead.
+Traditional Python OGMs instantiate thousands of Python objects when fetching query results, creating a major serialization bottleneck. Voyager uses the **Apache Arrow C Data Interface** (`__arrow_c_stream__`) to convert graph database records directly into **Polars DataFrames** at memory speed without Python serialization overhead.
 
 ```python
 import polars as pl
 from voyager_ogm import generate_synthetic_stream, to_polars
 
-# 1. Receive native Arrow stream from query engine
+# Stream query records directly into Polars in milliseconds
 stream = generate_synthetic_stream(100_000)
-
-# 2. Load directly into Polars in less than 2 milliseconds
 df = to_polars(stream)
 
-# 3. Run analytical queries
+# Run analytical queries with zero object materialization overhead
 stats = (
     df.lazy()
     .filter(pl.col("active"))
@@ -215,78 +114,136 @@ stats = (
 print(stats)
 ```
 
----
+### 3. Rule-Based Query Optimizer
 
-## Multi-Database Compatibility & Testing
+Before queries are emitted to the database, Voyager runs optimization passes over the AST:
 
-> [!NOTE]
-> **Active Development Status:**
-> Voyager OGM is actively under development. Query compilation and database bridging are continuously verified against live database instances.
+- **Predicate Pushdown**: Automatically inlines filter conditions directly into the pattern match, allowing database engines to leverage node/relationship indexes instead of scanning full tables.
+- **Constant Folding**: Pre-computes arithmetic and static sub-expressions at compile time in Rust, even when combined with dynamic variables. The database engine never re-evaluates static formulas across millions of graph records.
+- **Dead Clause Elimination**: Prunes unused query fragments and redundant traversals.
 
-Voyager is verified against 6 database engines:
+#### Optimization Example:
 
-| Database Engine          | Dialect / Standard              | Connection / Transport             |  Status   |
-| :----------------------- | :------------------------------ | :--------------------------------- | :-------: |
-| **Neo4j 5.26**           | openCypher / Cypher 25 _(Exp.)_ | Bolt (`bolt://localhost:7687`)     | ✅ Tested |
-| **Memgraph**             | openCypher / ISO GQL            | Bolt (`bolt://localhost:7688`)     | ✅ Tested |
-| **Apache AGE**           | Cypher-in-SQL                   | PostgreSQL (`host=localhost:5455`) | ✅ Tested |
-| **DuckDB & DuckPGQ** | SQL:2023 / SQL:2023 PGQ (`GRAPH_TABLE`) | In-Memory / Extension | ✅ Tested |
-| **PostgreSQL 19 Beta 3** | Relational / Recursive SQL      | PostgreSQL (`host=localhost:5456`) | ✅ Tested |
-| **FalkorDB**             | openCypher                      | Native Client (`port: 6379`)       | ✅ Tested |
+```python
+# Query with a dynamic database property and a time formula:
+# e.g., finding events exceeding a user's base quota plus a 7-day retention window
+query = (
+    Query.match(user)
+    .to(action)
+    .node(event)
+    .where(
+        user.city == "London",
+        event.duration_sec >= user.base_quota + (7 * 24 * 60 * 60),  # Constant folding
+    )
+    .return_(user.name, event.type)
+)
 
-All automated test suites and test cases can be inspected directly in the test directories:
-
-- Python integration & conformance suites: [`packages/python/tests/`](packages/python/tests/)
-- Rust core AST & dialect snapshots: [`crates/voyager-core/tests/`](crates/voyager-core/tests/)
-
----
-
-## Developer Commands
-
-Voyager OGM uses [`just`](https://github.com/casey/just) as a command runner for automated development tasks.
-
-### Install `just`
-
-If you do not have `just` installed, install it for your system from the [official installation page](https://github.com/casey/just#installation):
-
-```bash
-# Via Rust Cargo
-cargo install just
-
-# Via Windows (Winget or Scoop)
-winget install Casey.Just
-# or: scoop install just
-
-# Via macOS / Linux (Homebrew)
-brew install just
+# Optimized query emitted to the database:
+# MATCH (_user_0:Person {city: $p0})-[_action_0:PERFORMED]->(_event_0:Event)
+# WHERE (_event_0.duration_sec >= _user_0.base_quota + 604800)  <-- Folded at compile time
+# RETURN _user_0.name, _event_0.type
 ```
 
-### Available Development Recipes
+### 4. Complex Expressions & Graph Functions
 
-Run tasks with `just`:
+Instead of limiting queries to flat equality checks (`p.age == 25`), Voyager's expression AST supports nested computations, arithmetic trees, string operations, and graph built-in functions:
 
-```bash
-# Setup the local development environment
-just setup
-
-# Verify environment and toolchain
-just doctor
-
-# Format all code (Rust, Python, TypeScript)
-just fmt
-
-# Run all linters
-just lint
-
-# Run all test suites
-just test
-
-# Run Rust and Python code examples
-just examples
-
-# Run full continuous integration check
-just ci
+```python
+# Complex expressions in projections and filters:
+query = (
+    Query.match(p)
+    .where(
+        p.name.to_lower().starts_with("al"),
+        p.salary * 1.15 + p.bonus > 100_000,
+        p.tags.size() > 2,
+    )
+    .return_(
+        full_name=p.first_name + " " + p.last_name,
+        display_name=p.nickname.coalesce(p.first_name),
+    )
+)
 ```
+
+### 5. In-Memory Identity Map & Unit of Work
+
+Voyager combines **Active Record** ergonomics with **Data Mapper** architecture:
+
+- **Active Record Ergonomics**: Work with graph nodes and relationships as natural Python objects—read, update, and modify fields directly in your application code.
+- **Data Mapper Cleanliness**: Instead of firing an immediate database query on every property modification, the transactional Unit of Work tracks dirty fields in memory and flushes them in a single, minimal batched update.
+- **Identity Map Consistency**: If the same graph node is loaded across multiple queries or traversals within a transaction, Voyager returns the exact same in-memory object. Changes made in one place are immediately visible everywhere without stale reads or duplicate database lookups.
+
+#### Example:
+
+```python
+with session.transaction():
+    # 1. Fetch a person from the database
+    alice = session.get(Person, id="alice_42")
+
+    # 2. Modify properties directly (Active Record style)
+    alice.city = "Cambridge"
+    alice.role = "Lead Architect"
+
+    # 3. Another query in the same transaction traverses a team that includes Alice:
+    # Voyager reuses the existing in-memory object instead of re-fetching
+    lead = query.match(team).to(has_lead).node(person).first()
+    print(lead.city)  # "Cambridge" (changes are immediately visible, zero stale reads)
+
+    # 4. Flush changes: Unit of Work automatically emits a single minimal UPDATE
+    session.flush()
+```
+
+### 6. Interactive Graph Viewer
+
+Voyager includes a built-in interactive graph viewer with force-directed physics, Cartesian dot grid, schema legend chips, and an inspector drawer.
+
+```python
+from voyager_ogm import view_graph
+
+# In a Marimo notebook cell or VS Code interactive notebook (.ipynb):
+view_graph(nodes, relationships)
+```
+
+Explore the runnable interactive demos in the repository:
+
+- [**Marimo GraphRAG Demo**](examples/python/07_marimo_graphrag_demo.py) — Interactive dashboard with schema filters, neighborhood spotlights, and inspector drawer (`marimo run examples/python/07_marimo_graphrag_demo.py`).
+- [**Jupyter & VS Code Notebook**](examples/python/08_jupyter_vscode_graph_demo.ipynb) — Interactive `.ipynb` notebook demonstrating graph exploration directly within cell outputs.
+- [**Query Path Visualizer**](examples/python/09_query_path_visualization.py) — Visualizes multi-hop path traversals and graph pattern matching.
+
+---
+
+## Database Compatibility
+
+Voyager is verified against 6 database backends:
+
+| Database             | Dialect / Standard           | Connection / Transport   |
+| :------------------- | :--------------------------- | :----------------------- |
+| **Neo4j**            | openCypher / Cypher 25       | Bolt Protocol            |
+| **Memgraph**         | openCypher / ISO GQL         | Bolt Protocol            |
+| **Apache AGE**       | Cypher-in-SQL                | PostgreSQL Wire Protocol |
+| **DuckDB & DuckPGQ** | SQL:2023 PGQ (`GRAPH_TABLE`) | In-Memory / Arrow FFI    |
+| **FalkorDB**         | openCypher                   | Native Client / Bolt     |
+| **PostgreSQL**       | Relational / Recursive SQL   | PostgreSQL Wire Protocol |
+
+---
+
+## Roadmap
+
+Voyager's development is organized into focused milestone phases. You can track active progress, issues, and completion percentages directly on [**GitHub Milestones**](https://github.com/tanishq-kumar/voyager-ogm/milestones):
+
+- **[Milestone 1: v0.1.0-alpha](https://github.com/tanishq-kumar/voyager-ogm/milestone/1)** — Core Read AST Engine _(Completed)_
+- **[Milestone 2: v0.2.0-alpha](https://github.com/tanishq-kumar/voyager-ogm/milestone/2)** — Mutations, Ingestion & Arrow Streaming _(Completed)_
+- **[Milestone 3: v0.3.0-alpha](https://github.com/tanishq-kumar/voyager-ogm/milestone/3)** — Multi-Dialect Syntax Conformance _(Completed)_
+- **[Milestone 4: v0.4.0-alpha](https://github.com/tanishq-kumar/voyager-ogm/milestone/4)** — Python Integrations, Rich Expressions & Query Optimizer _(Active)_
+- **[Milestone 5: v0.5.0-alpha](https://github.com/tanishq-kumar/voyager-ogm/milestone/5)** — TypeScript SDK _(Planned)_
+- **[Milestone 6: v0.6.0-alpha](https://github.com/tanishq-kumar/voyager-ogm/milestone/6)** — Voyager CLI (`voy`) _(Planned)_
+
+---
+
+## Contributing & Local Development
+
+Voyager is a solo project and contributions, feedback, and constructive criticism are warmly welcome!
+
+For local build setup instructions, testing with database containers, and contribution guidelines, please see [**CONTRIBUTING.md**](CONTRIBUTING.md).
 
 ---
 
@@ -294,5 +251,5 @@ just ci
 
 Dual-licensed under either:
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT License ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT License ([LICENSE-MIT](LICENSE-MIT))
