@@ -59,9 +59,9 @@ test-rust:
 test-snapshot:
     uv run cargo insta test --workspace
 
-# Run Python SDK tests with pytest
+# Run Python SDK tests with pytest (skipping slow live container integration tests)
 test-python:
-    uv run pytest
+    uv run pytest -m "not live"
 
 # Run TypeScript SDK tests with bun test
 test-ts:
@@ -166,7 +166,7 @@ down:
 
 # Run live database integration tests against real running databases
 test-live:
-    uv run pytest packages/python/tests/test_live_database_bridge.py packages/python/tests/test_real_world_scenarios.py -v
+    uv run pytest -m live packages/python/tests/test_live_database_bridge.py packages/python/tests/test_real_world_scenarios.py -v
 
 # Run openCypher TCK conformance test suite
 test-tck:
@@ -186,4 +186,4 @@ test-age:
 
 # Run Multi-Engine Live Matrix integration tests (Neo4j, Memgraph, Apache AGE, DuckDB)
 test-matrix:
-    uv run pytest packages/python/tests/test_live_matrix.py -v
+    uv run pytest -m live packages/python/tests/test_live_matrix.py -v

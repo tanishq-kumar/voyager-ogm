@@ -20,6 +20,8 @@ from voyager_ogm import (
     reset_alias_counters,
 )
 
+pytestmark = pytest.mark.live
+
 try:
     from neo4j import AsyncGraphDatabase, GraphDatabase
 
