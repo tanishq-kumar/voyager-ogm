@@ -1,0 +1,66 @@
+[package]
+name = "voyager-net"
+description = "Native asynchronous network runtime, connection pooling, and wire protocol engine for Voyager OGM"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+autobenches = false
+
+[dependencies]
+voyager-core = { workspace = true, features = ["serde", "arrow"] }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+parking_lot = { workspace = true }
+url = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+arrow = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-array = { workspace = true }
+md-5 = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+
+# Optional dependency for head-to-head comparative driver benchmarks
+neo4rs = { version = "0.8.0", optional = true }
+
+[features]
+default = []
+bench-driver = ["dep:neo4rs"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+
+[[bench]]
+name = "bench_security_overhead"
+harness = false
+
+[[bench]]
+name = "bench_driver_vs_voyager_net"
+harness = false
+required-features = ["bench-driver"]
+
+[[bench]]
+name = "bench_1m_driver_vs_voyager"
+harness = false
+required-features = ["bench-driver"]
+
+[[bench]]
+name = "bench_live_bolt"
+harness = false
+
+[[bench]]
+name = "bench_jumbo_payloads"
+harness = false
+

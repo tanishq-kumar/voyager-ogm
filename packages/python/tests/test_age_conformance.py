@@ -271,6 +271,7 @@ def test_age_dml_mutations():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.live
 def test_live_apache_age_database_execution():
     """Verifies live query execution against running Apache AGE instance if available."""
     try:
@@ -279,7 +280,7 @@ def test_live_apache_age_database_execution():
         con = psycopg.connect(
             "host=127.0.0.1 port=5455 user=postgres password=voyagerpass123 dbname=voyager_graph",
             autocommit=True,
-            connect_timeout=3,
+            connect_timeout=1,
         )
     except Exception:
         pytest.skip("Apache AGE container not reachable on port 5455")

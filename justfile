@@ -13,6 +13,7 @@ doctor:
     @Write-Host "=== Voyager OGM Environment & Toolchain Diagnostics ===" -ForegroundColor Cyan
     @Write-Host "  [OK] Rust Compiler      : $(cargo --version)"
     @Write-Host "  [OK] Nextest Runner     : cargo-nextest $( (cargo nextest --version)[0].Split(' ')[1] )"
+    @Write-Host "  [OK] Cargo Sweep        : $( (cargo sweep --version).Trim() )"
     @Write-Host "  [OK] Python Toolchain   : $(uv --version)"
     @Write-Host "  [OK] TypeScript Runtime : Bun v$(bun --version)"
     @Write-Host ""
@@ -26,7 +27,17 @@ setup:
     @uv sync --all-extras
     @echo "=== Setting up TypeScript workspace ==="
     @bun install
+    @echo "=== Fetching official conformance repositories ==="
+    @uv run python scripts/fetch_conformance.py
     @echo "[PASS] Environment setup complete!"
+
+# Fetch or update official vendor conformance repositories (Apache AGE, FalkorDB)
+fetch-conformance:
+    @uv run python scripts/fetch_conformance.py
+
+# Run official FalkorDB conformance test suite
+test-falkordb-official:
+    uv run cargo test -p voyager-net --test official_falkordb_tests -- --nocapture
 
 # Build all Rust workspace members and Python native extension
 build:
@@ -48,13 +59,13 @@ test-rust:
 test-snapshot:
     uv run cargo insta test --workspace
 
-# Run Python SDK tests with pytest
+# Run Python SDK tests with pytest (skipping slow live container integration tests)
 test-python:
-    uv run pytest
+    uv run pytest -m "not live"
 
 # Run TypeScript SDK tests with bun test
 test-ts:
-    bun test
+    bun test packages/typescript
 
 # Format code across Rust and Python
 fmt:
@@ -87,13 +98,39 @@ pre-commit: fmt-check lint typecheck
 pre-push: test bench-save
     @echo "[PASS] Pre-push verification and benchmark capture complete!"
 
-# Run benchmarks
+# Run Rust micro-benchmarks
 bench:
     uv run cargo bench --workspace
+
+# Run Python PyCapsule & hydration benchmarks
+bench-python:
+    uv run pytest packages/python/benches/ --benchmark-only
+
+# Run head-to-head OGM comparison benchmark against Neomodel and Pydantic v2
+bench-ogm:
+    uv run python packages/python/benches/bench_head_to_head.py
+
+# Re-generate vector SVG benchmark charts for README documentation
+bench-charts:
+    uv run python scripts/generate_benchmark_charts.py
+
+# Run complete benchmark suite, save JSON snapshot, and re-generate charts
+bench-all name="":
+    uv run cargo bench --workspace
+    uv run python scripts/save_benchmarks.py {{name}}
+    uv run python scripts/generate_benchmark_charts.py
 
 # Run Python & Rust hydration/compilation benchmarks and dynamically save JSON results
 bench-save name="":
     uv run python scripts/save_benchmarks.py {{name}}
+
+# Prune build artifacts older than N days (defaults to 7) without wiping dependencies
+sweep days="7":
+    cargo sweep -t {{days}}
+
+# Enforce a maximum target/ disk budget by removing oldest artifacts (defaults to 4GB)
+sweep-max size="4GB":
+    cargo sweep --maxsize {{size}}
 
 
 # Run all Rust code examples
@@ -129,7 +166,7 @@ down:
 
 # Run live database integration tests against real running databases
 test-live:
-    uv run pytest packages/python/tests/test_live_database_bridge.py packages/python/tests/test_real_world_scenarios.py -v
+    uv run pytest -m live packages/python/tests/test_live_database_bridge.py packages/python/tests/test_real_world_scenarios.py -v
 
 # Run openCypher TCK conformance test suite
 test-tck:
@@ -149,4 +186,4 @@ test-age:
 
 # Run Multi-Engine Live Matrix integration tests (Neo4j, Memgraph, Apache AGE, DuckDB)
 test-matrix:
-    uv run pytest packages/python/tests/test_live_matrix.py -v
+    uv run pytest -m live packages/python/tests/test_live_matrix.py -v

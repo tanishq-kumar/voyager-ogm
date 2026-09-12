@@ -1,0 +1,80 @@
+[
+  {
+    "engine": "voyager-net",
+    "scenario": "1. Bulk 10k Rows (Direct Wire->Arrow)",
+    "iterations": 20,
+    "concurrency": 1,
+    "duration_ms": 1450.4089,
+    "qps": 13.789214889676973,
+    "p50_ms": 63.315599999999996,
+    "p90_ms": 81.0505,
+    "p95_ms": 159.8642,
+    "p99_ms": 234.2652,
+    "max_ms": 234.2652
+  },
+  {
+    "engine": "neo4rs",
+    "scenario": "1. Bulk 10k Rows (Row-by-Row Unpack)",
+    "iterations": 20,
+    "concurrency": 1,
+    "duration_ms": 2239.8649,
+    "qps": 8.929109965516224,
+    "p50_ms": 106.75619999999999,
+    "p90_ms": 130.4264,
+    "p95_ms": 150.1365,
+    "p99_ms": 180.42430000000002,
+    "max_ms": 180.42430000000002
+  },
+  {
+    "engine": "voyager-net",
+    "scenario": "2. Point Reads (Conc 20, 1000 runs)",
+    "iterations": 1000,
+    "concurrency": 20,
+    "duration_ms": 768.5838,
+    "qps": 1301.0942983705875,
+    "p50_ms": 12.5266,
+    "p90_ms": 27.2575,
+    "p95_ms": 33.594,
+    "p99_ms": 49.5015,
+    "max_ms": 75.304
+  },
+  {
+    "engine": "neo4rs",
+    "scenario": "2. Point Reads (Conc 20, 1000 runs)",
+    "iterations": 1000,
+    "concurrency": 20,
+    "duration_ms": 860.5614,
+    "qps": 1162.0321339070053,
+    "p50_ms": 12.1436,
+    "p90_ms": 24.348200000000002,
+    "p95_ms": 39.121900000000004,
+    "p99_ms": 123.79990000000001,
+    "max_ms": 235.4947
+  },
+  {
+    "engine": "voyager-net",
+    "scenario": "3. 2-Hop Traversal (Conc 10, 200 runs)",
+    "iterations": 200,
+    "concurrency": 10,
+    "duration_ms": 239.7403,
+    "qps": 834.2360462550519,
+    "p50_ms": 10.0059,
+    "p90_ms": 20.0273,
+    "p95_ms": 24.4511,
+    "p99_ms": 39.6685,
+    "max_ms": 42.263099999999994
+  },
+  {
+    "engine": "neo4rs",
+    "scenario": "3. 2-Hop Traversal (Conc 10, 200 runs)",
+    "iterations": 200,
+    "concurrency": 10,
+    "duration_ms": 311.3882,
+    "qps": 642.2850962239417,
+    "p50_ms": 11.520000000000001,
+    "p90_ms": 30.9224,
+    "p95_ms": 44.8347,
+    "p99_ms": 51.467400000000005,
+    "max_ms": 56.041599999999995
+  }
+]

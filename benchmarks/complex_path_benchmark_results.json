@@ -1,0 +1,122 @@
+{
+  "Neo4j 5.26": {
+    "dataset": "10,000 Nodes, 10,000 Edges (2-Hop)",
+    "unopt_stmt": "MATCH (p:Person)-[w1:WORKSAT]->(c:Company)-[w2:WORKSAT]->(colleague:Person) WHERE ((p.city = $p0) AND (colleague.city = $p1)) AND (p.age >= $p2) RETURN p.name AS p_name, c.name AS comp_name, colleague.name AS colleague_name",
+    "opt_stmt": "MATCH (p:Person {city: $p0})-[w1:WORKSAT]->(c:Company)-[w2:WORKSAT]->(colleague:Person {city: $p1}) WHERE p.age >= $p2 RETURN p.name AS p_name, c.name AS comp_name, colleague.name AS colleague_name",
+    "unopt": {
+      "mean_ms": 18.92185500182677,
+      "median_ms": 12.564349977765232,
+      "min_ms": 6.539400084875524,
+      "max_ms": 86.22140006627887,
+      "p95_ms": 44.45970000233501
+    },
+    "opt": {
+      "mean_ms": 10.555072498391382,
+      "median_ms": 10.18975005717948,
+      "min_ms": 6.761599914170802,
+      "max_ms": 16.56569994520396,
+      "p95_ms": 16.298400005325675
+    },
+    "speedup": 1.7926788285642288
+  },
+  "Memgraph": {
+    "dataset": "10,000 Nodes, 10,000 Edges (2-Hop)",
+    "unopt_stmt": "MATCH (p:Person)-[w1:WORKSAT]->(c:Company)-[w2:WORKSAT]->(colleague:Person) WHERE ((p.city = $p0) AND (colleague.city = $p1)) AND (p.age >= $p2) RETURN p.name AS p_name, c.name AS comp_name, colleague.name AS colleague_name",
+    "opt_stmt": "MATCH (p:Person {city: $p0})-[w1:WORKSAT]->(c:Company)-[w2:WORKSAT]->(colleague:Person {city: $p1}) WHERE p.age >= $p2 RETURN p.name AS p_name, c.name AS comp_name, colleague.name AS colleague_name",
+    "unopt": {
+      "mean_ms": 1.4544700010446832,
+      "median_ms": 1.3791000237688422,
+      "min_ms": 0.875400030054152,
+      "max_ms": 2.546599949710071,
+      "p95_ms": 2.365700085647404
+    },
+    "opt": {
+      "mean_ms": 1.1457499989774078,
+      "median_ms": 1.0415499564260244,
+      "min_ms": 0.8746000239625573,
+      "max_ms": 2.6640999130904675,
+      "p95_ms": 1.8547000363469124
+    },
+    "speedup": 1.2694479618964092
+  },
+  "DuckDB": {
+    "dataset": "50,000 Rows (2-Hop Relational Graph)",
+    "unopt_stmt": "2-Hop Join (Unsimplified Conjunction Tree)",
+    "opt_stmt": "2-Hop Join (Optimized Flattened Predicates)",
+    "unopt": {
+      "mean_ms": 4.264928000047803,
+      "median_ms": 4.199600021820515,
+      "min_ms": 3.8367999950423837,
+      "max_ms": 5.307300016283989,
+      "p95_ms": 4.680300015024841
+    },
+    "opt": {
+      "mean_ms": 4.578181998804212,
+      "median_ms": 4.549750010482967,
+      "min_ms": 3.841899917460978,
+      "max_ms": 6.173499976284802,
+      "p95_ms": 5.286199972033501
+    },
+    "speedup": 0.9315767702467423
+  },
+  "PostgreSQL 19": {
+    "dataset": "50,000 Rows (2-Hop Indexed Graph)",
+    "unopt_stmt": "2-Hop Join (Unsimplified Predicates)",
+    "opt_stmt": "2-Hop Join (Simplified B-Tree Filters)",
+    "unopt": {
+      "mean_ms": 351.90210749860853,
+      "median_ms": 352.4057499598712,
+      "min_ms": 292.08839999046177,
+      "max_ms": 404.7038999851793,
+      "p95_ms": 401.3361999532208
+    },
+    "opt": {
+      "mean_ms": 350.01606000296306,
+      "median_ms": 354.7051499481313,
+      "min_ms": 293.53759996593,
+      "max_ms": 430.59120001271367,
+      "p95_ms": 424.13980001583695
+    },
+    "speedup": 1.0053884598770397
+  },
+  "FalkorDB": {
+    "dataset": "2,050 Nodes, 2-Hop Graph",
+    "unopt_stmt": "MATCH (p:Person)-[:WORKS_AT]->(c:Company)<-[:WORKS_AT]-(colleague:Person) WHERE p.city = 'Tokyo' AND colleague.city = 'Berlin' AND p.age >= 30 RETURN p.name, c.name, colleague.name",
+    "opt_stmt": "MATCH (p:Person {city: 'Tokyo'})-[:WORKS_AT]->(c:Company)<-[:WORKS_AT]-(colleague:Person {city: 'Berlin'}) WHERE p.age >= 30 RETURN p.name, c.name, colleague.name",
+    "unopt": {
+      "mean_ms": 2.488219999941066,
+      "median_ms": 2.466200035996735,
+      "min_ms": 2.1637999452650547,
+      "max_ms": 3.4388999920338392,
+      "p95_ms": 2.8846999630331993
+    },
+    "opt": {
+      "mean_ms": 2.7377049962524325,
+      "median_ms": 2.613399992696941,
+      "min_ms": 2.263300004415214,
+      "max_ms": 3.992099897004664,
+      "p95_ms": 3.6231999984011054
+    },
+    "speedup": 0.9088707524540155
+  },
+  "Apache AGE": {
+    "dataset": "520 Nodes, 2-Hop Graph",
+    "unopt_stmt": "2-Hop Unoptimized WHERE",
+    "opt_stmt": "2-Hop Optimized Inline Maps",
+    "unopt": {
+      "mean_ms": 2.8217033366672695,
+      "median_ms": 2.7439500554464757,
+      "min_ms": 2.454300061799586,
+      "max_ms": 3.9528999477624893,
+      "p95_ms": 3.543799975886941
+    },
+    "opt": {
+      "mean_ms": 2.4334466628109417,
+      "median_ms": 2.319199964404106,
+      "min_ms": 2.0257000578567386,
+      "max_ms": 3.561499994248152,
+      "p95_ms": 3.4452000400051475
+    },
+    "speedup": 1.159550106353201
+  }
+}

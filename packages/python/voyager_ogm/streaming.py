@@ -37,6 +37,8 @@ class QueryResult:
             stream: Underlying Rust ArrowStream capsule.
         """
         self._stream = stream
+        self._cached_df: pl.DataFrame | None = None
+        self._cached_table: pa.Table | None = None
 
     @property
     def num_rows(self) -> int:
@@ -54,10 +56,22 @@ class QueryResult:
         Returns:
             PyArrow Table containing the full result stream.
         """
+        if self._cached_table is not None:
+            return self._cached_table
+        if self._cached_df is not None:
+            tbl = self._cached_df.to_arrow()
+            self._cached_table = tbl
+            return tbl
         import pyarrow as pa
 
+        if hasattr(self._stream, "is_consumed") and self._stream.is_consumed:
+            tbl = pa.Table.from_pylist(self.to_dicts())
+            self._cached_table = tbl
+            return tbl
         reader = pa.RecordBatchReader.from_stream(self._stream)
-        return reader.read_all()
+        tbl = reader.read_all()
+        self._cached_table = tbl
+        return tbl
 
     def to_polars(self) -> pl.DataFrame:
         """Zero-copy ingestion directly into a Polars DataFrame.
@@ -67,9 +81,22 @@ class QueryResult:
         Returns:
             Polars DataFrame containing the hydrated graph dataset.
         """
+        if self._cached_df is not None:
+            return self._cached_df
         import polars as pl
 
-        return pl.DataFrame(self._stream)
+        if self._cached_table is not None:
+            df = pl.DataFrame(self._cached_table)
+            self._cached_df = df
+            return df
+
+        if hasattr(self._stream, "is_consumed") and self._stream.is_consumed:
+            df = pl.DataFrame(self.to_dicts())
+            self._cached_df = df
+            return df
+        df = pl.DataFrame(self._stream)
+        self._cached_df = df
+        return df
 
     def to_dicts(self) -> list[dict[str, Any]]:
         """Convenience method to export records as Python dictionaries.
@@ -77,6 +104,10 @@ class QueryResult:
         Returns:
             List of dictionaries representing the row records.
         """
+        if self._cached_df is not None:
+            return self._cached_df.to_dicts()
+        if hasattr(self._stream, "to_dicts"):
+            return self._stream.to_dicts()
         return self.to_polars().to_dicts()
 
 

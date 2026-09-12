@@ -1,0 +1,134 @@
+{
+  "hydration": {
+    "title": "In-Memory Entity Hydration Speed",
+    "subtitle": "Higher is better -- 10,000 graph nodes with 6 properties (Nodes / Second)",
+    "unit": "nodes/sec",
+    "display_unit": "/s",
+    "axis_max": 1200000,
+    "axis_ticks": [0, 500000, 1000000],
+    "items": [
+      {
+        "id": "voyager",
+        "label": "Voyager OGM",
+        "sublabel": "Zero-Copy Arrow C Stream",
+        "value": 1013607,
+        "entity_type": "voyager"
+      },
+      {
+        "id": "pydantic",
+        "label": "Pydantic v2",
+        "sublabel": "Official Driver + BaseModel",
+        "value": 280899,
+        "entity_type": "pydantic"
+      },
+      {
+        "id": "neomodel",
+        "label": "neomodel",
+        "sublabel": "StructuredNode.inflate()",
+        "value": 23016,
+        "entity_type": "neomodel"
+      }
+    ],
+    "annotation": {
+      "target": "voyager",
+      "baseline": "neomodel",
+      "type": "speedup",
+      "format": "{ratio:.1f}x FASTER"
+    }
+  },
+  "latency": {
+    "title": "High-Concurrency Latency (p99 Tail vs p50 Median)",
+    "subtitle": "Lower is better -- 1,000 Point Reads across 20 Concurrent Connections (Milliseconds)",
+    "unit": "ms",
+    "display_unit": "ms",
+    "axis_max": 130,
+    "precision": 1,
+    "axis_ticks": [0, 60, 120],
+    "sections": [
+      {
+        "name": "Tail Latency (p99)",
+        "items": [
+          {
+            "id": "voyager_p99",
+            "label": "Voyager Native Engine",
+            "sublabel": "Non-blocking async multiplexing",
+            "value": 49.5,
+            "entity_type": "voyager"
+          },
+          {
+            "id": "neo4rs_p99",
+            "label": "neo4rs Driver (Standard)",
+            "sublabel": "Generic connection pool",
+            "value": 123.8,
+            "entity_type": "driver"
+          }
+        ],
+        "annotation": {
+          "target": "voyager_p99",
+          "baseline": "neo4rs_p99",
+          "type": "ratio_lower",
+          "format": "{ratio:.1f}x LOWER"
+        }
+      },
+      {
+        "name": "Median (p50)",
+        "items": [
+          {
+            "id": "voyager_p50",
+            "label": "Voyager Native Engine",
+            "sublabel": "Non-blocking async multiplexing",
+            "value": 12.5,
+            "entity_type": "voyager",
+            "tone": "light"
+          },
+          {
+            "id": "neo4rs_p50",
+            "label": "neo4rs Driver (Standard)",
+            "sublabel": "Generic connection pool",
+            "value": 12.1,
+            "entity_type": "driver",
+            "tone": "light"
+          }
+        ]
+      }
+    ]
+  },
+  "memory": {
+    "title": "Physical Memory Footprint (50,000 Entities)",
+    "subtitle": "Lower is better -- Process Resident Set Size (RSS) Memory Delta (Megabytes)",
+    "unit": "MB",
+    "display_unit": "MB",
+    "axis_max": 50,
+    "precision": 2,
+    "axis_ticks": [0, 25, 50],
+    "items": [
+      {
+        "id": "voyager",
+        "label": "Voyager / PyArrow",
+        "sublabel": "Buffer raw nbytes: 2.38 MB",
+        "value": 3.32,
+        "entity_type": "voyager"
+      },
+      {
+        "id": "driver_dict",
+        "label": "Python list[dict]",
+        "sublabel": "Standard Driver Records",
+        "value": 9.83,
+        "entity_type": "driver"
+      },
+      {
+        "id": "pydantic",
+        "label": "Pydantic v2 Models",
+        "sublabel": "50,000 Model Instances",
+        "value": 42.23,
+        "entity_type": "pydantic"
+      }
+    ],
+    "annotation": {
+      "target": "voyager",
+      "baseline": "pydantic",
+      "type": "percent_less",
+      "format": "{percent:.0f}% LESS RAM"
+    }
+  }
+}

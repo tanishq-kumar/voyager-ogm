@@ -116,7 +116,8 @@ def test_arrow_and_polars_data_integrity_and_null_checks():
     assert df["age"].min() == 20
     assert df["age"].max() == 79
 
-    table = to_arrow(stream)
+    stream2 = generate_synthetic_stream(50_000)
+    table = to_arrow(stream2)
     assert table.num_rows == 50_000
     assert table.column("id").null_count == 0
 

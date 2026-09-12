@@ -1,0 +1,86 @@
+[
+  {
+    "name": "1. Point Reads (1-Hop Lookup, Concurrency 20)",
+    "iterations": 1000,
+    "concurrency": 20,
+    "duration_ms": 694.6830000000001,
+    "qps": 1439.5055010702722,
+    "p50_ms": 9.010900000000001,
+    "p90_ms": 23.502,
+    "p95_ms": 33.079299999999996,
+    "p99_ms": 112.3552,
+    "max_ms": 183.5525
+  },
+  {
+    "name": "2. Graph 2-Hop Traversal & Aggregation",
+    "iterations": 200,
+    "concurrency": 10,
+    "duration_ms": 1450.1522,
+    "qps": 137.91655799991202,
+    "p50_ms": 54.6768,
+    "p90_ms": 112.1941,
+    "p95_ms": 150.4988,
+    "p99_ms": 337.7155,
+    "max_ms": 355.48839999999996
+  },
+  {
+    "name": "3. Bulk Result Streaming (10k Rows -> Arrow)",
+    "iterations": 20,
+    "concurrency": 1,
+    "duration_ms": 1978.5852,
+    "qps": 10.108232892877194,
+    "p50_ms": 78.9237,
+    "p90_ms": 149.9257,
+    "p95_ms": 150.4603,
+    "p99_ms": 315.8807,
+    "max_ms": 315.8807
+  },
+  {
+    "name": "4. Bulk Ingestion (5,000 Nodes UNWIND $batch)",
+    "iterations": 10,
+    "concurrency": 1,
+    "duration_ms": 1242.7946000000002,
+    "qps": 8.046381920230422,
+    "p50_ms": 97.7966,
+    "p90_ms": 175.18130000000002,
+    "p95_ms": 278.426,
+    "p99_ms": 278.426,
+    "max_ms": 278.426
+  },
+  {
+    "name": "5. Pool Contention (100 Tasks / 5 Conns)",
+    "iterations": 1000,
+    "concurrency": 100,
+    "duration_ms": 520.7941999999999,
+    "qps": 1920.144271960018,
+    "p50_ms": 50.704699999999995,
+    "p90_ms": 61.9378,
+    "p95_ms": 65.8057,
+    "p99_ms": 69.33449999999999,
+    "max_ms": 74.1966
+  },
+  {
+    "name": "6. Mixed Types Streaming (5k Variant Rows)",
+    "iterations": 10,
+    "concurrency": 1,
+    "duration_ms": 450.6313,
+    "qps": 22.191090587804265,
+    "p50_ms": 19.9789,
+    "p90_ms": 24.414,
+    "p95_ms": 278.06419999999997,
+    "p99_ms": 278.06419999999997,
+    "max_ms": 278.06419999999997
+  },
+  {
+    "name": "7. Jumbo Frame Streaming (5MB Payload / TCP)",
+    "iterations": 10,
+    "concurrency": 1,
+    "duration_ms": 3011.9316,
+    "qps": 3.320128518190785,
+    "p50_ms": 242.79670000000002,
+    "p90_ms": 687.804,
+    "p95_ms": 736.938,
+    "p99_ms": 736.938,
+    "max_ms": 736.938
+  }
+]

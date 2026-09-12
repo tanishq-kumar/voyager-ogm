@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 320" width="100%" height="100%" style="background:#0d1117; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; border-radius:12px; border:1px solid #30363d;">
+  <style>
+    .title { fill: #f0f6fc; font-size: 18px; font-weight: 700; }
+    .subtitle { fill: #8b949e; font-size: 13px; }
+    .label { fill: #c9d1d9; font-size: 14px; font-weight: 600; }
+    .sublabel { fill: #8b949e; font-size: 11px; }
+    .val { fill: #ffffff; font-size: 13px; font-weight: 700; }
+    .badge { fill: #3fb950; font-size: 11px; font-weight: 700; }
+    .badge-bg { fill: rgba(35, 134, 54, 0.2); stroke: #238636; stroke-width: 1; }
+    .grid { stroke: #21262d; stroke-dasharray: 4,4; stroke-width: 1; }
+  </style>
+
+  <!-- Header -->
+  <text x="32" y="42" class="title">High-Concurrency Latency (p99 Tail vs p50 Median)</text>
+  <text x="32" y="64" class="subtitle">Lower is better -- 1,000 Point Reads across 20 Concurrent Connections (Milliseconds)</text>
+
+  <!-- Grid Lines -->
+  <line x1="250" y1="90" x2="250" y2="270" class="grid" />
+  <line x1="439" y1="90" x2="439" y2="270" class="grid" />
+  <line x1="628" y1="90" x2="628" y2="270" class="grid" />
+
+  <!-- Section 1: Tail Latency (p99) -->
+  <text x="32" y="100" class="label">Tail Latency (p99)</text>
+  <text x="32" y="126" class="sublabel">Voyager Native Engine</text>
+  <rect x="250" y="110" width="156" height="24" rx="4" fill="#f97316" />
+  <text x="416" y="127" class="val">49.5 ms</text>
+  <rect x="690" y="108" width="118" height="24" rx="12" class="badge-bg" />
+  <text x="749" y="124" text-anchor="middle" class="badge">2.5x LOWER</text>
+  <text x="32" y="160" class="sublabel">neo4rs Driver (Standard)</text>
+  <rect x="250" y="144" width="390" height="24" rx="4" fill="#3b82f6" />
+  <text x="650" y="161" class="val">123.8 ms</text>
+  <!-- Section 2: Median (p50) -->
+  <text x="32" y="198" class="label">Median (p50)</text>
+  <text x="32" y="222" class="sublabel">Voyager Native Engine</text>
+  <rect x="250" y="206" width="39" height="20" rx="4" fill="#fb923c" />
+  <text x="299" y="221" class="val">12.5 ms</text>
+  <text x="32" y="254" class="sublabel">neo4rs Driver (Standard)</text>
+  <rect x="250" y="238" width="38" height="20" rx="4" fill="#60a5fa" />
+  <text x="298" y="253" class="val">12.1 ms</text>
+
+  <!-- Footer Axis -->
+  <line x1="250" y1="270" x2="660" y2="270" stroke="#30363d" stroke-width="1" />
+  <text x="250" y="292" class="sublabel" text-anchor="middle">0 ms</text>
+  <text x="439" y="292" class="sublabel" text-anchor="middle">60 ms</text>
+  <text x="628" y="292" class="sublabel" text-anchor="middle">120 ms</text>
+</svg>

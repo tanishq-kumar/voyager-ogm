@@ -79,12 +79,15 @@ def test_schema_drop_ddl_generation():
     assert "DROP INDEX index_user_age IF EXISTS" in drop_statements
 
 
+@pytest.mark.live
 def test_live_neo4j_schema_ddl_creation():
     """Verifies applying constraints and indexes live to the running Neo4j database."""
     try:
         from neo4j import GraphDatabase
 
-        driver = GraphDatabase.driver("bolt://127.0.0.1:7687", auth=("neo4j", "voyagerpass123"))
+        driver = GraphDatabase.driver(
+            "bolt://127.0.0.1:7687", auth=("neo4j", "voyagerpass123"), connection_timeout=0.2
+        )
         driver.verify_connectivity()
     except Exception:
         pytest.skip("Neo4j database not reachable on bolt://127.0.0.1:7687")

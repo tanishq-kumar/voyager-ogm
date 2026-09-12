@@ -1,0 +1,55 @@
+{
+  "compilation": {
+    "python_ast_us": {
+      "mean_us": 68.0795,
+      "median_us": 61.0,
+      "min_us": 35.7,
+      "max_us": 648.9,
+      "p95_us": 125.0
+    },
+    "native_emitter_unopt_us": {
+      "mean_us": 27.683349999999997,
+      "median_us": 23.7,
+      "min_us": 18.8,
+      "max_us": 269.0,
+      "p95_us": 46.5
+    },
+    "native_optimizer_pass_us": 2.7416500000000035,
+    "total_compilation_us": {
+      "mean_us": 30.425,
+      "median_us": 24.3,
+      "min_us": 20.9,
+      "max_us": 291.9,
+      "p95_us": 50.7
+    }
+  },
+  "live_neo4j_waterfall": {
+    "point_query": {
+      "client_compile_us": 19.063,
+      "network_transport_us": 2178.3799999999997,
+      "server_exec_us": 1000.0,
+      "client_hydration_us": 18.484,
+      "total_ms": 3.2159269999999998,
+      "cpu_percentage": 1.1675327207365094
+    },
+    "scan_500_query": {
+      "client_compile_us": 59.711000000000006,
+      "db_wire_us": 48333.04666666666,
+      "client_orm_hydration_us": 12560.142,
+      "client_polars_hydration_us": 101757.67333333334,
+      "total_ms": 60.95289966666667,
+      "cpu_percentage": 20.70427013155114
+    }
+  },
+  "in_memory_duckdb": {
+    "compile_us": 83.31,
+    "duck_exec_us": 13466.933333333332,
+    "total_ms": 13.550243333333333
+  },
+  "bulk_ingestion": {
+    "dict_creation_ms": 261.9316,
+    "polars_creation_ms": 269.2507,
+    "arrow_conv_ms": 39.5465,
+    "bulk_compile_us": 50.656000000000006
+  }
+}
