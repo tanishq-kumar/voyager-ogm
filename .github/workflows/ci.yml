@@ -154,8 +154,8 @@ jobs:
       - name: Build Native Python Extension (maturin develop)
         run: uv run --all-extras --python ${{ matrix.python-version }} maturin develop --uv
 
-      - name: Run Pytest Suite
-        run: uv run --all-extras --python ${{ matrix.python-version }} pytest
+      - name: Run Pytest Suite (Unit & Functional Tests)
+        run: uv run --all-extras --python ${{ matrix.python-version }} pytest -m "not live"
 
   # =========================================================================
   # 4. Consolidated CI Gate (Required Status Check for Branch Protection)

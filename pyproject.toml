@@ -100,6 +100,10 @@ convention = "google"
 [tool.pytest.ini_options]
 testpaths = ["packages/python/tests"]
 python_files = ["test_*.py"]
+markers = [
+    "live: marks tests that require live external database containers (Neo4j, Memgraph, Apache AGE, FalkorDB)",
+]
+addopts = "-m 'not live'"
 
 [dependency-groups]
 dev = [
