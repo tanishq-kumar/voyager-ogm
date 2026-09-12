@@ -20,6 +20,8 @@ from voyager_ogm import (
     reset_alias_counters,
 )
 
+pytestmark = pytest.mark.live
+
 try:
     from neo4j import AsyncGraphDatabase, GraphDatabase
 
@@ -37,10 +39,12 @@ def _is_neo4j_online() -> bool:
     if not NEO4J_AVAILABLE:
         return False
     try:
-        driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
-        driver.verify_connectivity()
-        driver.close()
-        return True
+        from voyager_ogm import NativeClient
+
+        c = NativeClient(f"{NEO4J_URI}?connect_timeout=2", min_idle=1, max_size=2)
+        online = c.ping_sync()
+        c.close()
+        return online
     except Exception:
         return False
 
@@ -71,10 +75,10 @@ def clean_neo4j():
     if NEO4J_ONLINE:
         driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
         with driver.session() as s:
-            s.run("MATCH (n) DETACH DELETE n")
+            s.run("MATCH (n) DETACH DELETE n").consume()
         yield driver
         with driver.session() as s:
-            s.run("MATCH (n) DETACH DELETE n")
+            s.run("MATCH (n) DETACH DELETE n").consume()
         driver.close()
     else:
         yield None
@@ -109,7 +113,7 @@ def test_live_neo4j_sync_crud(clean_neo4j):
 
 @pytest.mark.skipif(not NEO4J_ONLINE, reason="Live Neo4j instance not online on localhost:7687")
 @pytest.mark.asyncio
-async def test_live_neo4j_async_crud():
+async def test_live_neo4j_async_crud(clean_neo4j):
     """Test asynchronous non-blocking query execution against real Neo4j."""
     async_driver = AsyncGraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
     try:

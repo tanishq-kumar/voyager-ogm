@@ -54,3 +54,7 @@ out/
 *.swo
 .DS_Store
 Thumbs.db
+
+# Conformance repositories
+tests/conformance/
+test_data/conformance/

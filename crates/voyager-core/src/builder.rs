@@ -1322,3 +1322,15 @@ impl From<String> for LiteralValue {
         Self::String(v)
     }
 }
+
+impl From<Vec<LiteralValue>> for LiteralValue {
+    fn from(v: Vec<LiteralValue>) -> Self {
+        Self::List(v)
+    }
+}
+
+impl From<Vec<(String, LiteralValue)>> for LiteralValue {
+    fn from(v: Vec<(String, LiteralValue)>) -> Self {
+        Self::Map(v)
+    }
+}

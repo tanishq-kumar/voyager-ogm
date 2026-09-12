@@ -1,0 +1,116 @@
+{
+  "Neo4j 5.26": {
+    "unopt_stmt": "MATCH (u:BenchUser) WHERE u.city = $p0 RETURN u.name, u.age",
+    "opt_stmt": "MATCH (u:BenchUser {city: $p0}) RETURN u.name, u.age",
+    "unopt": {
+      "mean_ms": 6.61969099775888,
+      "median_ms": 6.100149999838322,
+      "min_ms": 5.464100046083331,
+      "max_ms": 22.31450006365776,
+      "p95_ms": 10.18910005223006
+    },
+    "opt": {
+      "mean_ms": 6.451158998534083,
+      "median_ms": 6.051499978639185,
+      "min_ms": 5.3860999178141356,
+      "max_ms": 21.778700058348477,
+      "p95_ms": 8.65839992184192
+    },
+    "speedup": 1.0261242978607554
+  },
+  "Memgraph": {
+    "unopt_stmt": "MATCH (u:BenchUser) WHERE u.city = $p0 RETURN u.name, u.age",
+    "opt_stmt": "MATCH (u:BenchUser {city: $p0}) RETURN u.name, u.age",
+    "unopt": {
+      "mean_ms": 4.849187000654638,
+      "median_ms": 4.402499936986715,
+      "min_ms": 3.7058000452816486,
+      "max_ms": 17.065699910745025,
+      "p95_ms": 7.620100048370659
+    },
+    "opt": {
+      "mean_ms": 4.213951998390257,
+      "median_ms": 4.115700023248792,
+      "min_ms": 3.633500076830387,
+      "max_ms": 5.8394999941810966,
+      "p95_ms": 4.927899921312928
+    },
+    "speedup": 1.1507456664212221
+  },
+  "Apache AGE": {
+    "unopt_stmt": "MATCH (u:BenchUser) WHERE u.city = %s",
+    "opt_stmt": "MATCH (u:BenchUser {city: %s})",
+    "unopt": {
+      "mean_ms": 0.4336540005169809,
+      "median_ms": 0.40155003080144525,
+      "min_ms": 0.3632999723777175,
+      "max_ms": 0.7519000209867954,
+      "p95_ms": 0.7000000914558768
+    },
+    "opt": {
+      "mean_ms": 0.3916560020297766,
+      "median_ms": 0.3593500005081296,
+      "min_ms": 0.3037999849766493,
+      "max_ms": 0.7413000566884875,
+      "p95_ms": 0.6267999997362494
+    },
+    "speedup": 1.1072318521088598
+  },
+  "DuckDB": {
+    "unopt_stmt": "GRAPH_TABLE / SQL (Unsimplified Predicate Tree)",
+    "opt_stmt": "GRAPH_TABLE / SQL (Flattened Conjunction Tree)",
+    "unopt": {
+      "mean_ms": 0.6165710010100156,
+      "median_ms": 0.5898499512113631,
+      "min_ms": 0.5101999267935753,
+      "max_ms": 1.1874999618157744,
+      "p95_ms": 0.7485999958589673
+    },
+    "opt": {
+      "mean_ms": 0.6332350021693856,
+      "median_ms": 0.6032499950379133,
+      "min_ms": 0.5010999739170074,
+      "max_ms": 1.012900029309094,
+      "p95_ms": 0.8823999669402838
+    },
+    "speedup": 0.9736843334586984
+  },
+  "PostgreSQL 19": {
+    "unopt_stmt": "SELECT WHERE (city = $1 AND TRUE) AND age >= 20",
+    "opt_stmt": "SELECT WHERE city = $1 AND age >= 20",
+    "unopt": {
+      "mean_ms": 0.350996000925079,
+      "median_ms": 0.3305000136606395,
+      "min_ms": 0.31160004436969757,
+      "max_ms": 0.5268000531941652,
+      "p95_ms": 0.458099995739758
+    },
+    "opt": {
+      "mean_ms": 0.39607400074601173,
+      "median_ms": 0.34610001603141427,
+      "min_ms": 0.32780005130916834,
+      "max_ms": 1.0973000898957253,
+      "p95_ms": 0.6142999045550823
+    },
+    "speedup": 0.8861879352443544
+  },
+  "FalkorDB": {
+    "unopt_stmt": "MATCH (u:BenchUser) WHERE u.city = 'Berlin' RETURN u.name, u.age",
+    "opt_stmt": "MATCH (u:BenchUser {city: 'Berlin'}) RETURN u.name, u.age",
+    "unopt": {
+      "mean_ms": 2.321744004730135,
+      "median_ms": 2.030500036198646,
+      "min_ms": 1.76620006095618,
+      "max_ms": 5.968300043605268,
+      "p95_ms": 4.444899968802929
+    },
+    "opt": {
+      "mean_ms": 2.8415690024849027,
+      "median_ms": 2.648899971973151,
+      "min_ms": 1.7634000396355987,
+      "max_ms": 5.063400021754205,
+      "p95_ms": 4.171499982476234
+    },
+    "speedup": 0.8170640947658883
+  }
+}

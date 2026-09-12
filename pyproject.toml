@@ -75,6 +75,7 @@ python-source = "packages/python"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = ["tests/conformance", "test_data/conformance"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "D"]
@@ -89,6 +90,8 @@ convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 "packages/python/tests/*" = ["D"]
+"packages/python/benches/*" = ["D"]
+"scripts/*" = ["D"]
 "test_data/*" = ["D"]
 "examples/*" = ["D"]
 "examples/python/07_marimo_graphrag_demo.py" = ["D", "N807", "B018"]
@@ -97,6 +100,10 @@ convention = "google"
 [tool.pytest.ini_options]
 testpaths = ["packages/python/tests"]
 python_files = ["test_*.py"]
+markers = [
+    "live: marks tests that require live external database containers (Neo4j, Memgraph, Apache AGE, FalkorDB)",
+]
+addopts = "-m 'not live'"
 
 [dependency-groups]
 dev = [

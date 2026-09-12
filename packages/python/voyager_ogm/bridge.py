@@ -812,6 +812,34 @@ def create_bridge(
                 if isinstance(sync_inst, DuckDbBridge):
                     return AsyncDuckDbBridge(driver_or_connection)
 
+    # If a database connection URI string was provided, attempt to auto-instantiate the official driver
+    if isinstance(driver_or_connection, str) and not driver_or_connection.startswith("mock://"):
+        scheme = (
+            driver_or_connection.split("://", 1)[0].lower() if "://" in driver_or_connection else ""
+        )
+        if scheme in ("bolt", "neo4j", "bolt+s", "neo4j+s", "bolt+ssc", "neo4j+ssc"):
+            try:
+                import neo4j
+
+                if is_async and hasattr(neo4j, "AsyncGraphDatabase"):
+                    drv = neo4j.AsyncGraphDatabase.driver(driver_or_connection)
+                    return AsyncNeo4jBoltBridge(drv)
+                elif hasattr(neo4j, "GraphDatabase"):
+                    drv = neo4j.GraphDatabase.driver(driver_or_connection)
+                    return Neo4jBoltBridge(drv)
+            except Exception:
+                pass
+        elif scheme == "duckdb":
+            try:
+                import duckdb
+
+                path = driver_or_connection.replace("duckdb://", "") or ":memory:"
+                conn = duckdb.connect(path)
+                bridge_inst = DuckDbBridge(conn)
+                return AsyncDuckDbBridge(conn) if is_async else bridge_inst
+            except Exception:
+                pass
+
     if is_async:
         return AsyncMockBridge()
     return MockBridge()

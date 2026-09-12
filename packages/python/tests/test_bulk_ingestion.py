@@ -175,23 +175,3 @@ def test_session_bulk_create_iso_gql_dialect():
         "UNWIND $batch AS row INSERT (_person_0:Person) "
         "SET _person_0.id = row.id, _person_0.name = row.name, _person_0.age = row.age"
     )
-
-
-def test_bench_100k_polars_bulk_plan_generation(benchmark):
-    """Benchmark high-speed chunking and plan generation for 100,000 Polars rows."""
-    df = pl.DataFrame(
-        {
-            "id": list(range(100_000)),
-            "name": [f"User_{i}" for i in range(100_000)],
-            "age": [20 + (i % 40) for i in range(100_000)],
-        }
-    )
-    session = Session(dialect="cypher")
-
-    def run_plan():
-        plan = session.bulk_create(Person, df, batch_size=50_000)
-        assert plan.num_batches == 2
-        return plan
-
-    plan = benchmark(run_plan)
-    assert plan.total_records == 100_000

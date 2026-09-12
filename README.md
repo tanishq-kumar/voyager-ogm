@@ -211,6 +211,28 @@ Explore the runnable interactive demos in the repository:
 
 ---
 
+## Performance & Benchmarks
+
+This benchmark suite measures real-world entity hydration throughput, memory consumption under scale, and high-concurrency network tail latency comparing Voyager against Python graph OGMs and official drivers:
+
+1. **1,000,000+ Entities/Sec Hydration**: Columnar streaming achieves **44.0x faster** entity hydration than Neomodel and **3.6x faster** than Pydantic v2.
+2. **92% Lower Memory Footprint**: Stores 50,000 entities in **2.38 MB** of contiguous buffer memory (3.32 MB process RSS delta), compared to 42+ MB for standard Pydantic models.
+3. **2.5x Lower Tail Latency**: Pipelined asynchronous Bolt networking delivers **p99 latency of 49.5 ms** under heavy concurrency (vs. 123.8 ms for standard drivers).
+
+<div align="center">
+
+![In-Memory Entity Hydration Speed](benchmarks/assets/hydration_throughput.svg)
+
+![Physical Memory Footprint](benchmarks/assets/memory_footprint.svg)
+
+![High-Concurrency Tail Latency](benchmarks/assets/concurrency_latency.svg)
+
+</div>
+
+> **Methodology Note & Disclaimer**: These figures represent comparative in-library performance captures recorded on a local dev environment and should not be taken as final or definitive production terms. Real-world scenarios will yield different results depending on network topology, disk I/O, and database cluster configuration; more comprehensive benchmarking is ongoing. See [**benchmarks/README.md**](benchmarks/README.md) for full metrics, caveats, and reproduction steps.
+
+---
+
 ## Database Compatibility
 
 Voyager is verified against 6 database backends:

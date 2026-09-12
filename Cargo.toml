@@ -4,6 +4,7 @@ members = [
     "crates/voyager-core",
     "crates/voyager-cli",
     "crates/voyager-pyo3",
+    "crates/voyager-net",
 ]
 
 [workspace.package]
@@ -19,6 +20,17 @@ categories = ["database", "compilers"]
 [workspace.dependencies]
 # Internal workspace crates
 voyager-core = { path = "crates/voyager-core", version = "0.4.5-alpha.1" }
+voyager-net = { path = "crates/voyager-net", version = "0.4.5-alpha.1" }
+
+# Asynchronous Network Runtime
+tokio = { version = "1.43", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+async-trait = "0.1"
+bytes = "1.9"
+futures = "0.3"
+futures-util = "0.3"
+parking_lot = "0.12"
+url = "2.5"
 
 # Serialization & Data
 serde = { version = "1.0", features = ["derive"] }
@@ -26,6 +38,13 @@ serde_json = "1.0"
 arrow = { version = "53.0", default-features = false, features = ["ffi", "ipc", "json"] }
 arrow-schema = "53.0"
 arrow-array = "53.0"
+
+# Cryptography & Auth (PostgreSQL MD5 & SCRAM-SHA-256)
+md-5 = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+hex = "0.4"
 
 # CLI & Diagnostics
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -40,7 +59,13 @@ criterion = { version = "0.5", features = ["html_reports"] }
 
 # Python FFI
 pyo3 = { version = "0.23", features = ["extension-module", "abi3-py311", "generate-import-lib"] }
+pyo3-async-runtimes = { version = "0.23", features = ["tokio-runtime"] }
 pyo3-polars = "0.18"
+
+[profile.dev]
+# Line tables only: preserves stack trace file:line locations while reducing .pdb sizes by ~75%
+debug = 1
+opt-level = 2
 
 [profile.release]
 opt-level = 3
