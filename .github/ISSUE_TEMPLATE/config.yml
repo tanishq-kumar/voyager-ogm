@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a Question
+    url: https://github.com/tanishq-kumar/voyager-ogm/discussions
+    about: Please ask questions and discuss ideas in GitHub Discussions.
+  - name: Documentation
+    url: https://github.com/tanishq-kumar/voyager-ogm#readme
+    about: Read the Voyager documentation and examples.
