@@ -72,9 +72,7 @@ def get_color(entity_type: str, tone: str = "default") -> str:
     return type_colors.get(tone, type_colors["default"])
 
 
-def format_number(
-    val: float | int, unit: str = "", precision: int | None = None
-) -> str:
+def format_number(val: float | int, unit: str = "", precision: int | None = None) -> str:
     """Formats numeric values dynamically with commas or decimals."""
     if precision is not None:
         formatted = f"{val:.{precision}f}"
@@ -87,9 +85,7 @@ def format_number(
     return f"{formatted}{(' ' + unit) if unit else ''}"
 
 
-def compute_annotation_badge(
-    annotation_spec: dict[str, Any], items: list[dict[str, Any]]
-) -> str:
+def compute_annotation_badge(annotation_spec: dict[str, Any], items: list[dict[str, Any]]) -> str:
     """Computes the annotation badge text dynamically from the data."""
     val_map = {item["id"]: float(item["value"]) for item in items}
     target_val = val_map.get(annotation_spec.get("target", ""))
@@ -103,23 +99,13 @@ def compute_annotation_badge(
 
     if badge_type == "speedup":
         ratio = target_val / baseline_val if baseline_val > 0 else 0.0
-        return (
-            fmt_str.format(ratio=ratio) if fmt_str else f"{ratio:.1f}x FASTER"
-        )
+        return fmt_str.format(ratio=ratio) if fmt_str else f"{ratio:.1f}x FASTER"
     elif badge_type == "ratio_lower":
         ratio = baseline_val / target_val if target_val > 0 else 0.0
         return fmt_str.format(ratio=ratio) if fmt_str else f"{ratio:.1f}x LOWER"
     elif badge_type == "percent_less":
-        percent = (
-            (1.0 - (target_val / baseline_val)) * 100.0
-            if baseline_val > 0
-            else 0.0
-        )
-        return (
-            fmt_str.format(percent=percent)
-            if fmt_str
-            else f"{percent:.0f}% LESS RAM"
-        )
+        percent = (1.0 - (target_val / baseline_val)) * 100.0 if baseline_val > 0 else 0.0
+        return fmt_str.format(percent=percent) if fmt_str else f"{percent:.0f}% LESS RAM"
 
     return ""
 
@@ -144,9 +130,7 @@ def generate_bar_chart(data: dict[str, Any], output_path: Path) -> None:
     tick_svg = []
     for tick in axis_ticks:
         tick_x = CHART_X_START + int((tick / axis_max) * CHART_USABLE_WIDTH)
-        grid_svg.append(
-            f'  <line x1="{tick_x}" y1="90" x2="{tick_x}" y2="270" class="grid" />'
-        )
+        grid_svg.append(f'  <line x1="{tick_x}" y1="90" x2="{tick_x}" y2="270" class="grid" />')
         if data.get("unit") and ("nodes" in data["unit"]):
             tick_label = f"{tick:,}" if tick > 0 else "0"
             if tick == axis_ticks[-1]:
@@ -164,19 +148,13 @@ def generate_bar_chart(data: dict[str, Any], output_path: Path) -> None:
         y = y_starts[i]
         val = float(item["value"])
         bar_w = max(int((val / axis_max) * CHART_USABLE_WIDTH), 8)
-        color = get_color(
-            item.get("entity_type", "driver"), item.get("tone", "default")
-        )
+        color = get_color(item.get("entity_type", "driver"), item.get("tone", "default"))
         val_str = format_number(val, unit, precision)
 
         # Labels
         bar_svg.append(f"  <!-- Bar {i + 1}: {item['label']} -->")
-        bar_svg.append(
-            f'  <text x="32" y="{y + 16}" class="label">{item["label"]}</text>'
-        )
-        bar_svg.append(
-            f'  <text x="32" y="{y + 32}" class="sublabel">{item["sublabel"]}</text>'
-        )
+        bar_svg.append(f'  <text x="32" y="{y + 16}" class="label">{item["label"]}</text>')
+        bar_svg.append(f'  <text x="32" y="{y + 32}" class="sublabel">{item["sublabel"]}</text>')
 
         # Bar Rect
         bar_svg.append(
@@ -185,9 +163,7 @@ def generate_bar_chart(data: dict[str, Any], output_path: Path) -> None:
 
         # Value text placed right after the bar
         val_x = CHART_X_START + bar_w + 12
-        bar_svg.append(
-            f'  <text x="{val_x}" y="{y + 23}" class="val">{val_str}</text>'
-        )
+        bar_svg.append(f'  <text x="{val_x}" y="{y + 23}" class="val">{val_str}</text>')
 
         # Pin badge on row 0 (Voyager) at exact unified coordinate
         if i == 0 and badge_text:
@@ -242,9 +218,7 @@ def generate_latency_chart(data: dict[str, Any], output_path: Path) -> None:
     tick_svg = []
     for tick in axis_ticks:
         tick_x = CHART_X_START + int((tick / axis_max) * CHART_USABLE_WIDTH)
-        grid_svg.append(
-            f'  <line x1="{tick_x}" y1="90" x2="{tick_x}" y2="270" class="grid" />'
-        )
+        grid_svg.append(f'  <line x1="{tick_x}" y1="90" x2="{tick_x}" y2="270" class="grid" />')
         tick_label = f"{tick} {unit}"
         tick_svg.append(
             f'  <text x="{tick_x}" y="292" class="sublabel" text-anchor="middle">{tick_label}</text>'
@@ -255,20 +229,14 @@ def generate_latency_chart(data: dict[str, Any], output_path: Path) -> None:
     # Section 1: p99 Tail Latency (at top, anchoring badge at y=108)
     p99_items = sec1["items"]
     content_svg.append(f"  <!-- Section 1: {sec1['name']} -->")
-    content_svg.append(
-        f'  <text x="32" y="100" class="label">{sec1["name"]}</text>'
-    )
+    content_svg.append(f'  <text x="32" y="100" class="label">{sec1["name"]}</text>')
 
     # Item 1: Voyager Native (p99)
     voy_p99 = p99_items[0]
     voy_p99_val = float(voy_p99["value"])
     voy_p99_w = int((voy_p99_val / axis_max) * CHART_USABLE_WIDTH)
-    voy_p99_color = get_color(
-        voy_p99.get("entity_type", "voyager"), voy_p99.get("tone", "default")
-    )
-    content_svg.append(
-        f'  <text x="32" y="126" class="sublabel">{voy_p99["label"]}</text>'
-    )
+    voy_p99_color = get_color(voy_p99.get("entity_type", "voyager"), voy_p99.get("tone", "default"))
+    content_svg.append(f'  <text x="32" y="126" class="sublabel">{voy_p99["label"]}</text>')
     content_svg.append(
         f'  <rect x="{CHART_X_START}" y="110" width="{voy_p99_w}" height="24" rx="4" fill="{voy_p99_color}" />'
     )
@@ -289,12 +257,8 @@ def generate_latency_chart(data: dict[str, Any], output_path: Path) -> None:
     neo_p99 = p99_items[1]
     neo_p99_val = float(neo_p99["value"])
     neo_p99_w = int((neo_p99_val / axis_max) * CHART_USABLE_WIDTH)
-    neo_p99_color = get_color(
-        neo_p99.get("entity_type", "driver"), neo_p99.get("tone", "default")
-    )
-    content_svg.append(
-        f'  <text x="32" y="160" class="sublabel">{neo_p99["label"]}</text>'
-    )
+    neo_p99_color = get_color(neo_p99.get("entity_type", "driver"), neo_p99.get("tone", "default"))
+    content_svg.append(f'  <text x="32" y="160" class="sublabel">{neo_p99["label"]}</text>')
     content_svg.append(
         f'  <rect x="{CHART_X_START}" y="144" width="{neo_p99_w}" height="24" rx="4" fill="{neo_p99_color}" />'
     )
@@ -306,20 +270,14 @@ def generate_latency_chart(data: dict[str, Any], output_path: Path) -> None:
     sec2 = sections[1]
     p50_items = sec2["items"]
     content_svg.append(f"  <!-- Section 2: {sec2['name']} -->")
-    content_svg.append(
-        f'  <text x="32" y="198" class="label">{sec2["name"]}</text>'
-    )
+    content_svg.append(f'  <text x="32" y="198" class="label">{sec2["name"]}</text>')
 
     # Item 3: Voyager Native (p50)
     voy_p50 = p50_items[0]
     voy_p50_val = float(voy_p50["value"])
     voy_p50_w = max(int((voy_p50_val / axis_max) * CHART_USABLE_WIDTH), 8)
-    voy_p50_color = get_color(
-        voy_p50.get("entity_type", "voyager"), voy_p50.get("tone", "light")
-    )
-    content_svg.append(
-        f'  <text x="32" y="222" class="sublabel">{voy_p50["label"]}</text>'
-    )
+    voy_p50_color = get_color(voy_p50.get("entity_type", "voyager"), voy_p50.get("tone", "light"))
+    content_svg.append(f'  <text x="32" y="222" class="sublabel">{voy_p50["label"]}</text>')
     content_svg.append(
         f'  <rect x="{CHART_X_START}" y="206" width="{voy_p50_w}" height="20" rx="4" fill="{voy_p50_color}" />'
     )
@@ -331,12 +289,8 @@ def generate_latency_chart(data: dict[str, Any], output_path: Path) -> None:
     neo_p50 = p50_items[1]
     neo_p50_val = float(neo_p50["value"])
     neo_p50_w = max(int((neo_p50_val / axis_max) * CHART_USABLE_WIDTH), 8)
-    neo_p50_color = get_color(
-        neo_p50.get("entity_type", "driver"), neo_p50.get("tone", "light")
-    )
-    content_svg.append(
-        f'  <text x="32" y="254" class="sublabel">{neo_p50["label"]}</text>'
-    )
+    neo_p50_color = get_color(neo_p50.get("entity_type", "driver"), neo_p50.get("tone", "light"))
+    content_svg.append(f'  <text x="32" y="254" class="sublabel">{neo_p50["label"]}</text>')
     content_svg.append(
         f'  <rect x="{CHART_X_START}" y="238" width="{neo_p50_w}" height="20" rx="4" fill="{neo_p50_color}" />'
     )
@@ -370,17 +324,13 @@ def generate_latency_chart(data: dict[str, Any], output_path: Path) -> None:
 def load_benchmark_data(data_path: Path) -> dict[str, Any]:
     """Loads benchmark summary data from JSON file with safe fallbacks."""
     if not data_path.exists():
-        raise FileNotFoundError(
-            f"Benchmark summary data file not found: {data_path}"
-        )
+        raise FileNotFoundError(f"Benchmark summary data file not found: {data_path}")
     with open(data_path, encoding="utf-8") as f:
         return json.load(f)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Generate dynamic SVG benchmark charts."
-    )
+    parser = argparse.ArgumentParser(description="Generate dynamic SVG benchmark charts.")
     parser.add_argument(
         "--data",
         type=Path,
@@ -398,12 +348,8 @@ def main() -> None:
     print(f"=== Generating Vector SVG Benchmark Charts from {args.data} ===")
     data = load_benchmark_data(args.data)
 
-    generate_bar_chart(
-        data["hydration"], args.output_dir / "hydration_throughput.svg"
-    )
-    generate_latency_chart(
-        data["latency"], args.output_dir / "concurrency_latency.svg"
-    )
+    generate_bar_chart(data["hydration"], args.output_dir / "hydration_throughput.svg")
+    generate_latency_chart(data["latency"], args.output_dir / "concurrency_latency.svg")
     generate_bar_chart(data["memory"], args.output_dir / "memory_footprint.svg")
 
     print("=== All SVG Benchmark Charts Successfully Generated! ===")
