@@ -133,7 +133,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let json = serde_json::to_string_pretty(&results)?;
-    std::fs::write("benchmarks/native_jumbo_results.json", json)?;
+    let out_path = if std::path::Path::new("benchmarks").is_dir() {
+        std::path::PathBuf::from("benchmarks").join("native_jumbo_results.json")
+    } else if std::path::Path::new("../../benchmarks").is_dir() {
+        std::path::PathBuf::from("../../benchmarks").join("native_jumbo_results.json")
+    } else {
+        std::fs::create_dir_all("benchmarks").ok();
+        std::path::PathBuf::from("benchmarks").join("native_jumbo_results.json")
+    };
+    std::fs::write(&out_path, json)?;
+    println!(
+        "[SAVED] Native jumbo payload results written to {}",
+        out_path.display()
+    );
 
     conn.close().await?;
     Ok(())
