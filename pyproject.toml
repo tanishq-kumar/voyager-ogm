@@ -90,6 +90,8 @@ convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 "packages/python/tests/*" = ["D"]
+"packages/python/benches/*" = ["D"]
+"scripts/*" = ["D"]
 "test_data/*" = ["D"]
 "examples/*" = ["D"]
 "examples/python/07_marimo_graphrag_demo.py" = ["D", "N807", "B018"]

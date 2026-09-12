@@ -61,7 +61,7 @@ test-snapshot:
 
 # Run Python SDK tests with pytest
 test-python:
-    uv run pytest --benchmark-skip
+    uv run pytest
 
 # Run TypeScript SDK tests with bun test
 test-ts:
@@ -98,9 +98,27 @@ pre-commit: fmt-check lint typecheck
 pre-push: test bench-save
     @echo "[PASS] Pre-push verification and benchmark capture complete!"
 
-# Run benchmarks
+# Run Rust micro-benchmarks
 bench:
     uv run cargo bench --workspace
+
+# Run Python PyCapsule & hydration benchmarks
+bench-python:
+    uv run pytest packages/python/benches/ --benchmark-only
+
+# Run head-to-head OGM comparison benchmark against Neomodel and Pydantic v2
+bench-ogm:
+    uv run python packages/python/benches/bench_head_to_head.py
+
+# Re-generate vector SVG benchmark charts for README documentation
+bench-charts:
+    uv run python scripts/generate_benchmark_charts.py
+
+# Run complete benchmark suite, save JSON snapshot, and re-generate charts
+bench-all name="":
+    uv run cargo bench --workspace
+    uv run python scripts/save_benchmarks.py {{name}}
+    uv run python scripts/generate_benchmark_charts.py
 
 # Run Python & Rust hydration/compilation benchmarks and dynamically save JSON results
 bench-save name="":

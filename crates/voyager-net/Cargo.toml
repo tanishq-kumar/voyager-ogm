@@ -32,8 +32,14 @@ hmac = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
 
+# Optional dependency for head-to-head comparative driver benchmarks
+neo4rs = { version = "0.8.0", optional = true }
+
+[features]
+default = []
+bench-driver = ["dep:neo4rs"]
+
 [dev-dependencies]
-neo4rs = "0.8.0"
 tokio = { workspace = true, features = ["test-util", "macros"] }
 
 [[bench]]
@@ -43,10 +49,12 @@ harness = false
 [[bench]]
 name = "bench_driver_vs_voyager_net"
 harness = false
+required-features = ["bench-driver"]
 
 [[bench]]
 name = "bench_1m_driver_vs_voyager"
 harness = false
+required-features = ["bench-driver"]
 
 [[bench]]
 name = "bench_live_bolt"
@@ -55,3 +63,4 @@ harness = false
 [[bench]]
 name = "bench_jumbo_payloads"
 harness = false
+

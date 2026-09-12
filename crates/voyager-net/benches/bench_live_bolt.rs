@@ -591,8 +591,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Write JSON output for comparison
     let json = serde_json::to_string_pretty(&all_results)?;
-    std::fs::write("benchmarks/native_bolt_results.json", json)?;
-    println!("[SAVED] Saved native benchmark metrics to benchmarks/native_bolt_results.json");
+    let out_path = if std::path::Path::new("benchmarks").is_dir() {
+        std::path::PathBuf::from("benchmarks").join("native_bolt_results.json")
+    } else if std::path::Path::new("../../benchmarks").is_dir() {
+        std::path::PathBuf::from("../../benchmarks").join("native_bolt_results.json")
+    } else {
+        std::fs::create_dir_all("benchmarks").ok();
+        std::path::PathBuf::from("benchmarks").join("native_bolt_results.json")
+    };
+    std::fs::write(&out_path, json)?;
+    println!(
+        "[SAVED] Saved native benchmark metrics to {}",
+        out_path.display()
+    );
 
     Ok(())
 }

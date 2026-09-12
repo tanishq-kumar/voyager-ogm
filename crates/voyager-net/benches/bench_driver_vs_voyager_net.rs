@@ -420,9 +420,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Write out results JSON
     let json = serde_json::to_string_pretty(&all_metrics)?;
-    std::fs::write("benchmarks/driver_vs_voyager_net_results.json", json)?;
+    let out_path = if std::path::Path::new("benchmarks").is_dir() {
+        std::path::PathBuf::from("benchmarks").join("driver_vs_voyager_net_results.json")
+    } else if std::path::Path::new("../../benchmarks").is_dir() {
+        std::path::PathBuf::from("../../benchmarks").join("driver_vs_voyager_net_results.json")
+    } else {
+        std::fs::create_dir_all("benchmarks").ok();
+        std::path::PathBuf::from("benchmarks").join("driver_vs_voyager_net_results.json")
+    };
+    std::fs::write(&out_path, json)?;
     println!(
-        "[SAVED] Comparative results written to benchmarks/driver_vs_voyager_net_results.json"
+        "[SAVED] Comparative results written to {}",
+        out_path.display()
     );
 
     Ok(())
