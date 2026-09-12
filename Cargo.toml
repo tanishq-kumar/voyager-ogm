@@ -35,15 +35,15 @@ url = "2.5"
 # Serialization & Data
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-arrow = { version = "53.0", default-features = false, features = ["ffi", "ipc", "json"] }
-arrow-schema = "53.0"
-arrow-array = "53.0"
+arrow = { version = "59.3", default-features = false, features = ["ffi", "ipc", "json"] }
+arrow-schema = "59.3"
+arrow-array = "59.3"
 
 # Cryptography & Auth (PostgreSQL MD5 & SCRAM-SHA-256)
-md-5 = "0.10"
-sha2 = "0.10"
-hmac = "0.12"
-base64 = "0.22"
+md-5 = "0.11"
+sha2 = "0.11"
+hmac = "0.13"
+base64 = "0.23"
 hex = "0.4"
 
 # CLI & Diagnostics
@@ -55,11 +55,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Testing & Benchmarking
 insta = { version = "1.41", features = ["json", "yaml"] }
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 
 # Python FFI
-pyo3 = { version = "0.23", features = ["extension-module", "abi3-py311", "generate-import-lib"] }
-pyo3-async-runtimes = { version = "0.23", features = ["tokio-runtime"] }
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py311", "generate-import-lib"] }
+pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 pyo3-polars = "0.18"
 
 [profile.dev]
