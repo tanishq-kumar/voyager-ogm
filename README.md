@@ -229,7 +229,7 @@ This benchmark suite measures real-world entity hydration throughput, memory con
 
 </div>
 
-> **Methodology Note & Disclaimer**: These figures represent comparative in-library performance captures recorded on a local developer laptop (11th Gen Intel i5, 16 GB RAM) and should not be taken as final or definitive production terms. Real-world scenarios will yield different results depending on network topology, disk I/O, and database cluster configuration; more comprehensive benchmarking is ongoing. See [**benchmarks/README.md**](benchmarks/README.md) for full metrics, caveats, and reproduction steps.
+> **Methodology Note & Disclaimer**: These figures represent comparative in-library performance captures recorded on a local dev environment and should not be taken as final or definitive production terms. Real-world scenarios will yield different results depending on network topology, disk I/O, and database cluster configuration; more comprehensive benchmarking is ongoing. See [**benchmarks/README.md**](benchmarks/README.md) for full metrics, caveats, and reproduction steps.
 
 ---
 
