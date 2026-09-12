@@ -133,7 +133,8 @@ query = (
     .node(event)
     .where(
         user.city == "London",
-        event.duration_sec >= user.base_quota + (7 * 24 * 60 * 60),  # Constant folding (in progress)
+        # Constant folding (in progress):
+        event.duration_sec >= user.base_quota + (7 * 24 * 60 * 60),
     )
     .return_(user.name, event.type)
 )
