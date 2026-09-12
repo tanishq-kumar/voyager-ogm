@@ -119,7 +119,7 @@ print(stats)
 Before queries are emitted to the database, Voyager runs optimization passes over the AST:
 
 - **Predicate Pushdown**: Automatically inlines filter conditions directly into the pattern match, allowing database engines to leverage node/relationship indexes instead of scanning full tables.
-- **Constant Folding**: Pre-computes arithmetic and static sub-expressions at compile time in Rust, even when combined with dynamic variables. The database engine never re-evaluates static formulas across millions of graph records.
+- **Constant Folding** *(In Progress)*: Pre-computes arithmetic and static sub-expressions at compile time in Rust, even when combined with dynamic variables. The database engine never re-evaluates static formulas across millions of graph records.
 - **Dead Clause Elimination**: Prunes unused query fragments and redundant traversals.
 
 #### Optimization Example:
@@ -133,7 +133,7 @@ query = (
     .node(event)
     .where(
         user.city == "London",
-        event.duration_sec >= user.base_quota + (7 * 24 * 60 * 60),  # Constant folding
+        event.duration_sec >= user.base_quota + (7 * 24 * 60 * 60),  # Constant folding (in progress)
     )
     .return_(user.name, event.type)
 )
