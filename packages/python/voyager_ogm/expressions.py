@@ -21,6 +21,13 @@ class Expression:
         """Assigns a projection alias name to this expression in RETURN clauses."""
         return AliasedExpr(self, alias)
 
+    def __bool__(self) -> bool:
+        """Explicitly disallows evaluating AST expressions in a boolean context."""
+        raise TypeError(
+            f"Evaluating a Voyager {type(self).__name__} in a boolean context (e.g. 'if expr:' or 'expr and expr') "
+            "is not supported. Use query filters (e.g. Query.where(...)) or logical operators (&, |) instead."
+        )
+
     # Arithmetic Operator Overloads
     def __add__(self, other: Any) -> BinaryExpr:
         return BinaryExpr(self, "+", to_expression(other))
