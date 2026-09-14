@@ -6,6 +6,7 @@ automatic descriptor binding, base class injection, and type reflection.
 
 from __future__ import annotations
 
+import difflib
 import inspect
 import threading
 import weakref
@@ -143,6 +144,12 @@ class Field(Generic[_T]):
         if alias is None:
             return self
         assert self.name is not None
+        if hasattr(instance, "_bound_fields") and isinstance(instance._bound_fields, dict):
+            bound = instance._bound_fields.get(self.name)
+            if bound is None:
+                bound = BoundField(alias, self.name)
+                instance._bound_fields[self.name] = bound
+            return bound
         return BoundField(alias, self.name)
 
     def bind(self, alias: str) -> BoundField:
@@ -185,11 +192,28 @@ class BoundField(Expression):
         """Returns the AST property specification tuple `('prop', var, prop)`."""
         return ("prop", self.target_alias, self.field_name)
 
+    def __hash__(self) -> int:
+        """Returns the hash of this bound field based on its target alias and property name."""
+        return hash((self.target_alias, self.field_name))
+
+    def __bool__(self) -> bool:
+        """Explicitly disallows evaluating a BoundField in a boolean context."""
+        raise TypeError(
+            f"Evaluating a BoundField ('{self.target_alias}.{self.field_name}') in a boolean context "
+            "(e.g. 'if node.prop:') is not supported. "
+            f"To inspect in-memory property values, use entity.get('{self.field_name}') instead."
+        )
+
     def __repr__(self) -> str:
         return f"{self.target_alias}.{self.field_name}"
 
-    def __eq__(self, other: Any) -> PredicateExpr:  # type: ignore[override]
-        """Creates an equality predicate `alias.prop = value`."""
+    def __eq__(self, other: Any) -> Any:  # type: ignore[override]
+        """Creates an equality predicate `alias.prop = value`, or returns True if comparing identical bound fields."""
+        if isinstance(other, BoundField) and (self.target_alias, self.field_name) == (
+            other.target_alias,
+            other.field_name,
+        ):
+            return True
         return PredicateExpr(self.target_alias, self.field_name, "eq", other)
 
     def __gt__(self, other: Any) -> PredicateExpr:
@@ -316,6 +340,15 @@ class PredicateExpr(BinaryExpr):
     def __repr__(self) -> str:
         return f"({self.target}.{self.field} {self.op} {self.value!r})"
 
+    def __bool__(self) -> bool:
+        """Explicitly disallows evaluating a PredicateExpr in a boolean context."""
+        raise TypeError(
+            f"Evaluating a PredicateExpr ('{self.target}.{self.field} {self.op} {self.value!r}') in a boolean context "
+            "(e.g. 'if node.prop == val:' or 'expr and expr') is not supported. "
+            "To filter queries, pass this predicate to Query.where(...). "
+            f"To check an in-memory property value, use entity.get('{self.field}') == {self.value!r}."
+        )
+
 
 def _process_type_annotations(cls: Any) -> dict[str, Field]:
     """Extracts type annotations and injects Field descriptors automatically.
@@ -327,6 +360,11 @@ def _process_type_annotations(cls: Any) -> dict[str, Field]:
         Dictionary mapping field attribute names to Field descriptors.
     """
     fields_map: dict[str, Field] = {}
+
+    # Inherit schema fields from base classes in MRO
+    for base in reversed(cls.__mro__):
+        if hasattr(base, "_schema_fields") and isinstance(base._schema_fields, dict):
+            fields_map.update(base._schema_fields)
 
     try:
         annotations = inspect.get_annotations(cls, eval_str=True)
@@ -353,6 +391,16 @@ def _process_type_annotations(cls: Any) -> dict[str, Field]:
             )
             setattr(cls, attr_name, field_desc)
             fields_map[attr_name] = field_desc
+
+    # Discover any explicit Field descriptors defined without type annotations
+    for attr_name in dir(cls):
+        if attr_name.startswith("_") or attr_name in fields_map:
+            continue
+        val = getattr(cls, attr_name, None)
+        if isinstance(val, Field):
+            if val.name is None:
+                val.name = attr_name
+            fields_map[attr_name] = val
 
     cls._schema_fields = fields_map
     return fields_map
@@ -567,10 +615,19 @@ class Node:
             BoundField bound to this node's alias and property name.
 
         Raises:
-            AttributeError: If name starts with an underscore.
+            AttributeError: If name starts with an underscore or is not declared in schema.
         """
         if name.startswith("_"):
             raise AttributeError(name)
+        if self._schema_fields:
+            if name not in self._schema_fields:
+                matches = difflib.get_close_matches(
+                    name, self._schema_fields.keys(), n=1, cutoff=0.6
+                )
+                suggestion = f". Did you mean '{matches[0]}'?" if matches else ""
+                raise AttributeError(
+                    f"'{type(self).__name__}' has no property '{name}'{suggestion}"
+                )
         if name not in self._bound_fields:
             self._bound_fields[name] = BoundField(self._alias, name)
         return self._bound_fields[name]
@@ -651,10 +708,19 @@ class Relationship:
             BoundField bound to this edge's alias and property name.
 
         Raises:
-            AttributeError: If name starts with an underscore.
+            AttributeError: If name starts with an underscore or is not declared in schema.
         """
         if name.startswith("_"):
             raise AttributeError(name)
+        if self._schema_fields:
+            if name not in self._schema_fields:
+                matches = difflib.get_close_matches(
+                    name, self._schema_fields.keys(), n=1, cutoff=0.6
+                )
+                suggestion = f". Did you mean '{matches[0]}'?" if matches else ""
+                raise AttributeError(
+                    f"'{type(self).__name__}' has no property '{name}'{suggestion}"
+                )
         if name not in self._bound_fields:
             self._bound_fields[name] = BoundField(self._alias, name)
         return self._bound_fields[name]

@@ -178,3 +178,137 @@ def test_string_contains_predicate():
         "COLUMNS (p.name))"
     )
     assert compiled_pgq.statement == expected_pgq
+
+
+def test_typo_safe_node_attribute_access():
+    p = Person("p")
+    # Declared fields work normally and are cached
+    assert p.name is not None
+    assert p.age is not None
+    assert p.name is p.name  # Descriptor caching in _bound_fields
+
+    # Misspelled attribute with close match raises AttributeError with suggestion
+    with pytest.raises(
+        AttributeError, match="'Person' has no property 'nmae'\\. Did you mean 'name'\\?"
+    ):
+        _ = p.nmae
+
+    # Misspelled attribute with another close match
+    with pytest.raises(
+        AttributeError, match="'Person' has no property 'aeg'\\. Did you mean 'age'\\?"
+    ):
+        _ = p.aeg
+
+    # Attribute with no close match raises AttributeError without suggestion
+    with pytest.raises(AttributeError, match="'Person' has no property 'completely_unknown'"):
+        _ = p.completely_unknown
+
+
+def test_typo_safe_relationship_attribute_access():
+    rel = ActedIn("r")
+    assert rel.role is not None
+
+    with pytest.raises(
+        AttributeError, match="'ActedIn' has no property 'roel'\\. Did you mean 'role'\\?"
+    ):
+        _ = rel.roel
+
+
+def test_dynamic_node_allows_arbitrary_attributes():
+    # Schema-less dynamic node instance has empty _schema_fields
+    raw_node = Node("n")
+    assert raw_node._schema_fields == {}
+    # Dynamic properties are synthesized into BoundField
+    field = raw_node.custom_prop
+    assert field.field_name == "custom_prop"
+    assert field.target_alias == "n"
+
+
+def test_schema_fields_inheritance_across_subclasses():
+    class Employee(Person):
+        department = Field()
+
+    emp = Employee("e")
+    # Inherited fields from Person
+    assert emp.name is not None
+    assert emp.age is not None
+    # Own field
+    assert emp.department is not None
+
+    # Typo on inherited field
+    with pytest.raises(
+        AttributeError, match="'Employee' has no property 'nmae'\\. Did you mean 'name'\\?"
+    ):
+        _ = emp.nmae
+
+    # Typo on own field
+    with pytest.raises(
+        AttributeError,
+        match="'Employee' has no property 'departmnet'\\. Did you mean 'department'\\?",
+    ):
+        _ = emp.departmnet
+
+
+def test_bound_field_hash_and_dict_set_usage():
+    p = Person("p")
+    u = User("u")
+
+    # BoundField can be added to sets and dict keys
+    fields_set = {p.name, p.age}
+    assert p.name in fields_set
+    assert p.age in fields_set
+    assert u.username not in fields_set
+
+    field_map = {p.name: "NameField", p.age: "AgeField"}
+    assert field_map[p.name] == "NameField"
+    assert field_map[p.age] == "AgeField"
+
+    # Distinct BoundField instances with matching (target_alias, field_name) match in sets
+    from voyager_ogm.models import BoundField
+
+    f1 = BoundField("p", "name")
+    f2 = BoundField("p", "name")
+    f3 = BoundField("p", "age")
+    f_diff_alias = BoundField("other", "name")
+
+    s = {f1}
+    assert f2 in s
+    assert f3 not in s
+    assert f_diff_alias not in s
+
+
+def test_predicate_and_field_boolean_truthiness_guard():
+    p = Person("p")
+    u = User("u")
+
+    # 1. Evaluating PredicateExpr in boolean context must raise TypeError
+    pred = p.age == 25
+    with pytest.raises(
+        TypeError, match="Evaluating a PredicateExpr .* in a boolean context .* is not supported"
+    ):
+        if pred:
+            pass
+
+    with pytest.raises(
+        TypeError, match="Evaluating a PredicateExpr .* in a boolean context .* is not supported"
+    ):
+        bool(p.name == "Alice")
+
+    # 2. Evaluating BoundField directly in boolean context must raise TypeError
+    with pytest.raises(
+        TypeError, match="Evaluating a BoundField .* in a boolean context .* is not supported"
+    ):
+        if p.name:
+            pass
+
+    with pytest.raises(
+        TypeError, match="Evaluating a BoundField .* in a boolean context .* is not supported"
+    ):
+        bool(p.age)
+
+    # 3. Comparing two different fields returns PredicateExpr for queries
+    cross_field_pred = p.name == u.username
+    assert type(cross_field_pred).__name__ == "PredicateExpr"
+    query = Query.match(p).node(u).where(p.name == u.username)
+    compiled = query.compile("cypher")
+    assert "WHERE p.name = u.username" in compiled.statement
