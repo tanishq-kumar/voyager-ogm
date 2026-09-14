@@ -1,11 +1,12 @@
 //! Rule-based AST Query Optimizer for Voyager OGM.
 //!
 //! Provides multi-level rule-based optimizations over [`QueryAstArena`]:
+//! - **Constant Folding**: Pre-evaluates arithmetic expressions (`10 + 20` -> `30`), float operations, relational comparisons (`10 > 5` -> `true`), boolean identities, and nested partial reassociation (`(x + 10) + 20` -> `x + 30`) at compile time.
 //! - **Predicate Pushdown**: Hoists single-node equality filters from `WHERE` clauses into inline node property patterns (`(p:Person {city: $p0})`) to enable database index seeks before path traversal.
 //! - **Boolean Simplification**: Flattens conjunction chains (`AND`) and strips redundant boolean constants.
 //! - **Dead Variable Pruning**: In aggressive mode, eliminates unreferenced intermediate internal aliases.
 
-use crate::ast::{AstNode, BinaryOp, LiteralValue, NodeHandle, QueryAstArena};
+use crate::ast::{AstNode, BinaryOp, LiteralValue, NodeHandle, QueryAstArena, UnaryOp};
 use crate::error::Result;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -66,7 +67,10 @@ impl AstOptimizer {
             return Ok(root);
         }
 
-        // Pass 1 & 2: Predicate Pushdown & Conjunction Simplification
+        // Pass 1: Constant Folding & Expression Simplification
+        self.fold_all_expressions(arena, root)?;
+
+        // Pass 2: Predicate Pushdown & Conjunction Simplification
         self.optimize_statement(arena, root)?;
 
         // Pass 3: Dead Variable Pruning (in Aggressive mode)
@@ -203,15 +207,803 @@ impl AstOptimizer {
         Ok(())
     }
 
+    /// Pass 1: Traverses the statement and recursively folds constant sub-expressions.
+    fn fold_all_expressions(&self, arena: &mut QueryAstArena, root: NodeHandle) -> Result<()> {
+        let root_node = arena.get(root)?.clone();
+        if let AstNode::QueryStatement {
+            load_csv,
+            unwinds,
+            matches,
+            with_clauses,
+            mutations,
+            return_clause,
+        } = root_node
+        {
+            if let Some(load_h) = load_csv {
+                let load_node = arena.get(load_h)?.clone();
+                if let AstNode::LoadCsvClause { url, .. } = load_node {
+                    let folded_url = self.fold_expression(arena, url)?;
+                    if let AstNode::LoadCsvClause { url: u, .. } = arena.get_mut(load_h)? {
+                        *u = folded_url;
+                    }
+                }
+            }
+
+            for unwind_h in unwinds {
+                let unwind_node = arena.get(unwind_h)?.clone();
+                if let AstNode::UnwindClause { expression, .. } = unwind_node {
+                    let folded_expr = self.fold_expression(arena, expression)?;
+                    if let AstNode::UnwindClause { expression: e, .. } = arena.get_mut(unwind_h)? {
+                        *e = folded_expr;
+                    }
+                }
+            }
+
+            for match_h in matches {
+                self.fold_match_clause(arena, match_h)?;
+            }
+
+            for with_h in with_clauses {
+                self.fold_with_clause(arena, with_h)?;
+            }
+
+            for mut_h in mutations {
+                self.optimize_mutation_clause(arena, mut_h)?;
+            }
+
+            if let Some(ret_h) = return_clause {
+                self.fold_return_clause(arena, ret_h)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn fold_match_clause(&self, arena: &mut QueryAstArena, match_handle: NodeHandle) -> Result<()> {
+        let match_node = arena.get(match_handle)?.clone();
+        if let AstNode::MatchClause {
+            paths,
+            where_clause,
+            ..
+        } = match_node
+        {
+            for path_h in paths {
+                self.fold_path_predicates(arena, path_h)?;
+            }
+            if let Some(where_h) = where_clause {
+                let where_node = arena.get(where_h)?.clone();
+                if let AstNode::WhereClause { root_predicate } = where_node {
+                    let folded_pred = self.fold_expression(arena, root_predicate)?;
+                    if let AstNode::WhereClause { root_predicate: rp } = arena.get_mut(where_h)? {
+                        *rp = folded_pred;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn fold_with_clause(&self, arena: &mut QueryAstArena, with_handle: NodeHandle) -> Result<()> {
+        let with_node = arena.get(with_handle)?.clone();
+        if let AstNode::WithClause {
+            projections,
+            order_by,
+            where_clause,
+            ..
+        } = with_node
+        {
+            let mut folded_projections = Vec::with_capacity(projections.len());
+            for mut item in projections {
+                item.expression = self.fold_expression(arena, item.expression)?;
+                folded_projections.push(item);
+            }
+
+            let mut folded_order_by = Vec::with_capacity(order_by.len());
+            for (expr_h, asc) in order_by {
+                let folded_expr = self.fold_expression(arena, expr_h)?;
+                folded_order_by.push((folded_expr, asc));
+            }
+
+            if let AstNode::WithClause {
+                projections: proj,
+                order_by: ord,
+                ..
+            } = arena.get_mut(with_handle)?
+            {
+                *proj = folded_projections;
+                *ord = folded_order_by;
+            }
+
+            if let Some(where_h) = where_clause {
+                let where_node = arena.get(where_h)?.clone();
+                if let AstNode::WhereClause { root_predicate } = where_node {
+                    let folded_pred = self.fold_expression(arena, root_predicate)?;
+                    if let AstNode::WhereClause { root_predicate: rp } = arena.get_mut(where_h)? {
+                        *rp = folded_pred;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn fold_return_clause(&self, arena: &mut QueryAstArena, ret_h: NodeHandle) -> Result<()> {
+        let ret_node = arena.get(ret_h)?.clone();
+        if let AstNode::ReturnClause {
+            projections,
+            order_by,
+            ..
+        } = ret_node
+        {
+            let mut folded_projections = Vec::with_capacity(projections.len());
+            for mut item in projections {
+                item.expression = self.fold_expression(arena, item.expression)?;
+                folded_projections.push(item);
+            }
+
+            let mut folded_order_by = Vec::with_capacity(order_by.len());
+            for (expr_h, asc) in order_by {
+                let folded_expr = self.fold_expression(arena, expr_h)?;
+                folded_order_by.push((folded_expr, asc));
+            }
+
+            if let AstNode::ReturnClause {
+                projections: proj,
+                order_by: ord,
+                ..
+            } = arena.get_mut(ret_h)?
+            {
+                *proj = folded_projections;
+                *ord = folded_order_by;
+            }
+        }
+        Ok(())
+    }
+
+    fn fold_path_predicates(&self, arena: &mut QueryAstArena, path_h: NodeHandle) -> Result<()> {
+        let path_node = arena.get(path_h)?.clone();
+        match path_node {
+            AstNode::NodePattern { predicates, .. } => {
+                let mut folded_preds = Vec::with_capacity(predicates.len());
+                for pred_h in predicates {
+                    folded_preds.push(self.fold_expression(arena, pred_h)?);
+                }
+                if let AstNode::NodePattern { predicates: p, .. } = arena.get_mut(path_h)? {
+                    *p = folded_preds;
+                }
+            }
+            AstNode::PathChain { start_node, edges } => {
+                self.fold_path_predicates(arena, start_node)?;
+                for edge_h in edges {
+                    let edge_node = arena.get(edge_h)?.clone();
+                    if let AstNode::EdgePattern {
+                        predicates,
+                        target_node,
+                        ..
+                    } = edge_node
+                    {
+                        let mut folded_preds = Vec::with_capacity(predicates.len());
+                        for pred_h in predicates {
+                            folded_preds.push(self.fold_expression(arena, pred_h)?);
+                        }
+                        if let AstNode::EdgePattern { predicates: p, .. } = arena.get_mut(edge_h)? {
+                            *p = folded_preds;
+                        }
+                        self.fold_path_predicates(arena, target_node)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Recursively evaluates and folds constant sub-expressions into literal nodes.
+    pub fn fold_expression(
+        &self,
+        arena: &mut QueryAstArena,
+        handle: NodeHandle,
+    ) -> Result<NodeHandle> {
+        if handle.is_null() {
+            return Ok(handle);
+        }
+
+        let node = arena.get(handle)?.clone();
+        match node {
+            AstNode::BinaryExpression { left, op, right } => {
+                let left_folded = self.fold_expression(arena, left)?;
+                let right_folded = self.fold_expression(arena, right)?;
+                self.fold_binary_op(arena, left_folded, op, right_folded)
+            }
+            AstNode::UnaryExpression { op, operand } => {
+                let operand_folded = self.fold_expression(arena, operand)?;
+                self.fold_unary_op(arena, op, operand_folded)
+            }
+            AstNode::FunctionCall { name, arguments } => {
+                let mut folded_args = Vec::with_capacity(arguments.len());
+                for arg in arguments {
+                    folded_args.push(self.fold_expression(arena, arg)?);
+                }
+                Ok(arena.alloc(AstNode::FunctionCall {
+                    name,
+                    arguments: folded_args,
+                }))
+            }
+            AstNode::CaseExpression {
+                operand,
+                when_then_branches,
+                else_branch,
+            } => self.fold_case_expression(arena, operand, when_then_branches, else_branch),
+            AstNode::ListComprehension {
+                variable,
+                list_expression,
+                where_filter,
+                map_expression,
+            } => {
+                let list_folded = self.fold_expression(arena, list_expression)?;
+                let filter_folded = where_filter
+                    .map(|f| self.fold_expression(arena, f))
+                    .transpose()?;
+                let map_folded = map_expression
+                    .map(|m| self.fold_expression(arena, m))
+                    .transpose()?;
+                Ok(arena.alloc(AstNode::ListComprehension {
+                    variable,
+                    list_expression: list_folded,
+                    where_filter: filter_folded,
+                    map_expression: map_folded,
+                }))
+            }
+            AstNode::PatternComprehension {
+                path,
+                where_filter,
+                projection,
+            } => {
+                let filter_folded = where_filter
+                    .map(|f| self.fold_expression(arena, f))
+                    .transpose()?;
+                let proj_folded = self.fold_expression(arena, projection)?;
+                Ok(arena.alloc(AstNode::PatternComprehension {
+                    path,
+                    where_filter: filter_folded,
+                    projection: proj_folded,
+                }))
+            }
+            AstNode::ExistsSubquery { subquery } => {
+                self.fold_subquery(arena, subquery)?;
+                Ok(handle)
+            }
+            AstNode::CountSubquery { subquery } => {
+                self.fold_subquery(arena, subquery)?;
+                Ok(handle)
+            }
+            AstNode::ListLiteral(items) => {
+                let mut folded_items = Vec::with_capacity(items.len());
+                for item in items {
+                    folded_items.push(self.fold_expression(arena, item)?);
+                }
+                Ok(arena.alloc(AstNode::ListLiteral(folded_items)))
+            }
+            _ => Ok(handle),
+        }
+    }
+
+    #[allow(clippy::collapsible_if)]
+    fn fold_binary_op(
+        &self,
+        arena: &mut QueryAstArena,
+        left: NodeHandle,
+        op: BinaryOp,
+        right: NodeHandle,
+    ) -> Result<NodeHandle> {
+        let left_node = arena.get(left)?.clone();
+        let right_node = arena.get(right)?.clone();
+
+        // 1. Both are literals -> direct evaluation
+        if let (AstNode::Literal(l_val), AstNode::Literal(r_val)) = (&left_node, &right_node) {
+            if let Some(folded) = self.eval_binary_literals(l_val, op, r_val) {
+                return Ok(arena.alloc(AstNode::Literal(folded)));
+            }
+        }
+
+        // 2. Boolean identity and short-circuit laws
+        match op {
+            BinaryOp::And => {
+                if let AstNode::Literal(LiteralValue::Bool(false)) = left_node {
+                    return Ok(left); // false AND expr -> false
+                }
+                if let AstNode::Literal(LiteralValue::Bool(false)) = right_node {
+                    return Ok(right); // expr AND false -> false
+                }
+                if let AstNode::Literal(LiteralValue::Bool(true)) = left_node {
+                    return Ok(right); // true AND expr -> expr
+                }
+                if let AstNode::Literal(LiteralValue::Bool(true)) = right_node {
+                    return Ok(left); // expr AND true -> expr
+                }
+            }
+            BinaryOp::Or => {
+                if let AstNode::Literal(LiteralValue::Bool(true)) = left_node {
+                    return Ok(left); // true OR expr -> true
+                }
+                if let AstNode::Literal(LiteralValue::Bool(true)) = right_node {
+                    return Ok(right); // expr OR true -> true
+                }
+                if let AstNode::Literal(LiteralValue::Bool(false)) = left_node {
+                    return Ok(right); // false OR expr -> expr
+                }
+                if let AstNode::Literal(LiteralValue::Bool(false)) = right_node {
+                    return Ok(left); // expr OR false -> expr
+                }
+            }
+            // 3. Arithmetic identities
+            BinaryOp::Add => {
+                if let AstNode::Literal(LiteralValue::Int64(0)) = right_node {
+                    return Ok(left); // x + 0 -> x
+                }
+                if let AstNode::Literal(LiteralValue::Int64(0)) = left_node {
+                    return Ok(right); // 0 + x -> x
+                }
+            }
+            BinaryOp::Sub => {
+                if let AstNode::Literal(LiteralValue::Int64(0)) = right_node {
+                    return Ok(left); // x - 0 -> x
+                }
+            }
+            BinaryOp::Mul => {
+                if let AstNode::Literal(LiteralValue::Int64(1)) = right_node {
+                    return Ok(left); // x * 1 -> x
+                }
+                if let AstNode::Literal(LiteralValue::Int64(1)) = left_node {
+                    return Ok(right); // 1 * x -> x
+                }
+                // Note: Do NOT fold `x * 0 -> 0` when `x` is non-literal, because in SQL and Cypher
+                // Three-Valued Logic (3VL), `NULL * 0` yields `NULL`, not `0`. Folding it would
+                // incorrectly include nodes/rows with NULL values in WHERE filters.
+            }
+            BinaryOp::Div => {
+                if let AstNode::Literal(LiteralValue::Int64(1)) = right_node {
+                    return Ok(left); // x / 1 -> x
+                }
+            }
+            _ => {}
+        }
+
+        // 4. Associative reassociation for nested expressions (e.g. (x + 10) + 20 -> x + 30)
+        if let AstNode::Literal(LiteralValue::Int64(r_const)) = right_node {
+            match op {
+                BinaryOp::Add => {
+                    if let AstNode::BinaryExpression {
+                        left: inner_l,
+                        op: BinaryOp::Add,
+                        right: inner_r,
+                    } = left_node
+                    {
+                        let inner_r_node = arena.get(inner_r)?.clone();
+                        if let AstNode::Literal(LiteralValue::Int64(inner_c)) = inner_r_node {
+                            if let Some(sum) = inner_c.checked_add(r_const) {
+                                let new_lit =
+                                    arena.alloc(AstNode::Literal(LiteralValue::Int64(sum)));
+                                return Ok(arena.alloc(AstNode::BinaryExpression {
+                                    left: inner_l,
+                                    op: BinaryOp::Add,
+                                    right: new_lit,
+                                }));
+                            }
+                        }
+                        let inner_l_node = arena.get(inner_l)?.clone();
+                        if let AstNode::Literal(LiteralValue::Int64(inner_c)) = inner_l_node {
+                            if let Some(sum) = inner_c.checked_add(r_const) {
+                                let new_lit =
+                                    arena.alloc(AstNode::Literal(LiteralValue::Int64(sum)));
+                                return Ok(arena.alloc(AstNode::BinaryExpression {
+                                    left: inner_r,
+                                    op: BinaryOp::Add,
+                                    right: new_lit,
+                                }));
+                            }
+                        }
+                    }
+                }
+                BinaryOp::Sub => {
+                    if let AstNode::BinaryExpression {
+                        left: inner_l,
+                        op: BinaryOp::Sub,
+                        right: inner_r,
+                    } = left_node
+                    {
+                        let inner_r_node = arena.get(inner_r)?.clone();
+                        if let AstNode::Literal(LiteralValue::Int64(inner_c)) = inner_r_node {
+                            if let Some(sum) = inner_c.checked_add(r_const) {
+                                let new_lit =
+                                    arena.alloc(AstNode::Literal(LiteralValue::Int64(sum)));
+                                return Ok(arena.alloc(AstNode::BinaryExpression {
+                                    left: inner_l,
+                                    op: BinaryOp::Sub,
+                                    right: new_lit,
+                                }));
+                            }
+                        }
+                    }
+                }
+                BinaryOp::Mul => {
+                    if let AstNode::BinaryExpression {
+                        left: inner_l,
+                        op: BinaryOp::Mul,
+                        right: inner_r,
+                    } = left_node
+                    {
+                        let inner_r_node = arena.get(inner_r)?.clone();
+                        if let AstNode::Literal(LiteralValue::Int64(inner_c)) = inner_r_node {
+                            if let Some(prod) = inner_c.checked_mul(r_const) {
+                                let new_lit =
+                                    arena.alloc(AstNode::Literal(LiteralValue::Int64(prod)));
+                                return Ok(arena.alloc(AstNode::BinaryExpression {
+                                    left: inner_l,
+                                    op: BinaryOp::Mul,
+                                    right: new_lit,
+                                }));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(arena.alloc(AstNode::BinaryExpression { left, op, right }))
+    }
+
+    fn eval_binary_literals(
+        &self,
+        left: &LiteralValue,
+        op: BinaryOp,
+        right: &LiteralValue,
+    ) -> Option<LiteralValue> {
+        match (left, op, right) {
+            // --- Integer Arithmetic ---
+            (LiteralValue::Int64(a), BinaryOp::Add, LiteralValue::Int64(b)) => {
+                a.checked_add(*b).map(LiteralValue::Int64)
+            }
+            (LiteralValue::Int64(a), BinaryOp::Sub, LiteralValue::Int64(b)) => {
+                a.checked_sub(*b).map(LiteralValue::Int64)
+            }
+            (LiteralValue::Int64(a), BinaryOp::Mul, LiteralValue::Int64(b)) => {
+                a.checked_mul(*b).map(LiteralValue::Int64)
+            }
+            (LiteralValue::Int64(a), BinaryOp::Div, LiteralValue::Int64(b)) => {
+                if *b != 0 {
+                    a.checked_div(*b).map(LiteralValue::Int64)
+                } else {
+                    None // Do not divide by zero!
+                }
+            }
+            (LiteralValue::Int64(a), BinaryOp::Mod, LiteralValue::Int64(b)) => {
+                if *b != 0 {
+                    a.checked_rem(*b).map(LiteralValue::Int64)
+                } else {
+                    None // Do not modulo by zero!
+                }
+            }
+
+            // --- Integer Relational ---
+            (LiteralValue::Int64(a), BinaryOp::Eq, LiteralValue::Int64(b)) => {
+                Some(LiteralValue::Bool(a == b))
+            }
+            (LiteralValue::Int64(a), BinaryOp::Neq, LiteralValue::Int64(b)) => {
+                Some(LiteralValue::Bool(a != b))
+            }
+            (LiteralValue::Int64(a), BinaryOp::Lt, LiteralValue::Int64(b)) => {
+                Some(LiteralValue::Bool(a < b))
+            }
+            (LiteralValue::Int64(a), BinaryOp::Lte, LiteralValue::Int64(b)) => {
+                Some(LiteralValue::Bool(a <= b))
+            }
+            (LiteralValue::Int64(a), BinaryOp::Gt, LiteralValue::Int64(b)) => {
+                Some(LiteralValue::Bool(a > b))
+            }
+            (LiteralValue::Int64(a), BinaryOp::Gte, LiteralValue::Int64(b)) => {
+                Some(LiteralValue::Bool(a >= b))
+            }
+
+            // --- Float Arithmetic ---
+            (LiteralValue::Float64(a), BinaryOp::Add, LiteralValue::Float64(b)) => {
+                let res = a + b;
+                if res.is_finite() {
+                    Some(LiteralValue::Float64(res))
+                } else {
+                    None
+                }
+            }
+            (LiteralValue::Float64(a), BinaryOp::Sub, LiteralValue::Float64(b)) => {
+                let res = a - b;
+                if res.is_finite() {
+                    Some(LiteralValue::Float64(res))
+                } else {
+                    None
+                }
+            }
+            (LiteralValue::Float64(a), BinaryOp::Mul, LiteralValue::Float64(b)) => {
+                let res = a * b;
+                if res.is_finite() {
+                    Some(LiteralValue::Float64(res))
+                } else {
+                    None
+                }
+            }
+            (LiteralValue::Float64(a), BinaryOp::Div, LiteralValue::Float64(b)) => {
+                if *b != 0.0 {
+                    let res = a / b;
+                    if res.is_finite() {
+                        Some(LiteralValue::Float64(res))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            (LiteralValue::Float64(a), BinaryOp::Mod, LiteralValue::Float64(b)) => {
+                if *b != 0.0 {
+                    let res = a % b;
+                    if res.is_finite() {
+                        Some(LiteralValue::Float64(res))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+
+            // --- Float Relational ---
+            (LiteralValue::Float64(a), BinaryOp::Eq, LiteralValue::Float64(b)) => {
+                Some(LiteralValue::Bool(a == b))
+            }
+            (LiteralValue::Float64(a), BinaryOp::Neq, LiteralValue::Float64(b)) => {
+                Some(LiteralValue::Bool(a != b))
+            }
+            (LiteralValue::Float64(a), BinaryOp::Lt, LiteralValue::Float64(b)) => {
+                Some(LiteralValue::Bool(a < b))
+            }
+            (LiteralValue::Float64(a), BinaryOp::Lte, LiteralValue::Float64(b)) => {
+                Some(LiteralValue::Bool(a <= b))
+            }
+            (LiteralValue::Float64(a), BinaryOp::Gt, LiteralValue::Float64(b)) => {
+                Some(LiteralValue::Bool(a > b))
+            }
+            (LiteralValue::Float64(a), BinaryOp::Gte, LiteralValue::Float64(b)) => {
+                Some(LiteralValue::Bool(a >= b))
+            }
+
+            // --- Mixed Integer & Float Promotion ---
+            (LiteralValue::Int64(a), op, LiteralValue::Float64(b)) => self.eval_binary_literals(
+                &LiteralValue::Float64(*a as f64),
+                op,
+                &LiteralValue::Float64(*b),
+            ),
+            (LiteralValue::Float64(a), op, LiteralValue::Int64(b)) => self.eval_binary_literals(
+                &LiteralValue::Float64(*a),
+                op,
+                &LiteralValue::Float64(*b as f64),
+            ),
+
+            // --- Boolean Operations ---
+            (LiteralValue::Bool(a), BinaryOp::And, LiteralValue::Bool(b)) => {
+                Some(LiteralValue::Bool(*a && *b))
+            }
+            (LiteralValue::Bool(a), BinaryOp::Or, LiteralValue::Bool(b)) => {
+                Some(LiteralValue::Bool(*a || *b))
+            }
+            (LiteralValue::Bool(a), BinaryOp::Xor, LiteralValue::Bool(b)) => {
+                Some(LiteralValue::Bool(*a ^ *b))
+            }
+            (LiteralValue::Bool(a), BinaryOp::Eq, LiteralValue::Bool(b)) => {
+                Some(LiteralValue::Bool(a == b))
+            }
+            (LiteralValue::Bool(a), BinaryOp::Neq, LiteralValue::Bool(b)) => {
+                Some(LiteralValue::Bool(a != b))
+            }
+
+            // --- String Operations ---
+            (LiteralValue::String(a), BinaryOp::Add, LiteralValue::String(b)) => {
+                Some(LiteralValue::String(format!("{a}{b}")))
+            }
+            (LiteralValue::String(a), BinaryOp::Eq, LiteralValue::String(b)) => {
+                Some(LiteralValue::Bool(a == b))
+            }
+            (LiteralValue::String(a), BinaryOp::Neq, LiteralValue::String(b)) => {
+                Some(LiteralValue::Bool(a != b))
+            }
+            (LiteralValue::String(a), BinaryOp::Contains, LiteralValue::String(b)) => {
+                Some(LiteralValue::Bool(a.contains(b.as_str())))
+            }
+            (LiteralValue::String(a), BinaryOp::StartsWith, LiteralValue::String(b)) => {
+                Some(LiteralValue::Bool(a.starts_with(b.as_str())))
+            }
+            (LiteralValue::String(a), BinaryOp::EndsWith, LiteralValue::String(b)) => {
+                Some(LiteralValue::Bool(a.ends_with(b.as_str())))
+            }
+
+            _ => None,
+        }
+    }
+
+    fn fold_unary_op(
+        &self,
+        arena: &mut QueryAstArena,
+        op: UnaryOp,
+        operand: NodeHandle,
+    ) -> Result<NodeHandle> {
+        let operand_node = arena.get(operand)?.clone();
+        match op {
+            UnaryOp::Not => {
+                if let AstNode::Literal(LiteralValue::Bool(b)) = operand_node {
+                    return Ok(arena.alloc(AstNode::Literal(LiteralValue::Bool(!b))));
+                }
+                // Double negation: NOT(NOT(x)) -> x
+                if let AstNode::UnaryExpression {
+                    op: UnaryOp::Not,
+                    operand: inner,
+                } = operand_node
+                {
+                    return Ok(inner);
+                }
+            }
+            UnaryOp::Neg => {
+                if let AstNode::Literal(LiteralValue::Int64(i)) = operand_node {
+                    if let Some(neg_i) = i.checked_neg() {
+                        return Ok(arena.alloc(AstNode::Literal(LiteralValue::Int64(neg_i))));
+                    }
+                } else if let AstNode::Literal(LiteralValue::Float64(f)) = operand_node {
+                    let neg_f = -f;
+                    if neg_f.is_finite() {
+                        return Ok(arena.alloc(AstNode::Literal(LiteralValue::Float64(neg_f))));
+                    }
+                }
+                // Double negation: -(-x) -> x
+                if let AstNode::UnaryExpression {
+                    op: UnaryOp::Neg,
+                    operand: inner,
+                } = operand_node
+                {
+                    return Ok(inner);
+                }
+            }
+            UnaryOp::IsNull => {
+                if let AstNode::Literal(LiteralValue::Null) = operand_node {
+                    return Ok(arena.alloc(AstNode::Literal(LiteralValue::Bool(true))));
+                }
+            }
+            UnaryOp::IsNotNull => {
+                if let AstNode::Literal(LiteralValue::Null) = operand_node {
+                    return Ok(arena.alloc(AstNode::Literal(LiteralValue::Bool(false))));
+                }
+            }
+        }
+        Ok(arena.alloc(AstNode::UnaryExpression { op, operand }))
+    }
+
+    fn fold_case_expression(
+        &self,
+        arena: &mut QueryAstArena,
+        operand: Option<NodeHandle>,
+        when_then_branches: Vec<(NodeHandle, NodeHandle)>,
+        else_branch: Option<NodeHandle>,
+    ) -> Result<NodeHandle> {
+        let folded_operand = operand
+            .map(|op_h| self.fold_expression(arena, op_h))
+            .transpose()?;
+
+        let mut folded_branches = Vec::new();
+        let mut constant_hit = None;
+
+        for (when_h, then_h) in when_then_branches {
+            let folded_when = self.fold_expression(arena, when_h)?;
+            let folded_then = self.fold_expression(arena, then_h)?;
+
+            if folded_operand.is_none() {
+                let when_node = arena.get(folded_when)?.clone();
+                if let AstNode::Literal(LiteralValue::Bool(true)) = when_node {
+                    // Constant true branch reached - subsequent branches are unreachable
+                    constant_hit = Some(folded_then);
+                    break;
+                } else if let AstNode::Literal(LiteralValue::Bool(false)) = when_node {
+                    // Constant false condition - branch can never be taken, skip it
+                    continue;
+                }
+            }
+
+            folded_branches.push((folded_when, folded_then));
+        }
+
+        if let Some(hit) = constant_hit {
+            return Ok(hit);
+        }
+
+        let folded_else = else_branch
+            .map(|e_h| self.fold_expression(arena, e_h))
+            .transpose()?;
+
+        if folded_branches.is_empty() {
+            if let Some(e) = folded_else {
+                return Ok(e);
+            }
+            return Ok(arena.alloc(AstNode::Literal(LiteralValue::Null)));
+        }
+
+        Ok(arena.alloc(AstNode::CaseExpression {
+            operand: folded_operand,
+            when_then_branches: folded_branches,
+            else_branch: folded_else,
+        }))
+    }
+
+    fn fold_subquery(&self, arena: &mut QueryAstArena, subquery_h: NodeHandle) -> Result<()> {
+        let node = arena.get(subquery_h)?.clone();
+        match node {
+            AstNode::QueryStatement { .. } => {
+                self.fold_all_expressions(arena, subquery_h)?;
+            }
+            AstNode::MatchClause { .. } => {
+                self.fold_match_clause(arena, subquery_h)?;
+            }
+            AstNode::PathChain { .. } | AstNode::NodePattern { .. } => {
+                self.fold_path_predicates(arena, subquery_h)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn optimize_mutation_clause(
         &self,
         arena: &mut QueryAstArena,
         mut_handle: NodeHandle,
     ) -> Result<()> {
-        let mut_node = arena.get(mut_handle)?;
-        if let AstNode::MergeClause { path, .. } = mut_node {
-            let path_handle = *path;
-            let _ = path_handle;
+        let mut_node = arena.get(mut_handle)?.clone();
+        match mut_node {
+            AstNode::SetClause { items } => {
+                for item_h in items {
+                    let item_node = arena.get(item_h)?.clone();
+                    if let AstNode::SetItem { value, .. } = item_node {
+                        let folded_val = self.fold_expression(arena, value)?;
+                        if let AstNode::SetItem { value: v, .. } = arena.get_mut(item_h)? {
+                            *v = folded_val;
+                        }
+                    }
+                }
+            }
+            AstNode::MergeClause {
+                path,
+                on_create_set,
+                on_match_set,
+            } => {
+                self.fold_path_predicates(arena, path)?;
+                for item_h in on_create_set {
+                    let item_node = arena.get(item_h)?.clone();
+                    if let AstNode::SetItem { value, .. } = item_node {
+                        let folded_val = self.fold_expression(arena, value)?;
+                        if let AstNode::SetItem { value: v, .. } = arena.get_mut(item_h)? {
+                            *v = folded_val;
+                        }
+                    }
+                }
+                for item_h in on_match_set {
+                    let item_node = arena.get(item_h)?.clone();
+                    if let AstNode::SetItem { value, .. } = item_node {
+                        let folded_val = self.fold_expression(arena, value)?;
+                        if let AstNode::SetItem { value: v, .. } = arena.get_mut(item_h)? {
+                            *v = folded_val;
+                        }
+                    }
+                }
+            }
+            AstNode::CreateClause { paths } => {
+                for p_h in paths {
+                    self.fold_path_predicates(arena, p_h)?;
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -295,9 +1087,6 @@ impl AstOptimizer {
             AstNode::UnaryExpression { operand, .. } => {
                 self.is_constant_expression(arena, *operand)
             }
-            AstNode::BinaryExpression { left, right, .. } => Ok(self
-                .is_constant_expression(arena, *left)?
-                && self.is_constant_expression(arena, *right)?),
             AstNode::ListLiteral(items) => {
                 for &item in items {
                     if !self.is_constant_expression(arena, item)? {

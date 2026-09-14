@@ -140,6 +140,7 @@ examples-rust:
     uv run cargo run --example 03_single_call_pattern
     uv run cargo run --example 04_expression_tree_builder
     uv run cargo run --example 05_direct_arena_allocation
+    uv run cargo run --example 06_ast_optimizer_constant_folding
 
 # Run all Python code examples (Beginner to Advanced)
 examples-python:
@@ -148,6 +149,8 @@ examples-python:
     uv run python examples/python/03_advanced_multihop_aggregations.py
     uv run python examples/python/04_data_science_polars_streaming.py
     uv run python examples/python/05_enterprise_multi_dialect.py
+    uv run python examples/python/06_sqlalchemy_hybrid_bridge.py
+    uv run python examples/python/11_query_optimizer_constant_folding.py
 
 # Run all code examples across Rust and Python
 examples: examples-rust examples-python

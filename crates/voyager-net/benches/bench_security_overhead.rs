@@ -109,7 +109,7 @@ async fn main() {
         );
         params.insert(
             "path".to_string(),
-            serde_json::json!(r#"C:\Users\supri\data"#),
+            serde_json::json!(r#"C:\Data\graph_store"#),
         );
         let query = "MATCH (n:Person {name: $name, path: $path}) RETURN n;";
 

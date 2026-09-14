@@ -221,3 +221,23 @@ def test_optimizer_rhs_functions_over_parameters_hoisting():
     assert "(p:Person {city: toUpper($p0)})" in compiled.statement
     assert "WHERE" not in compiled.statement
     assert compiled.parameters == {"p0": "london"}
+
+
+def test_optimizer_constant_folding_in_python_queries():
+    """Verify constant folding across arithmetic expressions and partial reassociation in Python SDK."""
+    from voyager_ogm import lit
+
+    p = Person("p")
+    # p.age == (lit(10) + lit(20)) -> 30
+    q = Query.match(p).where(p.age == (lit(10) + lit(20))).return_(p.name).optimize()
+    compiled = q.compile("cypher")
+    assert "(p:Person {age: $p0})" in compiled.statement
+    assert compiled.parameters == {"p0": 30}
+    assert "WHERE" not in compiled.statement
+
+    # Partial reassociation: (p.age + 10) + 20 > 50 -> (p.age + 30) > 50
+    q2 = Query.match(p).where(((p.age + 10) + 20) > 50).return_(p.name).optimize()
+    compiled2 = q2.compile("cypher")
+    assert "(p.age + $p0) > $p1" in compiled2.statement
+    assert compiled2.parameters["p0"] == 30
+    assert compiled2.parameters["p1"] == 50
