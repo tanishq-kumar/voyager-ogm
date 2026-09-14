@@ -6,6 +6,10 @@ use std::collections::HashMap;
 
 use crate::error::{NetError, Result};
 
+/// Maximum recursion depth allowed when decoding nested PackStream structures (Lists, Maps, Structs)
+/// to prevent stack overflow denial-of-service on untrusted network payloads.
+pub const MAX_PACKSTREAM_DEPTH: usize = 64;
+
 /// Represents a graph Node decoded from a Bolt PackStream structure (`tag = 0x4E`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BoltNode {
@@ -201,8 +205,20 @@ impl PackStream {
         }
     }
 
-    /// Decodes a `BoltValue` from a byte buffer slice.
+    /// Decodes a `BoltValue` from a byte buffer slice with default recursion depth (0).
     pub fn decode(buf: &mut Bytes) -> Result<BoltValue> {
+        Self::decode_with_depth(buf, 0)
+    }
+
+    /// Decodes a `BoltValue` from a byte buffer slice tracking nesting recursion depth.
+    pub fn decode_with_depth(buf: &mut Bytes, depth: usize) -> Result<BoltValue> {
+        if depth > MAX_PACKSTREAM_DEPTH {
+            return Err(NetError::ProtocolError(format!(
+                "PackStream structure exceeded maximum nesting depth of {}",
+                MAX_PACKSTREAM_DEPTH
+            )));
+        }
+
         if !buf.has_remaining() {
             return Err(NetError::ProtocolError(
                 "Unexpected EOF while decoding PackStream value".to_string(),
@@ -228,19 +244,19 @@ impl PackStream {
         // 3. TinyList (0x90..0x9F)
         if (0x90..=0x9F).contains(&marker) {
             let len = (marker & 0x0F) as usize;
-            return Self::decode_list_payload(len, buf);
+            return Self::decode_list_payload(len, buf, depth);
         }
 
         // 4. TinyMap (0xA0..0xAF)
         if (0xA0..=0xAF).contains(&marker) {
             let size = (marker & 0x0F) as usize;
-            return Self::decode_map_payload(size, buf);
+            return Self::decode_map_payload(size, buf, depth);
         }
 
         // 5. TinyStruct (0xB0..0xBF)
         if (0xB0..=0xBF).contains(&marker) {
             let num_fields = (marker & 0x0F) as usize;
-            return Self::decode_structure_payload(num_fields, buf);
+            return Self::decode_structure_payload(num_fields, buf, depth);
         }
 
         // 6. Explicit Marker Bytes
@@ -339,7 +355,7 @@ impl PackStream {
                     ));
                 }
                 let len = buf.get_u8() as usize;
-                Self::decode_list_payload(len, buf)
+                Self::decode_list_payload(len, buf, depth)
             }
             0xD5 => {
                 if buf.remaining() < 2 {
@@ -348,7 +364,7 @@ impl PackStream {
                     ));
                 }
                 let len = buf.get_u16() as usize;
-                Self::decode_list_payload(len, buf)
+                Self::decode_list_payload(len, buf, depth)
             }
             0xD6 => {
                 if buf.remaining() < 4 {
@@ -357,7 +373,7 @@ impl PackStream {
                     ));
                 }
                 let len = buf.get_u32() as usize;
-                Self::decode_list_payload(len, buf)
+                Self::decode_list_payload(len, buf, depth)
             }
             0xD8 => {
                 if buf.remaining() < 1 {
@@ -366,7 +382,7 @@ impl PackStream {
                     ));
                 }
                 let len = buf.get_u8() as usize;
-                Self::decode_map_payload(len, buf)
+                Self::decode_map_payload(len, buf, depth)
             }
             0xD9 => {
                 if buf.remaining() < 2 {
@@ -375,7 +391,7 @@ impl PackStream {
                     ));
                 }
                 let len = buf.get_u16() as usize;
-                Self::decode_map_payload(len, buf)
+                Self::decode_map_payload(len, buf, depth)
             }
             0xDA => {
                 if buf.remaining() < 4 {
@@ -384,7 +400,7 @@ impl PackStream {
                     ));
                 }
                 let len = buf.get_u32() as usize;
-                Self::decode_map_payload(len, buf)
+                Self::decode_map_payload(len, buf, depth)
             }
             0xDC => {
                 if buf.remaining() < 1 {
@@ -393,7 +409,7 @@ impl PackStream {
                     ));
                 }
                 let len = buf.get_u8() as usize;
-                Self::decode_structure_payload(len, buf)
+                Self::decode_structure_payload(len, buf, depth)
             }
             0xDD => {
                 if buf.remaining() < 2 {
@@ -402,7 +418,7 @@ impl PackStream {
                     ));
                 }
                 let len = buf.get_u16() as usize;
-                Self::decode_structure_payload(len, buf)
+                Self::decode_structure_payload(len, buf, depth)
             }
             unknown => Err(NetError::ProtocolError(format!(
                 "Unknown PackStream marker byte 0x{:02X}",
@@ -609,32 +625,36 @@ impl PackStream {
         Ok(BoltValue::Bytes(bytes))
     }
 
-    fn decode_list_payload(len: usize, buf: &mut Bytes) -> Result<BoltValue> {
+    fn decode_list_payload(len: usize, buf: &mut Bytes, depth: usize) -> Result<BoltValue> {
+        // In PackStream, each element requires at least 1 byte (the type marker byte).
         if len > buf.remaining() {
             return Err(NetError::ProtocolError(format!(
-                "List length {} exceeds available buffer bytes {}",
+                "List length {} exceeds available buffer bytes {} (minimum 1 byte per element required)",
                 len,
                 buf.remaining()
             )));
         }
         let mut list = Vec::with_capacity(len.min(1024));
         for _ in 0..len {
-            list.push(Self::decode(buf)?);
+            list.push(Self::decode_with_depth(buf, depth + 1)?);
         }
         Ok(BoltValue::List(list))
     }
 
-    fn decode_map_payload(size: usize, buf: &mut Bytes) -> Result<BoltValue> {
-        if size.saturating_mul(2) > buf.remaining() {
+    fn decode_map_payload(size: usize, buf: &mut Bytes, depth: usize) -> Result<BoltValue> {
+        // In PackStream, each map entry consists of a key and a value, requiring at least 2 bytes.
+        let min_required = size.saturating_mul(2);
+        if min_required > buf.remaining() {
             return Err(NetError::ProtocolError(format!(
-                "Map size {} exceeds available buffer bytes {}",
+                "Map size {} requires at least {} bytes, which exceeds available buffer bytes {}",
                 size,
+                min_required,
                 buf.remaining()
             )));
         }
         let mut map = HashMap::with_capacity(size.min(1024));
         for _ in 0..size {
-            let key = match Self::decode(buf)? {
+            let key = match Self::decode_with_depth(buf, depth + 1)? {
                 BoltValue::String(s) => s,
                 other => {
                     return Err(NetError::ProtocolError(format!(
@@ -643,29 +663,34 @@ impl PackStream {
                     )));
                 }
             };
-            let value = Self::decode(buf)?;
+            let value = Self::decode_with_depth(buf, depth + 1)?;
             map.insert(key, value);
         }
         Ok(BoltValue::Map(map))
     }
 
-    fn decode_structure_payload(num_fields: usize, buf: &mut Bytes) -> Result<BoltValue> {
+    fn decode_structure_payload(
+        num_fields: usize,
+        buf: &mut Bytes,
+        depth: usize,
+    ) -> Result<BoltValue> {
         if !buf.has_remaining() {
             return Err(NetError::ProtocolError(
                 "Unexpected EOF reading structure signature tag".to_string(),
             ));
         }
         let tag = buf.get_u8();
+        // In PackStream, each field requires at least 1 byte (the type marker byte).
         if num_fields > buf.remaining() {
             return Err(NetError::ProtocolError(format!(
-                "Structure field count {} exceeds available buffer bytes {}",
+                "Structure field count {} exceeds available buffer bytes {} (minimum 1 byte per field required)",
                 num_fields,
                 buf.remaining()
             )));
         }
         let mut fields = Vec::with_capacity(num_fields.min(1024));
         for _ in 0..num_fields {
-            fields.push(Self::decode(buf)?);
+            fields.push(Self::decode_with_depth(buf, depth + 1)?);
         }
 
         // Try decoding into high-level graph structures if tag matches
