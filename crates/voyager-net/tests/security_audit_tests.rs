@@ -1,7 +1,7 @@
 use bytes::{Bytes, BytesMut};
 use std::collections::HashMap;
 use std::io::Cursor;
-use voyager_net::bolt::packstream::PackStream;
+use voyager_net::bolt::packstream::{BoltValue, PackStream};
 use voyager_net::bolt::stream::{MAX_BOLT_MESSAGE_SIZE, read_message_frame_buffered};
 use voyager_net::client::connect_any;
 use voyager_net::config::{ConnectionConfig, TlsMode};
@@ -63,6 +63,167 @@ fn test_packstream_list32_and_map32_allocation_bomb_rejected() {
         Ok(v) => panic!("Expected ProtocolError on Map32 bomb, got Ok: {:?}", v),
         Err(e) => panic!("Expected ProtocolError on Map32 bomb, got: {:?}", e),
     }
+}
+
+#[test]
+fn test_packstream_recursion_depth_limit_rejected() {
+    // Construct an adversarial payload with 70 levels of nested single-element TinyLists:
+    // 0x91 is TinyList of length 1.
+    let mut payload = vec![0x91; 70];
+    payload.push(0x01); // Innermost TinyInt(1)
+
+    let mut bytes = Bytes::from(payload);
+    let res = PackStream::decode(&mut bytes);
+    match res {
+        Err(NetError::ProtocolError(msg)) => {
+            assert!(
+                msg.contains("exceeded maximum nesting depth of 64"),
+                "Expected recursion depth rejection, got: {}",
+                msg
+            );
+        }
+        Ok(v) => panic!(
+            "Expected ProtocolError on nested list depth bomb, got Ok: {:?}",
+            v
+        ),
+        Err(e) => panic!(
+            "Expected ProtocolError on nested list depth bomb, got: {:?}",
+            e
+        ),
+    }
+
+    // Verify that a deeply nested payload within safe limits (e.g. 30 levels) decodes properly
+    let mut safe_payload = vec![0x91; 30];
+    safe_payload.push(0x2A); // TinyInt(42)
+
+    let mut safe_bytes = Bytes::from(safe_payload);
+    let safe_res = PackStream::decode(&mut safe_bytes);
+    assert!(
+        safe_res.is_ok(),
+        "Payload within depth limit should decode successfully"
+    );
+}
+
+#[test]
+fn test_packstream_map_recursion_depth_limit_rejected() {
+    // Construct an adversarial payload with 70 levels of nested single-entry TinyMaps:
+    // 0xA1 is TinyMap of size 1; 0x81, b'k' is key "k".
+    let mut payload = Vec::with_capacity(70 * 3 + 1);
+    for _ in 0..70 {
+        payload.push(0xA1); // TinyMap(1)
+        payload.push(0x81); // TinyString(1)
+        payload.push(b'k');
+    }
+    payload.push(0x01); // Innermost TinyInt(1)
+
+    let mut bytes = Bytes::from(payload);
+    let res = PackStream::decode(&mut bytes);
+    match res {
+        Err(NetError::ProtocolError(msg)) => {
+            assert!(
+                msg.contains("exceeded maximum nesting depth of 64"),
+                "Expected recursion depth rejection, got: {}",
+                msg
+            );
+        }
+        Ok(v) => panic!(
+            "Expected ProtocolError on nested map depth bomb, got Ok: {:?}",
+            v
+        ),
+        Err(e) => panic!(
+            "Expected ProtocolError on nested map depth bomb, got: {:?}",
+            e
+        ),
+    }
+}
+
+#[test]
+fn test_packstream_structure_recursion_depth_limit_rejected() {
+    // Construct an adversarial payload with 70 levels of nested single-field TinyStructs:
+    // 0xB1 is TinyStruct with 1 field; 0x72 is tag.
+    let mut payload = Vec::with_capacity(70 * 2 + 1);
+    for _ in 0..70 {
+        payload.push(0xB1); // TinyStruct(1)
+        payload.push(0x72); // Tag
+    }
+    payload.push(0x01); // Innermost TinyInt(1)
+
+    let mut bytes = Bytes::from(payload);
+    let res = PackStream::decode(&mut bytes);
+    match res {
+        Err(NetError::ProtocolError(msg)) => {
+            assert!(
+                msg.contains("exceeded maximum nesting depth of 64"),
+                "Expected recursion depth rejection, got: {}",
+                msg
+            );
+        }
+        Ok(v) => panic!(
+            "Expected ProtocolError on nested struct depth bomb, got Ok: {:?}",
+            v
+        ),
+        Err(e) => panic!(
+            "Expected ProtocolError on nested struct depth bomb, got: {:?}",
+            e
+        ),
+    }
+}
+
+#[test]
+fn test_packstream_map_incomplete_minimum_entry_bytes_rejected() {
+    // Map32 (0xDA) claiming size 100, which requires at least 200 bytes (minimum 2 bytes per key-value entry).
+    // Buffer only provides 150 bytes.
+    // Under old check: size (100) > buf.remaining() (150) was FALSE, passing invalid state into parser.
+    // Under new check: min_required (200) > buf.remaining() (150) is TRUE, properly rejecting upfront.
+    let mut payload = vec![0xDA, 0x00, 0x00, 0x00, 0x64]; // Map32 with size = 100
+    payload.extend(vec![0xC0; 150]); // 150 bytes of dummy payload
+
+    let mut bytes = Bytes::from(payload);
+    let res = PackStream::decode(&mut bytes);
+    match res {
+        Err(NetError::ProtocolError(msg)) => {
+            assert!(
+                msg.contains(
+                    "requires at least 200 bytes, which exceeds available buffer bytes 150"
+                ),
+                "Expected 2-byte minimum entry rejection, got: {}",
+                msg
+            );
+        }
+        Ok(v) => panic!(
+            "Expected ProtocolError on incomplete map entries, got Ok: {:?}",
+            v
+        ),
+        Err(e) => panic!(
+            "Expected ProtocolError on incomplete map entries, got: {:?}",
+            e
+        ),
+    }
+}
+
+#[test]
+fn test_packstream_deep_hierarchical_document_roundtrip() {
+    // Construct a valid hierarchical graph document nested 25 levels deep (within the 64 limit)
+    // with alternating maps and lists, simulating deep JSON / AST trees stored in graph properties.
+    let mut current = BoltValue::Integer(1337);
+    for i in 0..25 {
+        if i % 2 == 0 {
+            let mut map = HashMap::new();
+            map.insert("child".to_string(), current);
+            map.insert("level".to_string(), BoltValue::Integer(i));
+            current = BoltValue::Map(map);
+        } else {
+            current = BoltValue::List(vec![current, BoltValue::String(format!("node_{}", i))]);
+        }
+    }
+
+    let mut buf = BytesMut::new();
+    PackStream::encode(&current, &mut buf);
+
+    let mut bytes = buf.freeze();
+    let decoded = PackStream::decode(&mut bytes)
+        .expect("25-level hierarchical document should decode cleanly");
+    assert_eq!(decoded, current);
 }
 
 #[test]
