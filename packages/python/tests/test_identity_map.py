@@ -66,8 +66,8 @@ class TestIdentityMapBasics:
 
         # Should return the original in-memory instance p1 with updated fields
         assert res is p1
-        assert p1.name == "Alice Smith"
-        assert p1.age == 31
+        assert p1.get("name") == "Alice Smith"
+        assert p1.get("age") == 31
 
 
 class TestBatchCoalescingFlush:

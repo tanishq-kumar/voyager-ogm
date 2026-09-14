@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
+import time
 from typing import Any
 
 import pytest
@@ -15,7 +17,7 @@ from voyager_ogm import (
     Session,
 )
 from voyager_ogm.bridge import create_bridge
-from voyager_ogm.session import _is_query_semantic_error
+from voyager_ogm.session import _is_query_semantic_error, _SessionBase
 
 
 def test_is_query_semantic_error_classification():
@@ -181,3 +183,95 @@ def test_create_bridge_auto_instantiation_from_uri():
     else:
         assert isinstance(sync_bridge, MockBridge)
         assert isinstance(async_bridge, AsyncMockBridge)
+
+
+def test_session_base_inheritance():
+    """Verify Session and AsyncSession inherit common properties and methods from _SessionBase."""
+    session = Session(bridge=MockBridge())
+    async_session = AsyncSession(bridge=AsyncMockBridge())
+
+    assert isinstance(session, _SessionBase)
+    assert isinstance(async_session, _SessionBase)
+
+    # Shared properties work identically
+    assert session.dialect == async_session.dialect
+    assert session.backend == "bridge"
+    assert async_session.backend == "bridge"
+
+
+def test_backend_downgrade_logs_warning_and_circuit_breaker_probe_sync(caplog):
+    """Verify native execution failure logs a warning and circuit breaker probes native after cooldown."""
+    native_mock = MockNativeClientWithErrors(
+        ConnectionResetError("Socket broken: connection reset by peer")
+    )
+    # Configure short cooldown of 0.02s for testing
+    session = Session(bridge=native_mock, backend="auto", circuit_cooldown_seconds=0.02)
+    session._is_explicit_mock = True  # Allow mock fallback
+    assert session.backend == "native"
+
+    with caplog.at_level(logging.WARNING, logger="voyager_ogm.session"):
+        res = session.execute("MATCH (n) RETURN n")
+
+    # 1. Fallback to bridge must succeed
+    assert res == []
+    assert session.backend == "bridge"
+
+    # 2. Structured warning must be logged
+    assert any(
+        "Native backend execution failed" in record.message
+        and "Falling back to bridge backend" in record.message
+        for record in caplog.records
+    )
+
+    # 3. Subsequent query during cooldown stays on bridge
+    res2 = session.execute("MATCH (n) RETURN n")
+    assert res2 == []
+    assert session.backend == "bridge"
+
+    # 4. Heal the native client
+    native_mock.error_to_raise = None
+
+    # 5. Wait for circuit breaker cooldown to expire
+    time.sleep(0.08)
+
+    # 6. Next query probes native and recovers
+    with caplog.at_level(logging.INFO, logger="voyager_ogm.session"):
+        session.execute("MATCH (n) RETURN n")
+
+    assert session.backend == "native"
+    assert any("Native execution backend recovered" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_backend_downgrade_logs_warning_and_circuit_breaker_probe_async(caplog):
+    """Verify async session native failure logs warning and recovers via circuit breaker probe."""
+    import asyncio
+
+    native_mock = MockNativeClientWithErrors(
+        ConnectionResetError("Socket broken: connection reset by peer")
+    )
+    session = AsyncSession(bridge=native_mock, backend="auto", circuit_cooldown_seconds=0.02)
+    session._is_explicit_mock = True
+    assert session.backend == "native"
+
+    with caplog.at_level(logging.WARNING, logger="voyager_ogm.session"):
+        res = await session.execute("MATCH (n) RETURN n")
+
+    assert res == []
+    assert session.backend == "bridge"
+    assert any("Native backend execution failed" in record.message for record in caplog.records)
+
+    # Cooldown in effect -> stays bridge
+    await session.execute("MATCH (n) RETURN n")
+    assert session.backend == "bridge"
+
+    # Heal native client
+    native_mock.error_to_raise = None
+    await asyncio.sleep(0.08)
+
+    # Probes native and recovers
+    with caplog.at_level(logging.INFO, logger="voyager_ogm.session"):
+        await session.execute("MATCH (n) RETURN n")
+
+    assert session.backend == "native"
+    assert any("Native execution backend recovered" in record.message for record in caplog.records)
