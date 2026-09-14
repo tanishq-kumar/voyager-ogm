@@ -13,6 +13,9 @@ services:
       - NEO4J_dbms_memory_pagecache_size=256M
       - NEO4J_dbms_memory_heap_initial__size=512M
       - NEO4J_dbms_memory_heap_max__size=1G
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
     healthcheck:
       test:
         [
@@ -33,6 +36,9 @@ services:
     environment:
       - --bolt-port=7687
       - --log-level=WARNING
+    volumes:
+      - memgraph_data:/var/lib/memgraph
+      - memgraph_logs:/var/log/memgraph
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "7687"]
       interval: 5s
@@ -49,6 +55,8 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=voyagerpass123
       - POSTGRES_DB=voyager_graph
+    volumes:
+      - age_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d voyager_graph"]
       interval: 5s
@@ -61,8 +69,18 @@ services:
     container_name: voyager-falkordb
     ports:
       - "7689:7687"
+    volumes:
+      - falkordb_data:/data
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "7687"]
       interval: 5s
       timeout: 3s
       retries: 5
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  memgraph_data:
+  memgraph_logs:
+  age_data:
+  falkordb_data:

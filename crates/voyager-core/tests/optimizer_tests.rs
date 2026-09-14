@@ -289,3 +289,313 @@ fn test_optimizer_functions_over_parameters_hoisting() {
         res.statement
     );
 }
+
+#[test]
+fn test_optimizer_constant_folding_integer_arithmetic() {
+    use voyager_core::ast::{BinaryOp, LiteralValue};
+
+    let mut builder = QueryBuilder::new();
+    builder.match_node(Some("p"), vec!["Person"]);
+
+    // p.age == (10 + 20)
+    let p_age = builder.prop("p", "age");
+    let c10 = builder.literal(10i64);
+    let c20 = builder.literal(20i64);
+    let sum_expr = builder.binary_expr(c10, BinaryOp::Add, c20);
+    let eq_expr = builder.binary_expr(p_age, BinaryOp::Eq, sum_expr);
+    builder.where_expr(eq_expr);
+    builder.field("p", "name", Some("name"));
+
+    let (mut arena, root) = builder.build();
+    let optimizer = AstOptimizer::new(OptimizationLevel::Standard);
+    optimizer.optimize(&mut arena, root).unwrap();
+
+    let mut cypher = CypherEmitter::new();
+    let res = cypher.visit_query(&arena, root).unwrap();
+
+    // Constant folding evaluates 10 + 20 -> 30, allowing predicate pushdown to hoist {age: $p0} where $p0 = 30!
+    assert!(
+        res.statement.contains("(p:Person {age: $p0})"),
+        "Expected hoisted {{age: $p0}}, got: {}",
+        res.statement
+    );
+    assert_eq!(
+        res.parameters.get("p0"),
+        Some(&LiteralValue::Int64(30)),
+        "Expected folded parameter 30"
+    );
+    assert!(
+        !res.statement.contains("WHERE"),
+        "WHERE clause should be eliminated after hoisting, got: {}",
+        res.statement
+    );
+}
+
+#[test]
+fn test_optimizer_constant_folding_division_by_zero_and_overflow_safety() {
+    use voyager_core::ast::BinaryOp;
+
+    let mut builder = QueryBuilder::new();
+    builder.match_node(Some("p"), vec!["Person"]);
+
+    // 1. Division by zero: p.val == 10 / 0 (must NOT panic or fold)
+    let p_val = builder.prop("p", "val");
+    let c10 = builder.literal(10i64);
+    let c0 = builder.literal(0i64);
+    let div_zero = builder.binary_expr(c10, BinaryOp::Div, c0);
+    let eq_div = builder.binary_expr(p_val, BinaryOp::Eq, div_zero);
+
+    // 2. Integer overflow: p.big == i64::MAX + 1 (must NOT panic or fold)
+    let p_big = builder.prop("p", "big");
+    let max_i64 = builder.literal(i64::MAX);
+    let c1 = builder.literal(1i64);
+    let overflow_expr = builder.binary_expr(max_i64, BinaryOp::Add, c1);
+    let eq_overflow = builder.binary_expr(p_big, BinaryOp::Eq, overflow_expr);
+
+    let and_cond = builder.binary_expr(eq_div, BinaryOp::And, eq_overflow);
+    builder.where_expr(and_cond);
+    builder.field("p", "name", Some("name"));
+
+    let (mut arena, root) = builder.build();
+    let optimizer = AstOptimizer::new(OptimizationLevel::Standard);
+    // Optimizer execution MUST NOT panic
+    optimizer.optimize(&mut arena, root).unwrap();
+
+    let mut cypher = CypherEmitter::new();
+    let res = cypher.visit_query(&arena, root).unwrap();
+
+    // The division by zero and overflow expressions remain safely preserved in WHERE
+    assert!(
+        res.statement.contains("WHERE"),
+        "Unfoldable safe expressions must remain in WHERE: {}",
+        res.statement
+    );
+}
+
+#[test]
+fn test_optimizer_constant_folding_floats_and_type_promotion() {
+    use voyager_core::ast::{BinaryOp, LiteralValue};
+
+    let mut builder = QueryBuilder::new();
+    builder.match_node(Some("p"), vec!["Person"]);
+
+    // p.rate == 10 + 2.5 (i64 promoted to f64 -> 12.5)
+    let p_rate = builder.prop("p", "rate");
+    let c10 = builder.literal(10i64);
+    let c2_5 = builder.literal(2.5f64);
+    let add_expr = builder.binary_expr(c10, BinaryOp::Add, c2_5);
+    let eq_expr = builder.binary_expr(p_rate, BinaryOp::Eq, add_expr);
+    builder.where_expr(eq_expr);
+    builder.field("p", "name", Some("name"));
+
+    let (mut arena, root) = builder.build();
+    let optimizer = AstOptimizer::new(OptimizationLevel::Standard);
+    optimizer.optimize(&mut arena, root).unwrap();
+
+    let mut cypher = CypherEmitter::new();
+    let res = cypher.visit_query(&arena, root).unwrap();
+
+    assert!(
+        res.statement.contains("(p:Person {rate: $p0})"),
+        "Expected hoisted {{rate: $p0}}, got: {}",
+        res.statement
+    );
+    assert_eq!(
+        res.parameters.get("p0"),
+        Some(&LiteralValue::Float64(12.5)),
+        "Expected promoted float parameter 12.5"
+    );
+}
+
+#[test]
+fn test_optimizer_constant_folding_relational_and_boolean_laws() {
+    use voyager_core::ast::BinaryOp;
+
+    let mut builder = QueryBuilder::new();
+    builder.match_node(Some("p"), vec!["Person"]);
+
+    // p.age > 18 AND (10 > 5) -> p.age > 18 AND true -> p.age > 18
+    let p_age = builder.prop("p", "age");
+    let c18 = builder.literal(18i64);
+    let age_gt_18 = builder.binary_expr(p_age, BinaryOp::Gt, c18);
+
+    let c10 = builder.literal(10i64);
+    let c5 = builder.literal(5i64);
+    let ten_gt_five = builder.binary_expr(c10, BinaryOp::Gt, c5);
+
+    let and_expr = builder.binary_expr(age_gt_18, BinaryOp::And, ten_gt_five);
+    builder.where_expr(and_expr);
+    builder.field("p", "name", Some("name"));
+
+    let (mut arena, root) = builder.build();
+    let optimizer = AstOptimizer::new(OptimizationLevel::Standard);
+    optimizer.optimize(&mut arena, root).unwrap();
+
+    let mut cypher = CypherEmitter::new();
+    let res = cypher.visit_query(&arena, root).unwrap();
+
+    // Constant 10 > 5 folded to true, then (expr AND true) simplified to expr
+    assert!(
+        res.statement.contains("WHERE p.age > $p0"),
+        "Expected simplified WHERE p.age > $p0, got: {}",
+        res.statement
+    );
+    assert!(
+        !res.statement.contains("AND"),
+        "Expected AND clause to be completely eliminated, got: {}",
+        res.statement
+    );
+}
+
+#[test]
+fn test_optimizer_constant_folding_unary_and_double_negation() {
+    use voyager_core::ast::{BinaryOp, LiteralValue, UnaryOp};
+
+    let mut builder = QueryBuilder::new();
+    builder.match_node(Some("p"), vec!["Person"]);
+
+    // p.balance == -(-50) -> 50
+    let p_balance = builder.prop("p", "balance");
+    let neg_50 = builder.literal(-50i64);
+    let double_neg = builder.unary_expr(UnaryOp::Neg, neg_50);
+    let eq_expr = builder.binary_expr(p_balance, BinaryOp::Eq, double_neg);
+    builder.where_expr(eq_expr);
+    builder.field("p", "balance", Some("balance"));
+
+    let (mut arena, root) = builder.build();
+    let optimizer = AstOptimizer::new(OptimizationLevel::Standard);
+    optimizer.optimize(&mut arena, root).unwrap();
+
+    let mut cypher = CypherEmitter::new();
+    let res = cypher.visit_query(&arena, root).unwrap();
+
+    assert!(
+        res.statement.contains("(p:Person {balance: $p0})"),
+        "Expected hoisted balance, got: {}",
+        res.statement
+    );
+    assert_eq!(
+        res.parameters.get("p0"),
+        Some(&LiteralValue::Int64(50)),
+        "Expected folded unary negation to produce 50"
+    );
+}
+
+#[test]
+fn test_optimizer_constant_folding_partial_reassociation() {
+    use voyager_core::ast::BinaryOp;
+
+    let mut builder = QueryBuilder::new();
+    builder.match_node(Some("p"), vec!["Person"]);
+
+    // WHERE (p.age + 10) + 20 > 50 -> p.age + 30 > 50
+    let p_age = builder.prop("p", "age");
+    let c10 = builder.literal(10i64);
+    let inner_add = builder.binary_expr(p_age, BinaryOp::Add, c10);
+    let c20 = builder.literal(20i64);
+    let outer_add = builder.binary_expr(inner_add, BinaryOp::Add, c20);
+    let c50 = builder.literal(50i64);
+    let gt_expr = builder.binary_expr(outer_add, BinaryOp::Gt, c50);
+
+    builder.where_expr(gt_expr);
+    builder.field("p", "name", Some("name"));
+
+    let (mut arena, root) = builder.build();
+    let optimizer = AstOptimizer::new(OptimizationLevel::Standard);
+    optimizer.optimize(&mut arena, root).unwrap();
+
+    let mut cypher = CypherEmitter::new();
+    let res = cypher.visit_query(&arena, root).unwrap();
+
+    // Partial reassociation evaluates 10 + 20 -> 30, resulting in (p.age + 30) > 50
+    assert!(
+        res.statement.contains("(p.age + $p0) > $p1"),
+        "Expected reassociated expression (p.age + $p0) > $p1, got: {}",
+        res.statement
+    );
+    assert_eq!(
+        res.parameters.get("p0"),
+        Some(&voyager_core::ast::LiteralValue::Int64(30)),
+        "Expected folded reassociated constant 30"
+    );
+}
+
+#[test]
+fn test_optimizer_constant_folding_multi_dialect_parity() {
+    use voyager_core::ast::{BinaryOp, LiteralValue};
+    use voyager_core::emitters::sql_pgq::SqlPgqEmitter;
+
+    let mut builder = QueryBuilder::new();
+    builder.match_node(Some("p"), vec!["Person"]);
+
+    // p.age > (7 * 3) -> p.age > 21
+    let p_age = builder.prop("p", "age");
+    let c7 = builder.literal(7i64);
+    let c3 = builder.literal(3i64);
+    let mul_expr = builder.binary_expr(c7, BinaryOp::Mul, c3);
+    let gt_expr = builder.binary_expr(p_age, BinaryOp::Gt, mul_expr);
+    builder.where_expr(gt_expr);
+    builder.field("p", "name", Some("name"));
+
+    let (mut arena, root) = builder.build();
+    let optimizer = AstOptimizer::new(OptimizationLevel::Standard);
+    optimizer.optimize(&mut arena, root).unwrap();
+
+    // 1. openCypher
+    let mut cypher = CypherEmitter::new();
+    let res_cypher = cypher.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res_cypher.parameters.get("p0"),
+        Some(&LiteralValue::Int64(21))
+    );
+    assert!(res_cypher.statement.contains("WHERE p.age > $p0"));
+
+    // 2. ISO GQL
+    let mut gql = IsoGqlEmitter::new();
+    let res_gql = gql.visit_query(&arena, root).unwrap();
+    assert_eq!(res_gql.parameters.get("p0"), Some(&LiteralValue::Int64(21)));
+    assert!(res_gql.statement.contains("WHERE p.age > $p0"));
+
+    // 3. SQL:2023 PGQ
+    let mut pgq = SqlPgqEmitter::new("social_network");
+    let res_pgq = pgq.visit_query(&arena, root).unwrap();
+    assert_eq!(res_pgq.parameters.get("p0"), Some(&LiteralValue::Int64(21)));
+    assert!(res_pgq.statement.contains("WHERE p.age > $p0"));
+}
+
+#[test]
+fn test_optimizer_constant_folding_null_safety_multiplication_by_zero() {
+    use voyager_core::ast::BinaryOp;
+
+    let mut builder = QueryBuilder::new();
+    builder.match_node(Some("p"), vec!["Person"]);
+
+    // p.val * 0 == 0 must NOT be folded to 0 == 0, because if p.val is NULL,
+    // NULL * 0 is NULL (falsy in WHERE). Folding to 0 == 0 would erroneously match NULL nodes.
+    let p_val = builder.prop("p", "val");
+    let c0_a = builder.literal(0i64);
+    let mul_expr = builder.binary_expr(p_val, BinaryOp::Mul, c0_a);
+    let c0_b = builder.literal(0i64);
+    let eq_expr = builder.binary_expr(mul_expr, BinaryOp::Eq, c0_b);
+    builder.where_expr(eq_expr);
+    builder.field("p", "name", Some("name"));
+
+    let (mut arena, root) = builder.build();
+    let optimizer = AstOptimizer::new(OptimizationLevel::Standard);
+    optimizer.optimize(&mut arena, root).unwrap();
+
+    let mut cypher = CypherEmitter::new();
+    let res = cypher.visit_query(&arena, root).unwrap();
+
+    // WHERE clause MUST be preserved to evaluate runtime NULL semantics
+    assert!(
+        res.statement.contains("WHERE"),
+        "WHERE clause must NOT be eliminated for p.val * 0: {}",
+        res.statement
+    );
+    assert!(
+        res.statement.contains("p.val * $p0") || res.statement.contains("(p.val * $p0)"),
+        "Multiplication by zero with dynamic operand must remain intact: {}",
+        res.statement
+    );
+}
