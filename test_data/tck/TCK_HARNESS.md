@@ -19,7 +19,7 @@ This document describes how Voyager OGM validates query compilation across **ope
   - **Neo4j 5.26** (Bolt protocol)
   - **Memgraph** (Bolt protocol)
   - **Apache AGE** (PostgreSQL extension with `agtype`)
-  - **DuckDB & DuckPGQ** (`GRAPH_TABLE` with zero-copy Polars export)
+  - **DuckDB** (Relational graph execution with zero-copy Polars export; DuckPGQ `GRAPH_TABLE` execution tracked in #58)
   - **PostgreSQL 19 Beta 3** (Recursive SQL queries)
   - **FalkorDB** (Low-latency Cypher queries)
 
