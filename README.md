@@ -33,7 +33,7 @@ I am developing Voyager in safe Rust with native Python (`PyO3`) bindings, with 
 Define models with Python type annotations and build queries once. Voyager compiles the abstract syntax tree (AST) into the exact dialect required by your database:
 
 - **openCypher**: Neo4j, Memgraph, FalkorDB, AWS Neptune.
-- **SQL:2023 PGQ (`GRAPH_TABLE`)**: DuckDB DuckPGQ, PostgreSQL.
+- **SQL:2023 PGQ (`GRAPH_TABLE`)**: DuckDB DuckPGQ, PostgreSQL (19+).
 - **ISO GQL (ISO/IEC 39075:2024)**: The official international graph query standard.
 
 ```python
@@ -151,16 +151,18 @@ Instead of limiting queries to flat equality checks (`p.age == 25`), Voyager's e
 
 ```python
 # Complex expressions in projections and filters:
+from voyager_ogm import fn
+
 query = (
     Query.match(p)
     .where(
-        p.name.to_lower().starts_with("al"),
+        fn.to_lower(p.name).startswith("al"),
         p.salary * 1.15 + p.bonus > 100_000,
-        p.tags.size() > 2,
+        fn.size(p.tags) > 2,
     )
     .return_(
         full_name=p.first_name + " " + p.last_name,
-        display_name=p.nickname.coalesce(p.first_name),
+        display_name=fn.coalesce(p.nickname, p.first_name),
     )
 )
 ```
@@ -177,8 +179,8 @@ Voyager combines **Active Record** ergonomics with **Data Mapper** architecture:
 
 ```python
 with session.transaction():
-    # 1. Fetch a person from the database
-    alice = session.get(Person, id="alice_42")
+    # 1. Fetch a person from the database (or retrieve tracked instance via session.get / session.get_node)
+    alice = session.get(Person, id="alice_42")  # or session.get_node(Person, "alice_42")
 
     # 2. Modify properties directly (Active Record style)
     alice.city = "Cambridge"
@@ -186,7 +188,7 @@ with session.transaction():
 
     # 3. Another query in the same transaction traverses a team that includes Alice:
     # Voyager reuses the existing in-memory object instead of re-fetching
-    lead = query.match(team).to(has_lead).node(person).first()
+    lead = session.execute(Query.match(team).to(has_lead).node(person)).first()
     print(lead.city)  # "Cambridge" (changes are immediately visible, zero stale reads)
 
     # 4. Flush changes: Unit of Work automatically emits a single minimal UPDATE
@@ -198,10 +200,10 @@ with session.transaction():
 Voyager includes a built-in interactive graph viewer with force-directed physics, Cartesian dot grid, schema legend chips, and an inspector drawer.
 
 ```python
-from voyager_ogm import view_graph
+from voyager_ogm import explore, show  # or view_graph
 
 # In a Marimo notebook cell or VS Code interactive notebook (.ipynb):
-view_graph(nodes, relationships)
+show(query)  # or explore(records)
 ```
 
 Explore the runnable interactive demos in the repository:
@@ -238,14 +240,14 @@ This benchmark suite measures real-world entity hydration throughput, memory con
 
 Voyager is verified against 6 database backends:
 
-| Database             | Dialect / Standard           | Connection / Transport   |
-| :------------------- | :--------------------------- | :----------------------- |
-| **Neo4j**            | openCypher / Cypher 25       | Bolt Protocol            |
-| **Memgraph**         | openCypher / ISO GQL         | Bolt Protocol            |
-| **Apache AGE**       | Cypher-in-SQL                | PostgreSQL Wire Protocol |
-| **DuckDB & DuckPGQ** | SQL:2023 PGQ (`GRAPH_TABLE`) | In-Memory / Arrow FFI    |
-| **FalkorDB**         | openCypher                   | Native Client / Bolt     |
-| **PostgreSQL**       | Relational / Recursive SQL   | PostgreSQL Wire Protocol |
+| Database             | Dialect / Standard                                      | Connection / Transport   |
+| :------------------- | :------------------------------------------------------ | :----------------------- |
+| **Neo4j**            | openCypher / Cypher 25                                  | Bolt Protocol            |
+| **Memgraph**         | openCypher                                              | Bolt Protocol            |
+| **Apache AGE**       | Cypher-in-SQL                                           | PostgreSQL Wire Protocol |
+| **DuckDB & DuckPGQ** | SQL:2023 PGQ (`GRAPH_TABLE`)                            | In-Memory / Arrow FFI    |
+| **FalkorDB**         | openCypher                                              | Redis RESP / Bolt        |
+| **PostgreSQL**       | Relational / Recursive SQL (14–18)<br>SQL:2023 PGQ (19+) | PostgreSQL Wire Protocol |
 
 ---
 

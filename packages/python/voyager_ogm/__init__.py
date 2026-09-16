@@ -88,7 +88,7 @@ from voyager_ogm.sqlalchemy import (
 )
 from voyager_ogm.streaming import QueryResult, to_arrow, to_polars
 from voyager_ogm.transaction import SavepointContext, Transaction
-from voyager_ogm.viewer import GraphViewer, explore, show, visualize_query
+from voyager_ogm.viewer import GraphViewer, explore, show, view_graph, visualize_query
 
 __version__ = version()
 
@@ -192,5 +192,6 @@ __all__ = [
     "to_polars",
     "unwind",
     "version",
+    "view_graph",
     "visualize_query",
 ]

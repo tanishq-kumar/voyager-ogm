@@ -230,7 +230,8 @@ class BinaryExpr(Expression):
 
     def to_spec(self) -> tuple[str, str, Any, Any]:
         """Converts this binary expression into an AST spec descriptor tuple."""
-        return ("bin", self.op, self.left.to_spec(), self.right.to_spec())
+        op_norm = self.op.lower().replace(" ", "_")
+        return ("bin", op_norm, self.left.to_spec(), self.right.to_spec())
 
     def __repr__(self) -> str:
         return f"({self.left!r} {self.op} {self.right!r})"

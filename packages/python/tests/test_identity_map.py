@@ -54,6 +54,11 @@ class TestIdentityMapBasics:
         assert tracked is p
         assert tracked.get("name") == "Alice"
 
+        # Ergonomic get and kwargs lookup
+        assert session.get(Person, "p1") is p
+        assert session.get(Person, id="p1") is p
+        assert session.get_node(Person, id="p1") is p
+
     def test_deduplication_and_in_memory_identity(self) -> None:
         """Registering a new instance with existing key updates and returns the tracked instance."""
         session = Session(enable_identity_map=True)
@@ -254,6 +259,21 @@ class TestAsyncSessionIdentityMap:
         assert res is not None
         assert res.total_records == 1
         assert p.dirty_fields == {}
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_async_get_and_get_node(self) -> None:
+        """Verifies that AsyncSession.get and get_node work with key and kwargs."""
+        session = AsyncSession(enable_identity_map=True)
+        p = Person(id="p_async_1", name="Bob", age=28)
+        session.register(p)
+
+        assert session.get(Person, "p_async_1") is p
+        assert session.get(Person, id="p_async_1") is p
+        assert session.get_node(Person, "p_async_1") is p
+        assert session.get_node(Person, id="p_async_1") is p
+        assert session.get(Person, "missing") is None
 
         await session.close()
 

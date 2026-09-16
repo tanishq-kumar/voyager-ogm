@@ -723,11 +723,26 @@ class _SessionBase:
             node._attach_session(self)
         return node
 
-    def get_node(self, model: type[Any], key: Any) -> Any | None:
+    def get_node(self, model: type[Any], key: Any = None, **kwargs: Any) -> Any | None:
         """Retrieves a tracked node instance from the Identity Map if present."""
         if not self._enable_identity_map:
             return None
+        if key is None and kwargs:
+            key = kwargs.get("id") if "id" in kwargs else next(iter(kwargs.values()))
         return self._identity_map.get((model, key))
+
+    def get(self, model: type[Any], key: Any = None, **kwargs: Any) -> Any | None:
+        """Retrieves a tracked node instance from the Identity Map by key or kwargs (e.g. `id="alice_42"`).
+
+        Args:
+            model: The Node model class.
+            key: Primary key or identity value.
+            **kwargs: Named identity key (e.g. `id="alice_42"`).
+
+        Returns:
+            Tracked node instance if present in the Identity Map, or None.
+        """
+        return self.get_node(model, key=key, **kwargs)
 
     def clear(self) -> None:
         """Clears all tracked entities from the Identity Map."""
