@@ -312,3 +312,15 @@ def test_predicate_and_field_boolean_truthiness_guard():
     query = Query.match(p).node(u).where(p.name == u.username)
     compiled = query.compile("cypher")
     assert "WHERE p.name = u.username" in compiled.statement
+
+
+def test_view_graph_ergonomic_alias():
+    """Verifies that view_graph is an ergonomic alias for show."""
+    import voyager_ogm
+    from voyager_ogm import show, view_graph
+    from voyager_ogm.viewer import show as viewer_show
+    from voyager_ogm.viewer import view_graph as viewer_view_graph
+
+    assert view_graph is show
+    assert viewer_view_graph is viewer_show
+    assert "view_graph" in voyager_ogm.__all__

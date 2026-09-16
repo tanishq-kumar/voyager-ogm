@@ -45,7 +45,7 @@
   - Added `Query.unwind(batch_param, alias)` fluent builder method.
 - **DML Mutation AST Nodes & Emitters (Task 2.3)**:
   - Added AST mutation variants: `CreateClause`, `MergeClause`, `SetClause`, `SetItem`, `DeleteClause`, `RemoveClause`.
-  - Multi-dialect mutation emission across openCypher (`CREATE`, `MERGE ON CREATE/MATCH SET`, `SET`, `DETACH DELETE`), ISO GQL (`INSERT`, `UPSERT`, `SET`, `DELETE`), and SQL:2023 PGQ.
+  - Multi-dialect mutation emission across openCypher (`CREATE`, `MERGE ON CREATE/MATCH SET`, `SET`, `DETACH DELETE`) and ISO GQL (`INSERT`, `UPSERT`, `SET`, `DELETE`); SQL:2023 PGQ read-only compliance.
   - In-code dirty property tracking on `Node` models (`.dirty_fields`, `.clear_dirty()`, automatic delta mutation).
 - **Two-Layer Rollback Unit-of-Work (Task 2.2)**:
   - Implemented `Transaction` and `UnitOfWork` with automatic rollback of dirty memory arena handles and entity state.

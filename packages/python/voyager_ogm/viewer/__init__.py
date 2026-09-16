@@ -67,6 +67,10 @@ def visualize_query(
     return GraphViewer.from_query(query=query, session=session, **kwargs)
 
 
+# Ergonomic Aliases
+view_graph = show
+
+
 __all__ = [
     "GraphViewer",
     "explore",
@@ -74,5 +78,6 @@ __all__ = [
     "extract_graph_pattern_from_cypher",
     "extract_path_topology_from_query",
     "show",
+    "view_graph",
     "visualize_query",
 ]
