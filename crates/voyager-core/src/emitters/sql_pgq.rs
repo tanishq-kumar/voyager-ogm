@@ -91,6 +91,11 @@ impl SqlPgqEmitter {
 
             self.buffer.push(']');
 
+            match direction {
+                Direction::Outgoing => self.buffer.push_str("->"),
+                Direction::Incoming | Direction::Undirected => self.buffer.push('-'),
+            }
+
             if min_hops.is_some() || max_hops.is_some() {
                 self.buffer.push('{');
                 if let Some(min) = min_hops {
@@ -105,10 +110,7 @@ impl SqlPgqEmitter {
                 self.buffer.push('}');
             }
 
-            match direction {
-                Direction::Outgoing => self.buffer.push_str("-> "),
-                Direction::Incoming | Direction::Undirected => self.buffer.push_str("- "),
-            }
+            self.buffer.push(' ');
 
             self.emit_node_pattern(arena, *target_node)?;
             Ok(())
@@ -233,7 +235,37 @@ impl SqlPgqEmitter {
                 }
             },
             AstNode::FunctionCall { name, arguments } => {
-                self.buffer.push_str(name);
+                let sql_func = match name.to_ascii_lowercase().as_str() {
+                    "tolower" => "LOWER",
+                    "toupper" => "UPPER",
+                    "size" | "length" => "LENGTH",
+                    "coalesce" => "COALESCE",
+                    "trim" => "TRIM",
+                    "ltrim" => "LTRIM",
+                    "rtrim" => "RTRIM",
+                    "split" => "STRING_SPLIT",
+                    "substring" => "SUBSTRING",
+                    "replace" => "REPLACE",
+                    "reverse" => "REVERSE",
+                    "left" => "LEFT",
+                    "right" => "RIGHT",
+                    "abs" => "ABS",
+                    "sqrt" => "SQRT",
+                    "ceil" => "CEIL",
+                    "floor" => "FLOOR",
+                    "round" => "ROUND",
+                    "log" => "LN",
+                    "log10" => "LOG10",
+                    "exp" => "EXP",
+                    "sin" => "SIN",
+                    "cos" => "COS",
+                    "tan" => "TAN",
+                    "asin" => "ASIN",
+                    "acos" => "ACOS",
+                    "atan" => "ATAN",
+                    _ => name.as_str(),
+                };
+                self.buffer.push_str(sql_func);
                 self.buffer.push('(');
                 for (i, &arg) in arguments.iter().enumerate() {
                     if i > 0 {
@@ -296,6 +328,17 @@ impl SqlPgqEmitter {
         }
     }
 
+    fn render_expression_to_string(
+        &mut self,
+        arena: &QueryAstArena,
+        handle: NodeHandle,
+    ) -> Result<String> {
+        let saved_buffer = std::mem::take(&mut self.buffer);
+        let res = self.emit_expression(arena, handle, false);
+        let expr_str = std::mem::replace(&mut self.buffer, saved_buffer);
+        res.map(|_| expr_str)
+    }
+
     fn emit_where(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
         let node = arena.get(handle)?;
         if let AstNode::WhereClause { root_predicate } = node {
@@ -307,6 +350,111 @@ impl SqlPgqEmitter {
                 "Expected WhereClause, got {node:?}"
             )))
         }
+    }
+
+    fn expressions_match(&self, arena: &QueryAstArena, a: NodeHandle, b: NodeHandle) -> bool {
+        if a == b {
+            return true;
+        }
+        match (arena.get(a), arena.get(b)) {
+            (
+                Ok(AstNode::PropertyAccess {
+                    target: t1,
+                    property: p1,
+                }),
+                Ok(AstNode::PropertyAccess {
+                    target: t2,
+                    property: p2,
+                }),
+            ) => p1 == p2 && self.expressions_match(arena, *t1, *t2),
+            (Ok(AstNode::Identifier(id1)), Ok(AstNode::Identifier(id2))) => id1 == id2,
+            (
+                Ok(AstNode::NodePattern {
+                    variable: Some(v1), ..
+                }),
+                Ok(AstNode::Identifier(id2)),
+            ) => v1 == id2,
+            (
+                Ok(AstNode::Identifier(id1)),
+                Ok(AstNode::NodePattern {
+                    variable: Some(v2), ..
+                }),
+            ) => id1 == v2,
+            (
+                Ok(AstNode::NodePattern {
+                    variable: Some(v1), ..
+                }),
+                Ok(AstNode::NodePattern {
+                    variable: Some(v2), ..
+                }),
+            ) => v1 == v2,
+            _ => false,
+        }
+    }
+
+    fn resolve_projected_column_name(
+        &self,
+        arena: &QueryAstArena,
+        expr_handle: NodeHandle,
+        projections: &[ProjectionItem],
+    ) -> String {
+        for proj in projections {
+            if self.expressions_match(arena, proj.expression, expr_handle) {
+                if let Some(alias) = &proj.alias {
+                    return alias.clone();
+                } else if let Ok(AstNode::PropertyAccess { property, .. }) =
+                    arena.get(proj.expression)
+                {
+                    return property.clone();
+                }
+            }
+        }
+        if let Ok(AstNode::PropertyAccess { property, .. }) = arena.get(expr_handle) {
+            return property.clone();
+        }
+        if let Ok(AstNode::Identifier(id)) = arena.get(expr_handle) {
+            return id.clone();
+        }
+        String::new()
+    }
+
+    fn get_expr_leaf_name(&self, arena: &QueryAstArena, expr_handle: NodeHandle) -> String {
+        match arena.get(expr_handle) {
+            Ok(AstNode::PropertyAccess { property, .. }) => property.clone(),
+            Ok(AstNode::Identifier(id)) => id.clone(),
+            _ => String::new(),
+        }
+    }
+
+    fn emit_matches_and_where(
+        &mut self,
+        arena: &QueryAstArena,
+        matches: &[NodeHandle],
+    ) -> Result<()> {
+        for (m_idx, &match_handle) in matches.iter().enumerate() {
+            if m_idx > 0 {
+                self.buffer.push_str(", ");
+            }
+            let match_node = arena.get(match_handle)?;
+            if let AstNode::MatchClause {
+                paths,
+                where_clause,
+                ..
+            } = match_node
+            {
+                for (p_idx, &path_handle) in paths.iter().enumerate() {
+                    if p_idx > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.emit_path(arena, path_handle)?;
+                }
+
+                if let Some(wh) = where_clause {
+                    self.emit_where(arena, *wh)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn emit_columns(
@@ -374,56 +522,141 @@ impl AstVisitor for SqlPgqEmitter {
                         .to_string(),
                 });
             }
-            self.buffer.push_str("SELECT * FROM GRAPH_TABLE (");
-            self.buffer.push_str(&self.graph_name);
-            self.buffer.push_str(" MATCH ");
-
-            for (m_idx, &match_handle) in matches.iter().enumerate() {
-                if m_idx > 0 {
-                    self.buffer.push_str(", ");
-                }
-                let match_node = arena.get(match_handle)?;
-                if let AstNode::MatchClause {
-                    paths,
-                    where_clause,
-                    ..
-                } = match_node
-                {
-                    for (p_idx, &path_handle) in paths.iter().enumerate() {
-                        if p_idx > 0 {
-                            self.buffer.push_str(", ");
-                        }
-                        self.emit_path(arena, path_handle)?;
-                    }
-
-                    if let Some(wh) = where_clause {
-                        self.emit_where(arena, *wh)?;
-                    }
-                }
-            }
 
             let mut order_by_clause = None;
             let mut limit_clause = None;
             let mut skip_clause = None;
+            let mut projections_list: Vec<ProjectionItem> = Vec::new();
 
             if let Some(ret_handle) = return_clause {
                 let ret_node = arena.get(*ret_handle)?;
                 if let AstNode::ReturnClause {
-                    distinct: _,
                     projections,
                     order_by,
                     skip,
                     limit,
+                    ..
                 } = ret_node
                 {
-                    self.emit_columns(arena, projections)?;
+                    projections_list = projections.clone();
                     order_by_clause = Some(order_by);
                     limit_clause = *limit;
                     skip_clause = *skip;
                 }
             }
 
-            self.buffer.push(')');
+            let has_aggregates = projections_list.iter().any(|p| p.aggregation.is_some());
+
+            if has_aggregates {
+                let mut inner_columns: Vec<(String, String)> = Vec::new();
+                let mut outer_select_items: Vec<String> = Vec::new();
+                let mut group_by_keys: Vec<String> = Vec::new();
+
+                for (idx, proj) in projections_list.iter().enumerate() {
+                    let expr_sql = self.render_expression_to_string(arena, proj.expression)?;
+                    let fallback_name = self.get_expr_leaf_name(arena, proj.expression);
+                    if let Some(func) = proj.aggregation {
+                        let inner_col_name = if let Some((_, existing_alias)) =
+                            inner_columns.iter().find(|(e, _)| e == &expr_sql)
+                        {
+                            existing_alias.clone()
+                        } else {
+                            let base_name = if !fallback_name.is_empty() {
+                                fallback_name
+                            } else {
+                                format!("col_{idx}")
+                            };
+                            let col_alias = if inner_columns.iter().any(|(_, a)| a == &base_name) {
+                                format!("{base_name}_{idx}")
+                            } else {
+                                base_name
+                            };
+                            inner_columns.push((expr_sql, col_alias.clone()));
+                            col_alias
+                        };
+
+                        let func_call = match func {
+                            AggregationFunc::Count => format!("COUNT({inner_col_name})"),
+                            AggregationFunc::CountDistinct => {
+                                format!("COUNT(DISTINCT {inner_col_name})")
+                            }
+                            AggregationFunc::Sum => format!("SUM({inner_col_name})"),
+                            AggregationFunc::Avg => format!("AVG({inner_col_name})"),
+                            AggregationFunc::Min => format!("MIN({inner_col_name})"),
+                            AggregationFunc::Max => format!("MAX({inner_col_name})"),
+                            AggregationFunc::Collect => format!("ARRAY_AGG({inner_col_name})"),
+                        };
+
+                        if let Some(alias) = &proj.alias {
+                            outer_select_items.push(format!("{func_call} AS {alias}"));
+                        } else {
+                            outer_select_items.push(func_call);
+                        }
+                    } else {
+                        let col_alias = proj.alias.clone().unwrap_or_else(|| {
+                            if !fallback_name.is_empty() {
+                                fallback_name
+                            } else {
+                                format!("col_{idx}")
+                            }
+                        });
+
+                        if let Some((_, existing_alias)) =
+                            inner_columns.iter().find(|(e, _)| e == &expr_sql)
+                        {
+                            outer_select_items.push(existing_alias.clone());
+                            group_by_keys.push(existing_alias.clone());
+                        } else {
+                            inner_columns.push((expr_sql, col_alias.clone()));
+                            outer_select_items.push(col_alias.clone());
+                            group_by_keys.push(col_alias);
+                        }
+                    }
+                }
+
+                self.buffer.push_str("SELECT ");
+                for (i, item) in outer_select_items.iter().enumerate() {
+                    if i > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.buffer.push_str(item);
+                }
+                self.buffer.push_str(" FROM GRAPH_TABLE (");
+                self.buffer.push_str(&self.graph_name);
+                self.buffer.push_str(" MATCH ");
+
+                self.emit_matches_and_where(arena, matches)?;
+
+                self.buffer.push_str(" COLUMNS (");
+                for (i, (expr_sql, alias)) in inner_columns.iter().enumerate() {
+                    if i > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.buffer.push_str(expr_sql);
+                    self.buffer.push_str(" AS ");
+                    self.buffer.push_str(alias);
+                }
+                self.buffer.push_str("))");
+
+                if !group_by_keys.is_empty() {
+                    self.buffer.push_str(" GROUP BY ");
+                    for (i, key) in group_by_keys.iter().enumerate() {
+                        if i > 0 {
+                            self.buffer.push_str(", ");
+                        }
+                        self.buffer.push_str(key);
+                    }
+                }
+            } else {
+                self.buffer.push_str("SELECT * FROM GRAPH_TABLE (");
+                self.buffer.push_str(&self.graph_name);
+                self.buffer.push_str(" MATCH ");
+
+                self.emit_matches_and_where(arena, matches)?;
+
+                self.emit_columns(arena, &projections_list)?;
+                self.buffer.push(')');
+            }
 
             if let Some(order_by) = order_by_clause
                 && !order_by.is_empty()
@@ -433,7 +666,13 @@ impl AstVisitor for SqlPgqEmitter {
                     if i > 0 {
                         self.buffer.push_str(", ");
                     }
-                    self.emit_expression(arena, *order_expr, false)?;
+                    let resolved =
+                        self.resolve_projected_column_name(arena, *order_expr, &projections_list);
+                    if !resolved.is_empty() {
+                        self.buffer.push_str(&resolved);
+                    } else {
+                        self.emit_expression(arena, *order_expr, false)?;
+                    }
                     if *is_asc {
                         self.buffer.push_str(" ASC");
                     } else {

@@ -25,6 +25,7 @@ from voyager_ogm import (
     Query,
     Relationship,
     Session,
+    fn,
     node,
     relationship,
     reset_alias_counters,
@@ -154,9 +155,9 @@ def test_pgq_multi_hop_chain_traversal():
 @pytest.mark.parametrize(
     ("min_hops", "max_hops", "expected_quantifier"),
     [
-        (1, 2, "-[r IS KNOWS]{1,2}->"),
-        (1, 3, "-[r IS KNOWS]{1,3}->"),
-        (2, 5, "-[r IS KNOWS]{2,5}->"),
+        (1, 2, "-[r IS KNOWS]->{1,2}"),
+        (1, 3, "-[r IS KNOWS]->{1,3}"),
+        (2, 5, "-[r IS KNOWS]->{2,5}"),
     ],
     ids=["hops_1_2", "hops_1_3", "hops_2_5"],
 )
@@ -167,6 +168,20 @@ def test_pgq_quantified_path_repetition(min_hops, max_hops, expected_quantifier)
     q = Query.match(a).to(Knows, "r").hops(min_hops, max_hops).node(b).return_(a.name, b.name)
     compiled = q.compile("sql_pgq", graph_name="g")
     assert expected_quantifier in compiled.statement
+
+
+def test_pgq_scalar_function_mappings():
+    """SQL:2023 PGQ: Function mappings to standard ANSI SQL functions."""
+    p = Person(alias="p")
+    q = Query.match(p).return_(
+        lower_name=fn.to_lower(p.name),
+        upper_city=fn.to_upper(p.city),
+        split_city=fn.split(p.city, "-"),
+    )
+    compiled = q.compile("sql_pgq", graph_name="g")
+    assert "LOWER(p.name) AS lower_name" in compiled.statement
+    assert "UPPER(p.city) AS upper_city" in compiled.statement
+    assert "STRING_SPLIT(p.city, $p0) AS split_city" in compiled.statement
 
 
 def test_pgq_undirected_and_incoming_traversal():
@@ -189,7 +204,7 @@ def test_pgq_undirected_and_incoming_traversal():
 
 
 def test_pgq_aggregations_and_projections():
-    """SQL:2023 PGQ: COUNT, AVG, SUM, MIN, MAX, ARRAY_AGG in COLUMNS."""
+    """SQL:2023 PGQ: COUNT, AVG, SUM, MIN, MAX, ARRAY_AGG in grouped queries."""
     p = Person(alias="p")
     q = (
         Query.match(p)
@@ -208,13 +223,16 @@ def test_pgq_aggregations_and_projections():
     )
     compiled = q.compile("sql_pgq", graph_name="g")
 
-    assert "COUNT(p.name) AS total_count" in compiled.statement
-    assert "AVG(p.age) AS avg_age" in compiled.statement
-    assert "SUM(p.age) AS total_age" in compiled.statement
-    assert "MIN(p.age) AS min_age" in compiled.statement
-    assert "MAX(p.age) AS max_age" in compiled.statement
-    assert "ARRAY_AGG(p.name) AS all_names" in compiled.statement
-    assert "ORDER BY p.city ASC LIMIT 10 OFFSET 5" in compiled.statement
+    assert "SELECT city, COUNT(name) AS total_count" in compiled.statement
+    assert "AVG(age) AS avg_age" in compiled.statement
+    assert "SUM(age) AS total_age" in compiled.statement
+    assert "MIN(age) AS min_age" in compiled.statement
+    assert "MAX(age) AS max_age" in compiled.statement
+    assert "ARRAY_AGG(name) AS all_names" in compiled.statement
+    assert "FROM GRAPH_TABLE (g MATCH (p IS Person)" in compiled.statement
+    assert "COLUMNS (p.city AS city, p.name AS name, p.age AS age))" in compiled.statement
+    assert "GROUP BY city" in compiled.statement
+    assert "ORDER BY city ASC LIMIT 10 OFFSET 5" in compiled.statement
 
 
 # ---------------------------------------------------------------------------
@@ -223,13 +241,18 @@ def test_pgq_aggregations_and_projections():
 
 
 def test_live_duckdb_relational_graph_schema_and_polars():
-    """Verifies live in-memory DuckDB relational-graph workflow with zero-copy Polars export."""
+    """Verifies live in-memory DuckDB + DuckPGQ execution and zero-copy Polars export."""
     if duckdb is None:
         pytest.skip("duckdb is not installed in this environment")
-    con = duckdb.connect(":memory:")
-    session = Session(bridge=con, dialect="sql")
+    con = duckdb.connect(":memory:", config={"allow_unsigned_extensions": "true"})
+    try:
+        con.execute("LOAD duckpgq;")
+    except Exception as exc:
+        pytest.skip(f"duckpgq extension could not be loaded: {exc}")
 
-    # Create node tables
+    session = Session(bridge=con, dialect="sql_pgq")
+
+    # Create node and edge tables
     session.execute("""
         CREATE TABLE Person (
             id BIGINT PRIMARY KEY,
@@ -275,29 +298,54 @@ def test_live_duckdb_relational_graph_schema_and_polars():
             (3, 20, 2015, 'Director');
     """)
 
-    # Execute join aggregation query via session
-    query = """
-        SELECT
-            c.name AS company,
-            c.industry AS industry,
-            COUNT(p.id) AS employee_count,
-            AVG(p.age) AS avg_employee_age
-        FROM Company c
-        JOIN WorksAt w ON c.id = w.company_id
-        JOIN Person p ON w.person_id = p.id
-        GROUP BY c.name, c.industry
-        ORDER BY employee_count DESC;
-    """
-    records = session.execute(query)
+    # Create DuckPGQ Property Graph
+    session.execute("""
+        CREATE PROPERTY GRAPH corp_graph
+        VERTEX TABLES (
+            Person LABEL Person,
+            Company LABEL Company
+        )
+        EDGE TABLES (
+            WorksAt SOURCE KEY (person_id) REFERENCES Person (id)
+                    DESTINATION KEY (company_id) REFERENCES Company (id)
+                    LABEL WORKS_AT
+        );
+    """)
+
+    # Execute Voyager OGM Graph Query over DuckPGQ
+    p = Person(alias="p")
+    c = Company(alias="c")
+    q = (
+        Query.match(p)
+        .to(WorksAt, "r")
+        .node(c)
+        .return_(
+            company=c.name,
+            employee_count=p.name.count(),
+            avg_employee_age=p.age.avg(),
+        )
+        .order_by(c.name)
+    )
+    compiled = q.compile("sql_pgq", graph_name="corp_graph")
+    assert (
+        "FROM GRAPH_TABLE (corp_graph MATCH (p IS Person) -[r IS WORKS_AT]-> (c IS Company)"
+        in compiled.statement
+    )
+
+    records = session.execute(compiled).all()
     assert len(records) == 2
-    assert records[0]["company"] == "TechCorp"
-    assert records[0]["employee_count"] == 2
-    assert records[0]["avg_employee_age"] == 31.0
+    assert records[0]["company"] == "BioHealth"
+    assert records[0]["employee_count"] == 1
+    assert records[0]["avg_employee_age"] == 45.0
+    assert records[1]["company"] == "TechCorp"
+    assert records[1]["employee_count"] == 2
+    assert records[1]["avg_employee_age"] == 31.0
 
     # Stream into Polars DataFrame
-    df = session.execute_to_polars(query)
-    assert df.shape == (2, 4)
-    assert df["company"].to_list() == ["TechCorp", "BioHealth"]
-    assert df["employee_count"].to_list() == [2, 1]
+    df = session.execute_to_polars(compiled)
+    assert df.shape == (2, 3)
+    assert df["company"].to_list() == ["BioHealth", "TechCorp"]
+    assert df["employee_count"].to_list() == [1, 2]
+    assert df["avg_employee_age"].to_list() == [45.0, 31.0]
 
     con.close()
