@@ -117,7 +117,11 @@ class TestNeo4jLiveMatrix:
         try:
             from voyager_ogm import NativeClient
 
-            c = NativeClient(f"{uri}?connect_timeout=2", min_idle=1, max_size=2)
+            c = NativeClient(
+                f"bolt://{auth[0]}:{auth[1]}@127.0.0.1:7687?connect_timeout=2",
+                min_idle=1,
+                max_size=2,
+            )
             c.ping_sync()
             c.close()
             driver = GraphDatabase.driver(uri, auth=auth, connection_timeout=2.0)
@@ -966,6 +970,97 @@ class TestPostgres19LiveMatrix:
             assert df["target_c"][0] == "Charlie"
             assert df["age_gap"][0] == 10
             assert df["c_tier"][0] == "Senior"
+
+    def test_postgres19_live_sql_pgq_graph_table_and_polars(self, pg19_conn):
+        """Verifies live SQL:2023 PGQ CREATE PROPERTY GRAPH and GRAPH_TABLE execution on PostgreSQL 19."""
+        with pg19_conn.cursor() as cur:
+            # 1. Setup tables and property graph
+            cur.execute("DROP PROPERTY GRAPH IF EXISTS live_pgq_graph;")
+            cur.execute("DROP TABLE IF EXISTS follows CASCADE;")
+            cur.execute("DROP TABLE IF EXISTS users CASCADE;")
+
+            cur.execute("""
+                CREATE TABLE users (
+                    id INT PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    age INT NOT NULL,
+                    city TEXT NOT NULL
+                );
+                CREATE TABLE follows (
+                    from_id INT REFERENCES users(id),
+                    to_id INT REFERENCES users(id),
+                    since INT NOT NULL,
+                    PRIMARY KEY (from_id, to_id)
+                );
+                INSERT INTO users VALUES
+                    (1, 'Alice', 30, 'London'),
+                    (2, 'Bob', 25, 'Berlin'),
+                    (3, 'Charlie', 35, 'London');
+                INSERT INTO follows VALUES
+                    (1, 2, 2021),
+                    (1, 3, 2023);
+                CREATE PROPERTY GRAPH live_pgq_graph
+                    VERTEX TABLES (users LABEL MatrixUser PROPERTIES (username, age, city))
+                    EDGE TABLES (
+                        follows
+                        SOURCE KEY (from_id) REFERENCES users (id)
+                        DESTINATION KEY (to_id) REFERENCES users (id)
+                        LABEL MATRIX_FOLLOWS
+                        PROPERTIES (since)
+                    );
+            """)
+
+            # 2. Compile Voyager Query targeting SQL:PGQ
+            a = MatrixUser(alias="a")
+            b = MatrixUser(alias="b")
+            r = MatrixFollows(alias="r")
+
+            q = (
+                Query.match(a)
+                .to(r)
+                .node(b)
+                .return_(source=a.username, target=b.username)
+                .order_by(a.username)
+            )
+            compiled = q.compile("sql_pgq", graph_name="live_pgq_graph")
+            assert (
+                "FROM GRAPH_TABLE (live_pgq_graph MATCH (a IS MatrixUser) -[r IS MATRIX_FOLLOWS]-> (b IS MatrixUser)"
+                in compiled.statement
+            )
+
+            cur.execute(compiled.statement)
+            col_names = [desc[0] for desc in cur.description]
+            rows = cur.fetchall()
+            df = pl.DataFrame(rows, schema=col_names, orient="row")
+            assert df.shape == (2, 2)
+            assert df["source"].to_list() == ["Alice", "Alice"]
+            assert set(df["target"].to_list()) == {"Bob", "Charlie"}
+
+            # 3. Grouped Aggregation query
+            q_agg = (
+                Query.match(a)
+                .to(r)
+                .node(b)
+                .return_(
+                    source_user=a.username,
+                    total_follows=b.username.count(),
+                    avg_target_age=b.age.avg(),
+                )
+                .order_by(a.username)
+            )
+            compiled_agg = q_agg.compile("sql_pgq", graph_name="live_pgq_graph")
+            assert "GROUP BY source_user" in compiled_agg.statement
+
+            cur.execute(compiled_agg.statement)
+            agg_cols = [desc[0] for desc in cur.description]
+            agg_rows = cur.fetchall()
+            df_agg = pl.DataFrame(agg_rows, schema=agg_cols, orient="row")
+            assert df_agg.shape == (1, 3)
+            assert df_agg["source_user"][0] == "Alice"
+            assert df_agg["total_follows"][0] == 2
+            assert float(df_agg["avg_target_age"][0]) == 30.0
+
+            cur.execute("DROP PROPERTY GRAPH IF EXISTS live_pgq_graph;")
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use voyager_net::postgres::{PostgresConnection, PostgresTransaction};
 use voyager_net::{AsyncConnection, ParsedUri};
 
-const PG19_URI: &str = "postgresql://postgres:voyagerpass123@localhost:5456/postgres";
+const PG19_URI: &str = "postgresql://postgres:voyagerpass123@127.0.0.1:5456/postgres";
 
 async fn get_pg19_connection() -> Option<PostgresConnection> {
     let parsed = match ParsedUri::parse(PG19_URI) {
@@ -204,4 +204,137 @@ async fn test_live_postgres19_transactions() {
 
     // Clean up
     let _ = conn.execute_simple("DROP TABLE net_tx_test;").await;
+}
+
+#[tokio::test]
+async fn test_live_postgres19_sql_pgq_graph_table_and_arrow() {
+    use voyager_core::builder::QueryBuilder;
+    use voyager_core::emitters::sql_pgq::SqlPgqEmitter;
+    use voyager_core::visitor::AstVisitor;
+
+    let mut conn = match get_pg19_connection().await {
+        Some(c) => c,
+        None => return,
+    };
+
+    // 1. Setup Tables and Property Graph DDL in PostgreSQL 19
+    let _ = conn
+        .execute_simple("DROP PROPERTY GRAPH IF EXISTS net_pgq_graph;")
+        .await;
+    let _ = conn
+        .execute_simple("DROP TABLE IF EXISTS net_pgq_knows;")
+        .await;
+    let _ = conn
+        .execute_simple("DROP TABLE IF EXISTS net_pgq_person;")
+        .await;
+
+    conn.execute_simple(
+        "CREATE TABLE net_pgq_person (id INT PRIMARY KEY, name TEXT, age INT, city TEXT);",
+    )
+    .await
+    .unwrap();
+    conn.execute_simple(
+        "CREATE TABLE net_pgq_knows (src INT REFERENCES net_pgq_person(id), dst INT REFERENCES net_pgq_person(id), since INT, PRIMARY KEY (src, dst));",
+    )
+    .await
+    .unwrap();
+
+    conn.execute_simple(
+        "INSERT INTO net_pgq_person VALUES (1, 'Alice', 34, 'London'), (2, 'Bob', 28, 'Berlin'), (3, 'Charlie', 42, 'London');",
+    )
+    .await
+    .unwrap();
+    conn.execute_simple("INSERT INTO net_pgq_knows VALUES (1, 2, 2020), (2, 3, 2021);")
+        .await
+        .unwrap();
+
+    conn.execute_simple(
+        "CREATE PROPERTY GRAPH net_pgq_graph
+            VERTEX TABLES (net_pgq_person LABEL Person PROPERTIES (name, age, city))
+            EDGE TABLES (
+                net_pgq_knows
+                SOURCE KEY (src) REFERENCES net_pgq_person (id)
+                DESTINATION KEY (dst) REFERENCES net_pgq_person (id)
+                LABEL KNOWS
+                PROPERTIES (since)
+            );",
+    )
+    .await
+    .unwrap();
+
+    // 2. Traversal Query built via Voyager QueryBuilder and SqlPgqEmitter
+    let mut builder = QueryBuilder::new();
+    builder
+        .match_node(Some("a"), vec!["Person"])
+        .to(vec!["KNOWS".to_string()], Some("r".to_string()))
+        .node(Some("b"), vec!["Person"])
+        .field("a", "name", Some("source".to_string()))
+        .field("b", "name", Some("target".to_string()))
+        .order_by_asc("a", "name");
+
+    let (arena, root) = builder.build();
+    let mut pgq = SqlPgqEmitter::new("net_pgq_graph");
+    let compiled = pgq.visit_query(&arena, root).unwrap();
+
+    assert!(
+        compiled
+            .statement
+            .contains("GRAPH_TABLE (net_pgq_graph MATCH")
+    );
+    assert!(compiled.statement.contains("ORDER BY source ASC"));
+
+    let res = conn.execute_simple(&compiled.statement).await.unwrap();
+    assert_eq!(res.columns, vec!["source", "target"]);
+    assert_eq!(res.row_count(), 2);
+
+    let batch = &res.batches[0];
+    let src_col = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::StringArray>()
+        .unwrap();
+    let dst_col = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<arrow_array::StringArray>()
+        .unwrap();
+    assert_eq!(src_col.value(0), "Alice");
+    assert_eq!(dst_col.value(0), "Bob");
+    assert_eq!(src_col.value(1), "Bob");
+    assert_eq!(dst_col.value(1), "Charlie");
+
+    // 3. Grouped Aggregation Query via SqlPgqEmitter
+    let mut agg_builder = QueryBuilder::new();
+    agg_builder
+        .match_node(Some("p"), vec!["Person"])
+        .field("p", "city", Some("city".to_string()))
+        .select_property_aggregate(
+            "p",
+            "name",
+            voyager_core::ast::AggregationFunc::Count,
+            Some("total_count".to_string()),
+        )
+        .order_by_asc("p", "city");
+
+    let (agg_arena, agg_root) = agg_builder.build();
+    let mut pgq_agg = SqlPgqEmitter::new("net_pgq_graph");
+    let compiled_agg = pgq_agg.visit_query(&agg_arena, agg_root).unwrap();
+
+    assert!(compiled_agg.statement.contains("GROUP BY city"));
+    assert!(compiled_agg.statement.contains("ORDER BY city ASC"));
+
+    let agg_res = conn.execute_simple(&compiled_agg.statement).await.unwrap();
+    assert_eq!(agg_res.columns, vec!["city", "total_count"]);
+    assert_eq!(agg_res.row_count(), 2);
+
+    // Clean up
+    let _ = conn
+        .execute_simple("DROP PROPERTY GRAPH IF EXISTS net_pgq_graph;")
+        .await;
+    let _ = conn
+        .execute_simple("DROP TABLE IF EXISTS net_pgq_knows;")
+        .await;
+    let _ = conn
+        .execute_simple("DROP TABLE IF EXISTS net_pgq_person;")
+        .await;
 }
