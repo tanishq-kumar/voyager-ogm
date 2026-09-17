@@ -521,6 +521,23 @@ class DuckDbBridge:
         """
         self.con = connection
 
+    def _format_pgq_statement(
+        self, statement: str, parameters: dict[str, Any]
+    ) -> tuple[str, dict[str, Any]]:
+        """Interpolates parameters for DuckPGQ GRAPH_TABLE queries where native parameter binding is unsupported."""
+        if "GRAPH_TABLE" in statement and parameters:
+            stmt = statement
+            for k, v in parameters.items():
+                if isinstance(v, str):
+                    escaped = v.replace("'", "''")
+                    stmt = stmt.replace(f"${k}", f"'{escaped}'")
+                elif v is None:
+                    stmt = stmt.replace(f"${k}", "NULL")
+                else:
+                    stmt = stmt.replace(f"${k}", str(v))
+            return stmt, {}
+        return statement, parameters
+
     def execute(
         self, statement: str, parameters: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
@@ -533,8 +550,8 @@ class DuckDbBridge:
         Returns:
             List of record dictionaries.
         """
-        params = parameters or {}
-        rel = self.con.execute(statement, params)
+        stmt, params = self._format_pgq_statement(statement, parameters or {})
+        rel = self.con.execute(stmt, params)
         if rel.description:
             cols = [d[0] for d in rel.description]
             rows = rel.fetchall()
@@ -553,10 +570,10 @@ class DuckDbBridge:
         Returns:
             Polars DataFrame.
         """
-        params = parameters or {}
+        stmt, params = self._format_pgq_statement(statement, parameters or {})
         if hasattr(self.con, "pl"):
-            return self.con.execute(statement, params).pl()
-        records = self.execute(statement, params)
+            return self.con.execute(stmt, params).pl()
+        records = self.execute(stmt, params)
         return pl.DataFrame(records) if records else pl.DataFrame()
 
     def execute_bulk(
