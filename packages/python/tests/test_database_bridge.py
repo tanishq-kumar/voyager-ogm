@@ -14,14 +14,17 @@ import pytest
 from voyager_ogm import (
     AsyncMockBridge,
     AsyncNeo4jBoltBridge,
+    AsyncPostgresBridge,
     AsyncSession,
     DuckDbBridge,
     Field,
     MockBridge,
     Neo4jBoltBridge,
     Node,
+    PostgresBridge,
     Query,
     Session,
+    create_bridge,
     node,
     register_bridge,
     reset_alias_counters,
@@ -282,3 +285,149 @@ def test_dynamic_bridge_registration():
     res = session.execute("CUSTOM GRAPH QUERY")
     assert res == [{"custom_key": "custom_val"}]
     assert client.history == ["CUSTOM GRAPH QUERY"]
+
+
+def test_postgres_sync_bridge_simulation():
+    """Test PostgresBridge wraps a mock psycopg/PostgreSQL connection."""
+
+    class MockPgCursor:
+        def __init__(self):
+            self.executed = []
+            self.description = [("id",), ("name",), ("city",)]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def execute(self, stmt, params=None):
+            self.executed.append((stmt, params))
+
+        def fetchall(self):
+            return [(1, "Alice", "London"), (2, "Bob", "Berlin")]
+
+    class MockPgConnection:
+        __module__ = "psycopg.connection"
+        __qualname__ = "Connection"
+
+        def __init__(self):
+            self.cursor_inst = MockPgCursor()
+            self.closed = False
+
+        def cursor(self):
+            return self.cursor_inst
+
+        def close(self):
+            self.closed = True
+
+    mock_conn = MockPgConnection()
+    bridge = PostgresBridge(mock_conn)
+    session = Session(bridge=bridge, dialect="sql_pgq")
+
+    # 1. Test GRAPH_TABLE query with parameters (parameter inlining)
+    pgq_stmt = (
+        "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) WHERE p.city = $p0 COLUMNS (p.name))"
+    )
+    records = session.execute(pgq_stmt, {"p0": "London"})
+    assert len(records) == 2
+    assert records[0]["name"] == "Alice"
+    assert len(mock_conn.cursor_inst.executed) == 1
+    executed_stmt, executed_params = mock_conn.cursor_inst.executed[0]
+    assert "$p0" not in executed_stmt
+    assert "'London'" in executed_stmt
+    assert executed_params == ()
+
+    # 2. Test standard SQL query with parameters ($p0 -> %s translation)
+    sql_stmt = "SELECT * FROM person WHERE city = $p0 AND age >= $p1"
+    df = session.execute_to_polars(sql_stmt, {"p0": "London", "p1": 25})
+    assert isinstance(df, pl.DataFrame)
+    assert len(df) == 2
+    executed_stmt2, executed_params2 = mock_conn.cursor_inst.executed[1]
+    assert executed_stmt2 == "SELECT * FROM person WHERE city = %s AND age >= %s"
+    assert executed_params2 == ["London", 25]
+
+
+@pytest.mark.asyncio
+async def test_postgres_async_bridge_simulation():
+    """Test AsyncPostgresBridge wraps a mock psycopg/PostgreSQL connection asynchronously."""
+
+    class MockPgCursor:
+        def __init__(self):
+            self.description = [("val",)]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def execute(self, stmt, params=None):
+            pass
+
+        def fetchall(self):
+            return [(42,)]
+
+    class MockPgConnection:
+        __module__ = "psycopg.connection"
+        __qualname__ = "Connection"
+
+        def cursor(self):
+            return MockPgCursor()
+
+    mock_conn = MockPgConnection()
+    bridge = AsyncPostgresBridge(mock_conn)
+    session = AsyncSession(bridge=bridge, dialect="sql_pgq")
+
+    records = await session.execute("SELECT 42 AS val")
+    assert len(records) == 1
+    assert records[0]["val"] == 42
+
+    df = await session.execute_to_polars("SELECT 42 AS val")
+    assert isinstance(df, pl.DataFrame)
+    assert df["val"][0] == 42
+
+
+def test_bridge_registry_and_uri_auto_resolution():
+    """Test that create_bridge auto-detects driver types and resolves URI schemes."""
+    # 1. Null / Mock fallbacks
+    assert isinstance(create_bridge(None), MockBridge)
+    assert isinstance(create_bridge(None, is_async=True), AsyncMockBridge)
+    assert isinstance(create_bridge(MockBridge()), MockBridge)
+    assert isinstance(create_bridge(AsyncMockBridge(), is_async=True), AsyncMockBridge)
+    assert isinstance(create_bridge("mock://test"), MockBridge)
+    assert isinstance(create_bridge("mock://test", is_async=True), AsyncMockBridge)
+
+    # 2. DuckDB connection auto-detection
+    class FakeDuckDb:
+        __module__ = "duckdb.duckdb"
+        __qualname__ = "DuckDBPyConnection"
+
+        def execute(self, *args):
+            pass
+
+    duck_inst = FakeDuckDb()
+    assert isinstance(create_bridge(duck_inst), DuckDbBridge)
+
+    # 3. PostgreSQL connection auto-detection
+    class FakePsycopg:
+        __module__ = "psycopg.connection"
+        __qualname__ = "Connection"
+
+        def cursor(self):
+            pass
+
+    pg_inst = FakePsycopg()
+    assert isinstance(create_bridge(pg_inst), PostgresBridge)
+    assert isinstance(create_bridge(pg_inst, is_async=True), AsyncPostgresBridge)
+
+    # 4. Neo4j driver auto-detection
+    class FakeNeo4jDriver:
+        __module__ = "neo4j._sync.driver"
+        __qualname__ = "Driver"
+
+        def session(self):
+            pass
+
+    neo_inst = FakeNeo4jDriver()
+    assert isinstance(create_bridge(neo_inst), Neo4jBoltBridge)

@@ -56,7 +56,7 @@ services:
       - POSTGRES_PASSWORD=voyagerpass123
       - POSTGRES_DB=voyager_graph
     volumes:
-      - age_data:/var/lib/postgresql/data
+      - age_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d voyager_graph"]
       interval: 5s
@@ -68,11 +68,30 @@ services:
     image: falkordb/falkordb:latest
     container_name: voyager-falkordb
     ports:
+      - "6379:6379"
       - "7689:7687"
     volumes:
       - falkordb_data:/data
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "7687"]
+      test: ["CMD", "nc", "-z", "localhost", "6379"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # PostgreSQL 19 Beta 3 (Relational & Recursive SQL Engine)
+  postgres19:
+    image: postgres:19beta3-alpine
+    container_name: voyager-postgres19
+    ports:
+      - "5456:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=voyagerpass123
+      - POSTGRES_DB=voyager_graph
+    volumes:
+      - postgres19_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d voyager_graph"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -84,3 +103,4 @@ volumes:
   memgraph_logs:
   age_data:
   falkordb_data:
+  postgres19_data:

@@ -4,7 +4,7 @@ use std::time::Instant;
 use voyager_net::postgres::PostgresConnection;
 use voyager_net::{AsyncConnection, ParsedUri};
 
-const AGE_URI: &str = "age://postgres:voyagerpass123@localhost:5455/postgres";
+const AGE_URI: &str = "age://postgres:voyagerpass123@127.0.0.1:5455/voyager_graph";
 
 fn get_regress_sql_dir() -> Option<PathBuf> {
     // Check multiple potential relative paths

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use voyager_net::postgres::{AgeValue, PostgresConnection, PostgresTransaction, parse_agtype};
 use voyager_net::{AsyncConnection, ParsedUri};
 
-const AGE_URI: &str = "age://postgres:voyagerpass123@localhost:5455/postgres?graph=live_age_test";
+const AGE_URI: &str = "age://postgres:voyagerpass123@127.0.0.1:5455/voyager_graph";
 
 async fn get_age_connection() -> Option<PostgresConnection> {
     let parsed = match ParsedUri::parse(AGE_URI) {

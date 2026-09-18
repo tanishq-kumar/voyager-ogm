@@ -55,6 +55,7 @@ Architectural Analysis of Engine Planner Behavior:
 from __future__ import annotations
 
 import json
+import socket
 
 try:
     import duckdb
@@ -85,6 +86,16 @@ from voyager_ogm import (
 
 pytestmark = pytest.mark.live
 
+
+def _is_port_open(host: str, port: int, timeout: float = 0.3) -> bool:
+    """Fast socket probe to detect whether a container port is actively listening."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Test Graph Models
 # ---------------------------------------------------------------------------
@@ -104,6 +115,42 @@ class MatrixFollows(Relationship):
     since: int = Field()
 
 
+@node(label="FnUser")
+class FnUser(Node):
+    user_id: str = Field(primary_key=True)
+    username: str = Field()
+    city: str = Field()
+    age: int = Field()
+    salary: float = Field()
+    skills: list = Field()
+    active: bool = Field()
+    email: str = Field(default="")
+
+
+@node(label="Person")
+class Person(Node):
+    name: str = Field()
+    age: int = Field()
+    city: str = Field()
+
+
+@node(label="Company")
+class Company(Node):
+    name: str = Field()
+    industry: str = Field()
+
+
+@relationship(type_name="KNOWS")
+class Knows(Relationship):
+    since: int = Field()
+
+
+@relationship(type_name="WORKS_AT")
+class WorksAt(Relationship):
+    since: int = Field()
+    role: str = Field()
+
+
 # ---------------------------------------------------------------------------
 # 1. Live Matrix Engine: Neo4j 5.26 (Bolt port 7687)
 # ---------------------------------------------------------------------------
@@ -112,6 +159,8 @@ class MatrixFollows(Relationship):
 class TestNeo4jLiveMatrix:
     @pytest.fixture
     def neo4j_driver(self):
+        if not _is_port_open("127.0.0.1", 7687):
+            pytest.skip("Neo4j container not available on port 7687")
         uri = "bolt://127.0.0.1:7687"
         auth = ("neo4j", "voyagerpass123")
         try:
@@ -359,6 +408,128 @@ class TestNeo4jLiveMatrix:
         with neo4j_driver.session() as s:
             s.run("MATCH (n:MatrixUser) DETACH DELETE n")
 
+    def test_neo4j_live_all_standard_functions(self, neo4j_driver):
+        """Verifies comprehensive suite of Cypher standard functions on live Neo4j."""
+        session = Session(bridge=neo4j_driver, dialect="cypher")
+
+        with neo4j_driver.session() as s:
+            s.run("MATCH (n:FnUser) DETACH DELETE n")
+            s.run(
+                """
+                CREATE (p:FnUser {
+                    user_id: 'fn_1',
+                    username: '  Alice Smith  ',
+                    city: 'London',
+                    age: 36,
+                    salary: 75000.50,
+                    skills: ['Rust', 'Python', 'Databases'],
+                    active: true
+                })
+                """
+            )
+
+        u = FnUser(alias="p")
+
+        # 1. String functions
+        q_str = (
+            Query.match(u)
+            .where(fn.to_lower(u.city) == "london")
+            .return_(
+                orig_name=u.username,
+                lower_name=fn.to_lower(u.username),
+                upper_city=fn.to_upper(u.city),
+                trimmed=fn.trim(u.username),
+                ltrimmed=fn.ltrim(u.username),
+                rtrimmed=fn.rtrim(u.username),
+                split_name=fn.split(u.city, "n"),
+                sub_name=fn.substring(u.city, 0, 3),
+                left_city=fn.left(u.city, 3),
+                right_city=fn.right(u.city, 3),
+                replaced=fn.replace(u.city, "Lon", "New"),
+                reversed_city=fn.reverse(u.city),
+                str_size=fn.size(u.city),
+                skills_size=fn.size(u.skills),
+                safe_email=fn.coalesce(u.email, "none@domain.com"),
+            )
+        )
+        df_str = session.execute_to_polars(q_str)
+        assert df_str["lower_name"][0] == "  alice smith  "
+        assert df_str["upper_city"][0] == "LONDON"
+        assert df_str["trimmed"][0] == "Alice Smith"
+        assert df_str["ltrimmed"][0] == "Alice Smith  "
+        assert df_str["rtrimmed"][0] == "  Alice Smith"
+        assert df_str["sub_name"][0] == "Lon"
+        assert df_str["left_city"][0] == "Lon"
+        assert df_str["right_city"][0] == "don"
+        assert df_str["replaced"][0] == "Newdon"
+        assert df_str["reversed_city"][0] == "nodnoL"
+        assert df_str["str_size"][0] == 6
+        assert df_str["skills_size"][0] == 3
+        assert df_str["safe_email"][0] == "none@domain.com"
+
+        # 2. Mathematical functions
+        q_math = Query.match(u).return_(
+            abs_salary=fn.abs_(u.salary),
+            ceil_val=fn.ceil(u.salary),
+            floor_val=fn.floor(u.salary),
+            round_val=fn.round_(u.salary, 1),
+            sign_val=fn.sign(u.salary),
+            sqrt_val=fn.sqrt(u.age),
+            exp_val=fn.exp(fn.sign(u.salary)),
+            log_val=fn.log(u.salary),
+            log10_val=fn.log10(u.salary),
+            sin_val=fn.sin(0),
+            cos_val=fn.cos(0),
+            pi_val=fn.pi(),
+            rand_val=fn.rand(),
+        )
+        df_math = session.execute_to_polars(q_math)
+        assert df_math["abs_salary"][0] == 75000.50
+        assert df_math["ceil_val"][0] == 75001.0
+        assert df_math["floor_val"][0] == 75000.0
+        assert df_math["round_val"][0] == 75000.5
+        assert df_math["sign_val"][0] == 1.0
+        assert df_math["sqrt_val"][0] == 6.0
+        assert df_math["sin_val"][0] == 0.0
+        assert df_math["cos_val"][0] == 1.0
+        assert round(df_math["pi_val"][0], 2) == 3.14
+
+        # 3. Temporal, Type Conversion & Reflection
+        q_types = Query.match(u).return_(
+            now_dt=fn.datetime(),
+            now_date=fn.date(),
+            now_time=fn.time(),
+            int_age=fn.to_integer(u.age),
+            float_age=fn.to_float(u.age),
+            str_age=fn.to_string(u.age),
+            bool_active=fn.to_boolean(u.active),
+            keys_list=fn.keys(u),
+            labels_list=fn.labels(u),
+        )
+        df_types = session.execute_to_polars(q_types)
+        assert df_types["int_age"][0] == 36
+        assert df_types["float_age"][0] == 36.0
+        assert df_types["str_age"][0] == "36"
+        assert df_types["bool_active"][0] is True
+        assert "FnUser" in df_types["labels_list"][0]
+
+        # 4. Aggregations & Grouping
+        q_agg = Query.match(u).return_(
+            city=u.city,
+            person_count=u.username.count(),
+            avg_age=u.age.avg(),
+            min_age=u.age.min(),
+            max_age=u.age.max(),
+            sum_salary=u.salary.sum(),
+            skills_collected=fn.collect(u.skills),
+        )
+        df_agg = session.execute_to_polars(q_agg)
+        assert df_agg["person_count"][0] == 1
+        assert df_agg["avg_age"][0] == 36.0
+
+        with neo4j_driver.session() as s:
+            s.run("MATCH (n:FnUser) DETACH DELETE n")
+
 
 # ---------------------------------------------------------------------------
 # 2. Live Matrix Engine: Memgraph (Bolt port 7688)
@@ -368,6 +539,8 @@ class TestNeo4jLiveMatrix:
 class TestMemgraphLiveMatrix:
     @pytest.fixture
     def memgraph_driver(self):
+        if not _is_port_open("127.0.0.1", 7688):
+            pytest.skip("Memgraph container not available on port 7688")
         uri = "bolt://127.0.0.1:7688"
         auth = ("", "")
         try:
@@ -519,6 +692,123 @@ class TestMemgraphLiveMatrix:
         with memgraph_driver.session() as s:
             s.run("MATCH (n:MatrixUser) DETACH DELETE n")
 
+    def test_memgraph_live_all_standard_functions(self, memgraph_driver):
+        """Verifies comprehensive suite of Cypher standard functions on live Memgraph."""
+        session = Session(bridge=memgraph_driver, dialect="cypher")
+
+        with memgraph_driver.session() as s:
+            s.run("MATCH (n:FnUser) DETACH DELETE n")
+            s.run(
+                """
+                CREATE (p:FnUser {
+                    user_id: 'mg_fn_1',
+                    username: '  Alice Smith  ',
+                    city: 'London',
+                    age: 36,
+                    salary: 75000.50,
+                    skills: ['Rust', 'Python', 'Databases'],
+                    active: true
+                })
+                """
+            )
+
+        u = FnUser(alias="p")
+
+        # 1. String functions
+        q_str = (
+            Query.match(u)
+            .where(fn.to_lower(u.city) == "london")
+            .return_(
+                orig_name=u.username,
+                lower_name=fn.to_lower(u.username),
+                upper_city=fn.to_upper(u.city),
+                trimmed=fn.trim(u.username),
+                ltrimmed=fn.ltrim(u.username),
+                rtrimmed=fn.rtrim(u.username),
+                split_name=fn.split(u.city, "n"),
+                sub_name=fn.substring(u.city, 0, 3),
+                left_city=fn.left(u.city, 3),
+                right_city=fn.right(u.city, 3),
+                replaced=fn.replace(u.city, "Lon", "New"),
+                reversed_city=fn.reverse(u.city),
+                str_size=fn.size(u.city),
+                skills_size=fn.size(u.skills),
+                safe_email=fn.coalesce(u.email, "none@domain.com"),
+            )
+        )
+        df_str = session.execute_to_polars(q_str)
+        assert df_str["lower_name"][0] == "  alice smith  "
+        assert df_str["upper_city"][0] == "LONDON"
+        assert df_str["trimmed"][0] == "Alice Smith"
+        assert df_str["ltrimmed"][0] == "Alice Smith  "
+        assert df_str["rtrimmed"][0] == "  Alice Smith"
+        assert df_str["sub_name"][0] == "Lon"
+        assert df_str["left_city"][0] == "Lon"
+        assert df_str["right_city"][0] == "don"
+        assert df_str["replaced"][0] == "Newdon"
+        assert df_str["reversed_city"][0] == "nodnoL"
+        assert df_str["str_size"][0] == 6
+        assert df_str["skills_size"][0] == 3
+        assert df_str["safe_email"][0] == "none@domain.com"
+
+        # 2. Mathematical functions (Memgraph round() requires 1 argument)
+        q_math = Query.match(u).return_(
+            abs_salary=fn.abs_(u.salary),
+            ceil_val=fn.ceil(u.salary),
+            floor_val=fn.floor(u.salary),
+            round_val=fn.round_(u.salary),
+            sign_val=fn.sign(u.salary),
+            sqrt_val=fn.sqrt(u.age),
+            exp_val=fn.exp(fn.sign(u.salary)),
+            log_val=fn.log(u.salary),
+            log10_val=fn.log10(u.salary),
+            sin_val=fn.sin(0),
+            cos_val=fn.cos(0),
+            rand_val=fn.rand(),
+        )
+        df_math = session.execute_to_polars(q_math)
+        assert df_math["abs_salary"][0] == 75000.50
+        assert df_math["ceil_val"][0] == 75001.0
+        assert df_math["floor_val"][0] == 75000.0
+        assert df_math["round_val"][0] in (75000.0, 75001.0)
+        assert df_math["sign_val"][0] == 1.0
+        assert df_math["sqrt_val"][0] == 6.0
+        assert df_math["sin_val"][0] == 0.0
+        assert df_math["cos_val"][0] == 1.0
+
+        # 3. Type Conversion & Reflection
+        q_types = Query.match(u).return_(
+            int_age=fn.to_integer(u.age),
+            float_age=fn.to_float(u.age),
+            str_age=fn.to_string(u.age),
+            bool_active=fn.to_boolean(u.active),
+            keys_list=fn.keys(u),
+            labels_list=fn.labels(u),
+        )
+        df_types = session.execute_to_polars(q_types)
+        assert df_types["int_age"][0] == 36
+        assert df_types["float_age"][0] == 36.0
+        assert df_types["str_age"][0] == "36"
+        assert df_types["bool_active"][0] is True
+        assert "FnUser" in df_types["labels_list"][0]
+
+        # 4. Aggregations & Grouping
+        q_agg = Query.match(u).return_(
+            city=u.city,
+            person_count=u.username.count(),
+            avg_age=u.age.avg(),
+            min_age=u.age.min(),
+            max_age=u.age.max(),
+            sum_salary=u.salary.sum(),
+            skills_collected=fn.collect(u.skills),
+        )
+        df_agg = session.execute_to_polars(q_agg)
+        assert df_agg["person_count"][0] == 1
+        assert df_agg["avg_age"][0] == 36.0
+
+        with memgraph_driver.session() as s:
+            s.run("MATCH (n:FnUser) DETACH DELETE n")
+
 
 # ---------------------------------------------------------------------------
 # 3. Live Matrix Engine: Apache AGE (PostgreSQL port 5455)
@@ -530,9 +820,9 @@ class TestApacheAgeLiveMatrix:
     def age_conn(self):
         if psycopg is None:
             pytest.skip("psycopg is not installed in this environment")
-        conn_str = (
-            "host=127.0.0.1 port=5455 user=postgres password=voyagerpass123 dbname=voyager_graph"
-        )
+        if not _is_port_open("127.0.0.1", 5455):
+            pytest.skip("Apache AGE container not available on port 5455")
+        conn_str = "host=127.0.0.1 port=5455 user=postgres password=voyagerpass123 dbname=voyager_graph connect_timeout=2"
         try:
             conn = psycopg.connect(conn_str, autocommit=True)
         except Exception as e:
@@ -657,6 +947,67 @@ class TestApacheAgeLiveMatrix:
 
             cur.execute("SELECT ag_catalog.drop_graph('age_opt_graph', true);")
 
+    def test_apache_age_live_all_standard_functions(self, age_conn):
+        """Verifies standard Cypher scalar and math functions executed live on Apache AGE."""
+        with age_conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS age;")
+            cur.execute("LOAD 'age';")
+            cur.execute('SET search_path = ag_catalog, "$user", public;')
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM ag_catalog.ag_graph WHERE name = 'fn_age_graph') THEN
+                        PERFORM ag_catalog.create_graph('fn_age_graph');
+                    END IF;
+                END
+                $$;
+                """
+            )
+            cur.execute(
+                "SELECT * FROM ag_catalog.cypher('fn_age_graph', $$ MATCH (n) DETACH DELETE n $$) AS (res agtype);"
+            )
+            cur.execute(
+                """
+                SELECT * FROM ag_catalog.cypher('fn_age_graph', $$
+                    CREATE (p:FnUser {
+                        user_id: 'age_fn_1',
+                        username: 'Alice Smith',
+                        city: 'London',
+                        age: 36,
+                        salary: 75000.50,
+                        active: true
+                    })
+                    RETURN p
+                $$) AS (p ag_catalog.agtype);
+                """
+            )
+
+            u = FnUser(alias="p")
+            q = (
+                Query.match(u)
+                .where(fn.to_lower(u.city) == "london")
+                .return_(
+                    lower_name=fn.to_lower(u.username),
+                    upper_city=fn.to_upper(u.city),
+                    abs_sal=fn.abs_(u.salary),
+                    sqrt_age=fn.sqrt(u.age),
+                    future_age=u.age + 5,
+                )
+            )
+            compiled = q.compile("apache_age", graph_name="fn_age_graph")
+            params = (json.dumps(compiled.parameters),) if compiled.parameters else ()
+            cur.execute(compiled.statement, params)
+            rows = cur.fetchall()
+            assert len(rows) == 1
+            assert "alice smith" in str(rows[0][0])
+            assert "LONDON" in str(rows[0][1])
+            assert "75000.5" in str(rows[0][2])
+            assert "6" in str(rows[0][3])
+            assert "41" in str(rows[0][4])
+
+            cur.execute("SELECT ag_catalog.drop_graph('fn_age_graph', true);")
+
 
 # ---------------------------------------------------------------------------
 # 4. Live Matrix Engine: DuckDB (In-Memory)
@@ -698,13 +1049,16 @@ class TestDuckDbLiveMatrix:
             pytest.skip("duckdb is not installed in this environment")
         conn = duckdb.connect(config={"allow_unsigned_extensions": "true"})
         try:
-            conn.execute(
-                "SET custom_extension_repository = 'http://duckpgq.s3.eu-north-1.amazonaws.com';"
-            )
-            conn.execute("FORCE INSTALL 'duckpgq';")
             conn.execute("LOAD 'duckpgq';")
-        except Exception as e:
-            pytest.skip(f"DuckPGQ extension could not be loaded: {e}")
+        except Exception:
+            try:
+                conn.execute(
+                    "SET custom_extension_repository = 'http://duckpgq.s3.eu-north-1.amazonaws.com';"
+                )
+                conn.execute("INSTALL 'duckpgq';")
+                conn.execute("LOAD 'duckpgq';")
+            except Exception as e:
+                pytest.skip(f"DuckPGQ extension could not be loaded: {e}")
 
         # 1. Create schema and Property Graph catalog
         conn.execute(
@@ -809,6 +1163,169 @@ class TestDuckDbLiveMatrix:
         assert df["age_gap"][0] == 10
         assert df["c_tier"][0] == "Senior"
 
+    def test_duckdb_live_duckpgq_all_query_scenarios(self):
+        """Verifies 7 comprehensive query builder scenarios on DuckPGQ via Voyager Session & DuckDbBridge."""
+        if duckdb is None:
+            pytest.skip("duckdb is not installed in this environment")
+        conn = duckdb.connect(config={"allow_unsigned_extensions": "true"})
+        try:
+            conn.execute("LOAD 'duckpgq';")
+        except Exception:
+            try:
+                conn.execute(
+                    "SET custom_extension_repository = 'http://duckpgq.s3.eu-north-1.amazonaws.com';"
+                )
+                conn.execute("INSTALL 'duckpgq';")
+                conn.execute("LOAD 'duckpgq';")
+            except Exception as e:
+                pytest.skip(f"DuckPGQ extension could not be loaded: {e}")
+
+        conn.execute(
+            """
+            CREATE TABLE Person (
+                id BIGINT PRIMARY KEY,
+                name VARCHAR,
+                age INTEGER,
+                city VARCHAR
+            );
+            CREATE TABLE Company (
+                id BIGINT PRIMARY KEY,
+                name VARCHAR,
+                industry VARCHAR
+            );
+            CREATE TABLE Knows (
+                src BIGINT,
+                dst BIGINT,
+                since INTEGER
+            );
+            CREATE TABLE WorksAt (
+                person_id BIGINT,
+                company_id BIGINT,
+                since INTEGER,
+                role VARCHAR
+            );
+            INSERT INTO Person VALUES
+                (1, 'Alice', 34, 'London'),
+                (2, 'Bob', 28, 'Berlin'),
+                (3, 'Charlie', 45, 'London'),
+                (4, 'Dan', 52, 'Paris');
+            INSERT INTO Company VALUES
+                (10, 'TechCorp', 'Technology'),
+                (20, 'BioHealth', 'Healthcare');
+            INSERT INTO Knows VALUES
+                (1, 2, 2020),
+                (2, 3, 2021),
+                (3, 4, 2022);
+            INSERT INTO WorksAt VALUES
+                (1, 10, 2018, 'Staff Engineer'),
+                (2, 10, 2021, 'Product Manager'),
+                (3, 20, 2015, 'Director');
+            CREATE PROPERTY GRAPH all_scenarios_graph
+            VERTEX TABLES (
+                Person LABEL Person,
+                Company LABEL Company
+            )
+            EDGE TABLES (
+                Knows SOURCE KEY (src) REFERENCES Person (id)
+                      DESTINATION KEY (dst) REFERENCES Person (id)
+                      LABEL KNOWS,
+                WorksAt SOURCE KEY (person_id) REFERENCES Person (id)
+                        DESTINATION KEY (company_id) REFERENCES Company (id)
+                        LABEL WORKS_AT
+            );
+            """
+        )
+
+        session = Session(bridge=conn, dialect="sql_pgq")
+        p = Person(alias="p")
+        p2 = Person(alias="p2")
+        c = Company(alias="c")
+
+        # Scenario 1: Single Node + Scalar Functions (LOWER, UPPER)
+        q1 = (
+            Query.match(p)
+            .where(p.age >= 30)
+            .return_(name=fn.to_lower(p.name), city=fn.to_upper(p.city))
+            .order_by(p.name)
+        )
+        res1 = session.execute(q1.compile("sql_pgq", graph_name="all_scenarios_graph"))
+        assert len(res1) == 3
+        assert res1[0]["name"] == "alice"
+        assert res1[0]["city"] == "LONDON"
+
+        # Scenario 2: Directed Multi-Hop Chain (Person -> Knows -> Person -> WorksAt -> Company)
+        q2 = (
+            Query.match(p)
+            .to(Knows, "r1")
+            .node(p2)
+            .to(WorksAt, "r2")
+            .node(c)
+            .return_(start_person=p.name, colleague=p2.name, company=c.name)
+            .order_by(p.name)
+        )
+        res2 = session.execute(q2.compile("sql_pgq", graph_name="all_scenarios_graph"))
+        assert len(res2) == 2
+        assert res2[0]["start_person"] == "Alice"
+        assert res2[0]["colleague"] == "Bob"
+        assert res2[0]["company"] == "TechCorp"
+
+        # Scenario 3: Incoming Traversal (Company <- WorksAt - Person)
+        q3 = (
+            Query.match(c)
+            .from_(WorksAt, "r")
+            .node(p)
+            .return_(company=c.name, person=p.name)
+            .order_by(p.name)
+        )
+        res3 = session.execute(q3.compile("sql_pgq", graph_name="all_scenarios_graph"))
+        assert len(res3) == 3
+
+        # Scenario 4: Undirected Traversal (Person - Knows - Person)
+        q4 = (
+            Query.match(p).edge(Knows, "r").node(p2).return_(p1=p.name, p2=p2.name).order_by(p.name)
+        )
+        res4 = session.execute(q4.compile("sql_pgq", graph_name="all_scenarios_graph"))
+        assert len(res4) == 6
+
+        # Scenario 5: Variable-length quantifier repetition ->{1,2}
+        q5 = (
+            Query.match(p)
+            .to(Knows, "r")
+            .hops(1, 2)
+            .node(p2)
+            .return_(source=p.name, reachable=p2.name)
+            .order_by(p.name)
+        )
+        res5 = session.execute(q5.compile("sql_pgq", graph_name="all_scenarios_graph"))
+        assert len(res5) > 0
+
+        # Scenario 6: Grouped Aggregations (COUNT, AVG, MIN, MAX, SUM) + Pagination (LIMIT/OFFSET)
+        q6 = (
+            Query.match(p)
+            .to(WorksAt, "r")
+            .node(c)
+            .return_(
+                company=c.name,
+                total_employees=p.name.count(),
+                avg_age=p.age.avg(),
+                min_age=p.age.min(),
+                max_age=p.age.max(),
+                sum_age=p.age.sum(),
+            )
+            .order_by(c.name)
+            .limit(10)
+        )
+        res6 = session.execute(q6.compile("sql_pgq", graph_name="all_scenarios_graph"))
+        assert len(res6) == 2
+
+        # Scenario 7: Polars DataFrame zero-copy streaming
+        df = session.execute_to_polars(q6.compile("sql_pgq", graph_name="all_scenarios_graph"))
+        assert isinstance(df, pl.DataFrame)
+        assert df.shape == (2, 6)
+        assert "company" in df.columns
+        assert "total_employees" in df.columns
+        conn.close()
+
 
 # ---------------------------------------------------------------------------
 # 5. Live Matrix Engine: PostgreSQL 19 Beta 3 (Port 5456)
@@ -820,9 +1337,9 @@ class TestPostgres19LiveMatrix:
     def pg19_conn(self):
         if psycopg is None:
             pytest.skip("psycopg is not installed in this environment")
-        conn_str = (
-            "host=127.0.0.1 port=5456 user=postgres password=voyagerpass123 dbname=voyager_graph"
-        )
+        if not _is_port_open("127.0.0.1", 5456):
+            pytest.skip("PostgreSQL 19 Beta container not available on port 5456")
+        conn_str = "host=127.0.0.1 port=5456 user=postgres password=voyagerpass123 dbname=voyager_graph connect_timeout=2"
         try:
             conn = psycopg.connect(conn_str, autocommit=True)
         except Exception as e:
@@ -1010,7 +1527,9 @@ class TestPostgres19LiveMatrix:
                     );
             """)
 
-            # 2. Compile Voyager Query targeting SQL:PGQ
+            session = Session(bridge=pg19_conn, dialect="sql_pgq")
+
+            # 2. Compile and execute Voyager Query targeting SQL:PGQ via PostgresBridge
             a = MatrixUser(alias="a")
             b = MatrixUser(alias="b")
             r = MatrixFollows(alias="r")
@@ -1028,15 +1547,12 @@ class TestPostgres19LiveMatrix:
                 in compiled.statement
             )
 
-            cur.execute(compiled.statement)
-            col_names = [desc[0] for desc in cur.description]
-            rows = cur.fetchall()
-            df = pl.DataFrame(rows, schema=col_names, orient="row")
+            df = session.execute_to_polars(compiled)
             assert df.shape == (2, 2)
             assert df["source"].to_list() == ["Alice", "Alice"]
             assert set(df["target"].to_list()) == {"Bob", "Charlie"}
 
-            # 3. Grouped Aggregation query
+            # 3. Grouped Aggregation query via PostgresBridge
             q_agg = (
                 Query.match(a)
                 .to(r)
@@ -1051,16 +1567,58 @@ class TestPostgres19LiveMatrix:
             compiled_agg = q_agg.compile("sql_pgq", graph_name="live_pgq_graph")
             assert "GROUP BY source_user" in compiled_agg.statement
 
-            cur.execute(compiled_agg.statement)
-            agg_cols = [desc[0] for desc in cur.description]
-            agg_rows = cur.fetchall()
-            df_agg = pl.DataFrame(agg_rows, schema=agg_cols, orient="row")
+            df_agg = session.execute_to_polars(compiled_agg)
             assert df_agg.shape == (1, 3)
             assert df_agg["source_user"][0] == "Alice"
             assert df_agg["total_follows"][0] == 2
             assert float(df_agg["avg_target_age"][0]) == 30.0
 
             cur.execute("DROP PROPERTY GRAPH IF EXISTS live_pgq_graph;")
+
+    def test_postgres19_live_standard_functions_via_bridge(self, pg19_conn):
+        """Verifies standard Cypher scalar functions transpiled to SQL:PGQ executed live on PostgreSQL 19."""
+        with pg19_conn.cursor() as cur:
+            cur.execute("DROP PROPERTY GRAPH IF EXISTS live_fn_pgq_graph;")
+            cur.execute("DROP TABLE IF EXISTS fn_users CASCADE;")
+            cur.execute(
+                """
+                CREATE TABLE fn_users (
+                    user_id TEXT PRIMARY KEY,
+                    username TEXT NOT NULL,
+                    city TEXT NOT NULL,
+                    age INT NOT NULL,
+                    active BOOLEAN NOT NULL
+                );
+                INSERT INTO fn_users VALUES
+                    ('fn_1', 'Alice Smith', 'London', 36, true),
+                    ('fn_2', 'Bob Jones', 'Berlin', 28, false);
+                CREATE PROPERTY GRAPH live_fn_pgq_graph
+                    VERTEX TABLES (fn_users LABEL MatrixUser PROPERTIES (username, city, age, active));
+                """
+            )
+
+            session = Session(bridge=pg19_conn, dialect="sql_pgq")
+            u = MatrixUser(alias="p")
+
+            q = (
+                Query.match(u)
+                .where(fn.to_lower(u.city) == "london")
+                .return_(
+                    lower_name=fn.to_lower(u.username),
+                    upper_city=fn.to_upper(u.city),
+                    sqrt_age=fn.sqrt(u.age),
+                    future_age=u.age + 5,
+                )
+            )
+            compiled = q.compile("sql_pgq", graph_name="live_fn_pgq_graph")
+            df = session.execute_to_polars(compiled)
+            assert df.shape == (1, 4)
+            assert df["lower_name"][0] == "alice smith"
+            assert df["upper_city"][0] == "LONDON"
+            assert df["future_age"][0] == 41
+
+            cur.execute("DROP PROPERTY GRAPH IF EXISTS live_fn_pgq_graph;")
+            cur.execute("DROP TABLE IF EXISTS fn_users CASCADE;")
 
 
 # ---------------------------------------------------------------------------
@@ -1071,6 +1629,8 @@ class TestPostgres19LiveMatrix:
 class TestFalkorDBLiveMatrix:
     @pytest.fixture
     def falkor_client(self):
+        if not _is_port_open("127.0.0.1", 6379):
+            pytest.skip("FalkorDB container not available on port 6379")
         try:
             from falkordb import FalkorDB
 
@@ -1184,5 +1744,53 @@ class TestFalkorDBLiveMatrix:
         assert df["target_c"][0] == "Harry"
         assert df["age_gap"][0] == 13
         assert df["c_tier"][0] == "Senior"
+
+        falkor_client.query("MATCH (n) DETACH DELETE n")
+
+    def test_falkordb_live_all_standard_functions(self, falkor_client):
+        """Verifies standard scalar and math functions on live FalkorDB."""
+        falkor_client.query("MATCH (n) DETACH DELETE n")
+        falkor_client.query(
+            """
+            CREATE (p:FnUser {
+                user_id: 'fk_fn_1',
+                username: '  Alice Smith  ',
+                city: 'London',
+                age: 36,
+                salary: 75000.50,
+                skills: ['Rust', 'Python', 'Databases'],
+                active: true
+            })
+            """
+        )
+
+        u = FnUser(alias="p")
+        q = (
+            Query.match(u)
+            .where(fn.to_lower(u.city) == "london")
+            .return_(
+                orig_name=u.username,
+                lower_name=fn.to_lower(u.username),
+                upper_city=fn.to_upper(u.city),
+                trimmed=fn.trim(u.username),
+                abs_salary=fn.abs_(u.salary),
+                sqrt_age=fn.sqrt(u.age),
+                ceil_sal=fn.ceil(u.salary),
+                floor_sal=fn.floor(u.salary),
+                future_age=u.age + 5,
+            )
+        )
+        compiled = q.compile("cypher")
+        res = falkor_client.query(compiled.statement, compiled.parameters)
+        assert len(res.result_set) == 1
+        row = res.result_set[0]
+        assert row[1] == "  alice smith  "
+        assert row[2] == "LONDON"
+        assert row[3] == "Alice Smith"
+        assert row[4] == 75000.50
+        assert row[5] == 6.0
+        assert row[6] == 75001.0
+        assert row[7] == 75000.0
+        assert row[8] == 41
 
         falkor_client.query("MATCH (n) DETACH DELETE n")
