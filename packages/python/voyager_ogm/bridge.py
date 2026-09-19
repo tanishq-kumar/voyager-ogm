@@ -521,6 +521,23 @@ class DuckDbBridge:
         """
         self.con = connection
 
+    def _format_pgq_statement(
+        self, statement: str, parameters: dict[str, Any]
+    ) -> tuple[str, dict[str, Any]]:
+        """Interpolates parameters for DuckPGQ GRAPH_TABLE queries where native parameter binding is unsupported."""
+        if "GRAPH_TABLE" in statement and parameters:
+            stmt = statement
+            for k, v in parameters.items():
+                if isinstance(v, str):
+                    escaped = v.replace("'", "''")
+                    stmt = stmt.replace(f"${k}", f"'{escaped}'")
+                elif v is None:
+                    stmt = stmt.replace(f"${k}", "NULL")
+                else:
+                    stmt = stmt.replace(f"${k}", str(v))
+            return stmt, {}
+        return statement, parameters
+
     def execute(
         self, statement: str, parameters: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
@@ -533,8 +550,8 @@ class DuckDbBridge:
         Returns:
             List of record dictionaries.
         """
-        params = parameters or {}
-        rel = self.con.execute(statement, params)
+        stmt, params = self._format_pgq_statement(statement, parameters or {})
+        rel = self.con.execute(stmt, params)
         if rel.description:
             cols = [d[0] for d in rel.description]
             rows = rel.fetchall()
@@ -553,10 +570,10 @@ class DuckDbBridge:
         Returns:
             Polars DataFrame.
         """
-        params = parameters or {}
+        stmt, params = self._format_pgq_statement(statement, parameters or {})
         if hasattr(self.con, "pl"):
-            return self.con.execute(statement, params).pl()
-        records = self.execute(statement, params)
+            return self.con.execute(stmt, params).pl()
+        records = self.execute(stmt, params)
         return pl.DataFrame(records) if records else pl.DataFrame()
 
     def execute_bulk(
@@ -703,6 +720,156 @@ class AsyncDuckDbBridge:
         await asyncio.to_thread(self.sync_bridge.close)
 
 
+class PostgresBridge:
+    """Synchronous PostgreSQL driver bridge (psycopg 3 / psycopg2) with zero-copy Polars output."""
+
+    def __init__(self, connection: Any) -> None:
+        """Initializes PostgresBridge.
+
+        Args:
+            connection: PostgreSQL connection instance (e.g. psycopg.Connection).
+        """
+        self.conn = connection
+
+    def _format_pgq_statement(
+        self, statement: str, parameters: dict[str, Any]
+    ) -> tuple[str, list[Any] | tuple[Any, ...]]:
+        """Formats statement and parameters for PostgreSQL execution."""
+        if "GRAPH_TABLE" in statement and parameters:
+            # PG19 GRAPH_TABLE does not support prepared parameters inside table function AST
+            stmt = statement
+            for k, v in parameters.items():
+                if isinstance(v, str):
+                    escaped = v.replace("'", "''")
+                    stmt = stmt.replace(f"${k}", f"'{escaped}'")
+                elif v is None:
+                    stmt = stmt.replace(f"${k}", "NULL")
+                elif isinstance(v, bool):
+                    stmt = stmt.replace(f"${k}", "TRUE" if v else "FALSE")
+                else:
+                    stmt = stmt.replace(f"${k}", str(v))
+            return stmt, ()
+        elif parameters:
+            stmt = statement
+            ordered_params = []
+            for k, v in parameters.items():
+                placeholder = f"${k}"
+                if placeholder in stmt:
+                    stmt = stmt.replace(placeholder, "%s")
+                    ordered_params.append(v)
+            return stmt, ordered_params
+        return statement, ()
+
+    def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Executes query on PostgreSQL.
+
+        Args:
+            statement: Query statement.
+            parameters: Query parameters.
+
+        Returns:
+            List of record dictionaries.
+        """
+        stmt, params = self._format_pgq_statement(statement, parameters or {})
+        with self.conn.cursor() as cur:
+            cur.execute(stmt, params)
+            if cur.description:
+                cols = [d[0] for d in cur.description]
+                rows = cur.fetchall()
+                return [dict(zip(cols, row, strict=False)) for row in rows]
+            return []
+
+    def execute_to_polars(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> pl.DataFrame:
+        """Executes query and streams to Polars DataFrame using zero-copy extraction.
+
+        Args:
+            statement: Query statement.
+            parameters: Query parameters.
+
+        Returns:
+            Polars DataFrame.
+        """
+        stmt, params = self._format_pgq_statement(statement, parameters or {})
+        with self.conn.cursor() as cur:
+            cur.execute(stmt, params)
+            if cur.description:
+                cols = [d[0] for d in cur.description]
+                rows = cur.fetchall()
+                return pl.DataFrame(rows, schema=cols, orient="row")
+            return pl.DataFrame()
+
+    def execute_bulk(
+        self,
+        plan_or_statement: BulkIngestionPlan | str,
+        batches: Sequence[dict[str, Any]] | None = None,
+    ) -> BulkExecutionResult:
+        """Executes bulk ingestion plan in PostgreSQL."""
+        start_time = time.perf_counter()
+        statement = (
+            plan_or_statement if isinstance(plan_or_statement, str) else plan_or_statement.statement
+        )
+        batch_list = batches or []
+        total_records = 0
+        total_batches = len(batch_list)
+        with self.conn.cursor() as cur:
+            for b in batch_list:
+                batch_data = b.get("batch", [])
+                total_records += len(batch_data)
+                stmt, params = self._format_pgq_statement(statement, b)
+                cur.execute(stmt, params)
+        return BulkExecutionResult(
+            total_batches=total_batches,
+            total_records=total_records,
+            duration_seconds=time.perf_counter() - start_time,
+            statement=statement,
+        )
+
+    def close(self) -> None:
+        """Closes connection."""
+        if hasattr(self.conn, "close"):
+            self.conn.close()
+
+
+class AsyncPostgresBridge:
+    """Asynchronous PostgreSQL driver bridge using asyncio worker threads."""
+
+    def __init__(self, connection: Any) -> None:
+        """Initializes AsyncPostgresBridge.
+
+        Args:
+            connection: PostgreSQL connection instance.
+        """
+        self.sync_bridge = PostgresBridge(connection)
+
+    async def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Asynchronously executes query."""
+        return await asyncio.to_thread(self.sync_bridge.execute, statement, parameters)
+
+    async def execute_to_polars(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> pl.DataFrame:
+        """Asynchronously streams query results to Polars DataFrame."""
+        return await asyncio.to_thread(self.sync_bridge.execute_to_polars, statement, parameters)
+
+    async def execute_bulk(
+        self,
+        plan_or_statement: BulkIngestionPlan | str,
+        batches: Sequence[dict[str, Any]] | None = None,
+    ) -> BulkExecutionResult:
+        """Asynchronously executes bulk ingestion plan."""
+        return await asyncio.to_thread(self.sync_bridge.execute_bulk, plan_or_statement, batches)
+
+    async def close(self) -> None:
+        """Closes connection asynchronously."""
+        await asyncio.to_thread(self.sync_bridge.close)
+
+
 _BRIDGE_REGISTRY: list[tuple[Callable[[Any], bool], type, bool]] = []
 
 
@@ -747,9 +914,17 @@ def _is_duckdb_conn(obj: Any) -> bool:
     return "duckdb" in type_name and hasattr(obj, "execute")
 
 
+def _is_postgres_conn(obj: Any) -> bool:
+    type_name = f"{type(obj).__module__}.{type(obj).__qualname__}"
+    return ("psycopg" in type_name or "asyncpg" in type_name) and hasattr(obj, "cursor")
+
+
 register_bridge(_is_neo4j_sync_driver, Neo4jBoltBridge, is_async=False)
 register_bridge(_is_neo4j_async_driver, AsyncNeo4jBoltBridge, is_async=True)
 register_bridge(_is_duckdb_conn, DuckDbBridge, is_async=False)
+register_bridge(_is_duckdb_conn, AsyncDuckDbBridge, is_async=True)
+register_bridge(_is_postgres_conn, PostgresBridge, is_async=False)
+register_bridge(_is_postgres_conn, AsyncPostgresBridge, is_async=True)
 
 
 @overload
@@ -837,6 +1012,15 @@ def create_bridge(
                 conn = duckdb.connect(path)
                 bridge_inst = DuckDbBridge(conn)
                 return AsyncDuckDbBridge(conn) if is_async else bridge_inst
+            except Exception:
+                pass
+        elif scheme in ("postgresql", "postgres"):
+            try:
+                import psycopg
+
+                conn = psycopg.connect(driver_or_connection, autocommit=True)
+                bridge_inst = PostgresBridge(conn)
+                return AsyncPostgresBridge(conn) if is_async else bridge_inst
             except Exception:
                 pass
 

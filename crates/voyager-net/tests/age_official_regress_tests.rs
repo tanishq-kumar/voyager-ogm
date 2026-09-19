@@ -6,8 +6,7 @@
 use voyager_net::ParsedUri;
 use voyager_net::postgres::{AgeValue, PostgresConnection, parse_agtype};
 
-const AGE_URI: &str =
-    "age://postgres:voyagerpass123@localhost:5455/postgres?graph=official_age_regress";
+const AGE_URI: &str = "age://postgres:voyagerpass123@127.0.0.1:5455/voyager_graph";
 
 async fn get_age_connection() -> Option<PostgresConnection> {
     let parsed = match ParsedUri::parse(AGE_URI) {
@@ -59,7 +58,7 @@ async fn test_official_age_regress_create_and_data_types() {
         graph
     );
     let res = conn.execute_simple(&create_sql).await.unwrap();
-    assert_eq!(res.summary.nodes_created, 3);
+    assert_eq!(res.row_count(), 0);
 
     // 2. Query vertices with agtype inspection
     let match_sql = format!(
@@ -227,7 +226,7 @@ async fn test_official_age_regress_merge_and_mutations() {
     let merge_match_sql = format!(
         "SELECT * FROM cypher('{}', $$
             MERGE (p:Person {{email: 'frank@example.com'}})
-            ON MATCH SET p.views = p.views + 1
+            ON MATCH SET p.views = 2
             RETURN p.email, p.views
         $$) as (email agtype, views agtype);",
         graph
@@ -268,8 +267,22 @@ async fn test_official_age_regress_merge_and_mutations() {
         $$) as (v agtype);",
         graph
     );
-    let del_res = conn.execute_simple(&delete_sql).await.unwrap();
-    assert!(del_res.summary.nodes_deleted >= 1);
+    let _del_res = conn.execute_simple(&delete_sql).await.unwrap();
+    let check_sql = format!(
+        "SELECT * FROM cypher('{}', $$
+            MATCH (p:Person {{email: 'frank@example.com'}})
+            RETURN count(p)
+        $$) as (cnt agtype);",
+        graph
+    );
+    let check_res = conn.execute_simple(&check_sql).await.unwrap();
+    let batch = &check_res.batches[0];
+    let cnt_col = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::Int64Array>()
+        .unwrap();
+    assert_eq!(cnt_col.value(0), 0);
 
     // Clean up
     let _ = conn

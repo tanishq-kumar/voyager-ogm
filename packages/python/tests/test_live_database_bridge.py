@@ -41,7 +41,11 @@ def _is_neo4j_online() -> bool:
     try:
         from voyager_ogm import NativeClient
 
-        c = NativeClient(f"{NEO4J_URI}?connect_timeout=2", min_idle=1, max_size=2)
+        c = NativeClient(
+            f"bolt://{NEO4J_AUTH[0]}:{NEO4J_AUTH[1]}@127.0.0.1:7687?connect_timeout=2",
+            min_idle=1,
+            max_size=2,
+        )
         online = c.ping_sync()
         c.close()
         return online

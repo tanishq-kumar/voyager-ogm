@@ -36,7 +36,7 @@ fn test_pgq_single_node_and_where_conformance() {
         res.statement
             .contains("COLUMNS (p.name AS name, p.age AS age)")
     );
-    assert!(res.statement.contains("ORDER BY p.age ASC"));
+    assert!(res.statement.contains("ORDER BY age ASC"));
     assert_eq!(res.parameters.get("p0"), Some(&LiteralValue::Int64(30)));
 }
 
@@ -147,7 +147,7 @@ fn test_pgq_multi_hop_and_quantified_hops() {
 
     let (a_h, r_h) = b_hops.build();
     let res_h = pgq.visit_query(&a_h, r_h).unwrap();
-    assert!(res_h.statement.contains("-[r IS KNOWS]{1,3}->"));
+    assert!(res_h.statement.contains("-[r IS KNOWS]->{1,3}"));
 }
 
 #[test]
@@ -233,12 +233,20 @@ fn test_pgq_all_aggregations_and_pagination() {
     let mut pgq = SqlPgqEmitter::new("social_graph");
     let res = pgq.visit_query(&arena, root).unwrap();
 
-    assert!(res.statement.contains("COUNT(p.name) AS total_count"));
-    assert!(res.statement.contains("AVG(p.age) AS avg_age"));
-    assert!(res.statement.contains("SUM(p.age) AS total_age"));
-    assert!(res.statement.contains("MIN(p.age) AS min_age"));
-    assert!(res.statement.contains("MAX(p.age) AS max_age"));
-    assert!(res.statement.contains("ARRAY_AGG(p.name) AS all_names"));
+    assert!(
+        res.statement
+            .contains("SELECT city, COUNT(name) AS total_count")
+    );
+    assert!(res.statement.contains("AVG(age) AS avg_age"));
+    assert!(res.statement.contains("SUM(age) AS total_age"));
+    assert!(res.statement.contains("MIN(age) AS min_age"));
+    assert!(res.statement.contains("MAX(age) AS max_age"));
+    assert!(res.statement.contains("ARRAY_AGG(name) AS all_names"));
+    assert!(
+        res.statement
+            .contains("COLUMNS (p.city AS city, p.name AS name, p.age AS age)")
+    );
+    assert!(res.statement.contains("GROUP BY city"));
     assert!(res.statement.contains("LIMIT 25 OFFSET 10"));
 }
 

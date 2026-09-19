@@ -88,7 +88,7 @@ fn test_sql_pgq_emitter_graph_table() {
 
     assert_eq!(
         compiled.statement,
-        "SELECT * FROM GRAPH_TABLE (movies_graph MATCH (p IS Person) -[r IS ACTED_IN]-> (m IS Movie) WHERE p.age > $p0 COLUMNS (p.name AS actor, m.title AS movie)) ORDER BY p.name ASC LIMIT 10"
+        "SELECT * FROM GRAPH_TABLE (movies_graph MATCH (p IS Person) -[r IS ACTED_IN]-> (m IS Movie) WHERE p.age > $p0 COLUMNS (p.name AS actor, m.title AS movie)) ORDER BY actor ASC LIMIT 10"
     );
     assert_eq!(
         compiled.parameters.get("p0"),
