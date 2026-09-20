@@ -173,3 +173,127 @@ async fn test_live_neo4j_connection_pool_concurrency() {
 
     assert_eq!(pool.active_count(), 0);
 }
+
+#[tokio::test]
+async fn test_live_neo4j_fluent_builder_with_clause_and_pagination() {
+    if !is_neo4j_online().await {
+        eprintln!("[SKIP] Live Neo4j instance is not reachable on 127.0.0.1:7687");
+        return;
+    }
+
+    use voyager_core::builder::QueryBuilder;
+    use voyager_core::emitters::CypherEmitter;
+    use voyager_core::visitor::AstVisitor;
+
+    let config = ConnectionConfig::from_uri(NEO4J_URI).with_auth(NEO4J_USER, NEO4J_PASS);
+    let mut conn = BoltConnection::connect(&config)
+        .await
+        .expect("Failed to connect to live Neo4j");
+
+    // Clean up
+    let _ = conn
+        .execute("MATCH (n:FluentNeo4jTest) DETACH DELETE n", &HashMap::new())
+        .await;
+
+    // Seed test records
+    let seed_cypher = "CREATE (:FluentNeo4jTest:Person {name: 'Bob', age: 20}), (:FluentNeo4jTest:Person {name: 'David', age: 25}), (:FluentNeo4jTest:Person {name: 'Alice', age: 30}), (:FluentNeo4jTest:Person {name: 'Charlie', age: 40})";
+    conn.execute(seed_cypher, &HashMap::new())
+        .await
+        .expect("Failed to seed records in Neo4j");
+
+    // 1. Test WITH clause pipeline: MATCH -> WHERE -> WITH p -> WHERE -> RETURN
+    let mut builder = QueryBuilder::new();
+    builder
+        .r#match()
+        .node(Some("p"), vec!["FluentNeo4jTest", "Person"])
+        .where_gte("p", "age", 20)
+        .r#with()
+        .field("p", "", None::<&str>)
+        .where_gt("p", "age", 25)
+        .r#return()
+        .field("p", "name", None::<&str>)
+        .field("p", "age", None::<&str>)
+        .order_by_asc("p", "age");
+
+    let (arena, root) = builder.build();
+    let mut emitter = CypherEmitter::new();
+    let compiled = emitter
+        .visit_query(&arena, root)
+        .expect("Cypher emission failed");
+
+    let mut query_params = HashMap::new();
+    for (k, v) in &compiled.parameters {
+        if let voyager_core::ast::LiteralValue::Int64(i) = v {
+            query_params.insert(k.clone(), serde_json::json!(i));
+        }
+    }
+
+    let res = conn
+        .execute(&compiled.statement, &query_params)
+        .await
+        .expect("Failed to execute WITH clause query on Neo4j");
+
+    assert_eq!(res.row_count(), 2);
+    let batch = res
+        .into_single_batch()
+        .unwrap()
+        .expect("Missing Arrow RecordBatch");
+    assert_eq!(batch.num_rows(), 2);
+
+    let name_col = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::StringArray>()
+        .unwrap();
+    let age_col = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<arrow_array::Int64Array>()
+        .unwrap();
+    assert_eq!(name_col.value(0), "Alice");
+    assert_eq!(age_col.value(0), 30);
+    assert_eq!(name_col.value(1), "Charlie");
+    assert_eq!(age_col.value(1), 40);
+
+    // 2. Test pagination: offset / skip and limit
+    let mut builder2 = QueryBuilder::new();
+    builder2
+        .r#match()
+        .node(Some("p"), vec!["FluentNeo4jTest", "Person"])
+        .r#return()
+        .field("p", "name", None::<&str>)
+        .order_by_asc("p", "age")
+        .skip(1)
+        .limit(2);
+
+    let (arena2, root2) = builder2.build();
+    let mut emitter2 = CypherEmitter::new();
+    let compiled2 = emitter2
+        .visit_query(&arena2, root2)
+        .expect("Cypher emission failed");
+
+    let res2 = conn
+        .execute(&compiled2.statement, &HashMap::new())
+        .await
+        .expect("Failed to execute pagination query on Neo4j");
+
+    assert_eq!(res2.row_count(), 2);
+    let batch2 = res2
+        .into_single_batch()
+        .unwrap()
+        .expect("Missing Arrow RecordBatch");
+    let name_col2 = batch2
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::StringArray>()
+        .unwrap();
+    assert_eq!(name_col2.value(0), "David");
+    assert_eq!(name_col2.value(1), "Alice");
+
+    // Clean up
+    let _ = conn
+        .execute("MATCH (n:FluentNeo4jTest) DETACH DELETE n", &HashMap::new())
+        .await;
+
+    conn.close().await.expect("Failed to close connection");
+}

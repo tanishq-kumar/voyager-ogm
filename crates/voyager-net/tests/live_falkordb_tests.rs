@@ -340,3 +340,96 @@ async fn test_live_valkey_uri_compatibility() {
 
     conn.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn test_live_falkordb_fluent_builder_with_clause_and_pagination() {
+    if !is_falkordb_online().await {
+        eprintln!("[SKIP] Live FalkorDB container is not reachable on 127.0.0.1:6379");
+        return;
+    }
+
+    use voyager_core::builder::QueryBuilder;
+    use voyager_core::emitters::CypherEmitter;
+    use voyager_core::visitor::AstVisitor;
+
+    let graph_name = "test_fluent_falkordb";
+    let uri = ParsedUri::parse(&format!("{}?graph={}", BASE_FALKORDB_ADDR, graph_name)).unwrap();
+    let mut conn = RedisConnection::connect(&uri)
+        .await
+        .expect("Failed to connect to FalkorDB");
+
+    let _ = conn.graph_delete(graph_name).await;
+
+    // Seed test records
+    let seed_cypher = "CREATE (:Person {name: 'Bob', age: 20}), (:Person {name: 'David', age: 25}), (:Person {name: 'Alice', age: 30}), (:Person {name: 'Charlie', age: 40})";
+    conn.graph_query(graph_name, seed_cypher, &HashMap::new())
+        .await
+        .expect("Failed to seed records");
+
+    // 1. Test WITH clause pipeline: MATCH -> WHERE -> WITH p -> WHERE -> RETURN
+    let mut builder = QueryBuilder::new();
+    builder
+        .r#match()
+        .node(Some("p"), vec!["Person"])
+        .where_gte("p", "age", 20)
+        .r#with()
+        .field("p", "", None::<&str>)
+        .where_gt("p", "age", 25)
+        .r#return()
+        .field("p", "name", None::<&str>)
+        .field("p", "age", None::<&str>)
+        .order_by_asc("p", "age");
+
+    let (arena, root) = builder.build();
+    let mut emitter = CypherEmitter::new();
+    let compiled = emitter
+        .visit_query(&arena, root)
+        .expect("Cypher emission failed");
+
+    let mut query_params = HashMap::new();
+    for (k, v) in &compiled.parameters {
+        if let voyager_core::ast::LiteralValue::Int64(i) = v {
+            query_params.insert(k.clone(), serde_json::json!(i));
+        }
+    }
+
+    let res = conn
+        .graph_query(graph_name, &compiled.statement, &query_params)
+        .await
+        .expect("Failed to execute WITH clause query on FalkorDB");
+
+    assert_eq!(res.rows.len(), 2);
+    assert_eq!(res.rows[0][0].as_str().unwrap(), "Alice");
+    assert_eq!(res.rows[0][1].as_i64().unwrap(), 30);
+    assert_eq!(res.rows[1][0].as_str().unwrap(), "Charlie");
+    assert_eq!(res.rows[1][1].as_i64().unwrap(), 40);
+
+    // 2. Test pagination: offset / skip and limit
+    let mut builder2 = QueryBuilder::new();
+    builder2
+        .r#match()
+        .node(Some("p"), vec!["Person"])
+        .r#return()
+        .field("p", "name", None::<&str>)
+        .order_by_asc("p", "age")
+        .skip(1)
+        .limit(2);
+
+    let (arena2, root2) = builder2.build();
+    let mut emitter2 = CypherEmitter::new();
+    let compiled2 = emitter2
+        .visit_query(&arena2, root2)
+        .expect("Cypher emission failed");
+
+    let res2 = conn
+        .graph_query(graph_name, &compiled2.statement, &HashMap::new())
+        .await
+        .expect("Failed to execute pagination query on FalkorDB");
+
+    assert_eq!(res2.rows.len(), 2);
+    assert_eq!(res2.rows[0][0].as_str().unwrap(), "David");
+    assert_eq!(res2.rows[1][0].as_str().unwrap(), "Alice");
+
+    let _ = conn.graph_delete(graph_name).await;
+    conn.close().await.unwrap();
+}

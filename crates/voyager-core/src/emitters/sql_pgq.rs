@@ -504,7 +504,7 @@ impl AstVisitor for SqlPgqEmitter {
             load_csv: _,
             unwinds,
             matches,
-            with_clauses: _,
+            with_clauses,
             mutations,
             return_clause,
         } = root_node
@@ -519,6 +519,13 @@ impl AstVisitor for SqlPgqEmitter {
                 return Err(Error::UnsupportedFeature {
                     dialect: "sql_pgq".to_string(),
                     feature: "UNWIND clauses - GRAPH_TABLE is a read-only query operator"
+                        .to_string(),
+                });
+            }
+            if !with_clauses.is_empty() {
+                return Err(Error::UnsupportedFeature {
+                    dialect: "sql_pgq".to_string(),
+                    feature: "WITH clauses - SQL:PGQ GRAPH_TABLE operator does not support Cypher-style intermediate WITH projection pipelines"
                         .to_string(),
                 });
             }

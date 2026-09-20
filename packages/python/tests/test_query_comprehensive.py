@@ -6,6 +6,7 @@ import pytest
 from voyager_ogm import (
     Field,
     Node,
+    Path,
     Query,
     Relationship,
     node,
@@ -100,3 +101,128 @@ def test_query_order_by_desc_shortcut():
     query = Query.match(p).return_(p.name).order_by_desc(p.age)
     compiled = query.compile("cypher")
     assert "ORDER BY p.age DESC" in compiled.statement
+
+
+def test_query_with_clause_and_intermediate_pipeline():
+    p = Person("p")
+
+    query = (
+        Query.match(p)
+        .where(p.age > 21)
+        .with_(p.name, p.age)
+        .where(p.age < 50)
+        .return_(p.name)
+        .limit(10)
+    )
+
+    compiled = query.compile("cypher")
+    assert (
+        compiled.statement
+        == "MATCH (p:Person) WHERE p.age > $p0 WITH p.name, p.age WHERE p.age < $p1 RETURN p.name LIMIT 10"
+    )
+    assert compiled.parameters == {"p0": 21, "p1": 50}
+
+    # Distinct WITH with aliased projection
+    q2 = Query.match(p).with_(p.name, distinct=True, user_age=p.age).return_("user_age")
+    c2 = q2.compile("cypher")
+    assert "WITH DISTINCT p.name, p.age AS user_age" in c2.statement
+
+
+def test_query_hybrid_method_chaining():
+    p = Person("p")
+    c = Company("c")
+
+    # UNWIND then CREATE
+    q1 = Query.unwind("$batch", "row").create(p)
+    c1 = q1.compile("cypher")
+    assert "UNWIND $batch AS row" in c1.statement
+    assert "CREATE (p:Person)" in c1.statement
+
+    # MATCH then CREATE
+    q2 = Query.match(p).create(c)
+    c2 = q2.compile("cypher")
+    assert "MATCH (p:Person)" in c2.statement
+    assert "CREATE (c:Company)" in c2.statement
+
+    # MATCH then MERGE
+    q3 = Query.match(p).merge(c)
+    c3 = q3.compile("cypher")
+    assert "MATCH (p:Person)" in c3.statement
+    assert "MERGE (c:Company)" in c3.statement
+
+    # MATCH then OPTIONAL MATCH
+    q4 = Query.match(p).optional_match(c)
+    c4 = q4.compile("cypher")
+    assert "MATCH (p:Person)" in c4.statement
+    assert "OPTIONAL MATCH (c:Company)" in c4.statement
+
+    # LOAD CSV then CREATE
+    q5 = Query.load_csv("file:///data.csv", alias="row").create(p)
+    c5 = q5.compile("cypher")
+    assert "LOAD CSV WITH HEADERS FROM $p0 AS row" in c5.statement
+    assert c5.parameters["p0"] == "file:///data.csv"
+    assert "CREATE (p:Person)" in c5.statement
+
+
+def test_query_input_validation_exceptions():
+    p = Person("p")
+
+    # Negative limit
+    with pytest.raises(ValueError, match="limit count must be non-negative"):
+        Query.match(p).limit(-1)
+
+    # Negative skip
+    with pytest.raises(ValueError, match="skip count must be non-negative"):
+        Query.match(p).skip(-1)
+
+    # Negative offset
+    with pytest.raises(ValueError, match="skip count must be non-negative"):
+        Query.match(p).offset(-5)
+
+    # Empty where()
+    with pytest.raises(ValueError, match="where\\(\\) requires at least one predicate condition"):
+        Query.match(p).where()
+
+    # Empty where_not()
+    with pytest.raises(
+        ValueError, match="where_not\\(\\) requires at least one predicate condition"
+    ):
+        Query.match(p).where_not()
+
+
+def test_query_offset_alias():
+    p = Person("p")
+    query = Query.match(p).return_(p.name).offset(10).limit(5)
+    compiled = query.compile("cypher")
+    assert "SKIP 10 LIMIT 5" in compiled.statement
+
+
+def test_query_subquery_static_methods():
+    p = Person("p")
+    c = Company("c")
+
+    sub = Query.match(c).where(c.name == p.name)
+    exists_expr = Query.exists(sub)
+    assert exists_expr.kind == "exists"
+
+    count_expr = Query.count(sub)
+    assert count_expr.kind == "count"
+
+    # In a where predicate
+    query = Query.match(p).where(Query.exists(sub)).return_(p.name)
+    compiled = query.compile("cypher")
+    assert "WHERE EXISTS { MATCH (c:Company)" in compiled.statement
+
+
+def test_query_match_patterns_and_path():
+    p = Person("p")
+    c = Company("c")
+
+    p1 = Path.match(p).to("WORKS_AT").node(c)
+    p2 = Path.match(p).to("MANAGES").node(c)
+
+    query = Query.match_patterns(p1, p2).where(c.name == "Acme").return_(p.name)
+    compiled = query.compile("cypher")
+    assert "MATCH (p:Person)-[:WORKS_AT]->(c:Company), (p)-[:MANAGES]->(c)" in compiled.statement
+    assert "WHERE c.name = $p0" in compiled.statement
+    assert "RETURN p.name" in compiled.statement

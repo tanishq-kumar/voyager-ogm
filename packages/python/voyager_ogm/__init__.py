@@ -70,7 +70,7 @@ from voyager_ogm.models import (
     relationship,
     reset_alias_counters,
 )
-from voyager_ogm.query import CompiledQuery, Query, load_csv, unwind
+from voyager_ogm.query import CompiledQuery, Path, Query, load_csv, unwind
 from voyager_ogm.schema import SchemaManager
 from voyager_ogm.session import (
     AsyncSession,
@@ -142,6 +142,7 @@ __all__ = [
     "Neo4jBoltBridge",
     "Node",
     "ParamExpr",
+    "Path",
     "PatternCompExpr",
     "PostgresBridge",
     "PredicateExpr",

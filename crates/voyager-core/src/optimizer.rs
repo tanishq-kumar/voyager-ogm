@@ -1236,9 +1236,49 @@ impl AstOptimizer {
             matches,
             return_clause,
             mutations,
+            with_clauses,
+            unwinds,
+            load_csv,
             ..
         } = root_node
         {
+            if let Some(load_h) = load_csv {
+                let load_node = arena.get(*load_h)?;
+                if let AstNode::LoadCsvClause { url, alias, .. } = load_node {
+                    self.collect_expr_vars(arena, *url, used_vars)?;
+                    used_vars.insert(alias.clone());
+                }
+            }
+
+            for &unwind_h in unwinds {
+                let unwind_node = arena.get(unwind_h)?;
+                if let AstNode::UnwindClause { expression, alias } = unwind_node {
+                    self.collect_expr_vars(arena, *expression, used_vars)?;
+                    used_vars.insert(alias.clone());
+                }
+            }
+
+            for &with_h in with_clauses {
+                let with_node = arena.get(with_h)?;
+                if let AstNode::WithClause {
+                    projections,
+                    order_by,
+                    where_clause,
+                    ..
+                } = with_node
+                {
+                    for proj in projections {
+                        self.collect_expr_vars(arena, proj.expression, used_vars)?;
+                    }
+                    for (order_expr, _) in order_by {
+                        self.collect_expr_vars(arena, *order_expr, used_vars)?;
+                    }
+                    if let Some(wh) = where_clause {
+                        self.collect_expr_vars(arena, *wh, used_vars)?;
+                    }
+                }
+            }
+
             if let Some(ret_h) = return_clause {
                 let ret_node = arena.get(*ret_h)?;
                 if let AstNode::ReturnClause {
