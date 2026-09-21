@@ -520,7 +520,13 @@ fn build_query_from_spec_internal(
                                         "min" => AggregationFunc::Min,
                                         "max" => AggregationFunc::Max,
                                         "collect" => AggregationFunc::Collect,
-                                        _ => AggregationFunc::Count,
+                                        other => {
+                                            return Err(pyo3::exceptions::PyValueError::new_err(
+                                                format!(
+                                                    "Unknown aggregation function '{other}'. Expected count, count_distinct, sum, avg, min, max, collect."
+                                                ),
+                                            ));
+                                        }
                                     };
                                     if prop == "*" || prop.is_empty() {
                                         let expr = builder.ident(var);
@@ -543,6 +549,32 @@ fn build_query_from_spec_internal(
                     } else if !where_item.is_none() {
                         let h = py_to_node_handle(builder, &where_item)?;
                         builder.where_expr(h);
+                    }
+                }
+                if let Some(order_item) = with_dict.get_item("order_by")? {
+                    if let Ok(order_list) = order_item.downcast::<PyList>() {
+                        for item in order_list {
+                            let tuple = item.downcast::<PyTuple>()?;
+                            if let Ok(var) = tuple.get_item(0)?.extract::<String>() {
+                                let prop: String = tuple.get_item(1)?.extract()?;
+                                let asc: bool = tuple.get_item(2)?.extract()?;
+                                builder.order_by_property(var, prop, asc);
+                            } else {
+                                let expr_h = py_to_node_handle(builder, &tuple.get_item(0)?)?;
+                                let asc: bool = tuple.get_item(1)?.extract()?;
+                                builder.order_by(expr_h, asc);
+                            }
+                        }
+                    }
+                }
+                if let Some(skip_item) = with_dict.get_item("skip")? {
+                    if let Ok(skip) = skip_item.extract::<u64>() {
+                        builder.skip(skip);
+                    }
+                }
+                if let Some(limit_item) = with_dict.get_item("limit")? {
+                    if let Ok(limit) = limit_item.extract::<u64>() {
+                        builder.limit(limit);
                     }
                 }
             }
@@ -576,7 +608,11 @@ fn build_query_from_spec_internal(
                                 "min" => AggregationFunc::Min,
                                 "max" => AggregationFunc::Max,
                                 "collect" => AggregationFunc::Collect,
-                                _ => AggregationFunc::Count,
+                                other => {
+                                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                                        "Unknown aggregation function '{other}'. Expected count, count_distinct, sum, avg, min, max, collect."
+                                    )));
+                                }
                             };
                             if prop == "*" || prop.is_empty() {
                                 let expr = builder.ident(var);

@@ -981,43 +981,51 @@ impl QueryBuilder {
 
     fn flush_current_path(&mut self) {
         if self.clause_mode == Some(ClauseMode::With) {
-            let where_clause = if self.current_where_predicates.is_empty() {
-                None
-            } else {
-                let preds = std::mem::take(&mut self.current_where_predicates);
-                let root_pred = if preds.len() == 1 {
-                    preds[0]
-                } else {
-                    let mut combined = preds[0];
-                    for &next_pred in &preds[1..] {
-                        combined = self.arena.alloc(AstNode::BinaryExpression {
-                            left: combined,
-                            op: BinaryOp::And,
-                            right: next_pred,
-                        });
-                    }
-                    combined
-                };
-                Some(self.arena.alloc(AstNode::WhereClause {
-                    root_predicate: root_pred,
-                }))
-            };
-
             let projections = std::mem::take(&mut self.projections);
-            let order_by = std::mem::take(&mut self.order_bys);
-            let distinct = std::mem::take(&mut self.distinct);
-            let skip = self.skip.take();
-            let limit = self.limit.take();
+            if !projections.is_empty() {
+                let where_clause = if self.current_where_predicates.is_empty() {
+                    None
+                } else {
+                    let preds = std::mem::take(&mut self.current_where_predicates);
+                    let root_pred = if preds.len() == 1 {
+                        preds[0]
+                    } else {
+                        let mut combined = preds[0];
+                        for &next_pred in &preds[1..] {
+                            combined = self.arena.alloc(AstNode::BinaryExpression {
+                                left: combined,
+                                op: BinaryOp::And,
+                                right: next_pred,
+                            });
+                        }
+                        combined
+                    };
+                    Some(self.arena.alloc(AstNode::WhereClause {
+                        root_predicate: root_pred,
+                    }))
+                };
 
-            let with_handle = self.arena.alloc(AstNode::WithClause {
-                distinct,
-                projections,
-                order_by,
-                skip,
-                limit,
-                where_clause,
-            });
-            self.with_clauses.push(with_handle);
+                let order_by = std::mem::take(&mut self.order_bys);
+                let distinct = std::mem::take(&mut self.distinct);
+                let skip = self.skip.take();
+                let limit = self.limit.take();
+
+                let with_handle = self.arena.alloc(AstNode::WithClause {
+                    distinct,
+                    projections,
+                    order_by,
+                    skip,
+                    limit,
+                    where_clause,
+                });
+                self.with_clauses.push(with_handle);
+            } else {
+                self.current_where_predicates.clear();
+                self.order_bys.clear();
+                self.distinct = false;
+                self.skip = None;
+                self.limit = None;
+            }
             self.clause_mode = None;
             return;
         }

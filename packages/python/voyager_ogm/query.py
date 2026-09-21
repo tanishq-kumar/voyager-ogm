@@ -75,8 +75,10 @@ class Query:
         self._native = NativeQueryBuilder()
         self._optimize: bool | None = None
         self._optimization_level: str | None = None
+        self._clause_mode: str = "match"
         self._current_paths: list[list[Any]] = [[]]
         self._where_specs: list[Any] = []
+        self._with_clauses: list[dict[str, Any]] = []
         self._projections: list[Any] = []
         self._order_bys: list[Any] = []
         self._skip: int | None = None
@@ -121,6 +123,7 @@ class Query:
             q = self()
         else:
             q = self
+        q._clause_mode = "match"
         q._native.match()
         if node_or_type is not None or labels is not None or variable is not None:
             q.node(node_or_type, labels=labels, variable=variable)
@@ -150,14 +153,19 @@ class Query:
         else:
             q = self
 
+        q._clause_mode = "match"
         q._native.match()
         seen_vars: set[str] = set()
+        first_pattern = True
 
-        for i, pat in enumerate(patterns):
-            if i > 0:
-                q.pattern()
+        for pat in patterns:
             if isinstance(pat, Query):
                 for path in pat._current_paths:
+                    if not path:
+                        continue
+                    if not first_pattern:
+                        q.pattern()
+                    first_pattern = False
                     for item in path:
                         if item[0] == "node":
                             _, var_name, lbls = item
@@ -183,6 +191,9 @@ class Query:
                     q._where_specs.append(w)
                     q._native.where_expr(w)
             elif isinstance(pat, Node):
+                if not first_pattern:
+                    q.pattern()
+                first_pattern = False
                 if pat.alias and pat.alias in seen_vars:
                     q.node(pat.alias)
                 else:
@@ -212,6 +223,7 @@ class Query:
             q = self()
         else:
             q = self
+        q._clause_mode = "match"
         q._native.create()
         if node_or_type is not None or labels is not None or variable is not None:
             q.node(node_or_type, labels=labels, variable=variable)
@@ -238,6 +250,7 @@ class Query:
             q = self()
         else:
             q = self
+        q._clause_mode = "match"
         q._native.merge()
         if node_or_type is not None or labels is not None or variable is not None:
             q.node(node_or_type, labels=labels, variable=variable)
@@ -264,6 +277,8 @@ class Query:
             q = self()
         else:
             q = self
+        q._clause_mode = "match"
+        q._is_optional = True
         q._native.optional_match()
         if node_or_type is not None or labels is not None or variable is not None:
             q.node(node_or_type, labels=labels, variable=variable)
@@ -345,6 +360,7 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
+        self._load_csv = (url, with_headers, alias)
         self._native.load_csv(url, with_headers, alias)
         return self
 
@@ -370,7 +386,9 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
-        self._native.unwind(batch_param.lstrip("$"), alias)
+        param_clean = batch_param.lstrip("$")
+        self._unwinds.append((param_clean, alias))
+        self._native.unwind(param_clean, alias)
         return self
 
     def add_create(self, node_or_type: Node | type[Node] | None = None) -> Query:
@@ -382,7 +400,9 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
+        self._clause_mode = "match"
         self._native.create()
+        self._current_paths.append([])
         if node_or_type is not None:
             self.node(node_or_type)
         return self
@@ -396,7 +416,9 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
+        self._clause_mode = "match"
         self._native.merge()
+        self._current_paths.append([])
         if node_or_type is not None:
             self.node(node_or_type)
         return self
@@ -417,7 +439,9 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
+        self._clause_mode = "match"
         self._native.match()
+        self._current_paths.append([])
         if node_or_type is not None or labels is not None or variable is not None:
             self.node(node_or_type, labels=labels, variable=variable)
         return self
@@ -438,7 +462,10 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
+        self._clause_mode = "match"
+        self._is_optional = True
         self._native.optional_match()
+        self._current_paths.append([])
         if node_or_type is not None or labels is not None or variable is not None:
             self.node(node_or_type, labels=labels, variable=variable)
         return self
@@ -628,16 +655,16 @@ class Query:
         for pred in predicates:
             if isinstance(pred, Expression) or hasattr(pred, "to_spec"):
                 spec = pred.to_spec()
-                self._where_specs.append(spec)
-                self._native.where_expr(spec)
             elif isinstance(pred, PredicateExpr):
                 spec = pred.to_spec()
-                self._where_specs.append(spec)
-                self._native.where_expr(spec)
             else:
                 spec = to_expression(pred).to_spec()
+
+            if self._clause_mode == "with" and self._with_clauses:
+                self._with_clauses[-1]["where"].append(spec)
+            else:
                 self._where_specs.append(spec)
-                self._native.where_expr(spec)
+            self._native.where_expr(spec)
         return self
 
     def to_spec(self) -> Any:
@@ -645,9 +672,21 @@ class Query:
         paths = [
             [tuple(x) if isinstance(x, list) else x for x in p] for p in self._current_paths if p
         ]
-        if not self._where_specs and not self._projections and len(paths) == 1:
+        if (
+            not self._where_specs
+            and not self._projections
+            and not self._with_clauses
+            and not self._unwinds
+            and not self._load_csv
+            and not self._order_bys
+            and self._skip is None
+            and self._limit is None
+            and not self._distinct
+            and len(paths) == 1
+        ):
             return paths[0]
-        return {
+
+        spec: dict[str, Any] = {
             "matches": [
                 {
                     "optional": self._is_optional,
@@ -655,12 +694,18 @@ class Query:
                     "where": self._where_specs,
                 }
             ],
+            "with_clauses": self._with_clauses,
             "projections": self._projections,
             "order_by": self._order_bys,
             "skip": self._skip,
             "limit": self._limit,
             "distinct": self._distinct,
         }
+        if self._unwinds:
+            spec["unwinds"] = self._unwinds
+        if self._load_csv:
+            spec["load_csv"] = self._load_csv
+        return spec
 
     filter = where
 
@@ -680,7 +725,12 @@ class Query:
             raise ValueError("where_not() requires at least one predicate condition")
         for pred in predicates:
             expr = to_expression(pred)
-            self._native.where_expr((~expr).to_spec())
+            spec = (~expr).to_spec()
+            if self._clause_mode == "with" and self._with_clauses:
+                self._with_clauses[-1]["where"].append(spec)
+            else:
+                self._where_specs.append(spec)
+            self._native.where_expr(spec)
         return self
 
     def on_create_set(self, *assignments: PredicateExpr, **kwargs: Any) -> Query:
@@ -795,29 +845,49 @@ class Query:
                 self._native.remove_property(var, prop)
         return self
 
-    def _project_field(self, field: Any, alias: str | None = None) -> None:
+    def _project_field(self, field: Any, alias: str | None = None) -> tuple[Any, ...]:
         if isinstance(field, AliasedExpr):
-            self._native.select_expr(field.expr.to_spec(), field.alias if alias is None else alias)
+            final_alias = field.alias if alias is None else alias
+            expr_spec = field.expr.to_spec()
+            self._native.select_expr(expr_spec, final_alias)
+            return ("expr", expr_spec, final_alias)
         elif isinstance(field, AggregationExpr):
             self._native.aggregate(field.target_alias, field.field_name, field.func, alias)
+            return ("agg", field.target_alias, field.field_name, field.func, alias)
         elif isinstance(field, BoundField):
             self._native.field(field.target_alias, field.field_name, alias)
+            return ("field", field.target_alias, field.field_name, alias)
         elif isinstance(field, Expression):
-            self._native.select_expr(field.to_spec(), alias)
+            expr_spec = field.to_spec()
+            self._native.select_expr(expr_spec, alias)
+            return ("expr", expr_spec, alias)
         elif isinstance(field, Field) or (hasattr(field, "name") and not hasattr(field, "alias")):
-            self._native.field("", field.name or "", alias)
+            var_name = getattr(field, "target_alias", "") or ""
+            name = getattr(field, "name", "") or ""
+            self._native.field(var_name, name, alias)
+            return ("field", var_name, name, alias)
         elif isinstance(field, str):
             parts = field.split()
             if len(parts) == 3 and parts[1].upper() == "AS":
-                var_prop = parts[0].split(".")
-                self._native.field(var_prop[0], var_prop[1], alias or parts[2])
+                final_alias = alias or parts[2]
+                if "." in parts[0]:
+                    var_prop = parts[0].split(".", 1)
+                    self._native.field(var_prop[0], var_prop[1], final_alias)
+                    return ("field", var_prop[0], var_prop[1], final_alias)
+                else:
+                    self._native.field(parts[0], "", final_alias)
+                    return ("field", parts[0], "", final_alias)
             elif "." in parts[0]:
-                var_prop = parts[0].split(".")
+                var_prop = parts[0].split(".", 1)
                 self._native.field(var_prop[0], var_prop[1], alias)
+                return ("field", var_prop[0], var_prop[1], alias)
             else:
                 self._native.field(parts[0], "", alias)
+                return ("field", parts[0], "", alias)
         else:
-            self._native.select_expr(to_expression(field).to_spec(), alias)
+            expr_spec = to_expression(field).to_spec()
+            self._native.select_expr(expr_spec, alias)
+            return ("expr", expr_spec, alias)
 
     def with_(
         self,
@@ -835,6 +905,9 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
 
+        Raises:
+            ValueError: If called with no projection fields.
+
         Example:
             >>> query = (
             ...     Query.match(p)
@@ -843,16 +916,31 @@ class Query:
             ...     .return_(p.name)
             ... )
         """
+        if not fields and not aliased_fields:
+            raise ValueError("with_() requires at least one projection field")
+
+        self._clause_mode = "with"
         self._native.with_()
+        with_entry: dict[str, Any] = {
+            "distinct": distinct,
+            "projections": [],
+            "where": [],
+            "order_by": [],
+            "skip": None,
+            "limit": None,
+        }
         if distinct:
             self._native.distinct()
 
         for field in fields:
-            self._project_field(field, None)
+            proj = self._project_field(field, None)
+            with_entry["projections"].append(proj)
 
         for alias, field in aliased_fields.items():
-            self._project_field(field, alias)
+            proj = self._project_field(field, alias)
+            with_entry["projections"].append(proj)
 
+        self._with_clauses.append(with_entry)
         return self
 
     def return_(
@@ -875,16 +963,33 @@ class Query:
             >>> query.return_(p.name, p.age, distinct=True, user_city=p.city)
             >>> query.return_(fn.to_lower(p.name).as_("lower_name"), p.age + 5)
         """
+        self._clause_mode = "return"
         self._native.return_()
         if distinct:
+            self._distinct = True
             self._native.distinct()
 
         for field in fields:
-            self._project_field(field, None)
+            proj = self._project_field(field, None)
+            self._projections.append(proj)
 
         for alias, field in aliased_fields.items():
-            self._project_field(field, alias)
+            proj = self._project_field(field, alias)
+            self._projections.append(proj)
 
+        return self
+
+    def distinct(self) -> Query:
+        """Enables DISTINCT on the active RETURN or WITH clause.
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        if self._clause_mode == "with" and self._with_clauses:
+            self._with_clauses[-1]["distinct"] = True
+        else:
+            self._distinct = True
+        self._native.distinct()
         return self
 
     def order_by(self, field: Any, ascending: bool = True) -> Query:
@@ -898,12 +1003,27 @@ class Query:
             The Query instance for fluent chaining.
         """
         if isinstance(field, BoundField):
+            order_spec: Any = (field.target_alias, field.field_name, ascending)
             self._native.order_by(field.target_alias, field.field_name, ascending)
         elif isinstance(field, Expression) or hasattr(field, "to_spec"):
+            order_spec = (field.to_spec(), ascending)
             self._native.order_by_expr(field.to_spec(), ascending)
         elif isinstance(field, str) and "." in field:
-            var_prop = field.split(".")
+            var_prop = field.split(".", 1)
+            order_spec = (var_prop[0], var_prop[1], ascending)
             self._native.order_by(var_prop[0], var_prop[1], ascending)
+        elif isinstance(field, str):
+            order_spec = (field, "", ascending)
+            self._native.order_by(field, "", ascending)
+        else:
+            expr_spec = to_expression(field).to_spec()
+            order_spec = (expr_spec, ascending)
+            self._native.order_by_expr(expr_spec, ascending)
+
+        if self._clause_mode == "with" and self._with_clauses:
+            self._with_clauses[-1]["order_by"].append(order_spec)
+        else:
+            self._order_bys.append(order_spec)
         return self
 
     def order_by_desc(self, field: Any) -> Query:
@@ -931,6 +1051,10 @@ class Query:
         """
         if count < 0:
             raise ValueError(f"limit count must be non-negative, got {count}")
+        if self._clause_mode == "with" and self._with_clauses:
+            self._with_clauses[-1]["limit"] = count
+        else:
+            self._limit = count
         self._native.limit(count)
         return self
 
@@ -948,6 +1072,10 @@ class Query:
         """
         if count < 0:
             raise ValueError(f"skip count must be non-negative, got {count}")
+        if self._clause_mode == "with" and self._with_clauses:
+            self._with_clauses[-1]["skip"] = count
+        else:
+            self._skip = count
         self._native.skip(count)
         return self
 
@@ -963,6 +1091,8 @@ class Query:
         Raises:
             ValueError: If count is negative.
         """
+        if count < 0:
+            raise ValueError(f"offset count must be non-negative, got {count}")
         return self.skip(count)
 
     def optimize(self, level: str = "standard") -> Query:
@@ -1074,8 +1204,8 @@ class Path(Query):
     via ``Query.match_patterns(p1, p2)``.
 
     Example:
-        >>> p1 = Path.match(u).to(f, "KNOWS")
-        >>> p2 = Path.match(u).to(c, "WORKS_AT")
+        >>> p1 = Path.match(u).to("KNOWS").node(f)
+        >>> p2 = Path.match(u).to("WORKS_AT").node(c)
         >>> query = Query.match_patterns(p1, p2).where(c.country == "UK").return_(u.name, f.name)
     """
 

@@ -176,7 +176,7 @@ def test_query_input_validation_exceptions():
         Query.match(p).skip(-1)
 
     # Negative offset
-    with pytest.raises(ValueError, match="skip count must be non-negative"):
+    with pytest.raises(ValueError, match="offset count must be non-negative"):
         Query.match(p).offset(-5)
 
     # Empty where()
@@ -188,6 +188,10 @@ def test_query_input_validation_exceptions():
         ValueError, match="where_not\\(\\) requires at least one predicate condition"
     ):
         Query.match(p).where_not()
+
+    # Empty with_()
+    with pytest.raises(ValueError, match="with_\\(\\) requires at least one projection field"):
+        Query.match(p).with_()
 
 
 def test_query_offset_alias():
@@ -226,3 +230,88 @@ def test_query_match_patterns_and_path():
     assert "MATCH (p:Person)-[:WORKS_AT]->(c:Company), (p)-[:MANAGES]->(c)" in compiled.statement
     assert "WHERE c.name = $p0" in compiled.statement
     assert "RETURN p.name" in compiled.statement
+
+
+def test_query_subquery_with_and_projections_roundtrip():
+    p = Person("p")
+    c = Company("c")
+
+    sub = (
+        Query.match(c)
+        .with_(c.name)
+        .where(c.name == "Acme")
+        .return_(c.name)
+        .order_by(c.name)
+        .limit(1)
+    )
+    spec = sub.to_spec()
+    assert "with_clauses" in spec
+    assert len(spec["with_clauses"]) == 1
+    assert spec["with_clauses"][0]["projections"] == [("field", "c", "name", None)]
+    assert len(spec["with_clauses"][0]["where"]) == 1
+    assert spec["projections"] == [("field", "c", "name", None)]
+    assert spec["limit"] == 1
+
+    query = Query.match(p).where(Query.exists(sub)).return_(p.name)
+    compiled = query.compile("cypher")
+    assert "EXISTS {" in compiled.statement
+    assert "WITH c.name" in compiled.statement
+    assert "WHERE c.name = $p0" in compiled.statement
+    assert "RETURN c.name" in compiled.statement
+    assert "LIMIT 1" in compiled.statement
+
+
+def test_query_match_patterns_multi_path():
+    a = Person("a")
+    b = Person("b")
+    c = Person("c")
+    d = Person("d")
+
+    p = Path.match(a).to("KNOWS").node(b).pattern().node(c).to("KNOWS").node(d)
+    query = Query.match_patterns(p).return_(a.name, d.name)
+    compiled = query.compile("cypher")
+    assert (
+        compiled.statement
+        == "MATCH (a:Person)-[:KNOWS]->(b:Person), (c:Person)-[:KNOWS]->(d:Person) RETURN a.name, d.name"
+    )
+
+
+def test_query_project_field_as_without_dot():
+    p = Person("p")
+    query = Query.match(p).return_("name AS n")
+    compiled = query.compile("cypher")
+    assert "RETURN name AS n" in compiled.statement
+
+
+def test_query_unknown_aggregation_raises():
+    from voyager_ogm._voyager_rs import compile_query_from_spec
+
+    spec = {
+        "matches": [
+            {
+                "optional": False,
+                "paths": [[("node", "p", ["Person"])]],
+                "where": [],
+            }
+        ],
+        "projections": [("agg", "p", "age", "unsupported_agg_func", None)],
+    }
+    with pytest.raises(ValueError, match="Unknown aggregation function"):
+        compile_query_from_spec(spec, "cypher")
+
+
+def test_query_with_where_before_order_by():
+    p = Person("p")
+    query = (
+        Query.match(p)
+        .with_(p.name, p.age)
+        .where(p.age > 21)
+        .order_by(p.age)
+        .limit(5)
+        .return_(p.name)
+    )
+    compiled = query.compile("cypher")
+    assert (
+        "WITH p.name, p.age WHERE p.age > $p0 ORDER BY p.age ASC LIMIT 5 RETURN p.name"
+        in compiled.statement
+    )
