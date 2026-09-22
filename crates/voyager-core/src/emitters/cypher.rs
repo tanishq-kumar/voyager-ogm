@@ -711,6 +711,9 @@ impl CypherEmitter {
                 }
                 self.emit_projection_item(arena, item)?;
             }
+            if let Some(wh) = where_clause {
+                self.emit_where(arena, *wh)?;
+            }
             if !order_by.is_empty() {
                 self.buffer.push_str(" ORDER BY ");
                 for (i, &(expr_handle, is_asc)) in order_by.iter().enumerate() {
@@ -730,9 +733,6 @@ impl CypherEmitter {
             }
             if let Some(l) = limit {
                 self.buffer.push_str(&format!(" LIMIT {l}"));
-            }
-            if let Some(wh) = where_clause {
-                self.emit_where(arena, *wh)?;
             }
             Ok(())
         } else {

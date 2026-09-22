@@ -179,3 +179,138 @@ fn test_cypher_emitter_procedure_call() {
         Some(&LiteralValue::String("Person".into()))
     );
 }
+
+#[test]
+fn test_cypher_emitter_with_clause() {
+    let mut builder = QueryBuilder::new();
+    builder
+        .r#match()
+        .node(Some("p"), vec!["Person"])
+        .where_gt("p", "age", 21)
+        .r#with()
+        .field("p", "name", Some("actor"))
+        .field("p", "age", None::<&str>)
+        .where_lt("p", "age", 50)
+        .r#return()
+        .field("p", "name", Some("actor"))
+        .limit(10);
+
+    let (arena, root) = builder.build();
+    let mut emitter = CypherEmitter::new();
+    let compiled = emitter
+        .visit_query(&arena, root)
+        .expect("Cypher emission failed");
+
+    assert_eq!(
+        compiled.statement,
+        "MATCH (p:Person) WHERE p.age > $p0 WITH p.name AS actor, p.age WHERE p.age < $p1 RETURN p.name AS actor LIMIT 10"
+    );
+    assert_eq!(
+        compiled.parameters.get("p0"),
+        Some(&LiteralValue::Int64(21))
+    );
+    assert_eq!(
+        compiled.parameters.get("p1"),
+        Some(&LiteralValue::Int64(50))
+    );
+}
+
+#[test]
+fn test_sql_pgq_emitter_rejects_with_clause() {
+    let mut builder = QueryBuilder::new();
+    builder
+        .r#match()
+        .node(Some("p"), vec!["Person"])
+        .r#with()
+        .field("p", "name", None::<&str>)
+        .r#return()
+        .field("p", "name", None::<&str>);
+
+    let (arena, root) = builder.build();
+    let mut emitter = SqlPgqEmitter::new("social_graph");
+    let result = emitter.visit_query(&arena, root);
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        voyager_core::Error::UnsupportedFeature { dialect, feature } => {
+            assert_eq!(dialect, "sql_pgq");
+            assert!(feature.contains("WITH clauses"));
+        }
+        other => panic!("Expected UnsupportedFeature error, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_cypher_emitter_with_where_order_by_skip_limit() {
+    let mut builder = QueryBuilder::new();
+    builder
+        .r#match()
+        .node(Some("p"), vec!["Person"])
+        .r#with()
+        .field("p", "name", None::<&str>)
+        .field("p", "age", None::<&str>)
+        .where_gt("p", "age", 18)
+        .order_by_asc("p", "age")
+        .skip(2)
+        .limit(10)
+        .r#return()
+        .field("p", "name", None::<&str>);
+
+    let (arena, root) = builder.build();
+    let mut emitter = CypherEmitter::new();
+    let compiled = emitter
+        .visit_query(&arena, root)
+        .expect("Cypher emission failed");
+
+    assert_eq!(
+        compiled.statement,
+        "MATCH (p:Person) WITH p.name, p.age WHERE p.age > $p0 ORDER BY p.age ASC SKIP 2 LIMIT 10 RETURN p.name"
+    );
+}
+
+#[test]
+fn test_iso_gql_emitter_with_where_order_by_offset_limit() {
+    let mut builder = QueryBuilder::new();
+    builder
+        .r#match()
+        .node(Some("p"), vec!["Person"])
+        .r#with()
+        .field("p", "name", None::<&str>)
+        .field("p", "age", None::<&str>)
+        .where_gt("p", "age", 18)
+        .order_by_asc("p", "age")
+        .skip(5)
+        .limit(10)
+        .r#return()
+        .field("p", "name", None::<&str>);
+
+    let (arena, root) = builder.build();
+    let mut emitter = IsoGqlEmitter::new();
+    let compiled = emitter
+        .visit_query(&arena, root)
+        .expect("ISO GQL emission failed");
+
+    assert_eq!(
+        compiled.statement,
+        "MATCH (p:Person) WITH p.name, p.age WHERE p.age > $p0 ORDER BY p.age ASC OFFSET 5 LIMIT 10 RETURN p.name"
+    );
+}
+
+#[test]
+fn test_empty_with_is_safely_ignored() {
+    let mut builder = QueryBuilder::new();
+    builder
+        .r#match()
+        .node(Some("p"), vec!["Person"])
+        .r#with()
+        .r#return()
+        .field("p", "name", None::<&str>);
+
+    let (arena, root) = builder.build();
+    let mut emitter = CypherEmitter::new();
+    let compiled = emitter
+        .visit_query(&arena, root)
+        .expect("Cypher emission failed");
+
+    assert_eq!(compiled.statement, "MATCH (p:Person) RETURN p.name");
+}

@@ -486,6 +486,10 @@ impl IsoGqlEmitter {
                 self.emit_projection_item(arena, proj)?;
             }
 
+            if let Some(wh) = where_clause {
+                self.emit_where(arena, *wh)?;
+            }
+
             if !order_by.is_empty() {
                 self.buffer.push_str(" ORDER BY ");
                 for (i, (order_expr, is_asc)) in order_by.iter().enumerate() {
@@ -507,10 +511,6 @@ impl IsoGqlEmitter {
 
             if let Some(l) = limit {
                 self.buffer.push_str(&format!(" LIMIT {l}"));
-            }
-
-            if let Some(wh) = where_clause {
-                self.emit_where(arena, *wh)?;
             }
 
             Ok(())

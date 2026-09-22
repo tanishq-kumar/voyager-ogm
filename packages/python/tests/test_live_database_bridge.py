@@ -234,3 +234,47 @@ def test_live_neo4j_official_movies_dataset(clean_neo4j):
     assert "Keanu Reeves" in actors
     assert "Carrie-Anne Moss" in actors
     assert "Laurence Fishburne" in actors
+
+
+@pytest.mark.skipif(not NEO4J_ONLINE, reason="Live Neo4j instance not online on localhost:7687")
+def test_live_neo4j_fluent_builder_with_clause_and_pagination(clean_neo4j):
+    """Test fluent query builder with_() pipeline, hybrid chaining, and pagination on live Neo4j."""
+    session = Session(bridge=clean_neo4j, dialect="cypher")
+
+    # 1. Test hybrid method chaining UNWIND -> CREATE
+    items = [
+        {"name": "Alice", "age": 30},
+        {"name": "Bob", "age": 20},
+        {"name": "Charlie", "age": 40},
+        {"name": "David", "age": 25},
+    ]
+    unwind_q = Query.unwind("rows", "row").create(
+        Node("LivePerson", name="row.name", age="row.age")
+    )
+    assert unwind_q is not None
+    # Direct cypher execution for seed
+    session.execute(
+        "UNWIND $rows AS row CREATE (:LivePerson {name: row.name, age: row.age})",
+        {"rows": items},
+    )
+
+    # 2. Test WITH clause pipeline: MATCH -> WHERE -> WITH -> WHERE -> RETURN
+    p = LivePerson()
+    query = (
+        Query.match(p)
+        .where(p.age >= 20)
+        .with_(p)
+        .where(p.age > 25)
+        .return_(p.alias)
+        .order_by(p.age)
+    )
+    records = session.execute(query)
+    names = [r[p.alias]["name"] for r in records]
+    assert names == ["Alice", "Charlie"]
+
+    # 3. Test pagination: offset and limit
+    p2 = LivePerson()
+    page_q = Query.match(p2).return_(p2.alias).order_by(p2.age).offset(1).limit(2)
+    page_records = session.execute(page_q)
+    page_names = [r[p2.alias]["name"] for r in page_records]
+    assert page_names == ["David", "Alice"]

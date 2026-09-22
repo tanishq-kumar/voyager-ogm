@@ -477,6 +477,110 @@ fn build_query_from_spec_internal(
         }
     }
 
+    if let Some(with_item) = spec.get_item("with_clauses")? {
+        if let Ok(with_list) = with_item.downcast::<PyList>() {
+            for item in with_list {
+                let with_dict = item.downcast::<PyDict>()?;
+                builder.r#with();
+                if let Some(distinct_item) = with_dict.get_item("distinct")? {
+                    if let Ok(distinct) = distinct_item.extract::<bool>() {
+                        if distinct {
+                            builder.distinct(true);
+                        }
+                    }
+                }
+                if let Some(proj_item) = with_dict.get_item("projections")? {
+                    if let Ok(proj_list) = proj_item.downcast::<PyList>() {
+                        for p in proj_list {
+                            let tuple = p.downcast::<PyTuple>()?;
+                            let tag: String = tuple.get_item(0)?.extract()?;
+                            match tag.as_str() {
+                                "field" => {
+                                    let var: String = tuple.get_item(1)?.extract()?;
+                                    let prop: String = tuple.get_item(2)?.extract()?;
+                                    let alias: Option<String> = tuple.get_item(3)?.extract()?;
+                                    builder.field(var, prop, alias);
+                                }
+                                "expr" => {
+                                    let expr_spec = tuple.get_item(1)?;
+                                    let alias: Option<String> = tuple.get_item(2)?.extract()?;
+                                    let h = py_to_node_handle(builder, &expr_spec)?;
+                                    builder.select_expr(h, alias);
+                                }
+                                "agg" => {
+                                    let var: String = tuple.get_item(1)?.extract()?;
+                                    let prop: String = tuple.get_item(2)?.extract()?;
+                                    let func_str: String = tuple.get_item(3)?.extract()?;
+                                    let alias: Option<String> = tuple.get_item(4)?.extract()?;
+                                    let agg = match func_str.to_lowercase().as_str() {
+                                        "count" => AggregationFunc::Count,
+                                        "count_distinct" => AggregationFunc::CountDistinct,
+                                        "sum" => AggregationFunc::Sum,
+                                        "avg" => AggregationFunc::Avg,
+                                        "min" => AggregationFunc::Min,
+                                        "max" => AggregationFunc::Max,
+                                        "collect" => AggregationFunc::Collect,
+                                        other => {
+                                            return Err(pyo3::exceptions::PyValueError::new_err(
+                                                format!(
+                                                    "Unknown aggregation function '{other}'. Expected count, count_distinct, sum, avg, min, max, collect."
+                                                ),
+                                            ));
+                                        }
+                                    };
+                                    if prop == "*" || prop.is_empty() {
+                                        let expr = builder.ident(var);
+                                        builder.select_aggregate(expr, agg, alias);
+                                    } else {
+                                        builder.select_property_aggregate(var, prop, agg, alias);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                if let Some(where_item) = with_dict.get_item("where")? {
+                    if let Ok(where_list) = where_item.downcast::<PyList>() {
+                        for wh in where_list {
+                            let h = py_to_node_handle(builder, &wh)?;
+                            builder.where_expr(h);
+                        }
+                    } else if !where_item.is_none() {
+                        let h = py_to_node_handle(builder, &where_item)?;
+                        builder.where_expr(h);
+                    }
+                }
+                if let Some(order_item) = with_dict.get_item("order_by")? {
+                    if let Ok(order_list) = order_item.downcast::<PyList>() {
+                        for item in order_list {
+                            let tuple = item.downcast::<PyTuple>()?;
+                            if let Ok(var) = tuple.get_item(0)?.extract::<String>() {
+                                let prop: String = tuple.get_item(1)?.extract()?;
+                                let asc: bool = tuple.get_item(2)?.extract()?;
+                                builder.order_by_property(var, prop, asc);
+                            } else {
+                                let expr_h = py_to_node_handle(builder, &tuple.get_item(0)?)?;
+                                let asc: bool = tuple.get_item(1)?.extract()?;
+                                builder.order_by(expr_h, asc);
+                            }
+                        }
+                    }
+                }
+                if let Some(skip_item) = with_dict.get_item("skip")? {
+                    if let Ok(skip) = skip_item.extract::<u64>() {
+                        builder.skip(skip);
+                    }
+                }
+                if let Some(limit_item) = with_dict.get_item("limit")? {
+                    if let Ok(limit) = limit_item.extract::<u64>() {
+                        builder.limit(limit);
+                    }
+                }
+            }
+        }
+    }
+
     if let Some(proj_item) = spec.get_item("projections")? {
         if let Ok(proj_list) = proj_item.downcast::<PyList>() {
             if !proj_list.is_empty() {
@@ -504,7 +608,11 @@ fn build_query_from_spec_internal(
                                 "min" => AggregationFunc::Min,
                                 "max" => AggregationFunc::Max,
                                 "collect" => AggregationFunc::Collect,
-                                _ => AggregationFunc::Count,
+                                other => {
+                                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                                        "Unknown aggregation function '{other}'. Expected count, count_distinct, sum, avg, min, max, collect."
+                                    )));
+                                }
                             };
                             if prop == "*" || prop.is_empty() {
                                 let expr = builder.ident(var);
@@ -722,6 +830,15 @@ impl PyQueryBuilder {
     fn where_ends_with(&mut self, var: String, prop: String, val: String) {
         self.inner
             .where_property(var, prop, BinaryOp::EndsWith, LiteralValue::String(val));
+    }
+
+    fn r#with(&mut self) {
+        self.inner.r#with();
+    }
+
+    #[pyo3(name = "with_")]
+    fn with_py(&mut self) {
+        self.inner.r#with();
     }
 
     fn r#return(&mut self) {

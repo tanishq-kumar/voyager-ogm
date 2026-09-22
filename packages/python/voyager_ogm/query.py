@@ -6,6 +6,7 @@ graph queries (openCypher, SQL:2023 PGQ, ISO GQL) backed by a native Rust AST en
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,6 +20,24 @@ from voyager_ogm.models import (
     PredicateExpr,
     Relationship,
 )
+
+
+class hybridmethod:  # noqa: N801
+    """Descriptor enabling a method to be called either on a class or on an instance.
+
+    When called on a class (e.g. ``Query.match(...)``), it passes the class as the first argument.
+    When called on an instance (e.g. ``q.match(...)``), it passes the instance as the first argument.
+    """
+
+    def __init__(self, func: Any) -> None:
+        self.func = func
+        self.__doc__ = func.__doc__
+        self.__name__ = getattr(func, "__name__", "hybridmethod")
+
+    def __get__(self, instance: Any, owner: Any) -> Any:
+        if instance is None:
+            return functools.partial(self.func, owner)
+        return functools.partial(self.func, instance)
 
 
 @dataclass(frozen=True)
@@ -56,8 +75,10 @@ class Query:
         self._native = NativeQueryBuilder()
         self._optimize: bool | None = None
         self._optimization_level: str | None = None
+        self._clause_mode: str = "match"
         self._current_paths: list[list[Any]] = [[]]
         self._where_specs: list[Any] = []
+        self._with_clauses: list[dict[str, Any]] = []
         self._projections: list[Any] = []
         self._order_bys: list[Any] = []
         self._skip: int | None = None
@@ -67,14 +88,28 @@ class Query:
         self._unwinds: list[tuple[str, str]] = []
         self._load_csv: tuple[str, bool, str] | None = None
 
-    @classmethod
+    @staticmethod
+    def exists(subquery_or_pattern: Any) -> Any:
+        """Creates an existential subquery expression `EXISTS { MATCH ... }`."""
+        from voyager_ogm.fn import exists as fn_exists
+
+        return fn_exists(subquery_or_pattern)
+
+    @staticmethod
+    def count(subquery_or_expr: Any) -> Any:
+        """Creates a scalar subquery `COUNT { MATCH ... }` or function `count(expr)`."""
+        from voyager_ogm.fn import count as fn_count
+
+        return fn_count(subquery_or_expr)
+
+    @hybridmethod
     def match(
-        cls,
+        self: Any,
         node_or_type: Node | type[Node] | str | None = None,
         labels: list[str] | str | None = None,
         variable: str | None = None,
     ) -> Query:
-        """Starts a standard MATCH clause.
+        """Starts or appends a standard MATCH clause.
 
         Args:
             node_or_type: Optional Node instance, subclass, or variable alias.
@@ -82,31 +117,99 @@ class Query:
             variable: Optional variable alias name.
 
         Returns:
-            A new Query instance initialized with the MATCH clause.
+            The Query instance initialized or chained with the MATCH clause.
         """
-        q = cls()
+        if isinstance(self, type):
+            q = self()
+        else:
+            q = self
+        q._clause_mode = "match"
         q._native.match()
         if node_or_type is not None or labels is not None or variable is not None:
             q.node(node_or_type, labels=labels, variable=variable)
         return q
 
-    @classmethod
+    @hybridmethod
     def match_node(
-        cls,
+        self: Any,
         variable: str | None = None,
         labels: list[str] | str | None = None,
     ) -> Query:
-        """Convenience factory method that begins a MATCH clause for a single node."""
-        return cls.match(variable=variable, labels=labels)
+        """Convenience method that begins or appends a MATCH clause for a single node."""
+        return self.match(variable=variable, labels=labels)
 
-    @classmethod
+    @hybridmethod
+    def match_patterns(self: Any, *patterns: Any) -> Query:
+        """Combines multiple independent path patterns into a single MATCH clause.
+
+        Args:
+            *patterns: Query or Path instances representing independent path chains.
+
+        Returns:
+            The Query instance with the combined MATCH patterns.
+        """
+        if isinstance(self, type):
+            q = self()
+        else:
+            q = self
+
+        q._clause_mode = "match"
+        q._native.match()
+        seen_vars: set[str] = set()
+        first_pattern = True
+
+        for pat in patterns:
+            if isinstance(pat, Query):
+                for path in pat._current_paths:
+                    if not path:
+                        continue
+                    if not first_pattern:
+                        q.pattern()
+                    first_pattern = False
+                    for item in path:
+                        if item[0] == "node":
+                            _, var_name, lbls = item
+                            if var_name and var_name in seen_vars:
+                                q.node(var_name)
+                            else:
+                                if var_name:
+                                    seen_vars.add(var_name)
+                                q.node(var_name, labels=lbls)
+                        elif item[0] == "edge":
+                            _, direction, types, edge_var, min_hops, max_hops = item
+                            if edge_var:
+                                seen_vars.add(edge_var)
+                            if direction == "out":
+                                q.to(types, edge_var)
+                            elif direction == "in":
+                                q.from_(types, edge_var)
+                            else:
+                                q.edge(types, edge_var)
+                            if min_hops != 1 or max_hops != 1:
+                                q.hops(min_hops, max_hops)
+                for w in pat._where_specs:
+                    q._where_specs.append(w)
+                    q._native.where_expr(w)
+            elif isinstance(pat, Node):
+                if not first_pattern:
+                    q.pattern()
+                first_pattern = False
+                if pat.alias and pat.alias in seen_vars:
+                    q.node(pat.alias)
+                else:
+                    if pat.alias:
+                        seen_vars.add(pat.alias)
+                    q.node(pat)
+        return q
+
+    @hybridmethod
     def create(
-        cls,
+        self: Any,
         node_or_type: Node | type[Node] | str | None = None,
         labels: list[str] | str | None = None,
         variable: str | None = None,
     ) -> Query:
-        """Starts a CREATE mutation clause.
+        """Starts or appends a CREATE mutation clause.
 
         Args:
             node_or_type: Optional Node instance, subclass, or variable alias.
@@ -114,22 +217,26 @@ class Query:
             variable: Optional variable alias name.
 
         Returns:
-            A new Query instance initialized with the CREATE clause.
+            The Query instance initialized or chained with the CREATE clause.
         """
-        q = cls()
+        if isinstance(self, type):
+            q = self()
+        else:
+            q = self
+        q._clause_mode = "match"
         q._native.create()
         if node_or_type is not None or labels is not None or variable is not None:
             q.node(node_or_type, labels=labels, variable=variable)
         return q
 
-    @classmethod
+    @hybridmethod
     def merge(
-        cls,
+        self: Any,
         node_or_type: Node | type[Node] | str | None = None,
         labels: list[str] | str | None = None,
         variable: str | None = None,
     ) -> Query:
-        """Starts a MERGE idempotent upsert clause.
+        """Starts or appends a MERGE idempotent upsert clause.
 
         Args:
             node_or_type: Optional Node instance, subclass, or variable alias.
@@ -137,33 +244,49 @@ class Query:
             variable: Optional variable alias name.
 
         Returns:
-            A new Query instance initialized with the MERGE clause.
+            The Query instance initialized or chained with the MERGE clause.
         """
-        q = cls()
+        if isinstance(self, type):
+            q = self()
+        else:
+            q = self
+        q._clause_mode = "match"
         q._native.merge()
         if node_or_type is not None or labels is not None or variable is not None:
             q.node(node_or_type, labels=labels, variable=variable)
         return q
 
-    @classmethod
-    def optional_match(cls, node_or_type: Node | type[Node] | None = None) -> Query:
-        """Starts an OPTIONAL MATCH clause.
+    @hybridmethod
+    def optional_match(
+        self: Any,
+        node_or_type: Node | type[Node] | str | None = None,
+        labels: list[str] | str | None = None,
+        variable: str | None = None,
+    ) -> Query:
+        """Starts or appends an OPTIONAL MATCH clause.
 
         Args:
-            node_or_type: Optional Node instance or Node subclass to initialize the path.
+            node_or_type: Optional Node instance, subclass, or variable alias.
+            labels: Optional label or list of labels.
+            variable: Optional variable alias name.
 
         Returns:
-            A new Query instance initialized with the OPTIONAL MATCH clause.
+            The Query instance initialized or chained with the OPTIONAL MATCH clause.
         """
-        q = cls()
+        if isinstance(self, type):
+            q = self()
+        else:
+            q = self
+        q._clause_mode = "match"
+        q._is_optional = True
         q._native.optional_match()
-        if node_or_type is not None:
-            q.node(node_or_type)
+        if node_or_type is not None or labels is not None or variable is not None:
+            q.node(node_or_type, labels=labels, variable=variable)
         return q
 
-    @classmethod
-    def call(cls, procedure_name: str, *args: Any, **kwargs: Any) -> Query:
-        """Starts a vendor procedure call (e.g. APOC or GDS).
+    @hybridmethod
+    def call(self: Any, procedure_name: str, *args: Any, **kwargs: Any) -> Query:
+        """Starts or appends a vendor procedure call (e.g. APOC or GDS).
 
         Args:
             procedure_name: Qualified procedure name (e.g. 'apoc.path.expandConfig').
@@ -171,31 +294,44 @@ class Query:
             **kwargs: Named parameter key-value pairs.
 
         Returns:
-            A new Query instance initialized with the procedure call.
+            The Query instance initialized or chained with the procedure call.
         """
-        q = cls()
+        if isinstance(self, type):
+            q = self()
+        else:
+            q = self
         arg_literals = list(args)
         q._native.call_procedure(procedure_name, arg_literals, kwargs)
         return q
 
-    @classmethod
-    def unwind(cls, batch_param: str, alias: str = "row") -> Query:
-        """Starts an UNWIND batch unrolling statement: `UNWIND $batch_param AS alias`.
+    @hybridmethod
+    def unwind(self: Any, batch_param: str, alias: str = "row") -> Query:
+        """Starts or appends an UNWIND batch expansion clause: `UNWIND $batch_param AS alias`.
 
         Args:
             batch_param: Name of the parameter list (e.g. 'batch').
             alias: Row alias name (default: 'row').
 
         Returns:
-            A new Query instance initialized with the UNWIND clause.
+            The Query instance initialized or chained with the UNWIND clause.
         """
-        q = cls()
-        q._native.unwind(batch_param.lstrip("$"), alias)
+        if isinstance(self, type):
+            q = self()
+        else:
+            q = self
+        param_clean = batch_param.lstrip("$")
+        q._unwinds.append((param_clean, alias))
+        q._native.unwind(param_clean, alias)
         return q
 
-    @classmethod
-    def load_csv(cls, url: str, with_headers: bool = True, alias: str = "row") -> Query:
-        """Starts a LOAD CSV file ingestion statement: `LOAD CSV [WITH HEADERS] FROM url AS alias`.
+    @hybridmethod
+    def load_csv(
+        self: Any,
+        url: str,
+        with_headers: bool = True,
+        alias: str = "row",
+    ) -> Query:
+        """Starts or appends a LOAD CSV file ingestion clause: `LOAD CSV [WITH HEADERS] FROM url AS alias`.
 
         Args:
             url: File URL or path (e.g. 'file:///persons.csv').
@@ -203,9 +339,13 @@ class Query:
             alias: Row alias variable name (default: 'row').
 
         Returns:
-            A new Query instance initialized with the LOAD CSV clause.
+            The Query instance initialized or chained with the LOAD CSV clause.
         """
-        q = cls()
+        if isinstance(self, type):
+            q = self()
+        else:
+            q = self
+        q._load_csv = (url, with_headers, alias)
         q._native.load_csv(url, with_headers, alias)
         return q
 
@@ -220,6 +360,7 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
+        self._load_csv = (url, with_headers, alias)
         self._native.load_csv(url, with_headers, alias)
         return self
 
@@ -245,7 +386,9 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
-        self._native.unwind(batch_param.lstrip("$"), alias)
+        param_clean = batch_param.lstrip("$")
+        self._unwinds.append((param_clean, alias))
+        self._native.unwind(param_clean, alias)
         return self
 
     def add_create(self, node_or_type: Node | type[Node] | None = None) -> Query:
@@ -257,7 +400,9 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
+        self._clause_mode = "match"
         self._native.create()
+        self._current_paths.append([])
         if node_or_type is not None:
             self.node(node_or_type)
         return self
@@ -271,7 +416,9 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
+        self._clause_mode = "match"
         self._native.merge()
+        self._current_paths.append([])
         if node_or_type is not None:
             self.node(node_or_type)
         return self
@@ -292,7 +439,9 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
+        self._clause_mode = "match"
         self._native.match()
+        self._current_paths.append([])
         if node_or_type is not None or labels is not None or variable is not None:
             self.node(node_or_type, labels=labels, variable=variable)
         return self
@@ -313,7 +462,10 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
+        self._clause_mode = "match"
+        self._is_optional = True
         self._native.optional_match()
+        self._current_paths.append([])
         if node_or_type is not None or labels is not None or variable is not None:
             self.node(node_or_type, labels=labels, variable=variable)
         return self
@@ -490,24 +642,29 @@ class Query:
         Args:
             *predicates: Predicate expressions created via operator overloads, boolean combinations,
                 or rich function expressions (e.g. `p.age >= 21`, `(p.age > 18) & (p.status == 'ACTIVE')`,
-                `fn.exists(subquery)`).
+                `Query.exists(subquery)`).
 
         Returns:
             The Query instance for fluent chaining.
+
+        Raises:
+            ValueError: If called with no predicates.
         """
+        if not predicates:
+            raise ValueError("where() requires at least one predicate condition")
         for pred in predicates:
             if isinstance(pred, Expression) or hasattr(pred, "to_spec"):
                 spec = pred.to_spec()
-                self._where_specs.append(spec)
-                self._native.where_expr(spec)
             elif isinstance(pred, PredicateExpr):
                 spec = pred.to_spec()
-                self._where_specs.append(spec)
-                self._native.where_expr(spec)
             else:
                 spec = to_expression(pred).to_spec()
+
+            if self._clause_mode == "with" and self._with_clauses:
+                self._with_clauses[-1]["where"].append(spec)
+            else:
                 self._where_specs.append(spec)
-                self._native.where_expr(spec)
+            self._native.where_expr(spec)
         return self
 
     def to_spec(self) -> Any:
@@ -515,9 +672,21 @@ class Query:
         paths = [
             [tuple(x) if isinstance(x, list) else x for x in p] for p in self._current_paths if p
         ]
-        if not self._where_specs and not self._projections and len(paths) == 1:
+        if (
+            not self._where_specs
+            and not self._projections
+            and not self._with_clauses
+            and not self._unwinds
+            and not self._load_csv
+            and not self._order_bys
+            and self._skip is None
+            and self._limit is None
+            and not self._distinct
+            and len(paths) == 1
+        ):
             return paths[0]
-        return {
+
+        spec: dict[str, Any] = {
             "matches": [
                 {
                     "optional": self._is_optional,
@@ -525,20 +694,43 @@ class Query:
                     "where": self._where_specs,
                 }
             ],
+            "with_clauses": self._with_clauses,
             "projections": self._projections,
             "order_by": self._order_bys,
             "skip": self._skip,
             "limit": self._limit,
             "distinct": self._distinct,
         }
+        if self._unwinds:
+            spec["unwinds"] = self._unwinds
+        if self._load_csv:
+            spec["load_csv"] = self._load_csv
+        return spec
 
     filter = where
 
     def where_not(self, *predicates: Any) -> Query:
-        """Applies negated filter predicates `NOT (pred)` to the current query path."""
+        """Applies negated filter predicates `NOT (pred)` to the current query path.
+
+        Args:
+            *predicates: Predicate expressions to negate.
+
+        Returns:
+            The Query instance for fluent chaining.
+
+        Raises:
+            ValueError: If called with no predicates.
+        """
+        if not predicates:
+            raise ValueError("where_not() requires at least one predicate condition")
         for pred in predicates:
             expr = to_expression(pred)
-            self._native.where_expr((~expr).to_spec())
+            spec = (~expr).to_spec()
+            if self._clause_mode == "with" and self._with_clauses:
+                self._with_clauses[-1]["where"].append(spec)
+            else:
+                self._where_specs.append(spec)
+            self._native.where_expr(spec)
         return self
 
     def on_create_set(self, *assignments: PredicateExpr, **kwargs: Any) -> Query:
@@ -653,6 +845,104 @@ class Query:
                 self._native.remove_property(var, prop)
         return self
 
+    def _project_field(self, field: Any, alias: str | None = None) -> tuple[Any, ...]:
+        if isinstance(field, AliasedExpr):
+            final_alias = field.alias if alias is None else alias
+            expr_spec = field.expr.to_spec()
+            self._native.select_expr(expr_spec, final_alias)
+            return ("expr", expr_spec, final_alias)
+        elif isinstance(field, AggregationExpr):
+            self._native.aggregate(field.target_alias, field.field_name, field.func, alias)
+            return ("agg", field.target_alias, field.field_name, field.func, alias)
+        elif isinstance(field, BoundField):
+            self._native.field(field.target_alias, field.field_name, alias)
+            return ("field", field.target_alias, field.field_name, alias)
+        elif isinstance(field, Expression):
+            expr_spec = field.to_spec()
+            self._native.select_expr(expr_spec, alias)
+            return ("expr", expr_spec, alias)
+        elif isinstance(field, Field) or (hasattr(field, "name") and not hasattr(field, "alias")):
+            var_name = getattr(field, "target_alias", "") or ""
+            name = getattr(field, "name", "") or ""
+            self._native.field(var_name, name, alias)
+            return ("field", var_name, name, alias)
+        elif isinstance(field, str):
+            parts = field.split()
+            if len(parts) == 3 and parts[1].upper() == "AS":
+                final_alias = alias or parts[2]
+                if "." in parts[0]:
+                    var_prop = parts[0].split(".", 1)
+                    self._native.field(var_prop[0], var_prop[1], final_alias)
+                    return ("field", var_prop[0], var_prop[1], final_alias)
+                else:
+                    self._native.field(parts[0], "", final_alias)
+                    return ("field", parts[0], "", final_alias)
+            elif "." in parts[0]:
+                var_prop = parts[0].split(".", 1)
+                self._native.field(var_prop[0], var_prop[1], alias)
+                return ("field", var_prop[0], var_prop[1], alias)
+            else:
+                self._native.field(parts[0], "", alias)
+                return ("field", parts[0], "", alias)
+        else:
+            expr_spec = to_expression(field).to_spec()
+            self._native.select_expr(expr_spec, alias)
+            return ("expr", expr_spec, alias)
+
+    def with_(
+        self,
+        *fields: Any,
+        distinct: bool = False,
+        **aliased_fields: Any,
+    ) -> Query:
+        """Starts or appends an intermediate `WITH` projection pipeline.
+
+        Args:
+            *fields: Positional fields, expressions, or raw strings to project.
+            distinct: If True, emits `WITH DISTINCT`.
+            **aliased_fields: Keyword arguments mapping custom alias names to fields.
+
+        Returns:
+            The Query instance for fluent chaining.
+
+        Raises:
+            ValueError: If called with no projection fields.
+
+        Example:
+            >>> query = (
+            ...     Query.match(p)
+            ...     .with_(p.name, p.age)
+            ...     .where(p.age > 21)
+            ...     .return_(p.name)
+            ... )
+        """
+        if not fields and not aliased_fields:
+            raise ValueError("with_() requires at least one projection field")
+
+        self._clause_mode = "with"
+        self._native.with_()
+        with_entry: dict[str, Any] = {
+            "distinct": distinct,
+            "projections": [],
+            "where": [],
+            "order_by": [],
+            "skip": None,
+            "limit": None,
+        }
+        if distinct:
+            self._native.distinct()
+
+        for field in fields:
+            proj = self._project_field(field, None)
+            with_entry["projections"].append(proj)
+
+        for alias, field in aliased_fields.items():
+            proj = self._project_field(field, alias)
+            with_entry["projections"].append(proj)
+
+        self._with_clauses.append(with_entry)
+        return self
+
     def return_(
         self,
         *fields: Any,
@@ -673,56 +963,33 @@ class Query:
             >>> query.return_(p.name, p.age, distinct=True, user_city=p.city)
             >>> query.return_(fn.to_lower(p.name).as_("lower_name"), p.age + 5)
         """
+        self._clause_mode = "return"
         self._native.return_()
         if distinct:
+            self._distinct = True
             self._native.distinct()
 
         for field in fields:
-            if isinstance(field, AliasedExpr):
-                self._native.select_expr(field.expr.to_spec(), field.alias)
-            elif isinstance(field, AggregationExpr):
-                self._native.aggregate(field.target_alias, field.field_name, field.func, None)
-            elif isinstance(field, BoundField):
-                self._native.field(field.target_alias, field.field_name, None)
-            elif isinstance(field, Expression):
-                self._native.select_expr(field.to_spec(), None)
-            elif isinstance(field, Field) or (
-                hasattr(field, "name") and not hasattr(field, "alias")
-            ):
-                self._native.field("", field.name or "", None)
-            elif isinstance(field, str):
-                parts = field.split()
-                if len(parts) == 3 and parts[1].upper() == "AS":
-                    var_prop = parts[0].split(".")
-                    self._native.field(var_prop[0], var_prop[1], parts[2])
-                elif "." in parts[0]:
-                    var_prop = parts[0].split(".")
-                    self._native.field(var_prop[0], var_prop[1], None)
-                else:
-                    self._native.field(parts[0], "", None)
-            else:
-                self._native.select_expr(to_expression(field).to_spec(), None)
+            proj = self._project_field(field, None)
+            self._projections.append(proj)
 
         for alias, field in aliased_fields.items():
-            if isinstance(field, AliasedExpr):
-                self._native.select_expr(field.expr.to_spec(), alias)
-            elif isinstance(field, AggregationExpr):
-                self._native.aggregate(field.target_alias, field.field_name, field.func, alias)
-            elif isinstance(field, BoundField):
-                self._native.field(field.target_alias, field.field_name, alias)
-            elif isinstance(field, Expression):
-                self._native.select_expr(field.to_spec(), alias)
-            elif isinstance(field, Field) or (
-                hasattr(field, "name") and not hasattr(field, "alias")
-            ):
-                self._native.field("", field.name or "", alias)
-            elif isinstance(field, str) and "." in field:
-                var_prop = field.split(".")
-                self._native.field(var_prop[0], var_prop[1], alias)
-            elif isinstance(field, str):
-                self._native.field(field, "", alias)
-            else:
-                self._native.select_expr(to_expression(field).to_spec(), alias)
+            proj = self._project_field(field, alias)
+            self._projections.append(proj)
+
+        return self
+
+    def distinct(self) -> Query:
+        """Enables DISTINCT on the active RETURN or WITH clause.
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        if self._clause_mode == "with" and self._with_clauses:
+            self._with_clauses[-1]["distinct"] = True
+        else:
+            self._distinct = True
+        self._native.distinct()
         return self
 
     def order_by(self, field: Any, ascending: bool = True) -> Query:
@@ -736,12 +1003,27 @@ class Query:
             The Query instance for fluent chaining.
         """
         if isinstance(field, BoundField):
+            order_spec: Any = (field.target_alias, field.field_name, ascending)
             self._native.order_by(field.target_alias, field.field_name, ascending)
         elif isinstance(field, Expression) or hasattr(field, "to_spec"):
+            order_spec = (field.to_spec(), ascending)
             self._native.order_by_expr(field.to_spec(), ascending)
         elif isinstance(field, str) and "." in field:
-            var_prop = field.split(".")
+            var_prop = field.split(".", 1)
+            order_spec = (var_prop[0], var_prop[1], ascending)
             self._native.order_by(var_prop[0], var_prop[1], ascending)
+        elif isinstance(field, str):
+            order_spec = (field, "", ascending)
+            self._native.order_by(field, "", ascending)
+        else:
+            expr_spec = to_expression(field).to_spec()
+            order_spec = (expr_spec, ascending)
+            self._native.order_by_expr(expr_spec, ascending)
+
+        if self._clause_mode == "with" and self._with_clauses:
+            self._with_clauses[-1]["order_by"].append(order_spec)
+        else:
+            self._order_bys.append(order_spec)
         return self
 
     def order_by_desc(self, field: Any) -> Query:
@@ -759,11 +1041,20 @@ class Query:
         """Limits the maximum number of returned rows.
 
         Args:
-            count: Maximum number of rows to return.
+            count: Maximum number of rows to return. Must be non-negative.
 
         Returns:
             The Query instance for fluent chaining.
+
+        Raises:
+            ValueError: If count is negative.
         """
+        if count < 0:
+            raise ValueError(f"limit count must be non-negative, got {count}")
+        if self._clause_mode == "with" and self._with_clauses:
+            self._with_clauses[-1]["limit"] = count
+        else:
+            self._limit = count
         self._native.limit(count)
         return self
 
@@ -771,13 +1062,38 @@ class Query:
         """Skips the first N rows for pagination.
 
         Args:
-            count: Number of rows to skip.
+            count: Number of rows to skip. Must be non-negative.
 
         Returns:
             The Query instance for fluent chaining.
+
+        Raises:
+            ValueError: If count is negative.
         """
+        if count < 0:
+            raise ValueError(f"skip count must be non-negative, got {count}")
+        if self._clause_mode == "with" and self._with_clauses:
+            self._with_clauses[-1]["skip"] = count
+        else:
+            self._skip = count
         self._native.skip(count)
         return self
+
+    def offset(self, count: int) -> Query:
+        """Skips the first N rows for pagination (SQL/GQL alias for skip).
+
+        Args:
+            count: Number of rows to skip. Must be non-negative.
+
+        Returns:
+            The Query instance for fluent chaining.
+
+        Raises:
+            ValueError: If count is negative.
+        """
+        if count < 0:
+            raise ValueError(f"offset count must be non-negative, got {count}")
+        return self.skip(count)
 
     def optimize(self, level: str = "standard") -> Query:
         """Enables rule-based AST query optimization.
@@ -881,6 +1197,21 @@ class Query:
         return GraphViewer.from_query(self, session=session, **kwargs)
 
 
+class Path(Query):
+    """Path pattern specification builder for graph topologies.
+
+    Used to define independent path chains for multi-pattern MATCH clauses
+    via ``Query.match_patterns(p1, p2)``.
+
+    Example:
+        >>> p1 = Path.match(u).to("KNOWS").node(f)
+        >>> p2 = Path.match(u).to("WORKS_AT").node(c)
+        >>> query = Query.match_patterns(p1, p2).where(c.country == "UK").return_(u.name, f.name)
+    """
+
+    pass
+
+
 def unwind(batch_param: str, alias: str = "row") -> Query:
     """Starts an UNWIND batch expansion query statement: `UNWIND $batch_param AS alias`."""
     return Query.unwind(batch_param, alias=alias)
@@ -889,3 +1220,13 @@ def unwind(batch_param: str, alias: str = "row") -> Query:
 def load_csv(url: str, with_headers: bool = True, alias: str = "row") -> Query:
     """Starts a LOAD CSV file ingestion query statement: `LOAD CSV [WITH HEADERS] FROM url AS alias`."""
     return Query.load_csv(url, with_headers=with_headers, alias=alias)
+
+
+__all__ = [
+    "CompiledQuery",
+    "Path",
+    "Query",
+    "hybridmethod",
+    "load_csv",
+    "unwind",
+]

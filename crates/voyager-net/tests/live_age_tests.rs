@@ -214,6 +214,91 @@ async fn test_live_age_transaction_rollback() {
     let res = conn.execute_simple(&verify_sql).await.unwrap();
     assert_eq!(res.row_count(), 0);
 
+    let _ = conn
+        .execute_simple(&format!(
+            "SELECT * FROM ag_catalog.drop_graph('{}', true);",
+            graph_name
+        ))
+        .await;
+}
+
+#[tokio::test]
+async fn test_live_age_fluent_builder_with_clause() {
+    let mut conn = match get_age_connection().await {
+        Some(c) => c,
+        None => return,
+    };
+
+    use voyager_core::builder::QueryBuilder;
+    use voyager_core::emitters::CypherEmitter;
+    use voyager_core::visitor::AstVisitor;
+
+    let graph_name = "net_fluent_age_graph";
+    let _ = conn
+        .execute_simple(&format!(
+            "SELECT * FROM ag_catalog.drop_graph('{}', true);",
+            graph_name
+        ))
+        .await;
+    let _ = conn
+        .execute_simple(&format!(
+            "SELECT * FROM ag_catalog.create_graph('{}');",
+            graph_name
+        ))
+        .await;
+
+    // Seed test nodes
+    let seed_sql = format!(
+        "SELECT * FROM cypher('{}', $$ CREATE (:Person {{name: 'Bob', age: 20}}), (:Person {{name: 'David', age: 25}}), (:Person {{name: 'Alice', age: 30}}), (:Person {{name: 'Charlie', age: 40}}) $$) as (v agtype);",
+        graph_name
+    );
+    conn.execute_simple(&seed_sql).await.unwrap();
+
+    // Build query with WITH clause: MATCH -> WHERE -> WITH p -> WHERE -> RETURN
+    let mut builder = QueryBuilder::new();
+    builder
+        .r#match()
+        .node(Some("p"), vec!["Person"])
+        .where_gte("p", "age", 20)
+        .r#with()
+        .field("p", "", None::<&str>)
+        .where_gt("p", "age", 25)
+        .r#return()
+        .field("p", "name", None::<&str>)
+        .order_by_asc("p", "age");
+
+    let (arena, root) = builder.build();
+    let mut emitter = CypherEmitter::new();
+    let compiled = emitter
+        .visit_query(&arena, root)
+        .expect("Cypher emission failed");
+
+    let mut stmt = compiled.statement.clone();
+    for (k, v) in &compiled.parameters {
+        if let voyager_core::ast::LiteralValue::Int64(i) = v {
+            stmt = stmt.replace(&format!("${k}"), &i.to_string());
+        }
+    }
+
+    let query_sql = format!(
+        "SELECT * FROM cypher('{}', $$ {} $$) as (name agtype);",
+        graph_name, stmt
+    );
+    let res = conn.execute_simple(&query_sql).await.unwrap();
+    assert_eq!(res.row_count(), 2);
+
+    let batch = &res.batches[0];
+    let col = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::StringArray>()
+        .unwrap();
+
+    let name1 = parse_agtype(col.value(0)).unwrap();
+    let name2 = parse_agtype(col.value(1)).unwrap();
+    assert_eq!(name1, AgeValue::String("Alice".to_string()));
+    assert_eq!(name2, AgeValue::String("Charlie".to_string()));
+
     // Clean up
     let _ = conn
         .execute_simple(&format!(
