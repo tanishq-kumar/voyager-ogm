@@ -147,21 +147,21 @@ fn test_tck_traversal_direction_and_hops_table_driven() {
             min_h: Some(1),
             max_h: Some(2),
             expected_cypher: "MATCH (a:Person)-[:KNOWS*1..2]->(b:Person) RETURN b.name",
-            expected_gql: "MATCH (a:Person)-[:KNOWS{1,2}]->(b:Person) RETURN b.name",
+            expected_gql: "MATCH ((a:Person)-[:KNOWS]->(b:Person)){1,2} RETURN b.name",
         },
         TestCase {
             direction: "to",
             min_h: Some(1),
             max_h: Some(3),
             expected_cypher: "MATCH (a:Person)-[:KNOWS*1..3]->(b:Person) RETURN b.name",
-            expected_gql: "MATCH (a:Person)-[:KNOWS{1,3}]->(b:Person) RETURN b.name",
+            expected_gql: "MATCH ((a:Person)-[:KNOWS]->(b:Person)){1,3} RETURN b.name",
         },
         TestCase {
             direction: "to",
             min_h: Some(2),
             max_h: Some(2),
             expected_cypher: "MATCH (a:Person)-[:KNOWS*2..2]->(b:Person) RETURN b.name",
-            expected_gql: "MATCH (a:Person)-[:KNOWS{2,2}]->(b:Person) RETURN b.name",
+            expected_gql: "MATCH ((a:Person)-[:KNOWS]->(b:Person)){2,2} RETURN b.name",
         },
     ];
 

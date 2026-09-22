@@ -62,6 +62,10 @@ class Expression:
     def __neg__(self) -> UnaryExpr:
         return UnaryExpr("-", self)
 
+    def concat(self, other: Any) -> BinaryExpr:
+        """String concatenation operator (`||` in GQL/SQL, `+` in Cypher)."""
+        return BinaryExpr(self, "||", to_expression(other))
+
     # Boolean & Bitwise Operator Overloads
     def __and__(self, other: Any) -> BinaryExpr:
         return BinaryExpr(self, "AND", to_expression(other))

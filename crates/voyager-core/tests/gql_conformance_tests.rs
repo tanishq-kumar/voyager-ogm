@@ -141,19 +141,19 @@ fn test_gql_quantified_paths_table_driven() {
             direction: "to",
             min_h: Some(1),
             max_h: Some(2),
-            expected_gql: "MATCH (a:Person)-[:KNOWS{1,2}]->(b:Person) RETURN b.name",
+            expected_gql: "MATCH ((a:Person)-[:KNOWS]->(b:Person)){1,2} RETURN b.name",
         },
         TestCase {
             direction: "to",
             min_h: Some(1),
             max_h: Some(3),
-            expected_gql: "MATCH (a:Person)-[:KNOWS{1,3}]->(b:Person) RETURN b.name",
+            expected_gql: "MATCH ((a:Person)-[:KNOWS]->(b:Person)){1,3} RETURN b.name",
         },
         TestCase {
             direction: "to",
             min_h: Some(2),
             max_h: Some(2),
-            expected_gql: "MATCH (a:Person)-[:KNOWS{2,2}]->(b:Person) RETURN b.name",
+            expected_gql: "MATCH ((a:Person)-[:KNOWS]->(b:Person)){2,2} RETURN b.name",
         },
     ];
 
@@ -486,5 +486,42 @@ fn test_gql_optional_match_conformance() {
     assert!(
         res.statement
             .contains("OPTIONAL MATCH (p)-[r:WORKS_AT]->(c:Company)")
+    );
+}
+
+#[test]
+fn test_gql_standard_functions_and_concatenation_conformance() {
+    let mut builder = QueryBuilder::new();
+    builder.match_node(Some("p"), vec!["Person"]);
+
+    let prop_name = builder.prop("p", "name");
+    let prop_city = builder.prop("p", "city");
+    let prop_skills = builder.prop("p", "skills");
+
+    // Standard string functions: lower, upper, char_length, trim, coalesce
+    let lower_name = builder.function("toLower", vec![prop_name]);
+    let upper_name = builder.function("toUpper", vec![prop_name]);
+    let len_city = builder.function("length", vec![prop_city]);
+    let card_skills = builder.function("size", vec![prop_skills]);
+
+    // String concat with ||
+    let hello_lit = builder.literal("Hello, ");
+    let greeting = builder.binary_expr(hello_lit, BinaryOp::Concat, prop_name);
+
+    builder
+        .r#return()
+        .custom_expr(lower_name, Some("lower_name"))
+        .custom_expr(upper_name, Some("upper_name"))
+        .custom_expr(len_city, Some("city_len"))
+        .custom_expr(card_skills, Some("skill_count"))
+        .custom_expr(greeting, Some("greeting"));
+
+    let (arena, root) = builder.build();
+    let mut gql = IsoGqlEmitter::new();
+    let res = gql.visit_query(&arena, root).unwrap();
+
+    assert_eq!(
+        res.statement,
+        "MATCH (p:Person) RETURN lower(p.name) AS lower_name, upper(p.name) AS upper_name, char_length(p.city) AS city_len, cardinality(p.skills) AS skill_count, $p0 || p.name AS greeting"
     );
 }

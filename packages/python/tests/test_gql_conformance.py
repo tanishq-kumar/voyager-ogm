@@ -37,6 +37,7 @@ class Person(Node):
     name = Field()
     age = Field()
     city = Field()
+    skills = Field()
 
 
 @node(label="Company")
@@ -123,9 +124,9 @@ def test_gql_match_and_where_predicates(
         ("to", 1, 1, "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN b.name"),
         ("from", 1, 1, "MATCH (a:Person)<-[r:KNOWS]-(b:Person) RETURN b.name"),
         ("edge", 1, 1, "MATCH (a:Person)-[r:KNOWS]-(b:Person) RETURN b.name"),
-        ("to", 1, 2, "MATCH (a:Person)-[_knows_0:KNOWS{1,2}]->(b:Person) RETURN b.name"),
-        ("to", 1, 3, "MATCH (a:Person)-[_knows_0:KNOWS{1,3}]->(b:Person) RETURN b.name"),
-        ("to", 2, 2, "MATCH (a:Person)-[_knows_0:KNOWS{2,2}]->(b:Person) RETURN b.name"),
+        ("to", 1, 2, "MATCH ((a:Person)-[_knows_0:KNOWS]->(b:Person)){1,2} RETURN b.name"),
+        ("to", 1, 3, "MATCH ((a:Person)-[_knows_0:KNOWS]->(b:Person)){1,3} RETURN b.name"),
+        ("to", 2, 2, "MATCH ((a:Person)-[_knows_0:KNOWS]->(b:Person)){2,2} RETURN b.name"),
     ],
     ids=[
         "gql_outgoing_edge",
@@ -326,3 +327,23 @@ def test_gql_optional_match_outer_join():
     assert (
         "MATCH (a:Person) OPTIONAL MATCH (a:Person)-[r:WORKS_AT]->(c:Company)" in compiled.statement
     )
+
+
+def test_gql_standard_functions_and_concatenation():
+    """ISO GQL: Standard functions (upper, lower, char_length, cardinality) and || concatenation."""
+    from voyager_ogm import fn
+
+    p = Person(alias="p")
+    q = Query.match(p).return_(
+        lower_name=fn.to_lower(p.name),
+        upper_name=fn.to_upper(p.name),
+        city_len=fn.char_length(p.city),
+        skill_count=fn.cardinality(p.skills),
+        full_greeting=p.name.concat(" from London"),
+    )
+    compiled = q.compile(dialect="iso_gql")
+    assert "lower(p.name) AS lower_name" in compiled.statement
+    assert "upper(p.name) AS upper_name" in compiled.statement
+    assert "char_length(p.city) AS city_len" in compiled.statement
+    assert "cardinality(p.skills) AS skill_count" in compiled.statement
+    assert "p.name || $p0 AS full_greeting" in compiled.statement
