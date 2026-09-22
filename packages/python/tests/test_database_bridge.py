@@ -431,3 +431,73 @@ def test_bridge_registry_and_uri_auto_resolution():
 
     neo_inst = FakeNeo4jDriver()
     assert isinstance(create_bridge(neo_inst), Neo4jBoltBridge)
+
+
+def test_postgres_bridge_execute_bulk_with_bulk_ingestion_plan():
+    """Test PostgresBridge.execute_bulk correctly processes batches from BulkIngestionPlan (Issue #72)."""
+    from unittest.mock import MagicMock
+
+    from voyager_ogm.ingestion import create_bulk_create_plan
+
+    mock_conn = MagicMock()
+    bridge = PostgresBridge(mock_conn)
+
+    data = [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]
+    plan = create_bulk_create_plan(Person, data, batch_size=1, dialect="sql_pgq")
+
+    res = bridge.execute_bulk(plan)
+    assert res.total_batches == 2
+    assert res.total_records == 2
+    assert mock_conn.cursor.return_value.__enter__.return_value.execute.call_count == 2
+
+
+def test_bridge_parameter_formatting_prefix_collision_safety():
+    """Test parameter prefix collision safety ($p vs $p0) in DuckDbBridge and PostgresBridge (Issue #73)."""
+    from unittest.mock import MagicMock
+
+    mock_conn = MagicMock()
+    duck_bridge = DuckDbBridge(mock_conn)
+    pg_bridge = PostgresBridge(mock_conn)
+
+    stmt = "SELECT * FROM GRAPH_TABLE(g MATCH (p) WHERE p.name = $p AND p.age > $p0 COLUMNS (p.id))"
+    params = {"p": "Alice", "p0": 30}
+
+    formatted_duck, _ = duck_bridge._format_pgq_statement(stmt, params)
+    assert "p.name = 'Alice'" in formatted_duck
+    assert "p.age > 30" in formatted_duck
+    assert "'Alice'0" not in formatted_duck
+
+    formatted_pg, _ = pg_bridge._format_pgq_statement(stmt, params)
+    assert "p.name = 'Alice'" in formatted_pg
+    assert "p.age > 30" in formatted_pg
+    assert "'Alice'0" not in formatted_pg
+
+
+def test_postgres_bridge_multiple_occurrences_parameter_count():
+    """Test multiple occurrences of a parameter in standard SQL match ordered_params length (Issue #73)."""
+    from unittest.mock import MagicMock
+
+    mock_conn = MagicMock()
+    pg_bridge = PostgresBridge(mock_conn)
+
+    stmt = "SELECT * FROM users WHERE age >= $p0 AND max_age <= $p0"
+    params = {"p0": 25}
+
+    formatted_stmt, ordered_params = pg_bridge._format_pgq_statement(stmt, params)
+    assert formatted_stmt == "SELECT * FROM users WHERE age >= %s AND max_age <= %s"
+    assert ordered_params == [25, 25]
+
+
+def test_postgres_bridge_asyncpg_connection_not_matched():
+    """Test asyncpg Connection is not matched as synchronous PostgresBridge (Issue #74)."""
+    from voyager_ogm.bridge import _is_postgres_conn
+
+    class FakeAsyncpg:
+        __module__ = "asyncpg.connection"
+        __qualname__ = "Connection"
+
+        def cursor(self):
+            pass
+
+    conn = FakeAsyncpg()
+    assert _is_postgres_conn(conn) is False

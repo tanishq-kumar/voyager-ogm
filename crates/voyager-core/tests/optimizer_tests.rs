@@ -599,3 +599,36 @@ fn test_optimizer_constant_folding_null_safety_multiplication_by_zero() {
         res.statement
     );
 }
+
+#[test]
+fn test_optimizer_sql_pgq_hoisted_predicate_preserved() {
+    use voyager_core::ast::{BinaryOp, LiteralValue};
+    use voyager_core::emitters::sql_pgq::SqlPgqEmitter;
+
+    let mut builder = QueryBuilder::new();
+    builder.match_node(Some("p"), vec!["Person"]);
+
+    let p_name = builder.prop("p", "name");
+    let c_alice = builder.literal("Alice");
+    let eq_expr = builder.binary_expr(p_name, BinaryOp::Eq, c_alice);
+    builder.where_expr(eq_expr);
+    builder.field("p", "name", Some("name"));
+
+    let (mut arena, root) = builder.build();
+    let optimizer = AstOptimizer::new(OptimizationLevel::Standard);
+    optimizer.optimize(&mut arena, root).unwrap();
+
+    let mut pgq = SqlPgqEmitter::new("social_network");
+    let res_pgq = pgq.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res_pgq.parameters.get("p0"),
+        Some(&LiteralValue::String("Alice".to_string()))
+    );
+    assert!(
+        res_pgq
+            .statement
+            .contains("(p IS Person WHERE p.name = $p0)"),
+        "Hoisted predicate must be preserved in SqlPgqEmitter: {}",
+        res_pgq.statement
+    );
+}
