@@ -76,6 +76,8 @@ class Query:
         self._optimize: bool | None = None
         self._optimization_level: str | None = None
         self._clause_mode: str = "match"
+        self._match_clauses: list[dict[str, Any]] = []
+        self._mutations: list[tuple[Any, ...] | list[Any]] = []
         self._current_paths: list[list[Any]] = [[]]
         self._where_specs: list[Any] = []
         self._with_clauses: list[dict[str, Any]] = []
@@ -91,6 +93,8 @@ class Query:
     @staticmethod
     def exists(subquery_or_pattern: Any) -> Any:
         """Creates an existential subquery expression `EXISTS { MATCH ... }`."""
+        if hasattr(subquery_or_pattern, "_mutations") and subquery_or_pattern._mutations:
+            raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
         from voyager_ogm.fn import exists as fn_exists
 
         return fn_exists(subquery_or_pattern)
@@ -98,9 +102,70 @@ class Query:
     @staticmethod
     def count(subquery_or_expr: Any) -> Any:
         """Creates a scalar subquery `COUNT { MATCH ... }` or function `count(expr)`."""
+        if hasattr(subquery_or_expr, "_mutations") and subquery_or_expr._mutations:
+            raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
         from voyager_ogm.fn import count as fn_count
 
         return fn_count(subquery_or_expr)
+
+    def _start_match_clause(self, optional: bool = False) -> None:
+        self._clause_mode = "match"
+        if optional:
+            self._is_optional = True
+            self._native.optional_match()
+        else:
+            self._native.match()
+
+        if (
+            len(self._match_clauses) == 1
+            and not any(self._match_clauses[0]["paths"])
+            and not self._match_clauses[0]["where"]
+        ):
+            self._match_clauses[0]["optional"] = optional
+            return
+
+        new_path: list[Any] = []
+        clause: dict[str, Any] = {
+            "optional": optional,
+            "paths": [new_path],
+            "where": [],
+        }
+        self._match_clauses.append(clause)
+        if len(self._current_paths) == 1 and not self._current_paths[0]:
+            self._current_paths[0] = new_path
+        else:
+            self._current_paths.append(new_path)
+
+    def _start_create_clause(self) -> None:
+        self._clause_mode = "create"
+        self._native.create()
+        new_path: list[Any] = []
+        self._mutations.append(["create", [new_path]])
+        if len(self._current_paths) == 1 and not self._current_paths[0]:
+            self._current_paths[0] = new_path
+        else:
+            self._current_paths.append(new_path)
+
+    def _start_merge_clause(self) -> None:
+        self._clause_mode = "merge"
+        self._native.merge()
+        merge_path: list[Any] = []
+        on_creates: list[tuple[str, str, Any]] = []
+        on_matches: list[tuple[str, str, Any]] = []
+        self._mutations.append(["merge", merge_path, on_creates, on_matches])
+        if len(self._current_paths) == 1 and not self._current_paths[0]:
+            self._current_paths[0] = merge_path
+        else:
+            self._current_paths.append(merge_path)
+
+    def _record_merge_set(self, kind: str, var: str, prop: str, val_spec: Any) -> None:
+        for mut in reversed(self._mutations):
+            if mut[0] == "merge":
+                if kind == "on_create":
+                    mut[2].append((var, prop, val_spec))
+                else:
+                    mut[3].append((var, prop, val_spec))
+                break
 
     @hybridmethod
     def match(
@@ -123,8 +188,7 @@ class Query:
             q = self()
         else:
             q = self
-        q._clause_mode = "match"
-        q._native.match()
+        q._start_match_clause(optional=False)
         if node_or_type is not None or labels is not None or variable is not None:
             q.node(node_or_type, labels=labels, variable=variable)
         return q
@@ -223,8 +287,7 @@ class Query:
             q = self()
         else:
             q = self
-        q._clause_mode = "match"
-        q._native.create()
+        q._start_create_clause()
         if node_or_type is not None or labels is not None or variable is not None:
             q.node(node_or_type, labels=labels, variable=variable)
         return q
@@ -250,8 +313,7 @@ class Query:
             q = self()
         else:
             q = self
-        q._clause_mode = "match"
-        q._native.merge()
+        q._start_merge_clause()
         if node_or_type is not None or labels is not None or variable is not None:
             q.node(node_or_type, labels=labels, variable=variable)
         return q
@@ -277,9 +339,7 @@ class Query:
             q = self()
         else:
             q = self
-        q._clause_mode = "match"
-        q._is_optional = True
-        q._native.optional_match()
+        q._start_match_clause(optional=True)
         if node_or_type is not None or labels is not None or variable is not None:
             q.node(node_or_type, labels=labels, variable=variable)
         return q
@@ -391,37 +451,41 @@ class Query:
         self._native.unwind(param_clean, alias)
         return self
 
-    def add_create(self, node_or_type: Node | type[Node] | None = None) -> Query:
+    def add_create(
+        self,
+        node_or_type: Node | type[Node] | str | None = None,
+        labels: list[str] | str | None = None,
+        variable: str | None = None,
+    ) -> Query:
         """Adds a CREATE mutation clause to the active query statement.
 
         Args:
-            node_or_type: Optional Node instance or Node subclass to initialize the path.
+            node_or_type: Optional Node instance, subclass, or variable alias.
+            labels: Optional label or list of labels.
+            variable: Optional variable alias name.
 
         Returns:
             The Query instance for fluent chaining.
         """
-        self._clause_mode = "match"
-        self._native.create()
-        self._current_paths.append([])
-        if node_or_type is not None:
-            self.node(node_or_type)
-        return self
+        return self.create(node_or_type=node_or_type, labels=labels, variable=variable)
 
-    def add_merge(self, node_or_type: Node | type[Node] | None = None) -> Query:
+    def add_merge(
+        self,
+        node_or_type: Node | type[Node] | str | None = None,
+        labels: list[str] | str | None = None,
+        variable: str | None = None,
+    ) -> Query:
         """Adds a MERGE idempotent upsert clause to the active query statement.
 
         Args:
-            node_or_type: Optional Node instance or Node subclass to initialize the path.
+            node_or_type: Optional Node instance, subclass, or variable alias.
+            labels: Optional label or list of labels.
+            variable: Optional variable alias name.
 
         Returns:
             The Query instance for fluent chaining.
         """
-        self._clause_mode = "match"
-        self._native.merge()
-        self._current_paths.append([])
-        if node_or_type is not None:
-            self.node(node_or_type)
-        return self
+        return self.merge(node_or_type=node_or_type, labels=labels, variable=variable)
 
     def add_match(
         self,
@@ -439,12 +503,7 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
-        self._clause_mode = "match"
-        self._native.match()
-        self._current_paths.append([])
-        if node_or_type is not None or labels is not None or variable is not None:
-            self.node(node_or_type, labels=labels, variable=variable)
-        return self
+        return self.match(node_or_type=node_or_type, labels=labels, variable=variable)
 
     def add_optional_match(
         self,
@@ -462,13 +521,7 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
-        self._clause_mode = "match"
-        self._is_optional = True
-        self._native.optional_match()
-        self._current_paths.append([])
-        if node_or_type is not None or labels is not None or variable is not None:
-            self.node(node_or_type, labels=labels, variable=variable)
-        return self
+        return self.optional_match(node_or_type=node_or_type, labels=labels, variable=variable)
 
     def node(
         self,
@@ -489,6 +542,9 @@ class Query:
         Example:
             >>> query.node("p", labels=["Person", "Actor"])
         """
+        if not self._match_clauses and not self._mutations:
+            self._start_match_clause(optional=False)
+
         if variable is not None and node_or_var is None:
             node_or_var = variable
         var_name: str | None = None
@@ -633,7 +689,12 @@ class Query:
             The Query instance for fluent chaining.
         """
         self._native.pattern()
-        self._current_paths.append([])
+        new_path: list[Any] = []
+        if self._clause_mode == "create" and self._mutations and self._mutations[-1][0] == "create":
+            self._mutations[-1][1].append(new_path)
+        elif self._match_clauses:
+            self._match_clauses[-1]["paths"].append(new_path)
+        self._current_paths.append(new_path)
         return self
 
     def where(self, *predicates: Any) -> Query:
@@ -662,6 +723,9 @@ class Query:
 
             if self._clause_mode == "with" and self._with_clauses:
                 self._with_clauses[-1]["where"].append(spec)
+            elif self._match_clauses:
+                self._match_clauses[-1]["where"].append(spec)
+                self._where_specs.append(spec)
             else:
                 self._where_specs.append(spec)
             self._native.where_expr(spec)
@@ -673,7 +737,8 @@ class Query:
             [tuple(x) if isinstance(x, list) else x for x in p] for p in self._current_paths if p
         ]
         if (
-            not self._where_specs
+            not self._mutations
+            and not self._where_specs
             and not self._projections
             and not self._with_clauses
             and not self._unwinds
@@ -682,18 +747,39 @@ class Query:
             and self._skip is None
             and self._limit is None
             and not self._distinct
+            and not self._is_optional
+            and len(self._match_clauses) <= 1
             and len(paths) == 1
         ):
             return paths[0]
 
-        spec: dict[str, Any] = {
-            "matches": [
+        matches_spec: list[dict[str, Any]] = []
+        for clause in self._match_clauses:
+            clause_paths = [
+                [tuple(x) if isinstance(x, list) else x for x in p]
+                for p in clause.get("paths", [])
+                if p
+            ]
+            if clause_paths or clause.get("where"):
+                matches_spec.append(
+                    {
+                        "optional": clause.get("optional", False),
+                        "paths": clause_paths,
+                        "where": clause.get("where", []),
+                    }
+                )
+
+        if not matches_spec and paths and not self._mutations:
+            matches_spec.append(
                 {
                     "optional": self._is_optional,
                     "paths": paths,
                     "where": self._where_specs,
                 }
-            ],
+            )
+
+        spec: dict[str, Any] = {
+            "matches": matches_spec,
             "with_clauses": self._with_clauses,
             "projections": self._projections,
             "order_by": self._order_bys,
@@ -701,6 +787,25 @@ class Query:
             "limit": self._limit,
             "distinct": self._distinct,
         }
+
+        if self._mutations:
+            mut_specs: list[tuple[Any, ...]] = []
+            for m in self._mutations:
+                tag = m[0]
+                if tag == "create":
+                    raw_paths = m[1]
+                    norm_paths = [
+                        [tuple(x) if isinstance(x, list) else x for x in p] for p in raw_paths if p
+                    ]
+                    mut_specs.append(("create", norm_paths))
+                elif tag == "merge":
+                    raw_path = m[1]
+                    norm_path = [tuple(x) if isinstance(x, list) else x for x in raw_path]
+                    mut_specs.append(("merge", norm_path, list(m[2]), list(m[3])))
+                else:
+                    mut_specs.append(tuple(m))
+            spec["mutations"] = mut_specs
+
         if self._unwinds:
             spec["unwinds"] = self._unwinds
         if self._load_csv:
@@ -728,6 +833,9 @@ class Query:
             spec = (~expr).to_spec()
             if self._clause_mode == "with" and self._with_clauses:
                 self._with_clauses[-1]["where"].append(spec)
+            elif self._match_clauses:
+                self._match_clauses[-1]["where"].append(spec)
+                self._where_specs.append(spec)
             else:
                 self._where_specs.append(spec)
             self._native.where_expr(spec)
@@ -745,10 +853,20 @@ class Query:
         """
         for assign in assignments:
             self._native.on_create_set(assign.target, assign.field, assign.value)
+            val_spec = (
+                assign.value.to_spec()
+                if hasattr(assign.value, "to_spec")
+                else to_expression(assign.value).to_spec()
+            )
+            self._record_merge_set("on_create", assign.target, assign.field, val_spec)
         for key, val in kwargs.items():
             if "." in key:
                 var, prop = key.split(".", 1)
                 self._native.on_create_set(var, prop, val)
+                val_spec = (
+                    val.to_spec() if hasattr(val, "to_spec") else to_expression(val).to_spec()
+                )
+                self._record_merge_set("on_create", var, prop, val_spec)
         return self
 
     def on_match_set(self, *assignments: PredicateExpr, **kwargs: Any) -> Query:
@@ -763,10 +881,20 @@ class Query:
         """
         for assign in assignments:
             self._native.on_match_set(assign.target, assign.field, assign.value)
+            val_spec = (
+                assign.value.to_spec()
+                if hasattr(assign.value, "to_spec")
+                else to_expression(assign.value).to_spec()
+            )
+            self._record_merge_set("on_match", assign.target, assign.field, val_spec)
         for key, val in kwargs.items():
             if "." in key:
                 var, prop = key.split(".", 1)
                 self._native.on_match_set(var, prop, val)
+                val_spec = (
+                    val.to_spec() if hasattr(val, "to_spec") else to_expression(val).to_spec()
+                )
+                self._record_merge_set("on_match", var, prop, val_spec)
         return self
 
     def set(self, *assignments: PredicateExpr | Node, **kwargs: Any) -> Query:
@@ -783,13 +911,27 @@ class Query:
         for assign in assignments:
             if isinstance(assign, PredicateExpr):
                 self._native.set_property(assign.target, assign.field, assign.value)
+                val_spec = (
+                    assign.value.to_spec()
+                    if hasattr(assign.value, "to_spec")
+                    else to_expression(assign.value).to_spec()
+                )
+                self._mutations.append(("set", assign.target, assign.field, val_spec))
             elif isinstance(assign, Node):
                 for field_name, val in assign.dirty_fields.items():
                     self._native.set_property(assign.alias, field_name, val)
+                    val_spec = (
+                        val.to_spec() if hasattr(val, "to_spec") else to_expression(val).to_spec()
+                    )
+                    self._mutations.append(("set", assign.alias, field_name, val_spec))
         for key, val in kwargs.items():
             if "." in key:
                 var, prop = key.split(".", 1)
                 self._native.set_property(var, prop, val)
+                val_spec = (
+                    val.to_spec() if hasattr(val, "to_spec") else to_expression(val).to_spec()
+                )
+                self._mutations.append(("set", var, prop, val_spec))
         return self
 
     def delete(self, *targets: Node | Relationship | str) -> Query:
@@ -808,6 +950,7 @@ class Query:
             else:
                 names.append(str(t))
         self._native.delete(names)
+        self._mutations.append(("delete", False, names))
         return self
 
     def detach_delete(self, *targets: Node | Relationship | str) -> Query:
@@ -826,6 +969,7 @@ class Query:
             else:
                 names.append(str(t))
         self._native.detach_delete(names)
+        self._mutations.append(("delete", True, names))
         return self
 
     def remove(self, *properties: BoundField | str) -> Query:
@@ -840,9 +984,11 @@ class Query:
         for p in properties:
             if isinstance(p, BoundField):
                 self._native.remove_property(p.target_alias, p.field_name)
+                self._mutations.append(("remove", p.target_alias, p.field_name))
             elif isinstance(p, str) and "." in p:
                 var, prop = p.split(".", 1)
                 self._native.remove_property(var, prop)
+                self._mutations.append(("remove", var, prop))
         return self
 
     def _project_field(self, field: Any, alias: str | None = None) -> tuple[Any, ...]:
