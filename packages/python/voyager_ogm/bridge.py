@@ -526,15 +526,22 @@ class DuckDbBridge:
     ) -> tuple[str, dict[str, Any]]:
         """Interpolates parameters for DuckPGQ GRAPH_TABLE queries where native parameter binding is unsupported."""
         if "GRAPH_TABLE" in statement and parameters:
+            import re
+
             stmt = statement
-            for k, v in parameters.items():
+            for k in sorted(parameters.keys(), key=len, reverse=True):
+                v = parameters[k]
                 if isinstance(v, str):
                     escaped = v.replace("'", "''")
-                    stmt = stmt.replace(f"${k}", f"'{escaped}'")
+                    replacement = f"'{escaped}'"
                 elif v is None:
-                    stmt = stmt.replace(f"${k}", "NULL")
+                    replacement = "NULL"
+                elif isinstance(v, bool):
+                    replacement = "TRUE" if v else "FALSE"
                 else:
-                    stmt = stmt.replace(f"${k}", str(v))
+                    replacement = str(v)
+                pattern = r"\$" + re.escape(k) + r"\b"
+                stmt = re.sub(pattern, lambda _m, r=replacement: r, stmt)
             return stmt, {}
         return statement, parameters
 
@@ -735,30 +742,41 @@ class PostgresBridge:
         self, statement: str, parameters: dict[str, Any]
     ) -> tuple[str, list[Any] | tuple[Any, ...]]:
         """Formats statement and parameters for PostgreSQL execution."""
-        if "GRAPH_TABLE" in statement and parameters:
+        if not parameters:
+            return statement, ()
+
+        import re
+
+        if "GRAPH_TABLE" in statement:
             # PG19 GRAPH_TABLE does not support prepared parameters inside table function AST
             stmt = statement
-            for k, v in parameters.items():
+            for k in sorted(parameters.keys(), key=len, reverse=True):
+                v = parameters[k]
                 if isinstance(v, str):
                     escaped = v.replace("'", "''")
-                    stmt = stmt.replace(f"${k}", f"'{escaped}'")
+                    replacement = f"'{escaped}'"
                 elif v is None:
-                    stmt = stmt.replace(f"${k}", "NULL")
+                    replacement = "NULL"
                 elif isinstance(v, bool):
-                    stmt = stmt.replace(f"${k}", "TRUE" if v else "FALSE")
+                    replacement = "TRUE" if v else "FALSE"
                 else:
-                    stmt = stmt.replace(f"${k}", str(v))
+                    replacement = str(v)
+                pattern = r"\$" + re.escape(k) + r"\b"
+                stmt = re.sub(pattern, lambda _m, r=replacement: r, stmt)
             return stmt, ()
-        elif parameters:
-            stmt = statement
-            ordered_params = []
-            for k, v in parameters.items():
-                placeholder = f"${k}"
-                if placeholder in stmt:
-                    stmt = stmt.replace(placeholder, "%s")
-                    ordered_params.append(v)
+        else:
+            ordered_params: list[Any] = []
+            pattern = re.compile(r"\$([a-zA-Z0-9_]+)\b")
+
+            def repl(m: re.Match[str]) -> str:
+                key = m.group(1)
+                if key in parameters:
+                    ordered_params.append(parameters[key])
+                    return "%s"
+                return m.group(0)
+
+            stmt = pattern.sub(repl, statement)
             return stmt, ordered_params
-        return statement, ()
 
     def execute(
         self, statement: str, parameters: dict[str, Any] | None = None
@@ -807,20 +825,37 @@ class PostgresBridge:
         plan_or_statement: BulkIngestionPlan | str,
         batches: Sequence[dict[str, Any]] | None = None,
     ) -> BulkExecutionResult:
-        """Executes bulk ingestion plan in PostgreSQL."""
+        """Executes bulk ingestion plan in PostgreSQL.
+
+        Args:
+            plan_or_statement: BulkIngestionPlan or statement string.
+            batches: Batch parameter sequence when a statement string is provided.
+
+        Returns:
+            BulkExecutionResult metrics.
+        """
         start_time = time.perf_counter()
-        statement = (
-            plan_or_statement if isinstance(plan_or_statement, str) else plan_or_statement.statement
-        )
-        batch_list = batches or []
+        statement = ""
         total_records = 0
-        total_batches = len(batch_list)
+        total_batches = 0
         with self.conn.cursor() as cur:
-            for b in batch_list:
-                batch_data = b.get("batch", [])
-                total_records += len(batch_data)
-                stmt, params = self._format_pgq_statement(statement, b)
-                cur.execute(stmt, params)
+            if isinstance(plan_or_statement, str):
+                statement = plan_or_statement
+                batch_list = batches or []
+                total_batches = len(batch_list)
+                for b in batch_list:
+                    batch_data = b.get("batch", [])
+                    total_records += len(batch_data)
+                    stmt, params = self._format_pgq_statement(statement, b)
+                    cur.execute(stmt, params)
+            else:
+                statement = plan_or_statement.statement
+                for batch_item in plan_or_statement:
+                    total_batches += 1
+                    batch_data = batch_item.parameters.get("batch", [])
+                    total_records += len(batch_data)
+                    stmt, params = self._format_pgq_statement(statement, batch_item.parameters)
+                    cur.execute(stmt, params)
         return BulkExecutionResult(
             total_batches=total_batches,
             total_records=total_records,
@@ -916,7 +951,7 @@ def _is_duckdb_conn(obj: Any) -> bool:
 
 def _is_postgres_conn(obj: Any) -> bool:
     type_name = f"{type(obj).__module__}.{type(obj).__qualname__}"
-    return ("psycopg" in type_name or "asyncpg" in type_name) and hasattr(obj, "cursor")
+    return "psycopg" in type_name and hasattr(obj, "cursor")
 
 
 register_bridge(_is_neo4j_sync_driver, Neo4jBoltBridge, is_async=False)

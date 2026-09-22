@@ -39,16 +39,31 @@ impl SqlPgqEmitter {
         if let AstNode::NodePattern {
             variable,
             labels,
-            predicates: _,
+            predicates,
         } = node
         {
             self.buffer.push('(');
+            let mut has_prefix = false;
             if let Some(var) = variable {
                 self.buffer.push_str(var);
+                has_prefix = true;
             }
             for label in labels {
                 self.buffer.push_str(" IS ");
                 self.buffer.push_str(label);
+                has_prefix = true;
+            }
+            if !predicates.is_empty() {
+                if has_prefix {
+                    self.buffer.push(' ');
+                }
+                self.buffer.push_str("WHERE ");
+                for (i, &pred_handle) in predicates.iter().enumerate() {
+                    if i > 0 {
+                        self.buffer.push_str(" AND ");
+                    }
+                    self.emit_expression(arena, pred_handle, false)?;
+                }
             }
             self.buffer.push(')');
             Ok(())
@@ -67,7 +82,7 @@ impl SqlPgqEmitter {
             direction,
             min_hops,
             max_hops,
-            predicates: _,
+            predicates,
             target_node,
         } = node
         {
@@ -87,6 +102,16 @@ impl SqlPgqEmitter {
                     self.buffer.push_str(" | ");
                 }
                 self.buffer.push_str(edge_type);
+            }
+
+            if !predicates.is_empty() {
+                self.buffer.push_str(" WHERE ");
+                for (i, &pred_handle) in predicates.iter().enumerate() {
+                    if i > 0 {
+                        self.buffer.push_str(" AND ");
+                    }
+                    self.emit_expression(arena, pred_handle, false)?;
+                }
             }
 
             self.buffer.push(']');
