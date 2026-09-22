@@ -90,6 +90,7 @@ fn parse_binary_op(s: &str) -> PyResult<BinaryOp> {
         "or" | "|" => Ok(BinaryOp::Or),
         "xor" | "^" => Ok(BinaryOp::Xor),
         "+" | "add" => Ok(BinaryOp::Add),
+        "||" | "concat" => Ok(BinaryOp::Concat),
         "-" | "sub" => Ok(BinaryOp::Sub),
         "*" | "mul" => Ok(BinaryOp::Mul),
         "/" | "div" => Ok(BinaryOp::Div),

@@ -104,6 +104,69 @@ impl IsoGqlEmitter {
         }
     }
 
+    fn emit_quantifier(&mut self, min_hops: Option<u32>, max_hops: Option<u32>) {
+        if min_hops.is_some() || max_hops.is_some() {
+            self.buffer.push('{');
+            if let Some(min) = min_hops {
+                self.buffer.push_str(&min.to_string());
+            } else {
+                self.buffer.push('1');
+            }
+            self.buffer.push(',');
+            if let Some(max) = max_hops {
+                self.buffer.push_str(&max.to_string());
+            }
+            self.buffer.push('}');
+        }
+    }
+
+    fn emit_edge_pattern_unquantified(
+        &mut self,
+        arena: &QueryAstArena,
+        handle: NodeHandle,
+    ) -> Result<()> {
+        let node = arena.get(handle)?;
+        if let AstNode::EdgePattern {
+            variable,
+            edge_types,
+            direction,
+            predicates: _,
+            target_node,
+            ..
+        } = node
+        {
+            match direction {
+                Direction::Incoming => self.buffer.push_str("<-["),
+                Direction::Outgoing | Direction::Undirected => self.buffer.push_str("-["),
+            }
+
+            if let Some(var) = variable {
+                self.buffer.push_str(var);
+            }
+
+            for (i, edge_type) in edge_types.iter().enumerate() {
+                if i == 0 {
+                    self.buffer.push(':');
+                } else {
+                    self.buffer.push('|');
+                }
+                self.buffer.push_str(edge_type);
+            }
+
+            match direction {
+                Direction::Outgoing => self.buffer.push_str("]->"),
+                Direction::Incoming | Direction::Undirected => self.buffer.push_str("]-"),
+            }
+
+            self.emit_node_pattern(arena, *target_node)?;
+            Ok(())
+        } else {
+            Err(Error::AstInvariantViolation(format!(
+                "Expected EdgePattern, got {node:?}"
+            )))
+        }
+    }
+
     fn emit_edge_pattern(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
         let node = arena.get(handle)?;
         if let AstNode::EdgePattern {
@@ -134,24 +197,12 @@ impl IsoGqlEmitter {
                 self.buffer.push_str(edge_type);
             }
 
-            if min_hops.is_some() || max_hops.is_some() {
-                self.buffer.push('{');
-                if let Some(min) = min_hops {
-                    self.buffer.push_str(&min.to_string());
-                } else {
-                    self.buffer.push('1');
-                }
-                self.buffer.push(',');
-                if let Some(max) = max_hops {
-                    self.buffer.push_str(&max.to_string());
-                }
-                self.buffer.push('}');
-            }
-
             match direction {
                 Direction::Outgoing => self.buffer.push_str("]->"),
                 Direction::Incoming | Direction::Undirected => self.buffer.push_str("]-"),
             }
+
+            self.emit_quantifier(*min_hops, *max_hops);
 
             self.emit_node_pattern(arena, *target_node)?;
             Ok(())
@@ -167,6 +218,22 @@ impl IsoGqlEmitter {
         match node {
             AstNode::NodePattern { .. } => self.emit_node_pattern(arena, handle),
             AstNode::PathChain { start_node, edges } => {
+                if edges.len() == 1 {
+                    let edge_node = arena.get(edges[0])?;
+                    if let AstNode::EdgePattern {
+                        min_hops, max_hops, ..
+                    } = edge_node
+                        && (min_hops.is_some() || max_hops.is_some())
+                    {
+                        self.buffer.push('(');
+                        self.emit_node_pattern(arena, *start_node)?;
+                        self.emit_edge_pattern_unquantified(arena, edges[0])?;
+                        self.buffer.push(')');
+                        self.emit_quantifier(*min_hops, *max_hops);
+                        return Ok(());
+                    }
+                }
+
                 self.emit_node_pattern(arena, *start_node)?;
                 for &edge_handle in edges {
                     self.emit_edge_pattern(arena, edge_handle)?;
@@ -249,9 +316,30 @@ impl IsoGqlEmitter {
                     self.buffer.push('(');
                 }
                 self.emit_expression(arena, *left, true)?;
-                self.buffer.push(' ');
-                self.buffer.push_str(&op.to_string());
-                self.buffer.push(' ');
+                match op {
+                    BinaryOp::Concat => {
+                        self.buffer.push_str(" || ");
+                    }
+                    BinaryOp::Add => {
+                        let is_string_concat = matches!(
+                            arena.get(*left),
+                            Ok(AstNode::Literal(LiteralValue::String(_)))
+                        ) || matches!(
+                            arena.get(*right),
+                            Ok(AstNode::Literal(LiteralValue::String(_)))
+                        );
+                        if is_string_concat {
+                            self.buffer.push_str(" || ");
+                        } else {
+                            self.buffer.push_str(" + ");
+                        }
+                    }
+                    other => {
+                        self.buffer.push(' ');
+                        self.buffer.push_str(&other.to_string());
+                        self.buffer.push(' ');
+                    }
+                }
                 self.emit_expression(arena, *right, true)?;
                 if nested {
                     self.buffer.push(')');
@@ -281,7 +369,39 @@ impl IsoGqlEmitter {
                 }
             },
             AstNode::FunctionCall { name, arguments } => {
-                self.buffer.push_str(name);
+                let gql_func = match name.to_ascii_lowercase().as_str() {
+                    "tolower" | "lower" => "lower",
+                    "toupper" | "upper" => "upper",
+                    "length" | "char_length" | "character_length" => "char_length",
+                    "size" | "cardinality" => "cardinality",
+                    "coalesce" => "coalesce",
+                    "trim" => "trim",
+                    "btrim" => "btrim",
+                    "ltrim" => "ltrim",
+                    "rtrim" => "rtrim",
+                    "split" => "split",
+                    "substring" => "substring",
+                    "replace" => "replace",
+                    "reverse" => "reverse",
+                    "left" => "left",
+                    "right" => "right",
+                    "abs" => "abs",
+                    "sqrt" => "sqrt",
+                    "ceil" | "ceiling" => "ceil",
+                    "floor" => "floor",
+                    "round" => "round",
+                    "exp" => "exp",
+                    "ln" | "log" => "ln",
+                    "log10" => "log10",
+                    "sin" => "sin",
+                    "cos" => "cos",
+                    "tan" => "tan",
+                    "asin" => "asin",
+                    "acos" => "acos",
+                    "atan" => "atan",
+                    _ => name.as_str(),
+                };
+                self.buffer.push_str(gql_func);
                 self.buffer.push('(');
                 for (i, &arg) in arguments.iter().enumerate() {
                     if i > 0 {

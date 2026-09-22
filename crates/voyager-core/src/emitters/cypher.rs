@@ -253,9 +253,14 @@ impl CypherEmitter {
                     self.buffer.push('(');
                 }
                 self.emit_expression(arena, *left, true)?;
-                self.buffer.push(' ');
-                self.buffer.push_str(&op.to_string());
-                self.buffer.push(' ');
+                match op {
+                    BinaryOp::Concat => self.buffer.push_str(" + "),
+                    other => {
+                        self.buffer.push(' ');
+                        self.buffer.push_str(&other.to_string());
+                        self.buffer.push(' ');
+                    }
+                }
                 self.emit_expression(arena, *right, true)?;
                 if nested {
                     self.buffer.push(')');
@@ -285,7 +290,12 @@ impl CypherEmitter {
                 }
             },
             AstNode::FunctionCall { name, arguments } => {
-                self.buffer.push_str(name);
+                let cypher_func = match name.to_ascii_lowercase().as_str() {
+                    "cardinality" => "size",
+                    "char_length" | "character_length" => "size",
+                    _ => name.as_str(),
+                };
+                self.buffer.push_str(cypher_func);
                 self.buffer.push('(');
                 for (i, &arg) in arguments.iter().enumerate() {
                     if i > 0 {

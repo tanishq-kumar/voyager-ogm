@@ -805,9 +805,11 @@ impl AstOptimizer {
             }
 
             // --- String Operations ---
-            (LiteralValue::String(a), BinaryOp::Add, LiteralValue::String(b)) => {
-                Some(LiteralValue::String(format!("{a}{b}")))
-            }
+            (
+                LiteralValue::String(a),
+                BinaryOp::Add | BinaryOp::Concat,
+                LiteralValue::String(b),
+            ) => Some(LiteralValue::String(format!("{a}{b}"))),
             (LiteralValue::String(a), BinaryOp::Eq, LiteralValue::String(b)) => {
                 Some(LiteralValue::Bool(a == b))
             }

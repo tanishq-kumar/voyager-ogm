@@ -200,6 +200,10 @@ impl SqlPgqEmitter {
                         self.buffer.push_str(" LIKE '%' || ");
                         self.emit_expression(arena, *right, true)?;
                     }
+                    BinaryOp::Concat => {
+                        self.buffer.push_str(" || ");
+                        self.emit_expression(arena, *right, true)?;
+                    }
                     other => {
                         self.buffer.push(' ');
                         self.buffer.push_str(&other.to_string());
@@ -236,9 +240,10 @@ impl SqlPgqEmitter {
             },
             AstNode::FunctionCall { name, arguments } => {
                 let sql_func = match name.to_ascii_lowercase().as_str() {
-                    "tolower" => "LOWER",
-                    "toupper" => "UPPER",
-                    "size" | "length" => "LENGTH",
+                    "tolower" | "lower" => "LOWER",
+                    "toupper" | "upper" => "UPPER",
+                    "size" | "length" | "char_length" | "character_length" => "LENGTH",
+                    "cardinality" => "CARDINALITY",
                     "coalesce" => "COALESCE",
                     "trim" => "TRIM",
                     "ltrim" => "LTRIM",

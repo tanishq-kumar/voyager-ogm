@@ -124,6 +124,8 @@ pub enum BinaryOp {
     Xor,
     /// Addition (`+`)
     Add,
+    /// String concatenation (`||`)
+    Concat,
     /// Subtraction (`-`)
     Sub,
     /// Multiplication (`*`)
@@ -153,6 +155,7 @@ impl fmt::Display for BinaryOp {
             Self::Or => write!(f, "OR"),
             Self::Xor => write!(f, "XOR"),
             Self::Add => write!(f, "+"),
+            Self::Concat => write!(f, "||"),
             Self::Sub => write!(f, "-"),
             Self::Mul => write!(f, "*"),
             Self::Div => write!(f, "/"),

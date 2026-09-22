@@ -39,7 +39,7 @@ fn test_string_and_scalar_functions() {
     let compiled_gql = gql_emitter.visit_query(&arena, root).unwrap();
     assert_eq!(
         compiled_gql.statement,
-        "MATCH (p:Person) RETURN toLower(p.name) AS lower_name, coalesce(p.email, $p0) AS clean_email, trim(p.name) AS trimmed"
+        "MATCH (p:Person) RETURN lower(p.name) AS lower_name, coalesce(p.email, $p0) AS clean_email, trim(p.name) AS trimmed"
     );
 }
 

@@ -23,9 +23,19 @@ def to_lower(expr: Any) -> FunctionExpr:
     return FunctionExpr("toLower", [to_expression(expr)])
 
 
+def lower(expr: Any) -> FunctionExpr:
+    """Emits `lower(expr)` / `toLower(expr)`."""
+    return to_lower(expr)
+
+
 def to_upper(expr: Any) -> FunctionExpr:
     """Emits `toUpper(expr)`."""
     return FunctionExpr("toUpper", [to_expression(expr)])
+
+
+def upper(expr: Any) -> FunctionExpr:
+    """Emits `upper(expr)` / `toUpper(expr)`."""
+    return to_upper(expr)
 
 
 def trim(expr: Any) -> FunctionExpr:
@@ -81,6 +91,11 @@ def length(expr: Any) -> FunctionExpr:
     return FunctionExpr("length", [to_expression(expr)])
 
 
+def char_length(expr: Any) -> FunctionExpr:
+    """Emits `char_length(expr)` (standard GQL/SQL string length)."""
+    return FunctionExpr("char_length", [to_expression(expr)])
+
+
 def coalesce(*args: Any) -> FunctionExpr:
     """Emits `coalesce(arg1, arg2, ...)`."""
     return FunctionExpr("coalesce", [to_expression(a) for a in args])
@@ -89,6 +104,11 @@ def coalesce(*args: Any) -> FunctionExpr:
 def size(expr: Any) -> FunctionExpr:
     """Emits `size(expr)`."""
     return FunctionExpr("size", [to_expression(expr)])
+
+
+def cardinality(expr: Any) -> FunctionExpr:
+    """Emits `cardinality(expr)` (standard GQL/SQL collection cardinality)."""
+    return FunctionExpr("cardinality", [to_expression(expr)])
 
 
 # List & Array Functions
