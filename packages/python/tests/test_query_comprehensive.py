@@ -315,3 +315,198 @@ def test_query_with_where_before_order_by():
         "WITH p.name, p.age WHERE p.age > $p0 ORDER BY p.age ASC LIMIT 5 RETURN p.name"
         in compiled.statement
     )
+
+
+def test_query_multi_clause_match_optional_match_to_spec():
+    from voyager_ogm._voyager_rs import compile_query_from_spec
+
+    p = Person("p")
+    c = Company("c")
+
+    q = Query.match(p).where(p.age > 20).optional_match(c).where(c.name == "Acme")
+    spec = q.to_spec()
+    assert "matches" in spec
+    assert len(spec["matches"]) == 2
+
+    # Verify first clause is not optional and scoped with its own predicate
+    assert spec["matches"][0]["optional"] is False
+    assert spec["matches"][0]["paths"] == [[("node", "p", ["Person"])]]
+    assert len(spec["matches"][0]["where"]) == 1
+
+    # Verify second clause is optional and scoped with its own predicate
+    assert spec["matches"][1]["optional"] is True
+    assert spec["matches"][1]["paths"] == [[("node", "c", ["Company"])]]
+    assert len(spec["matches"][1]["where"]) == 1
+
+    # Compile via compile_query_from_spec and verify OPTIONAL does not bleed
+    compiled_spec = compile_query_from_spec(spec, "cypher")
+    statement = compiled_spec["statement"]
+    assert "MATCH (p:Person)" in statement
+    assert "OPTIONAL MATCH (p:Person)" not in statement
+    assert "OPTIONAL MATCH (c:Company)" in statement
+    assert "WHERE p.age > $p0" in statement
+    assert "WHERE c.name = $p1" in statement
+
+    # Verify existential subquery with MATCH then OPTIONAL MATCH does not bleed OPTIONAL
+    sub = Query.match(p).optional_match(c)
+    outer = Query.match(p).where(Query.exists(sub)).return_(p.name)
+    compiled_outer = outer.compile("cypher")
+    assert "EXISTS { MATCH (p:Person) OPTIONAL MATCH (c:Company) }" in compiled_outer.statement
+
+
+def test_query_to_spec_mutations_roundtrip():
+    from voyager_ogm._voyager_rs import compile_query_from_spec
+
+    p = Person("p")
+    c = Company("c")
+
+    # MATCH then CREATE
+    q_create = Query.match(p).create(c)
+    spec_create = q_create.to_spec()
+    assert "matches" in spec_create and len(spec_create["matches"]) == 1
+    assert "mutations" in spec_create
+    assert spec_create["mutations"] == [("create", [[("node", "c", ["Company"])]])]
+    res_create = compile_query_from_spec(spec_create, "cypher")
+    assert res_create["statement"] == "MATCH (p:Person) CREATE (c:Company)"
+
+    # Standalone CREATE
+    q_pure_create = Query.create(p)
+    spec_pure_create = q_pure_create.to_spec()
+    assert spec_pure_create["matches"] == []
+    assert spec_pure_create["mutations"] == [("create", [[("node", "p", ["Person"])]])]
+    res_pure_create = compile_query_from_spec(spec_pure_create, "cypher")
+    assert res_pure_create["statement"] == "CREATE (p:Person)"
+
+    # MATCH then MERGE with ON CREATE SET and ON MATCH SET
+    q_merge = (
+        Query.match(p).merge(c).on_create_set(c.name == "Acme").on_match_set(c.name == "AcmeCorp")
+    )
+    spec_merge = q_merge.to_spec()
+    assert "mutations" in spec_merge
+    assert len(spec_merge["mutations"]) == 1
+    assert spec_merge["mutations"][0][0] == "merge"
+    assert spec_merge["mutations"][0][1] == [("node", "c", ["Company"])]
+    assert spec_merge["mutations"][0][2] == [("c", "name", ("lit", "Acme"))]
+    assert spec_merge["mutations"][0][3] == [("c", "name", ("lit", "AcmeCorp"))]
+    res_merge = compile_query_from_spec(spec_merge, "cypher")
+    assert "MATCH (p:Person) MERGE (c:Company)" in res_merge["statement"]
+    assert "ON CREATE SET c.name = $p0" in res_merge["statement"]
+    assert "ON MATCH SET c.name = $p1" in res_merge["statement"]
+
+    # SET and DELETE
+    q_set_del = Query.match(p).set(p.score == 99).delete(p)
+    spec_set_del = q_set_del.to_spec()
+    assert ("set", "p", "score", ("lit", 99)) in spec_set_del["mutations"]
+    assert ("delete", False, ["p"]) in spec_set_del["mutations"]
+    res_set_del = compile_query_from_spec(spec_set_del, "cypher")
+    assert res_set_del["statement"] == "MATCH (p:Person) SET p.score = $p0 DELETE p"
+
+    # DETACH DELETE
+    q_detach = Query.match(p).detach_delete(p)
+    spec_detach = q_detach.to_spec()
+    assert ("delete", True, ["p"]) in spec_detach["mutations"]
+    res_detach = compile_query_from_spec(spec_detach, "cypher")
+    assert res_detach["statement"] == "MATCH (p:Person) DETACH DELETE p"
+
+    # REMOVE
+    q_remove = Query.match(p).remove(p.score)
+    spec_remove = q_remove.to_spec()
+    assert ("remove", "p", "score") in spec_remove["mutations"]
+    res_remove = compile_query_from_spec(spec_remove, "cypher")
+    assert res_remove["statement"] == "MATCH (p:Person) REMOVE p.score"
+
+
+def test_query_subquery_rejects_mutations():
+    p = Person("p")
+    c = Company("c")
+
+    # EXISTS rejects CREATE
+    with pytest.raises(
+        ValueError, match="Subqueries do not support mutating clauses \\(CREATE/MERGE/SET/DELETE\\)"
+    ):
+        Query.exists(Query.match(p).create(c))
+
+    # COUNT rejects CREATE
+    with pytest.raises(
+        ValueError, match="Subqueries do not support mutating clauses \\(CREATE/MERGE/SET/DELETE\\)"
+    ):
+        Query.count(Query.match(p).create(c))
+
+    # Subquery with MERGE
+    with pytest.raises(
+        ValueError, match="Subqueries do not support mutating clauses \\(CREATE/MERGE/SET/DELETE\\)"
+    ):
+        Query.exists(Query.match(p).merge(c))
+
+    # Subquery with SET
+    with pytest.raises(
+        ValueError, match="Subqueries do not support mutating clauses \\(CREATE/MERGE/SET/DELETE\\)"
+    ):
+        Query.exists(Query.match(p).set(p.score == 50))
+
+    # Subquery with DELETE
+    with pytest.raises(
+        ValueError, match="Subqueries do not support mutating clauses \\(CREATE/MERGE/SET/DELETE\\)"
+    ):
+        Query.exists(Query.match(p).delete(p))
+
+    # Subquery with DETACH DELETE
+    with pytest.raises(
+        ValueError, match="Subqueries do not support mutating clauses \\(CREATE/MERGE/SET/DELETE\\)"
+    ):
+        Query.exists(Query.match(p).detach_delete(p))
+
+    # Subquery with REMOVE
+    with pytest.raises(
+        ValueError, match="Subqueries do not support mutating clauses \\(CREATE/MERGE/SET/DELETE\\)"
+    ):
+        Query.exists(Query.match(p).remove(p.score))
+
+
+def test_query_hybrid_chaining_path_boundaries():
+    p = Person("p")
+    c = Company("c")
+
+    # q.match(p).match(c) should produce separate paths matching add_match
+    q_match = Query.match(p).match(c)
+    assert len(q_match._current_paths) == 2
+    assert q_match._current_paths[0] == [("node", "p", ["Person"])]
+    assert q_match._current_paths[1] == [("node", "c", ["Company"])]
+    assert q_match.compile("cypher").statement == "MATCH (p:Person) MATCH (c:Company)"
+
+    q_add_match = Query.match(p).add_match(c)
+    assert q_add_match._current_paths == q_match._current_paths
+    assert q_add_match.compile("cypher").statement == q_match.compile("cypher").statement
+
+    # q.match(p).optional_match(c) should produce separate paths matching add_optional_match
+    q_opt = Query.match(p).optional_match(c)
+    assert len(q_opt._current_paths) == 2
+    assert q_opt._current_paths[0] == [("node", "p", ["Person"])]
+    assert q_opt._current_paths[1] == [("node", "c", ["Company"])]
+    assert q_opt.compile("cypher").statement == "MATCH (p:Person) OPTIONAL MATCH (c:Company)"
+
+    q_add_opt = Query.match(p).add_optional_match(c)
+    assert q_add_opt._current_paths == q_opt._current_paths
+    assert q_add_opt.compile("cypher").statement == q_opt.compile("cypher").statement
+
+    # q.match(p).create(c) should produce separate paths matching add_create
+    q_create = Query.match(p).create(c)
+    assert len(q_create._current_paths) == 2
+    assert q_create._current_paths[0] == [("node", "p", ["Person"])]
+    assert q_create._current_paths[1] == [("node", "c", ["Company"])]
+    assert q_create.compile("cypher").statement == "MATCH (p:Person) CREATE (c:Company)"
+
+    q_add_create = Query.match(p).add_create(c)
+    assert q_add_create._current_paths == q_create._current_paths
+    assert q_add_create.compile("cypher").statement == q_create.compile("cypher").statement
+
+    # q.match(p).merge(c) should produce separate paths matching add_merge
+    q_merge = Query.match(p).merge(c)
+    assert len(q_merge._current_paths) == 2
+    assert q_merge._current_paths[0] == [("node", "p", ["Person"])]
+    assert q_merge._current_paths[1] == [("node", "c", ["Company"])]
+    assert q_merge.compile("cypher").statement == "MATCH (p:Person) MERGE (c:Company)"
+
+    q_add_merge = Query.match(p).add_merge(c)
+    assert q_add_merge._current_paths == q_merge._current_paths
+    assert q_add_merge.compile("cypher").statement == q_merge.compile("cypher").statement

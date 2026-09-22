@@ -338,11 +338,15 @@ def all_shortest_paths(path_pattern: Any) -> FunctionExpr:
 # Subqueries & Conditionals
 def exists(subquery_or_pattern: Any) -> SubqueryExpr:
     """Emits an existential subquery `EXISTS { MATCH ... }`."""
+    if hasattr(subquery_or_pattern, "_mutations") and subquery_or_pattern._mutations:
+        raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
     return SubqueryExpr("exists", subquery_or_pattern)
 
 
 def count(subquery_or_expr: Any) -> Expression:
     """Emits scalar subquery `COUNT { MATCH ... }` if given a Query/subquery, or `count(expr)` function."""
+    if hasattr(subquery_or_expr, "_mutations") and subquery_or_expr._mutations:
+        raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
     from voyager_ogm.query import Query
 
     if isinstance(subquery_or_expr, Query):
