@@ -226,3 +226,42 @@ def test_session_bulk_create_relationships_explicit_properties():
     )
     assert "SET _connected_to_0.weight = row.weight" in plan.statement
     assert "ignored_meta" not in plan.statement
+
+
+def test_session_bulk_create_relationships_missing_fk_keys_raises():
+    """Test session.bulk_create_relationships raises ValueError early when FK keys are missing."""
+    session = Session(dialect="cypher")
+    invalid_data = [{"src": 1, "dst": 2, "weight": 0.5}]
+
+    with pytest.raises(ValueError, match=r"missing required endpoint key\(s\)"):
+        session.bulk_create_relationships(
+            "CONNECTED_TO",
+            invalid_data,
+            from_label="Server",
+            from_key="id",
+            to_label="Server",
+            to_key="id",
+        )
+
+
+def test_session_bulk_create_relationships_empty_properties_bare_rel():
+    """Test session.bulk_create_relationships creates bare relationship with no SET clause when properties=[]."""
+    session = Session(dialect="cypher")
+    edges_data = [
+        {"from_id": 1, "to_id": 2, "extra_note": "do not set"},
+    ]
+
+    plan = session.bulk_create_relationships(
+        "CONNECTED_TO",
+        edges_data,
+        from_label="Server",
+        from_key="id",
+        to_label="Server",
+        to_key="id",
+        properties=[],
+    )
+
+    assert (
+        "CREATE (_from_server_0)-[_connected_to_0:CONNECTED_TO]->(_to_server_0)" in plan.statement
+    )
+    assert "SET" not in plan.statement

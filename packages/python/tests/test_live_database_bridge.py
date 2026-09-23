@@ -294,7 +294,7 @@ def test_live_duckdb_session_ping_dialect_awareness():
         pytest.skip("DuckDB is not installed")
     con = duckdb.connect()
     # 1. Raw RETURN 1 must fail due to Cypher syntax in DuckDB
-    with pytest.raises(Exception, match=r"(?i)syntax error"):
+    with pytest.raises(duckdb.Error):
         con.execute("RETURN 1")
 
     # 2. Session.ping() must succeed using SELECT 1

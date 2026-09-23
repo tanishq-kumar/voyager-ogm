@@ -264,25 +264,43 @@ def create_bulk_create_rel_plan(
     """
     if isinstance(rel_model, str):
         rel_type = rel_model
-        props = list(properties) if properties is not None else []
     else:
         rel_type = getattr(
             rel_model,
             "__type__",
             getattr(rel_model, "__rel_type__", rel_model.__name__.upper()),
         )
-        if properties is not None:
-            props = list(properties)
-        else:
-            fields = getattr(rel_model, "_schema_fields", getattr(rel_model, "__fields__", {}))
-            props = list(fields.keys())
+
+    expected_from = f"from_{from_key}"
+    expected_to = f"to_{to_key}"
 
     batches = list(chunk_dataframe(data, batch_size=batch_size))
     total_records = sum(len(b) for b in batches)
 
-    if not props and batches and batches[0]:
-        skip_keys = {f"from_{from_key}", f"to_{to_key}"}
-        props = [k for k in batches[0][0].keys() if k not in skip_keys]
+    if batches and batches[0]:
+        first_record = batches[0][0]
+        missing = [k for k in (expected_from, expected_to) if k not in first_record]
+        if missing:
+            raise ValueError(
+                f"Bulk relationship data records are missing required endpoint key(s): {missing}. "
+                f"Expected record keys to include '{expected_from}' and '{expected_to}' based on "
+                f"from_key='{from_key}' and to_key='{to_key}'."
+            )
+
+    if properties is not None:
+        props = list(properties)
+    elif isinstance(rel_model, str):
+        if batches and batches[0]:
+            skip_keys = {expected_from, expected_to}
+            props = [k for k in batches[0][0].keys() if k not in skip_keys]
+        else:
+            props = []
+    else:
+        fields = getattr(rel_model, "_schema_fields", getattr(rel_model, "__fields__", {}))
+        props = list(fields.keys())
+        if not props and batches and batches[0]:
+            skip_keys = {expected_from, expected_to}
+            props = [k for k in batches[0][0].keys() if k not in skip_keys]
 
     compiled = _rs_compile_bulk_create_rel(
         rel_type=rel_type,

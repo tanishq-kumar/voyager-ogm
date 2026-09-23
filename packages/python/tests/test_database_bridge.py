@@ -573,6 +573,12 @@ def test_session_ping_dialect_awareness():
     assert session_pgq.ping() is True
     assert bridge_pgq.executed_queries[-1][0] == "SELECT 1"
 
+    # Apache AGE uses SELECT 1
+    bridge_age = FallbackBridge()
+    session_age = Session(bridge=bridge_age, dialect="age")
+    assert session_age.ping() is True
+    assert bridge_age.executed_queries[-1][0] == "SELECT 1"
+
     # MockBridge ping
     mock_bridge = MockBridge()
     session_mock = Session(bridge=mock_bridge, dialect="cypher")
@@ -609,3 +615,66 @@ async def test_async_session_ping_dialect_awareness():
     session_pgq = AsyncSession(bridge=bridge_pgq, dialect="sql_pgq")
     assert await session_pgq.ping() is True
     assert bridge_pgq.executed_queries[-1][0] == "SELECT 1"
+
+    bridge_age = AsyncFallbackBridge()
+    session_age = AsyncSession(bridge=bridge_age, dialect="age")
+    assert await session_age.ping() is True
+    assert bridge_age.executed_queries[-1][0] == "SELECT 1"
+
+
+def test_session_parameter_collision_warning():
+    """Test that runtime parameter key collisions with compiled parameters emit a UserWarning."""
+    bridge = MockBridge()
+    session = Session(bridge=bridge, dialect="cypher")
+
+    q = Query.match(Node("Person", name="Alice")).where(Node("Person").age > 25)
+    compiled = q.compile(dialect="cypher")
+    assert "p0" in compiled.parameters
+
+    with pytest.warns(UserWarning, match=r"Runtime parameter key collision detected: \['p0'\]"):
+        session.execute(compiled, parameters={"p0": 999})
+
+    _, params = bridge.executed_queries[-1]
+    assert params["p0"] == 999
+
+
+@pytest.mark.asyncio
+async def test_async_session_parameter_collision_warning():
+    """Test AsyncSession parameter key collision emits a UserWarning."""
+    bridge = AsyncMockBridge()
+    session = AsyncSession(bridge=bridge, dialect="cypher")
+
+    q = Query.match(Node("Person", name="Bob")).where(Node("Person").age > 30)
+    compiled = q.compile(dialect="cypher")
+    assert "p0" in compiled.parameters
+
+    with pytest.warns(UserWarning, match=r"Runtime parameter key collision detected: \['p0'\]"):
+        await session.execute(compiled, parameters={"p0": 42})
+
+    _, params = bridge.executed_queries[-1]
+    assert params["p0"] == 42
+
+
+def test_session_ping_bridge_exception_contract():
+    """Test that Session.ping returns False when bridge.ping() raises an exception."""
+
+    class RaisingBridge(MockBridge):
+        def ping(self) -> bool:
+            raise ConnectionResetError("Connection lost to database")
+
+    bridge = RaisingBridge()
+    session = Session(bridge=bridge, dialect="cypher")
+    assert session.ping() is False
+
+
+@pytest.mark.asyncio
+async def test_async_session_ping_bridge_exception_contract():
+    """Test that AsyncSession.ping returns False when async bridge.ping() raises an exception."""
+
+    class AsyncRaisingBridge(AsyncMockBridge):
+        async def ping(self) -> bool:
+            raise ConnectionResetError("Async connection lost to database")
+
+    bridge = AsyncRaisingBridge()
+    session = AsyncSession(bridge=bridge, dialect="cypher")
+    assert await session.ping() is False

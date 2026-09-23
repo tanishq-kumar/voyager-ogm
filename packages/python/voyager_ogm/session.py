@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+import warnings
 import weakref
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
@@ -697,7 +698,7 @@ class _SessionBase:
     def _get_ping_statement(self) -> str:
         """Determines the appropriate liveness probe query for the session's dialect."""
         dialect = (self._dialect or "").lower()
-        if "sql" in dialect or dialect in ("duckdb", "postgres", "postgresql"):
+        if "sql" in dialect or "age" in dialect or dialect in ("duckdb", "postgres", "postgresql"):
             return "SELECT 1"
         return "RETURN 1"
 
@@ -786,6 +787,29 @@ class _SessionBase:
                 plans.append((model_cls, nodes, plan))
         return plans
 
+    def _merge_parameters(
+        self,
+        compiled_params: dict[str, Any],
+        runtime_params: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Merges runtime parameters with compiled parameters, warning on key collisions."""
+        if not runtime_params:
+            return dict(compiled_params)
+        collisions = set(runtime_params.keys()) & set(compiled_params.keys())
+        if collisions:
+            collision_keys = sorted(collisions)
+            warnings.warn(
+                f"Runtime parameter key collision detected: {collision_keys}. "
+                f"Runtime values will override compiled parameters.",
+                UserWarning,
+                stacklevel=4,
+            )
+            logger.warning(
+                "Runtime parameter key collision detected: %s. Runtime values will override compiled parameters.",
+                collision_keys,
+            )
+        return {**compiled_params, **runtime_params}
+
     def _prepare_statement(
         self,
         query_or_statement: Query | CompiledQuery | str,
@@ -797,7 +821,7 @@ class _SessionBase:
 
         if isinstance(query_or_statement, CompiledQuery):
             stmt = query_or_statement.statement
-            params = {**query_or_statement.parameters, **(parameters or {})}
+            params = self._merge_parameters(query_or_statement.parameters, parameters)
             q_obj = query_or_statement
         elif isinstance(query_or_statement, Query):
             opt = (
@@ -816,7 +840,7 @@ class _SessionBase:
                 optimization_level=lvl,
             )
             stmt = compiled.statement
-            params = {**compiled.parameters, **(parameters or {})}
+            params = self._merge_parameters(compiled.parameters, parameters)
             q_obj = query_or_statement
         else:
             stmt = str(query_or_statement)
@@ -1084,10 +1108,16 @@ class Session(_SessionBase):
     def ping(self) -> bool:
         """Pings the database connection to verify liveness and network connectivity."""
         if self._active_backend == "native" and self._native_client is not None:
-            return bool(self._native_client.ping_sync())
+            try:
+                return bool(self._native_client.ping_sync())
+            except Exception:
+                return False
         ping_fn = getattr(self._bridge, "ping", None)
         if callable(ping_fn):
-            return bool(ping_fn())
+            try:
+                return bool(ping_fn())
+            except Exception:
+                return False
         try:
             self.execute(self._get_ping_statement())
             return True
@@ -1361,13 +1391,19 @@ class AsyncSession(_SessionBase):
     async def ping(self) -> bool:
         """Pings the database connection asynchronously to verify liveness."""
         if self._active_backend == "native" and self._native_client is not None:
-            return bool(await self._native_client.ping())
+            try:
+                return bool(await self._native_client.ping())
+            except Exception:
+                return False
         ping_fn = getattr(self._bridge, "ping", None)
         if callable(ping_fn):
-            res = ping_fn()
-            if hasattr(res, "__await__"):
-                return bool(await res)
-            return bool(res)
+            try:
+                res = ping_fn()
+                if hasattr(res, "__await__"):
+                    return bool(await res)
+                return bool(res)
+            except Exception:
+                return False
         try:
             await self.execute(self._get_ping_statement())
             return True
