@@ -694,6 +694,13 @@ class _SessionBase:
         """Active database bridge."""
         return self._bridge
 
+    def _get_ping_statement(self) -> str:
+        """Determines the appropriate liveness probe query for the session's dialect."""
+        dialect = (self._dialect or "").lower()
+        if "sql" in dialect or dialect in ("duckdb", "postgres", "postgresql"):
+            return "SELECT 1"
+        return "RETURN 1"
+
     def register(self, node: Any, key_field: str = "id", is_clean: bool = False) -> Any:
         """Registers a node instance with this session's Identity Map."""
         if not self._enable_identity_map:
@@ -790,7 +797,7 @@ class _SessionBase:
 
         if isinstance(query_or_statement, CompiledQuery):
             stmt = query_or_statement.statement
-            params = query_or_statement.parameters
+            params = {**query_or_statement.parameters, **(parameters or {})}
             q_obj = query_or_statement
         elif isinstance(query_or_statement, Query):
             opt = (
@@ -809,7 +816,7 @@ class _SessionBase:
                 optimization_level=lvl,
             )
             stmt = compiled.statement
-            params = compiled.parameters
+            params = {**compiled.parameters, **(parameters or {})}
             q_obj = query_or_statement
         else:
             stmt = str(query_or_statement)
@@ -860,6 +867,7 @@ class _SessionBase:
         to_key: str,
         batch_size: int = 50_000,
         dialect: str | None = None,
+        properties: list[str] | None = None,
     ) -> BulkIngestionPlan:
         """Prepares a high-throughput bulk relationship creation execution plan."""
         target_dialect = dialect or self._dialect
@@ -872,6 +880,7 @@ class _SessionBase:
             to_key=to_key,
             batch_size=batch_size,
             dialect=target_dialect,
+            properties=properties,
         )
 
 
@@ -1080,7 +1089,7 @@ class Session(_SessionBase):
         if callable(ping_fn):
             return bool(ping_fn())
         try:
-            self.execute("RETURN 1")
+            self.execute(self._get_ping_statement())
             return True
         except Exception:
             return False
@@ -1360,7 +1369,7 @@ class AsyncSession(_SessionBase):
                 return bool(await res)
             return bool(res)
         try:
-            await self.execute("RETURN 1")
+            await self.execute(self._get_ping_statement())
             return True
         except Exception:
             return False

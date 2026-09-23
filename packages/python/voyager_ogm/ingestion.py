@@ -244,6 +244,7 @@ def create_bulk_create_rel_plan(
     to_key: str,
     batch_size: int = 50_000,
     dialect: str = "cypher",
+    properties: list[str] | None = None,
 ) -> BulkIngestionPlan:
     """Creates a bulk relationship ingestion execution plan.
 
@@ -256,24 +257,32 @@ def create_bulk_create_rel_plan(
         to_key: Target node matching property name (e.g. "id").
         batch_size: Number of edges per batch transaction.
         dialect: Target graph query dialect ('cypher', 'iso_gql').
+        properties: Explicit list of edge properties to set, or None to infer.
 
     Returns:
         The generated execution plan.
     """
     if isinstance(rel_model, str):
         rel_type = rel_model
-        properties = []
+        props = list(properties) if properties is not None else []
     else:
         rel_type = getattr(
             rel_model,
             "__type__",
             getattr(rel_model, "__rel_type__", rel_model.__name__.upper()),
         )
-        fields = getattr(rel_model, "_schema_fields", getattr(rel_model, "__fields__", {}))
-        properties = list(fields.keys())
+        if properties is not None:
+            props = list(properties)
+        else:
+            fields = getattr(rel_model, "_schema_fields", getattr(rel_model, "__fields__", {}))
+            props = list(fields.keys())
 
     batches = list(chunk_dataframe(data, batch_size=batch_size))
     total_records = sum(len(b) for b in batches)
+
+    if not props and batches and batches[0]:
+        skip_keys = {f"from_{from_key}", f"to_{to_key}"}
+        props = [k for k in batches[0][0].keys() if k not in skip_keys]
 
     compiled = _rs_compile_bulk_create_rel(
         rel_type=rel_type,
@@ -281,7 +290,7 @@ def create_bulk_create_rel_plan(
         from_key=from_key,
         to_label=to_label,
         to_key=to_key,
-        properties=properties,
+        properties=props,
         batch_param="batch",
         row_alias="row",
         dialect=dialect,

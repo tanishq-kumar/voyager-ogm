@@ -175,3 +175,54 @@ def test_session_bulk_create_iso_gql_dialect():
         "UNWIND $batch AS row INSERT (_person_0:Person) "
         "SET _person_0.id = row.id, _person_0.name = row.name, _person_0.age = row.age"
     )
+
+
+def test_session_bulk_create_relationships_string_descriptor_infer_properties():
+    """Test session.bulk_create_relationships infers properties from record batch when given a string rel type."""
+    session = Session(dialect="cypher")
+    edges_data = [
+        {"from_id": "alice", "to_id": "bob", "since": 2021, "role": "admin"},
+        {"from_id": "bob", "to_id": "charlie", "since": 2022, "role": "member"},
+    ]
+
+    plan = session.bulk_create_relationships(
+        "KNOWS",
+        edges_data,
+        from_label="User",
+        from_key="id",
+        to_label="User",
+        to_key="id",
+    )
+
+    assert (
+        "MATCH (_from_user_0:User {id: row.from_id}), (_to_user_0:User {id: row.to_id})"
+        in plan.statement
+    )
+    assert "CREATE (_from_user_0)-[_knows_0:KNOWS]->(_to_user_0)" in plan.statement
+    assert "_knows_0.since = row.since" in plan.statement
+    assert "_knows_0.role = row.role" in plan.statement
+    assert plan.total_records == 2
+
+
+def test_session_bulk_create_relationships_explicit_properties():
+    """Test session.bulk_create_relationships respects explicit properties argument."""
+    session = Session(dialect="cypher")
+    edges_data = [
+        {"from_id": 1, "to_id": 2, "weight": 0.95, "ignored_meta": "skip_me"},
+    ]
+
+    plan = session.bulk_create_relationships(
+        "CONNECTED_TO",
+        edges_data,
+        from_label="Server",
+        from_key="id",
+        to_label="Server",
+        to_key="id",
+        properties=["weight"],
+    )
+
+    assert (
+        "CREATE (_from_server_0)-[_connected_to_0:CONNECTED_TO]->(_to_server_0)" in plan.statement
+    )
+    assert "SET _connected_to_0.weight = row.weight" in plan.statement
+    assert "ignored_meta" not in plan.statement

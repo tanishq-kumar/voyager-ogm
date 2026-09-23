@@ -130,7 +130,7 @@ impl IsoGqlEmitter {
             variable,
             edge_types,
             direction,
-            predicates: _,
+            predicates,
             target_node,
             ..
         } = node
@@ -151,6 +151,17 @@ impl IsoGqlEmitter {
                     self.buffer.push('|');
                 }
                 self.buffer.push_str(edge_type);
+            }
+
+            if !predicates.is_empty() {
+                self.buffer.push_str(" {");
+                for (i, &pred_handle) in predicates.iter().enumerate() {
+                    if i > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.emit_pattern_predicate(arena, pred_handle)?;
+                }
+                self.buffer.push('}');
             }
 
             match direction {
@@ -175,7 +186,7 @@ impl IsoGqlEmitter {
             direction,
             min_hops,
             max_hops,
-            predicates: _,
+            predicates,
             target_node,
         } = node
         {
@@ -195,6 +206,17 @@ impl IsoGqlEmitter {
                     self.buffer.push('|');
                 }
                 self.buffer.push_str(edge_type);
+            }
+
+            if !predicates.is_empty() {
+                self.buffer.push_str(" {");
+                for (i, &pred_handle) in predicates.iter().enumerate() {
+                    if i > 0 {
+                        self.buffer.push_str(", ");
+                    }
+                    self.emit_pattern_predicate(arena, pred_handle)?;
+                }
+                self.buffer.push('}');
             }
 
             match direction {
