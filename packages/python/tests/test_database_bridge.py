@@ -501,3 +501,180 @@ def test_postgres_bridge_asyncpg_connection_not_matched():
 
     conn = FakeAsyncpg()
     assert _is_postgres_conn(conn) is False
+
+
+def test_session_runtime_parameters_merging():
+    """Test session.execute and query.execute retain dynamically supplied runtime parameters."""
+    bridge = MockBridge()
+    session = Session(bridge=bridge, dialect="cypher")
+
+    p = Person()
+    q = Query.match(p).filter(p.age > 21)
+
+    # 1. session.execute(query, parameters={...})
+    session.execute(q, parameters={"runtime_limit": 10})
+    stmt, params = bridge.executed_queries[-1]
+    assert stmt == "MATCH (_person_0:Person) WHERE _person_0.age > $p0"
+    assert params["p0"] == 21
+    assert params["runtime_limit"] == 10
+
+    # 2. query.execute(session, parameters={...})
+    q.execute(session, parameters={"page_size": 50})
+    stmt, params = bridge.executed_queries[-1]
+    assert params["p0"] == 21
+    assert params["page_size"] == 50
+
+    # 3. session.execute(compiled_query, parameters={...})
+    compiled = q.compile(dialect="cypher")
+    session.execute(compiled, parameters={"offset": 100})
+    stmt, params = bridge.executed_queries[-1]
+    assert params["p0"] == 21
+    assert params["offset"] == 100
+
+
+@pytest.mark.asyncio
+async def test_async_session_runtime_parameters_merging():
+    """Test AsyncSession.execute retains dynamically supplied runtime parameters."""
+    bridge = AsyncMockBridge()
+    session = AsyncSession(bridge=bridge, dialect="cypher")
+
+    p = Person()
+    q = Query.match(p).filter(p.age > 25)
+
+    await session.execute(q, parameters={"runtime_limit": 5})
+    stmt, params = bridge.executed_queries[-1]
+    assert stmt == "MATCH (_person_0:Person) WHERE _person_0.age > $p0"
+    assert params["p0"] == 25
+    assert params["runtime_limit"] == 5
+
+    compiled = q.compile(dialect="cypher")
+    await session.execute(compiled, parameters={"offset": 20})
+    stmt, params = bridge.executed_queries[-1]
+    assert params["p0"] == 25
+    assert params["offset"] == 20
+
+
+def test_session_ping_dialect_awareness():
+    """Test Session.ping uses appropriate probing syntax per dialect."""
+    from unittest.mock import MagicMock
+
+    class FallbackBridge(MockBridge):
+        ping = None  # Explicitly disable ping method to test SQL/Cypher fallback execution
+
+    # Fallback with Cypher uses RETURN 1
+    bridge_cypher = FallbackBridge()
+    session_cypher = Session(bridge=bridge_cypher, dialect="cypher")
+    assert session_cypher.ping() is True
+    assert bridge_cypher.executed_queries[-1][0] == "RETURN 1"
+
+    # Fallback with SQL/PGQ uses SELECT 1
+    bridge_pgq = FallbackBridge()
+    session_pgq = Session(bridge=bridge_pgq, dialect="sql_pgq")
+    assert session_pgq.ping() is True
+    assert bridge_pgq.executed_queries[-1][0] == "SELECT 1"
+
+    # Apache AGE uses SELECT 1
+    bridge_age = FallbackBridge()
+    session_age = Session(bridge=bridge_age, dialect="age")
+    assert session_age.ping() is True
+    assert bridge_age.executed_queries[-1][0] == "SELECT 1"
+
+    # MockBridge ping
+    mock_bridge = MockBridge()
+    session_mock = Session(bridge=mock_bridge, dialect="cypher")
+    assert session_mock.ping() is True
+
+    # DuckDB bridge ping
+    mock_duckdb_con = MagicMock()
+    duck_bridge = DuckDbBridge(mock_duckdb_con)
+    session_duck = Session(bridge=duck_bridge, dialect="sql_pgq")
+    assert session_duck.ping() is True
+    mock_duckdb_con.execute.assert_called_with("SELECT 1")
+
+    # Postgres bridge ping
+    mock_pg_conn = MagicMock()
+    pg_bridge = PostgresBridge(mock_pg_conn)
+    session_pg = Session(bridge=pg_bridge, dialect="sql_pgq")
+    assert session_pg.ping() is True
+    mock_pg_conn.cursor.return_value.__enter__.return_value.execute.assert_called_with("SELECT 1")
+
+
+@pytest.mark.asyncio
+async def test_async_session_ping_dialect_awareness():
+    """Test AsyncSession.ping uses appropriate probing syntax per dialect."""
+
+    class AsyncFallbackBridge(AsyncMockBridge):
+        ping = None  # Explicitly disable ping method to test SQL/Cypher fallback execution
+
+    bridge_cypher = AsyncFallbackBridge()
+    session_cypher = AsyncSession(bridge=bridge_cypher, dialect="cypher")
+    assert await session_cypher.ping() is True
+    assert bridge_cypher.executed_queries[-1][0] == "RETURN 1"
+
+    bridge_pgq = AsyncFallbackBridge()
+    session_pgq = AsyncSession(bridge=bridge_pgq, dialect="sql_pgq")
+    assert await session_pgq.ping() is True
+    assert bridge_pgq.executed_queries[-1][0] == "SELECT 1"
+
+    bridge_age = AsyncFallbackBridge()
+    session_age = AsyncSession(bridge=bridge_age, dialect="age")
+    assert await session_age.ping() is True
+    assert bridge_age.executed_queries[-1][0] == "SELECT 1"
+
+
+def test_session_parameter_collision_warning():
+    """Test that runtime parameter key collisions with compiled parameters emit a UserWarning."""
+    bridge = MockBridge()
+    session = Session(bridge=bridge, dialect="cypher")
+
+    q = Query.match(Node("Person", name="Alice")).where(Node("Person").age > 25)
+    compiled = q.compile(dialect="cypher")
+    assert "p0" in compiled.parameters
+
+    with pytest.warns(UserWarning, match=r"Runtime parameter key collision detected: \['p0'\]"):
+        session.execute(compiled, parameters={"p0": 999})
+
+    _, params = bridge.executed_queries[-1]
+    assert params["p0"] == 999
+
+
+@pytest.mark.asyncio
+async def test_async_session_parameter_collision_warning():
+    """Test AsyncSession parameter key collision emits a UserWarning."""
+    bridge = AsyncMockBridge()
+    session = AsyncSession(bridge=bridge, dialect="cypher")
+
+    q = Query.match(Node("Person", name="Bob")).where(Node("Person").age > 30)
+    compiled = q.compile(dialect="cypher")
+    assert "p0" in compiled.parameters
+
+    with pytest.warns(UserWarning, match=r"Runtime parameter key collision detected: \['p0'\]"):
+        await session.execute(compiled, parameters={"p0": 42})
+
+    _, params = bridge.executed_queries[-1]
+    assert params["p0"] == 42
+
+
+def test_session_ping_bridge_exception_contract():
+    """Test that Session.ping returns False when bridge.ping() raises an exception."""
+
+    class RaisingBridge(MockBridge):
+        def ping(self) -> bool:
+            raise ConnectionResetError("Connection lost to database")
+
+    bridge = RaisingBridge()
+    session = Session(bridge=bridge, dialect="cypher")
+    assert session.ping() is False
+
+
+@pytest.mark.asyncio
+async def test_async_session_ping_bridge_exception_contract():
+    """Test that AsyncSession.ping returns False when async bridge.ping() raises an exception."""
+
+    class AsyncRaisingBridge(AsyncMockBridge):
+        async def ping(self) -> bool:
+            raise ConnectionResetError("Async connection lost to database")
+
+    bridge = AsyncRaisingBridge()
+    session = AsyncSession(bridge=bridge, dialect="cypher")
+    assert await session.ping() is False

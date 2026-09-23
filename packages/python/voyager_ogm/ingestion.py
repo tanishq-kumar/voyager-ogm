@@ -244,6 +244,7 @@ def create_bulk_create_rel_plan(
     to_key: str,
     batch_size: int = 50_000,
     dialect: str = "cypher",
+    properties: list[str] | None = None,
 ) -> BulkIngestionPlan:
     """Creates a bulk relationship ingestion execution plan.
 
@@ -256,24 +257,50 @@ def create_bulk_create_rel_plan(
         to_key: Target node matching property name (e.g. "id").
         batch_size: Number of edges per batch transaction.
         dialect: Target graph query dialect ('cypher', 'iso_gql').
+        properties: Explicit list of edge properties to set, or None to infer.
 
     Returns:
         The generated execution plan.
     """
     if isinstance(rel_model, str):
         rel_type = rel_model
-        properties = []
     else:
         rel_type = getattr(
             rel_model,
             "__type__",
             getattr(rel_model, "__rel_type__", rel_model.__name__.upper()),
         )
-        fields = getattr(rel_model, "_schema_fields", getattr(rel_model, "__fields__", {}))
-        properties = list(fields.keys())
+
+    expected_from = f"from_{from_key}"
+    expected_to = f"to_{to_key}"
 
     batches = list(chunk_dataframe(data, batch_size=batch_size))
     total_records = sum(len(b) for b in batches)
+
+    if batches and batches[0]:
+        first_record = batches[0][0]
+        missing = [k for k in (expected_from, expected_to) if k not in first_record]
+        if missing:
+            raise ValueError(
+                f"Bulk relationship data records are missing required endpoint key(s): {missing}. "
+                f"Expected record keys to include '{expected_from}' and '{expected_to}' based on "
+                f"from_key='{from_key}' and to_key='{to_key}'."
+            )
+
+    if properties is not None:
+        props = list(properties)
+    elif isinstance(rel_model, str):
+        if batches and batches[0]:
+            skip_keys = {expected_from, expected_to}
+            props = [k for k in batches[0][0].keys() if k not in skip_keys]
+        else:
+            props = []
+    else:
+        fields = getattr(rel_model, "_schema_fields", getattr(rel_model, "__fields__", {}))
+        props = list(fields.keys())
+        if not props and batches and batches[0]:
+            skip_keys = {expected_from, expected_to}
+            props = [k for k in batches[0][0].keys() if k not in skip_keys]
 
     compiled = _rs_compile_bulk_create_rel(
         rel_type=rel_type,
@@ -281,7 +308,7 @@ def create_bulk_create_rel_plan(
         from_key=from_key,
         to_label=to_label,
         to_key=to_key,
-        properties=properties,
+        properties=props,
         batch_param="batch",
         row_alias="row",
         dialect=dialect,

@@ -241,6 +241,10 @@ class MockBridge:
             statement=statement,
         )
 
+    def ping(self) -> bool:
+        """Pings the mock bridge."""
+        return True
+
     def close(self) -> None:
         """Closes the bridge."""
         pass
@@ -308,6 +312,10 @@ class AsyncMockBridge:
             BulkExecutionResult.
         """
         return self.sync_mock.execute_bulk(plan_or_statement, batches)
+
+    async def ping(self) -> bool:
+        """Pings the async mock bridge."""
+        return True
 
     async def close(self) -> None:
         """Closes bridge."""
@@ -403,6 +411,20 @@ class Neo4jBoltBridge:
             duration_seconds=time.perf_counter() - start_time,
             statement=statement,
         )
+
+    def ping(self) -> bool:
+        """Pings Neo4j connection to verify liveness."""
+        if hasattr(self.driver, "verify_connectivity"):
+            try:
+                self.driver.verify_connectivity()
+                return True
+            except Exception:
+                return False
+        try:
+            self.execute("RETURN 1")
+            return True
+        except Exception:
+            return False
 
     def close(self) -> None:
         """Closes the underlying driver."""
@@ -500,6 +522,22 @@ class AsyncNeo4jBoltBridge:
             duration_seconds=time.perf_counter() - start_time,
             statement=statement,
         )
+
+    async def ping(self) -> bool:
+        """Pings Neo4j connection asynchronously to verify liveness."""
+        if hasattr(self.driver, "verify_connectivity"):
+            try:
+                res = self.driver.verify_connectivity()
+                if hasattr(res, "__await__"):
+                    await res
+                return True
+            except Exception:
+                return False
+        try:
+            await self.execute("RETURN 1")
+            return True
+        except Exception:
+            return False
 
     async def close(self) -> None:
         """Closes the underlying async driver."""
@@ -661,6 +699,14 @@ class DuckDbBridge:
         finally:
             self.con.unregister("_voyager_temp_batch")
 
+    def ping(self) -> bool:
+        """Pings DuckDB to verify connection liveness."""
+        try:
+            self.con.execute("SELECT 1")
+            return True
+        except Exception:
+            return False
+
     def close(self) -> None:
         """Closes connection."""
         if hasattr(self.con, "close"):
@@ -721,6 +767,10 @@ class AsyncDuckDbBridge:
             BulkExecutionResult.
         """
         return await asyncio.to_thread(self.sync_bridge.execute_bulk, plan_or_statement, batches)
+
+    async def ping(self) -> bool:
+        """Pings DuckDB asynchronously to verify connection liveness."""
+        return await asyncio.to_thread(self.sync_bridge.ping)
 
     async def close(self) -> None:
         """Closes connection asynchronously."""
@@ -863,6 +913,15 @@ class PostgresBridge:
             statement=statement,
         )
 
+    def ping(self) -> bool:
+        """Pings PostgreSQL to verify connection liveness."""
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            return True
+        except Exception:
+            return False
+
     def close(self) -> None:
         """Closes connection."""
         if hasattr(self.conn, "close"):
@@ -899,6 +958,10 @@ class AsyncPostgresBridge:
     ) -> BulkExecutionResult:
         """Asynchronously executes bulk ingestion plan."""
         return await asyncio.to_thread(self.sync_bridge.execute_bulk, plan_or_statement, batches)
+
+    async def ping(self) -> bool:
+        """Pings PostgreSQL asynchronously to verify connection liveness."""
+        return await asyncio.to_thread(self.sync_bridge.ping)
 
     async def close(self) -> None:
         """Closes connection asynchronously."""

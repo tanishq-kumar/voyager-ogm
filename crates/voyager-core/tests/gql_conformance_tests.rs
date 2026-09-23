@@ -9,7 +9,7 @@
 //! 6. Graph DML Mutations (INSERT, UPSERT, SET, REMOVE, DELETE)
 //! 7. Batch Unrolling (UNWIND $batch) and Procedure Calls (CALL ... YIELD)
 
-use voyager_core::ast::{AggregationFunc, BinaryOp, LiteralValue};
+use voyager_core::ast::{AggregationFunc, AstNode, BinaryOp, LiteralValue};
 use voyager_core::builder::QueryBuilder;
 use voyager_core::emitters::iso_gql::IsoGqlEmitter;
 use voyager_core::visitor::AstVisitor;
@@ -523,5 +523,51 @@ fn test_gql_standard_functions_and_concatenation_conformance() {
     assert_eq!(
         res.statement,
         "MATCH (p:Person) RETURN lower(p.name) AS lower_name, upper(p.name) AS upper_name, char_length(p.city) AS city_len, cardinality(p.skills) AS skill_count, $p0 || p.name AS greeting"
+    );
+}
+
+#[test]
+fn test_gql_edge_pattern_predicates_conformance() {
+    let mut builder = QueryBuilder::new();
+    let f_ident = builder.ident("f");
+    builder
+        .r#match()
+        .node(Some("u"), vec!["User"])
+        .to(vec!["KNOWS"], Some("r"))
+        .node(Some("f"), vec!["Person"])
+        .r#return()
+        .select_expr(f_ident, None::<String>);
+
+    let (mut arena, root) = builder.build();
+
+    let r_ident = arena.alloc(AstNode::Identifier("r".to_string()));
+    let prop_access = arena.alloc(AstNode::PropertyAccess {
+        target: r_ident,
+        property: "since".to_string(),
+    });
+    let lit_val = arena.alloc(AstNode::Literal(LiteralValue::Int64(2020)));
+    let eq_pred = arena.alloc(AstNode::BinaryExpression {
+        left: prop_access,
+        op: BinaryOp::Eq,
+        right: lit_val,
+    });
+
+    for handle_idx in 0..arena.len() {
+        let handle = voyager_core::ast::NodeHandle(handle_idx as u32);
+        if let Ok(AstNode::EdgePattern { predicates, .. }) = arena.get_mut(handle) {
+            predicates.push(eq_pred);
+            break;
+        }
+    }
+
+    let mut emitter = IsoGqlEmitter::new();
+    let compiled = emitter.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        compiled.statement,
+        "MATCH (u:User)-[r:KNOWS {since: $p0}]->(f:Person) RETURN f"
+    );
+    assert_eq!(
+        compiled.parameters.get("p0"),
+        Some(&LiteralValue::Int64(2020))
     );
 }
