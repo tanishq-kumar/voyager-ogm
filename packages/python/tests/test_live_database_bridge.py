@@ -29,6 +29,14 @@ try:
 except ImportError:
     NEO4J_AVAILABLE = False
 
+try:
+    import duckdb
+
+    DUCKDB_AVAILABLE = True
+except ImportError:
+    duckdb = None
+    DUCKDB_AVAILABLE = False
+
 
 NEO4J_URI = "bolt://127.0.0.1:7687"
 NEO4J_AUTH = ("neo4j", "voyagerpass123")
@@ -278,3 +286,84 @@ def test_live_neo4j_fluent_builder_with_clause_and_pagination(clean_neo4j):
     page_records = session.execute(page_q)
     page_names = [r[p2.alias]["name"] for r in page_records]
     assert page_names == ["David", "Alice"]
+
+
+def test_live_duckdb_session_ping_dialect_awareness():
+    """Test Session.ping on live DuckDB runs SELECT 1 without syntax errors, while raw RETURN 1 fails."""
+    if not DUCKDB_AVAILABLE:
+        pytest.skip("DuckDB is not installed")
+    con = duckdb.connect()
+    # 1. Raw RETURN 1 must fail due to Cypher syntax in DuckDB
+    with pytest.raises(Exception, match=r"(?i)syntax error"):
+        con.execute("RETURN 1")
+
+    # 2. Session.ping() must succeed using SELECT 1
+    session = Session(bridge=con, dialect="sql_pgq")
+    assert session.ping() is True
+
+
+@pytest.mark.skipif(not NEO4J_ONLINE, reason="Live Neo4j instance not online on localhost:7687")
+def test_live_neo4j_session_ping_and_parameters_merging(clean_neo4j):
+    """Test Session.ping and runtime parameter merging on live Neo4j."""
+    session = Session(bridge=clean_neo4j, dialect="cypher")
+
+    # 1. Session.ping() liveness check
+    assert session.ping() is True
+
+    # 2. Seed data
+    session.execute("CREATE (:LivePerson {id: 1, name: 'Alice', age: 30})")
+    session.execute("CREATE (:LivePerson {id: 2, name: 'Bob', age: 20})")
+
+    # 3. Query with runtime parameters merged
+    p = LivePerson()
+    query = Query.match(p).where(p.age > 25).return_(p.name)
+    res = query.execute(session, parameters={"extra_param": "test"})
+    names = res.scalars().all()
+    assert names == ["Alice"]
+
+
+@pytest.mark.skipif(not NEO4J_ONLINE, reason="Live Neo4j instance not online on localhost:7687")
+@pytest.mark.asyncio
+async def test_live_neo4j_async_session_ping():
+    """Test AsyncSession.ping liveness check on live Neo4j."""
+    async_driver = AsyncGraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
+    try:
+        session = AsyncSession(bridge=async_driver, dialect="cypher")
+        assert await session.ping() is True
+    finally:
+        await async_driver.close()
+
+
+@pytest.mark.skipif(not NEO4J_ONLINE, reason="Live Neo4j instance not online on localhost:7687")
+def test_live_neo4j_bulk_create_relationships_string_descriptor(clean_neo4j):
+    """Test bulk relationship creation with string type descriptor and inferred properties on live Neo4j."""
+    session = Session(bridge=clean_neo4j, dialect="cypher")
+
+    # 1. Seed endpoint nodes
+    session.execute("CREATE (:LivePerson {id: 1, name: 'Alice', age: 30})")
+    session.execute("CREATE (:LivePerson {id: 2, name: 'Bob', age: 25})")
+
+    # 2. Ingest relationship using string type "COLLABORATES_WITH" with dynamic properties
+    edges = [
+        {"from_id": 1, "to_id": 2, "since": 2023, "role": "lead"},
+    ]
+    plan = session.bulk_create_relationships(
+        "COLLABORATES_WITH",
+        edges,
+        from_label="LivePerson",
+        from_key="id",
+        to_label="LivePerson",
+        to_key="id",
+    )
+    result = session.run_bulk(plan)
+    assert result.total_records == 1
+
+    # 3. Read back relationship from live Neo4j and assert properties were physically persisted
+    res = session.execute(
+        "MATCH (a:LivePerson {id: 1})-[r:COLLABORATES_WITH]->(b:LivePerson {id: 2}) "
+        "RETURN r.since AS since, r.role AS role"
+    )
+    rows = res.mappings().all()
+    assert len(rows) == 1
+    assert rows[0]["since"] == 2023
+    assert rows[0]["role"] == "lead"
