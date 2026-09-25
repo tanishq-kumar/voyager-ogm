@@ -24,6 +24,8 @@
 //! let (arena, root_handle) = builder.build();
 //! ```
 
+use std::collections::HashSet;
+
 use crate::ast::{
     AggregationFunc, AstNode, BinaryOp, Direction, LiteralValue, NodeHandle, ProjectionItem,
     QueryAstArena, UnaryOp,
@@ -1156,6 +1158,157 @@ impl QueryBuilder {
         f(&mut sub);
         let (sub_arena, sub_handle) = sub.build();
         self.import_subarena(sub_arena, sub_handle)
+    }
+
+    /// Returns true if this query builder contains any mutation clauses (CREATE, MERGE, SET, DELETE, REMOVE).
+    pub fn has_mutations(&self) -> bool {
+        !self.mutation_clauses.is_empty()
+            || !self.current_set_items.is_empty()
+            || !self.current_on_create_set.is_empty()
+            || !self.current_on_match_set.is_empty()
+            || matches!(
+                self.clause_mode,
+                Some(ClauseMode::Create | ClauseMode::Merge)
+            )
+    }
+
+    /// Imports match path patterns and associated filters from another QueryBuilder into this builder.
+    ///
+    /// Variable declarations are deduplicated against `seen_vars`: variables already present in `seen_vars`
+    /// will be referenced by variable alias without repeating label declarations.
+    pub fn import_match_patterns(
+        &mut self,
+        other: &mut QueryBuilder,
+        seen_vars: &mut HashSet<String>,
+    ) {
+        other.flush_current_path();
+
+        if self.clause_mode.is_none() {
+            self.r#match();
+        }
+
+        for &match_handle in &other.match_clauses {
+            let (paths, where_clause) = match other.arena.get(match_handle) {
+                Ok(AstNode::MatchClause {
+                    paths,
+                    where_clause,
+                    ..
+                }) => (paths.clone(), *where_clause),
+                _ => continue,
+            };
+
+            for path_handle in paths {
+                if self.current_path_start.is_some() || !self.current_match_paths.is_empty() {
+                    self.pattern();
+                }
+
+                match other.arena.get(path_handle) {
+                    Ok(AstNode::NodePattern {
+                        variable, labels, ..
+                    }) => {
+                        let (var, lbls) = if let Some(v) = variable {
+                            if seen_vars.contains(v) {
+                                (Some(v.clone()), Vec::new())
+                            } else {
+                                seen_vars.insert(v.clone());
+                                (Some(v.clone()), labels.clone())
+                            }
+                        } else {
+                            (None, labels.clone())
+                        };
+                        self.node(var, lbls);
+                    }
+                    Ok(AstNode::PathChain { start_node, edges }) => {
+                        let start_handle = *start_node;
+                        let edge_handles = edges.clone();
+
+                        if let Ok(AstNode::NodePattern {
+                            variable, labels, ..
+                        }) = other.arena.get(start_handle)
+                        {
+                            let (var, lbls) = if let Some(v) = variable {
+                                if seen_vars.contains(v) {
+                                    (Some(v.clone()), Vec::new())
+                                } else {
+                                    seen_vars.insert(v.clone());
+                                    (Some(v.clone()), labels.clone())
+                                }
+                            } else {
+                                (None, labels.clone())
+                            };
+                            self.node(var, lbls);
+                        }
+
+                        for edge_h in edge_handles {
+                            if let Ok(AstNode::EdgePattern {
+                                variable,
+                                edge_types,
+                                direction,
+                                min_hops,
+                                max_hops,
+                                target_node,
+                                ..
+                            }) = other.arena.get(edge_h)
+                            {
+                                if let Some(e_var) = variable {
+                                    seen_vars.insert(e_var.clone());
+                                }
+                                match direction {
+                                    Direction::Outgoing => {
+                                        self.to(edge_types.clone(), variable.clone());
+                                    }
+                                    Direction::Incoming => {
+                                        self.from(edge_types.clone(), variable.clone());
+                                    }
+                                    Direction::Undirected => {
+                                        self.edge(edge_types.clone(), variable.clone());
+                                    }
+                                }
+                                if min_hops.is_some() || max_hops.is_some() {
+                                    let min = min_hops.unwrap_or(1);
+                                    let max = max_hops.unwrap_or(min);
+                                    self.hops(min, max);
+                                }
+
+                                if let Ok(AstNode::NodePattern {
+                                    variable: target_var,
+                                    labels: target_lbls,
+                                    ..
+                                }) = other.arena.get(*target_node)
+                                {
+                                    let (t_var, t_lbls) = if let Some(v) = target_var {
+                                        if seen_vars.contains(v) {
+                                            (Some(v.clone()), Vec::new())
+                                        } else {
+                                            seen_vars.insert(v.clone());
+                                            (Some(v.clone()), target_lbls.clone())
+                                        }
+                                    } else {
+                                        (None, target_lbls.clone())
+                                    };
+                                    self.node(t_var, t_lbls);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if let Some(wh_handle) = where_clause
+                && let Ok(AstNode::WhereClause { root_predicate }) = other.arena.get(wh_handle)
+            {
+                let pred = *root_predicate;
+                let offset = self.arena.len() as u32;
+                for node in other.arena.nodes() {
+                    let mut cloned = node.clone();
+                    remap_ast_node(&mut cloned, offset);
+                    self.arena.alloc(cloned);
+                }
+                let remapped_pred = remap_handle(pred, offset);
+                self.where_expr(remapped_pred);
+            }
+        }
     }
 }
 

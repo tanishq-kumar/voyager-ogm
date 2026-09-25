@@ -355,21 +355,45 @@ def all_shortest_paths(path_pattern: Any) -> FunctionExpr:
     return FunctionExpr("allShortestPaths", [to_expression(path_pattern)])
 
 
+def _has_mutations(target: Any) -> bool:
+    """Checks whether a target query or AST container contains mutating clauses."""
+    if hasattr(target, "has_mutations") and callable(target.has_mutations):
+        return bool(target.has_mutations())
+    if (
+        hasattr(target, "_native")
+        and hasattr(target._native, "has_mutations")
+        and callable(target._native.has_mutations)
+    ):
+        return bool(target._native.has_mutations())
+    if hasattr(target, "_mutations") and target._mutations:
+        return True
+    return False
+
+
+def _is_query_like(target: Any) -> bool:
+    """Detects if an object behaves as a Query / subquery without importing Query directly."""
+    return (
+        hasattr(target, "compile")
+        or hasattr(target, "_native")
+        or hasattr(target, "_match_clauses")
+        or type(target).__name__ in ("Query", "Path")
+    )
+
+
 # Subqueries & Conditionals
 def exists(subquery_or_pattern: Any) -> SubqueryExpr:
     """Emits an existential subquery `EXISTS { MATCH ... }`."""
-    if hasattr(subquery_or_pattern, "_mutations") and subquery_or_pattern._mutations:
+    if _has_mutations(subquery_or_pattern):
         raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
     return SubqueryExpr("exists", subquery_or_pattern)
 
 
 def count(subquery_or_expr: Any) -> Expression:
     """Emits scalar subquery `COUNT { MATCH ... }` if given a Query/subquery, or `count(expr)` function."""
-    if hasattr(subquery_or_expr, "_mutations") and subquery_or_expr._mutations:
+    if _has_mutations(subquery_or_expr):
         raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
-    from voyager_ogm.query import Query
 
-    if isinstance(subquery_or_expr, Query):
+    if _is_query_like(subquery_or_expr):
         return SubqueryExpr("count", subquery_or_expr)
     return FunctionExpr("count", [to_expression(subquery_or_expr)])
 

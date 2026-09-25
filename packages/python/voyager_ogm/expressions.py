@@ -375,18 +375,33 @@ class PatternCompExpr(Expression):
         return f"[({self.path!r}){wh_str} | {self.proj!r}]"
 
 
+def _has_mutations(target: Any) -> bool:
+    """Checks whether a target query or AST container contains mutating clauses."""
+    if hasattr(target, "has_mutations") and callable(target.has_mutations):
+        return bool(target.has_mutations())
+    if (
+        hasattr(target, "_native")
+        and hasattr(target._native, "has_mutations")
+        and callable(target._native.has_mutations)
+    ):
+        return bool(target._native.has_mutations())
+    if hasattr(target, "_mutations") and target._mutations:
+        return True
+    return False
+
+
 class SubqueryExpr(Expression):
     """Existential or Scalar count subquery expression: `EXISTS { MATCH ... }` or `COUNT { MATCH ... }`."""
 
     def __init__(self, kind: str, subquery: Any) -> None:
-        if hasattr(subquery, "_mutations") and subquery._mutations:
+        if _has_mutations(subquery):
             raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
         self.kind = kind
         self.subquery = subquery
 
     def to_spec(self) -> tuple[str, Any]:
         """Converts this subquery into an AST spec descriptor tuple."""
-        if hasattr(self.subquery, "_mutations") and self.subquery._mutations:
+        if _has_mutations(self.subquery):
             raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
         sub_spec = self.subquery.to_spec() if hasattr(self.subquery, "to_spec") else self.subquery
         return (self.kind, sub_spec)
@@ -402,9 +417,9 @@ class AliasedExpr(Expression):
         self.expr = expr
         self.alias = alias
 
-    def to_spec(self) -> Any:
+    def to_spec(self) -> tuple[str, Any, str]:
         """Converts the inner aliased expression into an AST spec descriptor tuple."""
-        return self.expr.to_spec()
+        return ("alias", self.expr.to_spec(), self.alias)
 
     def __repr__(self) -> str:
         return f"{self.expr!r} AS {self.alias}"

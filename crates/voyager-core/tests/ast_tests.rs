@@ -355,3 +355,138 @@ fn test_memgraph_gqlalchemy_chaining_style() {
         }
     }
 }
+
+#[test]
+fn test_query_builder_has_mutations() {
+    // Pure read query
+    let mut read_b = QueryBuilder::new();
+    read_b
+        .match_node(Some("p"), vec!["Person"])
+        .where_eq("p", "age", 30)
+        .select_property("p", "name", None::<String>);
+    assert!(!read_b.has_mutations());
+
+    // Create clause
+    let mut create_b = QueryBuilder::new();
+    create_b.create().node(Some("n"), vec!["Node"]);
+    assert!(create_b.has_mutations());
+
+    // Merge clause
+    let mut merge_b = QueryBuilder::new();
+    merge_b.merge().node(Some("n"), vec!["Node"]);
+    assert!(merge_b.has_mutations());
+
+    // Set clause
+    let mut set_b = QueryBuilder::new();
+    set_b
+        .r#match()
+        .node(Some("n"), vec!["Node"])
+        .set_property("n", "active", true);
+    assert!(set_b.has_mutations());
+
+    // Delete clause
+    let mut del_b = QueryBuilder::new();
+    del_b
+        .r#match()
+        .node(Some("n"), vec!["Node"])
+        .delete(vec!["n"]);
+    assert!(del_b.has_mutations());
+
+    // Detach delete clause
+    let mut detach_b = QueryBuilder::new();
+    detach_b
+        .r#match()
+        .node(Some("n"), vec!["Node"])
+        .detach_delete(vec!["n"]);
+    assert!(detach_b.has_mutations());
+
+    // Remove property clause
+    let mut rem_b = QueryBuilder::new();
+    rem_b
+        .r#match()
+        .node(Some("n"), vec!["Node"])
+        .remove_property("n", "score");
+    assert!(rem_b.has_mutations());
+}
+
+#[test]
+fn test_query_builder_import_match_patterns_deduplication() {
+    use std::collections::HashSet;
+
+    let mut p1 = QueryBuilder::new();
+    p1.r#match()
+        .node(Some("p"), vec!["Person"])
+        .to(vec!["WORKS_AT"], None::<String>)
+        .node(Some("c"), vec!["Company"]);
+
+    let mut p2 = QueryBuilder::new();
+    p2.r#match()
+        .node(Some("p"), vec!["Person"])
+        .to(vec!["MANAGES"], None::<String>)
+        .node(Some("c"), vec!["Company"]);
+
+    let mut main_b = QueryBuilder::new();
+    let mut seen_vars = HashSet::new();
+
+    main_b.import_match_patterns(&mut p1, &mut seen_vars);
+    assert!(seen_vars.contains("p"));
+    assert!(seen_vars.contains("c"));
+
+    main_b.import_match_patterns(&mut p2, &mut seen_vars);
+
+    let (arena, root) = main_b.build();
+    let root_node = arena.get(root).unwrap();
+    if let AstNode::QueryStatement { matches, .. } = root_node {
+        assert_eq!(matches.len(), 1);
+        let match_node = arena.get(matches[0]).unwrap();
+        if let AstNode::MatchClause { paths, .. } = match_node {
+            assert_eq!(paths.len(), 2);
+
+            // Path 1 should have labels
+            if let AstNode::PathChain { start_node, edges } = arena.get(paths[0]).unwrap() {
+                if let AstNode::NodePattern {
+                    variable, labels, ..
+                } = arena.get(*start_node).unwrap()
+                {
+                    assert_eq!(variable.as_deref(), Some("p"));
+                    assert_eq!(labels, &["Person"]);
+                }
+                let edge = arena.get(edges[0]).unwrap();
+                if let AstNode::EdgePattern { target_node, .. } = edge
+                    && let AstNode::NodePattern {
+                        variable, labels, ..
+                    } = arena.get(*target_node).unwrap()
+                {
+                    assert_eq!(variable.as_deref(), Some("c"));
+                    assert_eq!(labels, &["Company"]);
+                }
+            }
+
+            // Path 2 should have NO labels because p and c were in seen_vars
+            if let AstNode::PathChain { start_node, edges } = arena.get(paths[1]).unwrap() {
+                if let AstNode::NodePattern {
+                    variable, labels, ..
+                } = arena.get(*start_node).unwrap()
+                {
+                    assert_eq!(variable.as_deref(), Some("p"));
+                    assert!(
+                        labels.is_empty(),
+                        "Expected empty labels for reused variable p, got {labels:?}"
+                    );
+                }
+                let edge = arena.get(edges[0]).unwrap();
+                if let AstNode::EdgePattern { target_node, .. } = edge
+                    && let AstNode::NodePattern {
+                        variable, labels, ..
+                    } = arena.get(*target_node).unwrap()
+                {
+                    assert_eq!(variable.as_deref(), Some("c"));
+                    assert!(
+                        labels.is_empty(),
+                        "Expected empty labels for reused variable c, got {labels:?}"
+                    );
+                }
+            }
+        }
+    }
+}

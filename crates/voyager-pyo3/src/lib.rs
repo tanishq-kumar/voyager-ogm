@@ -248,6 +248,10 @@ fn py_to_node_handle_depth(
                 }
                 Ok(builder.list_literal(item_handles))
             }
+            "alias" => {
+                let inner = tuple.get_item(1)?;
+                py_to_node_handle_depth(builder, &inner, depth + 1)
+            }
             other => Err(PyValueError::new_err(format!(
                 "Unknown expression tuple tag: '{other}'"
             ))),
@@ -504,7 +508,20 @@ fn build_query_from_spec_internal(
                                 }
                                 "expr" => {
                                     let expr_spec = tuple.get_item(1)?;
-                                    let alias: Option<String> = tuple.get_item(2)?.extract()?;
+                                    let mut alias: Option<String> = tuple.get_item(2)?.extract()?;
+                                    if alias.is_none() {
+                                        if let Ok(spec_tuple) = expr_spec.downcast::<PyTuple>() {
+                                            if !spec_tuple.is_empty()
+                                                && spec_tuple
+                                                    .get_item(0)?
+                                                    .extract::<String>()
+                                                    .map(|t| t == "alias")
+                                                    .unwrap_or(false)
+                                            {
+                                                alias = spec_tuple.get_item(2)?.extract().ok();
+                                            }
+                                        }
+                                    }
                                     let h = py_to_node_handle(builder, &expr_spec)?;
                                     builder.select_expr(h, alias);
                                 }
@@ -624,7 +641,20 @@ fn build_query_from_spec_internal(
                         }
                         "expr" => {
                             let expr_spec = tuple.get_item(1)?;
-                            let alias: Option<String> = tuple.get_item(2)?.extract()?;
+                            let mut alias: Option<String> = tuple.get_item(2)?.extract()?;
+                            if alias.is_none() {
+                                if let Ok(spec_tuple) = expr_spec.downcast::<PyTuple>() {
+                                    if !spec_tuple.is_empty()
+                                        && spec_tuple
+                                            .get_item(0)?
+                                            .extract::<String>()
+                                            .map(|t| t == "alias")
+                                            .unwrap_or(false)
+                                    {
+                                        alias = spec_tuple.get_item(2)?.extract().ok();
+                                    }
+                                }
+                            }
                             let h = py_to_node_handle(builder, &expr_spec)?;
                             builder.select_expr(h, alias);
                         }
@@ -728,6 +758,24 @@ impl PyQueryBuilder {
         self.inner.pattern();
     }
 
+    fn has_mutations(&self) -> bool {
+        self.inner.has_mutations()
+    }
+
+    #[pyo3(signature = (other, seen_vars=None))]
+    fn import_match_patterns(
+        &mut self,
+        other: &Bound<'_, PyQueryBuilder>,
+        seen_vars: Option<Vec<String>>,
+    ) -> PyResult<Vec<String>> {
+        let mut other_ref = other.borrow_mut();
+        let mut vars_set: std::collections::HashSet<String> =
+            seen_vars.unwrap_or_default().into_iter().collect();
+        self.inner
+            .import_match_patterns(&mut other_ref.inner, &mut vars_set);
+        Ok(vars_set.into_iter().collect())
+    }
+
     #[pyo3(signature = (variable=None, labels=vec![]))]
     fn node(&mut self, variable: Option<String>, labels: Vec<String>) {
         self.inner.node(variable, labels);
@@ -761,8 +809,25 @@ impl PyQueryBuilder {
 
     #[pyo3(signature = (expr, alias=None))]
     fn select_expr(&mut self, expr: &Bound<'_, PyAny>, alias: Option<String>) -> PyResult<()> {
-        let h = py_to_node_handle(&mut self.inner, expr)?;
-        self.inner.select_expr(h, alias);
+        let (h, resolved_alias) = if let Ok(tuple) = expr.downcast::<PyTuple>() {
+            if !tuple.is_empty()
+                && tuple
+                    .get_item(0)?
+                    .extract::<String>()
+                    .map(|t| t == "alias")
+                    .unwrap_or(false)
+            {
+                let inner = tuple.get_item(1)?;
+                let tuple_alias: Option<String> = tuple.get_item(2)?.extract().ok();
+                let inner_h = py_to_node_handle(&mut self.inner, &inner)?;
+                (inner_h, alias.or(tuple_alias))
+            } else {
+                (py_to_node_handle(&mut self.inner, expr)?, alias)
+            }
+        } else {
+            (py_to_node_handle(&mut self.inner, expr)?, alias)
+        };
+        self.inner.select_expr(h, resolved_alias);
         Ok(())
     }
 
