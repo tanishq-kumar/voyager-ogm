@@ -19,6 +19,7 @@ from voyager_ogm.models import (
     Node,
     PredicateExpr,
     Relationship,
+    _get_next_alias,
 )
 
 
@@ -175,7 +176,6 @@ class Query:
         else:
             q = self
 
-        q._clause_mode = "match"
         q._native.match()
         seen_vars: set[str] = set()
         first_pattern = True
@@ -473,10 +473,21 @@ class Query:
         if variable is not None and node_or_var is None:
             node_or_var = variable
         if isinstance(node_or_var, Node):
-            self._native.node(node_or_var.alias, node_or_var.labels)
+            lbls = getattr(node_or_var, "_cached_labels", None)
+            if lbls is None:
+                lbls = node_or_var.labels
+            self._native.node(node_or_var._alias, lbls)
         elif isinstance(node_or_var, type) and issubclass(node_or_var, Node):
-            instance = node_or_var()
-            self._native.node(instance.alias, instance.labels)
+            lbls = getattr(node_or_var, "_cached_labels", None)
+            if lbls is None:
+                lbls = getattr(node_or_var, "__labels__", [node_or_var.__name__])
+            cached_label = getattr(
+                node_or_var,
+                "_cached_label",
+                lbls[0] if lbls else node_or_var.__name__,
+            )
+            alias = _get_next_alias(cached_label)
+            self._native.node(alias, lbls)
         elif isinstance(node_or_var, str):
             lbls = [labels] if isinstance(labels, str) else (labels or [])
             self._native.node(node_or_var, lbls)
@@ -497,8 +508,18 @@ class Query:
         actual_rel = rel if rel is not None else edge_type
         actual_var = var if var is not None else variable
         if isinstance(actual_rel, Relationship):
-            return [actual_rel.edge_type], actual_rel.alias
+            cached_types = getattr(actual_rel, "_cached_types", None)
+            return (cached_types or [actual_rel.edge_type]), actual_rel._alias
         elif isinstance(actual_rel, type) and issubclass(actual_rel, Relationship):
+            cached_types = getattr(actual_rel, "_cached_types", None)
+            if cached_types is not None:
+                cached_type = getattr(
+                    actual_rel,
+                    "_cached_type",
+                    cached_types[0] if cached_types else actual_rel.__name__.upper(),
+                )
+                alias = actual_var or _get_next_alias(cached_type)
+                return cached_types, alias
             instance = actual_rel()
             return [instance.edge_type], actual_var or instance.alias
         elif isinstance(actual_rel, str):
@@ -615,6 +636,13 @@ class Query:
         if not predicates:
             raise ValueError("where() requires at least one predicate condition")
         for pred in predicates:
+            if isinstance(pred, PredicateExpr) and not isinstance(pred.value, Expression):
+                self._native.where_property(pred.target, pred.field, pred.op, pred.value)
+                continue
+            native_expr = getattr(pred, "_native_expr", None)
+            if native_expr is not None:
+                self._native.where_expr(native_expr)
+                continue
             if isinstance(pred, Expression) or hasattr(pred, "to_spec"):
                 spec = pred.to_spec()
             elif isinstance(pred, PredicateExpr):
@@ -647,8 +675,12 @@ class Query:
             raise ValueError("where_not() requires at least one predicate condition")
         for pred in predicates:
             expr = to_expression(pred)
-            spec = (~expr).to_spec()
-            self._native.where_expr(spec)
+            not_expr = ~expr
+            native_expr = getattr(not_expr, "_native_expr", None)
+            if native_expr is not None:
+                self._native.where_expr(native_expr)
+            else:
+                self._native.where_expr(not_expr.to_spec())
         return self
 
     def on_create_set(self, *assignments: PredicateExpr, **kwargs: Any) -> Query:
@@ -766,14 +798,16 @@ class Query:
     def _project_field(self, field: Any, alias: str | None = None) -> None:
         if isinstance(field, AliasedExpr):
             final_alias = field.alias if alias is None else alias
-            expr_spec = field.expr.to_spec()
+            nat = getattr(field.expr, "_native_expr", None)
+            expr_spec = field.expr.to_spec() if nat is None else nat
             self._native.select_expr(expr_spec, final_alias)
         elif isinstance(field, AggregationExpr):
             self._native.aggregate(field.target_alias, field.field_name, field.func, alias)
         elif isinstance(field, BoundField):
             self._native.field(field.target_alias, field.field_name, alias)
         elif isinstance(field, Expression):
-            expr_spec = field.to_spec()
+            nat = getattr(field, "_native_expr", None)
+            expr_spec = field.to_spec() if nat is None else nat
             self._native.select_expr(expr_spec, alias)
         elif isinstance(field, Field) or (hasattr(field, "name") and not hasattr(field, "alias")):
             var_name = getattr(field, "target_alias", "") or ""
@@ -794,7 +828,9 @@ class Query:
             else:
                 self._native.field(parts[0], "", alias)
         else:
-            expr_spec = to_expression(field).to_spec()
+            expr_obj = to_expression(field)
+            nat = getattr(expr_obj, "_native_expr", None)
+            expr_spec = expr_obj.to_spec() if nat is None else nat
             self._native.select_expr(expr_spec, alias)
 
     def with_(
@@ -893,7 +929,9 @@ class Query:
         if isinstance(field, BoundField):
             self._native.order_by(field.target_alias, field.field_name, ascending)
         elif isinstance(field, Expression) or hasattr(field, "to_spec"):
-            self._native.order_by_expr(field.to_spec(), ascending)
+            nat = getattr(field, "_native_expr", None)
+            expr_spec = field.to_spec() if nat is None else nat
+            self._native.order_by_expr(expr_spec, ascending)
         elif isinstance(field, str) and "." in field:
             var_prop = field.split(".", 1)
             self._native.order_by(var_prop[0], var_prop[1], ascending)
@@ -902,7 +940,9 @@ class Query:
         elif isinstance(field, tuple):
             self._native.order_by_expr(field, ascending)
         else:
-            expr_spec = to_expression(field).to_spec()
+            expr_obj = to_expression(field)
+            nat = getattr(expr_obj, "_native_expr", None)
+            expr_spec = expr_obj.to_spec() if nat is None else nat
             self._native.order_by_expr(expr_spec, ascending)
         return self
 

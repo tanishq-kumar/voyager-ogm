@@ -4,10 +4,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
-use voyager_core::ast::{AggregationFunc, BinaryOp, Direction, LiteralValue, NodeHandle, UnaryOp};
+use voyager_core::ast::{
+    AggregationFunc, BinaryOp, Direction, LiteralValue, NodeHandle, QueryAstArena, UnaryOp,
+};
 use voyager_core::builder::QueryBuilder;
 use voyager_core::emitters::{AgeEmitter, CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
 use voyager_core::optimizer::{AstOptimizer, OptimizationLevel};
@@ -113,6 +115,391 @@ fn parse_unary_op(s: &str) -> PyResult<UnaryOp> {
     }
 }
 
+/// Native AST Expression node handle wrapping a lightweight AST arena.
+#[pyclass(name = "AstExpr")]
+#[derive(Clone)]
+pub struct PyAstExpr {
+    pub(crate) arena: QueryAstArena,
+    pub(crate) handle: NodeHandle,
+}
+
+#[pymethods]
+impl PyAstExpr {
+    #[staticmethod]
+    fn prop(var: String, prop: String) -> Self {
+        let mut b = QueryBuilder::new();
+        let h = b.prop(var, prop);
+        Self {
+            arena: b.into_arena(),
+            handle: h,
+        }
+    }
+
+    #[staticmethod]
+    fn ident(name: String) -> Self {
+        let mut b = QueryBuilder::new();
+        let h = b.ident(name);
+        Self {
+            arena: b.into_arena(),
+            handle: h,
+        }
+    }
+
+    #[staticmethod]
+    fn literal(val: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let lit = py_to_literal(val)?;
+        let mut b = QueryBuilder::new();
+        let h = b.literal(lit);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    #[staticmethod]
+    fn binary(left: &Bound<'_, PyAny>, op: String, right: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let op_parsed = parse_binary_op(&op)?;
+        let mut b = QueryBuilder::new();
+        let left_h = py_to_node_handle_depth(&mut b, left, 0)?;
+        let right_h = py_to_node_handle_depth(&mut b, right, 0)?;
+        let h = b.binary_expr(left_h, op_parsed, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    #[staticmethod]
+    fn unary(op: String, operand: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let op_parsed = parse_unary_op(&op)?;
+        let mut b = QueryBuilder::new();
+        let op_h = py_to_node_handle_depth(&mut b, operand, 0)?;
+        let h = b.unary_expr(op_parsed, op_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    #[staticmethod]
+    fn function(name: String, args: Vec<Bound<'_, PyAny>>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let mut arg_handles = Vec::with_capacity(args.len());
+        for arg in &args {
+            arg_handles.push(py_to_node_handle_depth(&mut b, arg, 0)?);
+        }
+        let h = b.function(name, arg_handles);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn in_(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = b.import_subarena(self.arena.clone(), self.handle);
+        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let h = b.binary_expr(left_h, BinaryOp::In, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn not_in(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = b.import_subarena(self.arena.clone(), self.handle);
+        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let h = b.binary_expr(left_h, BinaryOp::NotIn, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn contains(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = b.import_subarena(self.arena.clone(), self.handle);
+        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let h = b.binary_expr(left_h, BinaryOp::Contains, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn startswith(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = b.import_subarena(self.arena.clone(), self.handle);
+        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let h = b.binary_expr(left_h, BinaryOp::StartsWith, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn endswith(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = b.import_subarena(self.arena.clone(), self.handle);
+        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let h = b.binary_expr(left_h, BinaryOp::EndsWith, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn is_null(&self) -> Self {
+        let mut b = QueryBuilder::new();
+        let op_h = b.import_subarena(self.arena.clone(), self.handle);
+        let h = b.unary_expr(UnaryOp::IsNull, op_h);
+        Self {
+            arena: b.into_arena(),
+            handle: h,
+        }
+    }
+
+    fn is_not_null(&self) -> Self {
+        let mut b = QueryBuilder::new();
+        let op_h = b.import_subarena(self.arena.clone(), self.handle);
+        let h = b.unary_expr(UnaryOp::IsNotNull, op_h);
+        Self {
+            arena: b.into_arena(),
+            handle: h,
+        }
+    }
+
+    fn __add__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = b.import_subarena(self.arena.clone(), self.handle);
+        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let h = b.binary_expr(left_h, BinaryOp::Add, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn __radd__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = b.import_subarena(self.arena.clone(), self.handle);
+        let h = b.binary_expr(left_h, BinaryOp::Add, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn __sub__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = b.import_subarena(self.arena.clone(), self.handle);
+        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let h = b.binary_expr(left_h, BinaryOp::Sub, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn __rsub__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = b.import_subarena(self.arena.clone(), self.handle);
+        let h = b.binary_expr(left_h, BinaryOp::Sub, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn __mul__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = b.import_subarena(self.arena.clone(), self.handle);
+        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let h = b.binary_expr(left_h, BinaryOp::Mul, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn __rmul__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = b.import_subarena(self.arena.clone(), self.handle);
+        let h = b.binary_expr(left_h, BinaryOp::Mul, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn __truediv__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = b.import_subarena(self.arena.clone(), self.handle);
+        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let h = b.binary_expr(left_h, BinaryOp::Div, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn __rtruediv__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = b.import_subarena(self.arena.clone(), self.handle);
+        let h = b.binary_expr(left_h, BinaryOp::Div, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn __mod__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = b.import_subarena(self.arena.clone(), self.handle);
+        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let h = b.binary_expr(left_h, BinaryOp::Mod, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn __rmod__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = b.import_subarena(self.arena.clone(), self.handle);
+        let h = b.binary_expr(left_h, BinaryOp::Mod, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn __neg__(&self) -> Self {
+        let mut b = QueryBuilder::new();
+        let op_h = b.import_subarena(self.arena.clone(), self.handle);
+        let h = b.unary_expr(UnaryOp::Neg, op_h);
+        Self {
+            arena: b.into_arena(),
+            handle: h,
+        }
+    }
+
+    fn __and__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = b.import_subarena(self.arena.clone(), self.handle);
+        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let h = b.binary_expr(left_h, BinaryOp::And, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn __rand__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = b.import_subarena(self.arena.clone(), self.handle);
+        let h = b.binary_expr(left_h, BinaryOp::And, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn __or__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = b.import_subarena(self.arena.clone(), self.handle);
+        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let h = b.binary_expr(left_h, BinaryOp::Or, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn __ror__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = b.import_subarena(self.arena.clone(), self.handle);
+        let h = b.binary_expr(left_h, BinaryOp::Or, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn __xor__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = b.import_subarena(self.arena.clone(), self.handle);
+        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let h = b.binary_expr(left_h, BinaryOp::Xor, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn __rxor__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut b = QueryBuilder::new();
+        let left_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = b.import_subarena(self.arena.clone(), self.handle);
+        let h = b.binary_expr(left_h, BinaryOp::Xor, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn __invert__(&self) -> Self {
+        let mut b = QueryBuilder::new();
+        let op_h = b.import_subarena(self.arena.clone(), self.handle);
+        let h = b.unary_expr(UnaryOp::Not, op_h);
+        Self {
+            arena: b.into_arena(),
+            handle: h,
+        }
+    }
+
+    fn __bool__(&self) -> PyResult<bool> {
+        Err(PyTypeError::new_err(
+            "Evaluating a Voyager AstExpr in a boolean context is not supported.",
+        ))
+    }
+
+    fn __richcmp__(
+        &self,
+        other: &Bound<'_, PyAny>,
+        op: pyo3::pyclass::CompareOp,
+    ) -> PyResult<Self> {
+        let bin_op = match op {
+            pyo3::pyclass::CompareOp::Eq => BinaryOp::Eq,
+            pyo3::pyclass::CompareOp::Ne => BinaryOp::Neq,
+            pyo3::pyclass::CompareOp::Lt => BinaryOp::Lt,
+            pyo3::pyclass::CompareOp::Le => BinaryOp::Lte,
+            pyo3::pyclass::CompareOp::Gt => BinaryOp::Gt,
+            pyo3::pyclass::CompareOp::Ge => BinaryOp::Gte,
+        };
+        let mut b = QueryBuilder::new();
+        let left_h = b.import_subarena(self.arena.clone(), self.handle);
+        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let h = b.binary_expr(left_h, bin_op, right_h);
+        Ok(Self {
+            arena: b.into_arena(),
+            handle: h,
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<AstExpr handle={:?}>", self.handle)
+    }
+}
+
 /// Maximum recursion depth allowed when converting Python expression trees to AST node handles.
 const MAX_AST_DEPTH: usize = 256;
 
@@ -129,6 +516,17 @@ fn py_to_node_handle_depth(
         return Err(PyValueError::new_err(format!(
             "Maximum AST expression recursion depth exceeded ({MAX_AST_DEPTH}). Query is too deeply nested.",
         )));
+    }
+    // Direct Native AST Expression fast-path:
+    if let Ok(py_expr) = val.downcast::<PyAstExpr>() {
+        let borrowed = py_expr.borrow();
+        return Ok(builder.import_subarena(borrowed.arena.clone(), borrowed.handle));
+    }
+    if let Ok(native_attr) = val.getattr("_native_expr")
+        && let Ok(py_expr) = native_attr.downcast::<PyAstExpr>()
+    {
+        let borrowed = py_expr.borrow();
+        return Ok(builder.import_subarena(borrowed.arena.clone(), borrowed.handle));
     }
     if let Ok(tuple) = val.downcast::<PyTuple>() {
         if tuple.is_empty() {
@@ -856,6 +1254,19 @@ impl PyQueryBuilder {
     #[pyo3(signature = (expr, alias=None))]
     fn custom_expr(&mut self, expr: &Bound<'_, PyAny>, alias: Option<String>) -> PyResult<()> {
         self.select_expr(expr, alias)
+    }
+
+    fn where_property(
+        &mut self,
+        var: String,
+        prop: String,
+        op: String,
+        val: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let op_parsed = parse_binary_op(&op)?;
+        let lit = py_to_literal(val)?;
+        self.inner.where_property(var, prop, op_parsed, lit);
+        Ok(())
     }
 
     fn where_eq(&mut self, var: String, prop: String, val: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -2000,6 +2411,7 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(clear_query_cache, m)?)?;
     m.add_function(wrap_pyfunction!(get_runtime_pid, m)?)?;
     m.add_class::<PyQueryBuilder>()?;
+    m.add_class::<PyAstExpr>()?;
     m.add_class::<PyArrowStream>()?;
     m.add_class::<PyNativeQueryResult>()?;
     m.add_class::<PyNativeClient>()?;

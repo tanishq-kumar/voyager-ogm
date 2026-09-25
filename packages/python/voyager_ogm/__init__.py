@@ -3,6 +3,7 @@
 from voyager_ogm import expressions, fn
 from voyager_ogm._voyager_rs import (
     ArrowStream,
+    AstExpr,
     NativeClient,
     NativeQueryBuilder,
     NativeQueryResult,
@@ -103,6 +104,7 @@ GraphQuery = Query
 __all__ = [
     "AliasedExpr",
     "ArrowStream",
+    "AstExpr",
     "AsyncDatabaseBridge",
     "AsyncDuckDbBridge",
     "AsyncHybridSession",

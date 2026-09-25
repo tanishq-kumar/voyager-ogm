@@ -632,7 +632,14 @@ def test_query_match_patterns_native_composition():
 
 
 def test_query_has_no_mirrored_python_collections():
-    q = Query()
+    p = Person("p")
+    queries = [
+        Query(),
+        Query.match(p).where(p.age > 20).return_(p.name),
+        Query.match_patterns(Path.match(p)),
+        Query.create(p),
+        Query.merge(p),
+    ]
     stripped_attrs = [
         "_mutations",
         "_matches",
@@ -649,5 +656,89 @@ def test_query_has_no_mirrored_python_collections():
         "_clause_mode",
         "_match_clauses",
     ]
-    for attr in stripped_attrs:
-        assert not hasattr(q, attr), f"Query still has stripped mirrored attribute {attr}"
+    for q in queries:
+        for attr in stripped_attrs:
+            assert not hasattr(q, attr), f"Query still has stripped mirrored attribute {attr}"
+
+
+def test_native_ast_expr_direct_allocation_and_operators():
+    from voyager_ogm import AstExpr, NativeQueryBuilder
+
+    # 1. Static factories
+    prop_e = AstExpr.prop("p", "age")
+    ident_e = AstExpr.ident("x")
+    lit_e = AstExpr.literal(42)
+    assert repr(prop_e).startswith("<AstExpr")
+    assert repr(ident_e).startswith("<AstExpr")
+    assert repr(lit_e).startswith("<AstExpr")
+
+    # 2. Binary and arithmetic operator overloads
+    add_e = prop_e + 5
+    _ = prop_e - 2
+    _ = prop_e * 3
+    _ = prop_e / 2
+    _ = prop_e % 10
+    _ = -prop_e
+    _ = ~prop_e
+    and_e = (prop_e > 18) & (AstExpr.prop("p", "status") == "ACTIVE")
+    _ = (prop_e < 10) | (prop_e > 65)
+    _ = (prop_e == 1) ^ (prop_e == 2)
+
+    # 3. String & list predicate methods
+    in_e = prop_e.in_([18, 21, 25])
+    _ = prop_e.not_in([0, -1])
+    name_e = AstExpr.prop("p", "name")
+    contains_e = name_e.contains("bob")
+    _ = name_e.startswith("ali")
+    _ = name_e.endswith("ce")
+    _ = prop_e.is_null()
+    _ = prop_e.is_not_null()
+
+    # 4. Compile via NativeQueryBuilder
+    b = NativeQueryBuilder()
+    b.match()
+    b.node("p", ["Person"])
+    b.where_expr(and_e)
+    b.where_expr(contains_e)
+    b.where_expr(in_e)
+    b.return_()
+    b.select_expr(add_e, "future_age")
+    res = b.compile("cypher")
+    assert "p.age > $p0" in res["statement"]
+    assert "p.status = $p1" in res["statement"]
+    assert "p.name CONTAINS $p2" in res["statement"]
+    assert "p.age IN $p3" in res["statement"]
+    assert "p.age + $p4 AS future_age" in res["statement"]
+    assert res["parameters"]["p0"] == 18
+    assert res["parameters"]["p1"] == "ACTIVE"
+    assert res["parameters"]["p2"] == "bob"
+    assert res["parameters"]["p3"] == [18, 21, 25]
+    assert res["parameters"]["p4"] == 5
+
+
+def test_query_where_property_fast_path():
+    p = Person("p")
+    # Simple predicate uses where_property directly
+    q = Query.match(p).where(p.age > 21).return_(p.name)
+    compiled = q.compile("cypher")
+    assert compiled.statement == "MATCH (p:Person) WHERE p.age > $p0 RETURN p.name"
+    assert compiled.parameters == {"p0": 21}
+
+    # Compound predicate uses native AST expression
+    q2 = Query.match(p).where((p.age >= 18) & (p.name == "Alice")).return_(p.name)
+    compiled2 = q2.compile("cypher")
+    assert (
+        compiled2.statement
+        == "MATCH (p:Person) WHERE (p.age >= $p0) AND (p.name = $p1) RETURN p.name"
+    )
+    assert compiled2.parameters == {"p0": 18, "p1": "Alice"}
+
+
+def test_ast_expr_boolean_rejection():
+    from voyager_ogm import AstExpr
+
+    e = AstExpr.prop("p", "age") > 18
+    with pytest.raises(
+        TypeError, match="Evaluating a Voyager AstExpr in a boolean context is not supported"
+    ):
+        bool(e)

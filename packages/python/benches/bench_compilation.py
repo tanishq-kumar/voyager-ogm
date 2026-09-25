@@ -253,3 +253,37 @@ def test_bench_voyager_native_rust_direct(benchmark: Any) -> None:
 
     res = benchmark(run)
     assert "MATCH (p:Person)" in res["statement"]
+
+
+# ============================================================
+# Benchmark 4: Direct Rust AST Expression Allocation
+# ============================================================
+def test_bench_voyager_ast_expr_direct(benchmark: Any) -> None:
+    from voyager_ogm import AstExpr
+
+    def run():
+        builder = NativeQueryBuilder()
+        builder.match()
+        builder.node("p", ["Person"])
+        expr = (AstExpr.prop("p", "age") > 18) & (AstExpr.prop("p", "status") == "ACTIVE")
+        builder.where_expr(expr)
+        builder.return_()
+        builder.field("p", "name", None)
+        return builder.compile("cypher")
+
+    res = benchmark(run)
+    assert "MATCH (p:Person)" in res["statement"]
+
+
+def test_bench_voyager_where_property_direct(benchmark: Any) -> None:
+    def run():
+        builder = NativeQueryBuilder()
+        builder.match()
+        builder.node("p", ["Person"])
+        builder.where_property("p", "age", "gt", 21)
+        builder.return_()
+        builder.field("p", "name", None)
+        return builder.compile("cypher")
+
+    res = benchmark(run)
+    assert "MATCH (p:Person)" in res["statement"]
