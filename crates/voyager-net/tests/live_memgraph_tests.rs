@@ -227,3 +227,145 @@ async fn test_live_memgraph_fluent_builder_with_clause_and_pagination() {
 
     conn.close().await.expect("Failed to close connection");
 }
+
+#[tokio::test]
+async fn test_live_memgraph_simultaneous_explain_and_profile_connections() {
+    if !is_memgraph_online().await {
+        eprintln!("[SKIP] Live Memgraph instance is not reachable on 127.0.0.1:7688");
+        return;
+    }
+
+    use voyager_core::builder::QueryBuilder;
+    use voyager_core::emitters::CypherEmitter;
+    use voyager_core::visitor::AstVisitor;
+
+    let config = ConnectionConfig::from_uri(MEMGRAPH_URI);
+
+    // Seed test records using a setup connection
+    let mut setup_conn = BoltConnection::connect(&config)
+        .await
+        .expect("Failed to connect to live Memgraph for setup");
+
+    let _ = setup_conn
+        .execute(
+            "MATCH (n:LiveSimultaneousMemgraphTest) DETACH DELETE n",
+            &HashMap::new(),
+        )
+        .await;
+
+    setup_conn
+        .execute(
+            "CREATE (:LiveSimultaneousMemgraphTest:Person {name: 'Alice', age: 30}), (:LiveSimultaneousMemgraphTest:Person {name: 'Bob', age: 25})",
+            &HashMap::new(),
+        )
+        .await
+        .expect("Failed to seed records in Memgraph");
+
+    // 1. Build explain query
+    let mut b_explain = QueryBuilder::new();
+    b_explain
+        .r#match()
+        .node(Some("p"), vec!["LiveSimultaneousMemgraphTest", "Person"])
+        .where_gte("p", "age", 20)
+        .r#return()
+        .field("p", "name", None::<&str>)
+        .field("p", "age", None::<&str>)
+        .order_by_asc("p", "age")
+        .explain();
+
+    let (arena_exp, root_exp) = b_explain.build();
+    let mut emitter_exp = CypherEmitter::new();
+    let compiled_exp = emitter_exp
+        .visit_query(&arena_exp, root_exp)
+        .expect("Explain Cypher emission failed");
+    assert_eq!(compiled_exp.execution_mode.as_str(), "explain");
+    assert!(compiled_exp.statement.starts_with("EXPLAIN "));
+
+    // 2. Build profile query
+    let mut b_profile = QueryBuilder::new();
+    b_profile
+        .r#match()
+        .node(Some("p"), vec!["LiveSimultaneousMemgraphTest", "Person"])
+        .where_gte("p", "age", 20)
+        .r#return()
+        .field("p", "name", None::<&str>)
+        .field("p", "age", None::<&str>)
+        .order_by_asc("p", "age")
+        .profile();
+
+    let (arena_prof, root_prof) = b_profile.build();
+    let mut emitter_prof = CypherEmitter::new();
+    let compiled_prof = emitter_prof
+        .visit_query(&arena_prof, root_prof)
+        .expect("Profile Cypher emission failed");
+    assert_eq!(compiled_prof.execution_mode.as_str(), "profile");
+    assert!(compiled_prof.statement.starts_with("PROFILE "));
+
+    let mut exp_params = HashMap::new();
+    for (k, v) in &compiled_exp.parameters {
+        if let voyager_core::ast::LiteralValue::Int64(i) = v {
+            exp_params.insert(k.clone(), serde_json::json!(i));
+        }
+    }
+
+    let mut prof_params = HashMap::new();
+    for (k, v) in &compiled_prof.parameters {
+        if let voyager_core::ast::LiteralValue::Int64(i) = v {
+            prof_params.insert(k.clone(), serde_json::json!(i));
+        }
+    }
+
+    let config1 = config.clone();
+    let config2 = config.clone();
+    let stmt_exp = compiled_exp.statement.clone();
+    let stmt_prof = compiled_prof.statement.clone();
+
+    // 3. Spawn 2 separate connections simultaneously
+    let handle1 = tokio::spawn(async move {
+        let mut conn1 = BoltConnection::connect(&config1)
+            .await
+            .expect("Live connection 1 failed");
+        let res = conn1.execute(&stmt_exp, &exp_params).await;
+        let _ = conn1.close().await;
+        res
+    });
+
+    let handle2 = tokio::spawn(async move {
+        let mut conn2 = BoltConnection::connect(&config2)
+            .await
+            .expect("Live connection 2 failed");
+        let res = conn2.execute(&stmt_prof, &prof_params).await;
+        let _ = conn2.close().await;
+        res
+    });
+
+    let (res1, res2) = tokio::join!(handle1, handle2);
+    let exp_result = res1
+        .expect("Task 1 panicked")
+        .expect("Explain execution failed");
+    let prof_result = res2
+        .expect("Task 2 panicked")
+        .expect("Profile execution failed");
+
+    // Both queries executed concurrently on Memgraph
+    // Memgraph returns tabular query plan rows for EXPLAIN
+    assert!(exp_result.row_count() > 0);
+    assert_eq!(exp_result.columns, vec!["QUERY PLAN"]);
+
+    // Memgraph returns operator execution metrics for PROFILE
+    assert!(prof_result.row_count() > 0);
+    assert!(prof_result.columns.contains(&"OPERATOR".to_string()));
+
+    // Clean up
+    let _ = setup_conn
+        .execute(
+            "MATCH (n:LiveSimultaneousMemgraphTest) DETACH DELETE n",
+            &HashMap::new(),
+        )
+        .await;
+
+    setup_conn
+        .close()
+        .await
+        .expect("Failed to close setup connection");
+}

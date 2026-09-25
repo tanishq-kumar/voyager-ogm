@@ -307,3 +307,112 @@ async fn test_live_age_fluent_builder_with_clause() {
         ))
         .await;
 }
+
+#[tokio::test]
+async fn test_live_age_simultaneous_explain_and_profile_connections() {
+    let mut setup_conn = match get_age_connection().await {
+        Some(c) => c,
+        None => return,
+    };
+
+    use voyager_core::builder::QueryBuilder;
+    use voyager_core::emitters::AgeEmitter;
+    use voyager_core::visitor::AstVisitor;
+
+    let graph_name = "net_simultaneous_age_graph";
+
+    // Clean up graph if already existing and create fresh
+    let _ = setup_conn
+        .execute_simple(&format!(
+            "SELECT * FROM ag_catalog.drop_graph('{}', true);",
+            graph_name
+        ))
+        .await;
+
+    setup_conn
+        .execute_simple(&format!(
+            "SELECT * FROM ag_catalog.create_graph('{}');",
+            graph_name
+        ))
+        .await
+        .unwrap();
+
+    // Seed test nodes
+    let seed_sql = format!(
+        "SELECT * FROM cypher('{}', $$ CREATE (:Person {{name: 'Alice', age: 30}}), (:Person {{name: 'Bob', age: 25}}) $$) as (v agtype);",
+        graph_name
+    );
+    setup_conn.execute_simple(&seed_sql).await.unwrap();
+
+    // 1. Build explain query with AgeEmitter
+    let mut b_explain = QueryBuilder::new();
+    b_explain
+        .r#match()
+        .node(Some("p"), vec!["Person"])
+        .r#return()
+        .field("p", "name", None::<&str>)
+        .explain();
+
+    let (arena_exp, root_exp) = b_explain.build();
+    let mut emitter_exp = AgeEmitter::new(graph_name);
+    let compiled_exp = emitter_exp
+        .visit_query(&arena_exp, root_exp)
+        .expect("AGE explain emission failed");
+    assert_eq!(compiled_exp.execution_mode.as_str(), "explain");
+    assert!(compiled_exp.statement.starts_with("EXPLAIN SELECT"));
+
+    // 2. Build profile query with AgeEmitter
+    let mut b_profile = QueryBuilder::new();
+    b_profile
+        .r#match()
+        .node(Some("p"), vec!["Person"])
+        .r#return()
+        .field("p", "name", None::<&str>)
+        .profile();
+
+    let (arena_prof, root_prof) = b_profile.build();
+    let mut emitter_prof = AgeEmitter::new(graph_name);
+    let compiled_prof = emitter_prof
+        .visit_query(&arena_prof, root_prof)
+        .expect("AGE profile emission failed");
+    assert_eq!(compiled_prof.execution_mode.as_str(), "profile");
+    assert!(
+        compiled_prof
+            .statement
+            .starts_with("EXPLAIN ANALYZE SELECT")
+    );
+
+    let stmt_exp = compiled_exp.statement.clone();
+    let stmt_prof = compiled_prof.statement.clone();
+
+    // 3. Run 2 connections simultaneously
+    let handle1 = tokio::spawn(async move {
+        let mut conn1 = get_age_connection().await.expect("AGE connection 1 failed");
+        conn1.execute_simple(&stmt_exp).await
+    });
+
+    let handle2 = tokio::spawn(async move {
+        let mut conn2 = get_age_connection().await.expect("AGE connection 2 failed");
+        conn2.execute_simple(&stmt_prof).await
+    });
+
+    let (res1, res2) = tokio::join!(handle1, handle2);
+    let exp_result = res1
+        .expect("Task 1 panicked")
+        .expect("AGE explain execution failed");
+    let prof_result = res2
+        .expect("Task 2 panicked")
+        .expect("AGE profile execution failed");
+
+    // Both queries executed concurrently on PostgreSQL/AGE returning query plans
+    assert!(exp_result.row_count() > 0);
+    assert!(prof_result.row_count() > 0);
+
+    // Clean up
+    let _ = setup_conn
+        .execute_simple(&format!(
+            "SELECT * FROM ag_catalog.drop_graph('{}', true);",
+            graph_name
+        ))
+        .await;
+}

@@ -1,8 +1,8 @@
 //! openCypher & Cypher 25 Dialect Emitter.
 
 use crate::ast::{
-    AggregationFunc, AstNode, BinaryOp, Direction, LiteralValue, NodeHandle, ProjectionItem,
-    QueryAstArena, UnaryOp,
+    AggregationFunc, AstNode, BinaryOp, Direction, ExecutionMode, LiteralValue, NodeHandle,
+    ProjectionItem, QueryAstArena, UnaryOp,
 };
 use crate::error::{Error, Result};
 use crate::visitor::{AstVisitor, CompiledQuery};
@@ -14,6 +14,7 @@ pub struct CypherEmitter {
     param_counter: usize,
     parameters: HashMap<String, LiteralValue>,
     buffer: String,
+    ignore_execution_mode: bool,
 }
 
 impl CypherEmitter {
@@ -23,7 +24,14 @@ impl CypherEmitter {
             param_counter: 0,
             parameters: HashMap::new(),
             buffer: String::with_capacity(256),
+            ignore_execution_mode: false,
         }
+    }
+
+    /// Configures the emitter to ignore execution mode prefixes (used by subqueries and outer wrappers like Apache AGE).
+    pub fn without_execution_mode(mut self) -> Self {
+        self.ignore_execution_mode = true;
+        self
     }
 
     fn emit_pattern_predicate(
@@ -423,7 +431,7 @@ impl CypherEmitter {
                 }
             }
             AstNode::QueryStatement { .. } => {
-                let mut nested_emitter = CypherEmitter::new();
+                let mut nested_emitter = CypherEmitter::new().without_execution_mode();
                 nested_emitter.param_counter = self.param_counter;
                 let compiled = nested_emitter.visit_query(arena, handle)?;
                 self.buffer.push_str(&compiled.statement);
@@ -762,6 +770,7 @@ impl AstVisitor for CypherEmitter {
         let root_node = arena.get(root)?;
         match root_node {
             AstNode::QueryStatement {
+                execution_mode,
                 load_csv,
                 unwinds,
                 matches,
@@ -769,6 +778,18 @@ impl AstVisitor for CypherEmitter {
                 mutations,
                 return_clause,
             } => {
+                if !self.ignore_execution_mode {
+                    match execution_mode {
+                        ExecutionMode::Normal => {}
+                        ExecutionMode::Explain => {
+                            self.buffer.push_str("EXPLAIN ");
+                        }
+                        ExecutionMode::Profile | ExecutionMode::ExplainAndProfile => {
+                            self.buffer.push_str("PROFILE ");
+                        }
+                    }
+                }
+
                 let mut has_emitted = false;
 
                 if let Some(load_csv_handle) = load_csv {
@@ -859,17 +880,37 @@ impl AstVisitor for CypherEmitter {
                     }
                 }
 
-                Ok(CompiledQuery::new(
+                let final_mode = if self.ignore_execution_mode {
+                    ExecutionMode::Normal
+                } else {
+                    *execution_mode
+                };
+
+                Ok(CompiledQuery::with_execution_mode(
                     std::mem::take(&mut self.buffer),
                     std::mem::take(&mut self.parameters),
+                    final_mode,
                 ))
             }
             AstNode::ProcedureCall {
+                execution_mode,
                 namespace,
                 procedure,
                 arguments,
                 yield_items,
             } => {
+                if !self.ignore_execution_mode {
+                    match execution_mode {
+                        ExecutionMode::Normal => {}
+                        ExecutionMode::Explain => {
+                            self.buffer.push_str("EXPLAIN ");
+                        }
+                        ExecutionMode::Profile | ExecutionMode::ExplainAndProfile => {
+                            self.buffer.push_str("PROFILE ");
+                        }
+                    }
+                }
+
                 self.buffer.push_str("CALL ");
                 if let Some(ns) = namespace {
                     self.buffer.push_str(ns);
@@ -895,9 +936,16 @@ impl AstVisitor for CypherEmitter {
                     }
                 }
 
-                Ok(CompiledQuery::new(
+                let final_mode = if self.ignore_execution_mode {
+                    ExecutionMode::Normal
+                } else {
+                    *execution_mode
+                };
+
+                Ok(CompiledQuery::with_execution_mode(
                     std::mem::take(&mut self.buffer),
                     std::mem::take(&mut self.parameters),
+                    final_mode,
                 ))
             }
             other => Err(Error::AstInvariantViolation(format!(

@@ -48,10 +48,12 @@ class CompiledQuery:
     Attributes:
         statement: The parameterized query string formatted for the target dialect.
         parameters: Deterministic dictionary mapping parameter names (e.g. 'p0') to values.
+        execution_mode: Query execution mode ('normal', 'explain', 'profile', 'explain_and_profile').
     """
 
     statement: str
     parameters: dict[str, Any]
+    execution_mode: str = "normal"
 
 
 class Query:
@@ -83,6 +85,43 @@ class Query:
         if callable(has_mut):
             return bool(has_mut())
         return False
+
+    def explain(self) -> Query:
+        """Sets execution mode to explain (dry run plan explanation without query execution).
+
+        Returns:
+            The Query instance chained with explain mode.
+        """
+        self._native.explain()
+        return self
+
+    def profile(self) -> Query:
+        """Sets execution mode to profile (plan explanation with live runtime profiling metrics).
+
+        Returns:
+            The Query instance chained with profile mode.
+        """
+        self._native.profile()
+        return self
+
+    @property
+    def execution_mode(self) -> str:
+        """Returns the current execution mode of this query ('normal', 'explain', 'profile', 'explain_and_profile')."""
+        return self._native.execution_mode()
+
+    def clone(self) -> Query:
+        """Returns an independent clone of this query with its own AST arena."""
+        q = Query.__new__(self.__class__)
+        q._native = self._native.clone_builder()
+        q._optimize = self._optimize
+        q._optimization_level = self._optimization_level
+        return q
+
+    def __copy__(self) -> Query:
+        return self.clone()
+
+    def __deepcopy__(self, memo: Any) -> Query:
+        return self.clone()
 
     @staticmethod
     def exists(subquery_or_pattern: Any) -> Any:
@@ -1075,7 +1114,11 @@ class Query:
             optimize=opt,
             optimization_level=opt_level,
         )
-        return CompiledQuery(statement=res["statement"], parameters=res["parameters"])
+        return CompiledQuery(
+            statement=res["statement"],
+            parameters=res["parameters"],
+            execution_mode=res.get("execution_mode", "normal"),
+        )
 
     def execute(self, session: Any, parameters: dict[str, Any] | None = None) -> Any:
         """Executes this query against a Voyager Session or database bridge.
@@ -1134,11 +1177,49 @@ def load_csv(url: str, with_headers: bool = True, alias: str = "row") -> Query:
     return Query.load_csv(url, with_headers=with_headers, alias=alias)
 
 
+def explain(target: Query) -> Query:
+    """Dry run plan explanation modifier.
+
+    Returns an independent cloned query with execution mode set to explain
+    (or explain_and_profile if already profiled).
+
+    Args:
+        target: The target Query instance to explain.
+
+    Returns:
+        A new Query instance with explain mode applied.
+
+    Example:
+        >>> explained = explain(query)
+    """
+    return target.clone().explain()
+
+
+def profile(target: Query) -> Query:
+    """Execution profiling modifier with real metrics.
+
+    Returns an independent cloned query with execution mode set to profile
+    (or explain_and_profile if already explained).
+
+    Args:
+        target: The target Query instance to profile.
+
+    Returns:
+        A new Query instance with profile mode applied.
+
+    Example:
+        >>> profiled = profile(query)
+    """
+    return target.clone().profile()
+
+
 __all__ = [
     "CompiledQuery",
     "Path",
     "Query",
+    "explain",
     "hybridmethod",
     "load_csv",
+    "profile",
     "unwind",
 ]

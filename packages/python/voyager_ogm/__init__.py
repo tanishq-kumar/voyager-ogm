@@ -71,7 +71,15 @@ from voyager_ogm.models import (
     relationship,
     reset_alias_counters,
 )
-from voyager_ogm.query import CompiledQuery, Path, Query, load_csv, unwind
+from voyager_ogm.query import (
+    CompiledQuery,
+    Path,
+    Query,
+    explain,
+    load_csv,
+    profile,
+    unwind,
+)
 from voyager_ogm.schema import SchemaManager
 from voyager_ogm.session import (
     AsyncSession,
@@ -171,6 +179,7 @@ __all__ = [
     "create_bulk_create_plan",
     "create_bulk_create_rel_plan",
     "create_bulk_merge_plan",
+    "explain",
     "explore",
     "expressions",
     "fn",
@@ -187,6 +196,7 @@ __all__ = [
     "node",
     "param",
     "pattern_comprehension",
+    "profile",
     "prop",
     "query",
     "register_bridge",

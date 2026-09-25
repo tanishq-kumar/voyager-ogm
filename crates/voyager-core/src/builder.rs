@@ -27,8 +27,8 @@
 use std::collections::HashSet;
 
 use crate::ast::{
-    AggregationFunc, AstNode, BinaryOp, Direction, LiteralValue, NodeHandle, ProjectionItem,
-    QueryAstArena, UnaryOp,
+    AggregationFunc, AstNode, BinaryOp, Direction, ExecutionMode, LiteralValue, NodeHandle,
+    ProjectionItem, QueryAstArena, UnaryOp,
 };
 
 #[derive(Debug, Clone)]
@@ -53,6 +53,7 @@ enum ClauseMode {
 #[derive(Debug, Default, Clone)]
 pub struct QueryBuilder {
     arena: QueryAstArena,
+    execution_mode: ExecutionMode,
     load_csv: Option<NodeHandle>,
     unwind_clauses: Vec<NodeHandle>,
     match_clauses: Vec<NodeHandle>,
@@ -81,8 +82,34 @@ impl QueryBuilder {
     pub fn new() -> Self {
         Self {
             arena: QueryAstArena::new(),
+            execution_mode: ExecutionMode::Normal,
             ..Default::default()
         }
+    }
+
+    /// Sets or combines execution mode with Explain (dry run plan without query execution).
+    pub fn explain(&mut self) -> &mut Self {
+        self.execution_mode = self.execution_mode.with_explain();
+        self
+    }
+
+    /// Sets or combines execution mode with Profile (query execution with live runtime metrics).
+    pub fn profile(&mut self) -> &mut Self {
+        self.execution_mode = self.execution_mode.with_profile();
+        self
+    }
+
+    /// Returns the active execution mode of this builder.
+    #[inline(always)]
+    pub fn execution_mode(&self) -> ExecutionMode {
+        self.execution_mode
+    }
+
+    /// Sets the explicit execution mode of this builder.
+    #[inline(always)]
+    pub fn set_execution_mode(&mut self, mode: ExecutionMode) -> &mut Self {
+        self.execution_mode = mode;
+        self
     }
 
     /// Allocates an identifier variable node in the arena.
@@ -285,6 +312,7 @@ impl QueryBuilder {
             (None, name_str)
         };
         let call_handle = self.arena.alloc(AstNode::ProcedureCall {
+            execution_mode: self.execution_mode,
             namespace,
             procedure,
             arguments,
@@ -1103,6 +1131,11 @@ impl QueryBuilder {
     /// Finalizes the AST and returns the completed arena alongside the root statement handle.
     pub fn build(mut self) -> (QueryAstArena, NodeHandle) {
         if let Some(proc_handle) = self.procedure_call {
+            if let Ok(AstNode::ProcedureCall { execution_mode, .. }) =
+                self.arena.get_mut(proc_handle)
+            {
+                *execution_mode = self.execution_mode;
+            }
             return (self.arena, proc_handle);
         }
 
@@ -1122,6 +1155,7 @@ impl QueryBuilder {
         };
 
         let root_handle = self.arena.alloc(AstNode::QueryStatement {
+            execution_mode: self.execution_mode,
             load_csv: self.load_csv,
             unwinds: self.unwind_clauses,
             matches: self.match_clauses,
@@ -1517,6 +1551,7 @@ fn remap_ast_node(node: &mut AstNode, offset: u32) {
             with_clauses,
             mutations,
             return_clause,
+            ..
         } => {
             if let Some(lc) = load_csv {
                 *lc = remap_handle(*lc, offset);

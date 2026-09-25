@@ -159,6 +159,7 @@ fn test_cypher_emitter_procedure_call() {
     let arg = arena.alloc(AstNode::Literal(LiteralValue::String("Person".into())));
 
     let proc_handle = arena.alloc(AstNode::ProcedureCall {
+        execution_mode: ExecutionMode::Normal,
         namespace: Some("apoc.path".into()),
         procedure: "subgraphNodes".into(),
         arguments: vec![arg],

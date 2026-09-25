@@ -1122,6 +1122,24 @@ fn build_query_from_spec_internal(
         }
     }
 
+    if let Some(mode_item) = spec.get_item("execution_mode")? {
+        if let Ok(mode_str) = mode_item.extract::<String>() {
+            match mode_str.to_ascii_lowercase().as_str() {
+                "explain" => {
+                    builder.explain();
+                }
+                "profile" => {
+                    builder.profile();
+                }
+                "explain_and_profile" => {
+                    builder.explain();
+                    builder.profile();
+                }
+                _ => {}
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1180,6 +1198,30 @@ impl PyQueryBuilder {
 
     fn has_mutations(&self) -> bool {
         self.inner.has_mutations()
+    }
+
+    fn explain(&mut self) {
+        self.inner.explain();
+    }
+
+    fn profile(&mut self) {
+        self.inner.profile();
+    }
+
+    fn execution_mode(&self) -> &'static str {
+        self.inner.execution_mode().as_str()
+    }
+
+    fn clone_builder(&self) -> Self {
+        self.clone()
+    }
+
+    fn __copy__(&self) -> Self {
+        self.clone()
+    }
+
+    fn __deepcopy__(&self, _memo: &Bound<'_, PyAny>) -> Self {
+        self.clone()
     }
 
     #[pyo3(signature = (other, seen_vars=None))]
@@ -1545,6 +1587,7 @@ impl PyQueryBuilder {
             params_dict.set_item(k, literal_to_py(&v, py)?)?;
         }
         dict.set_item("parameters", params_dict)?;
+        dict.set_item("execution_mode", compiled.execution_mode.as_str())?;
 
         Ok(dict)
     }
@@ -1731,6 +1774,7 @@ fn compile_query_from_spec<'py>(
             params_dict.set_item(param_name, literal_to_py(&val, py)?)?;
         }
         dict.set_item("parameters", params_dict)?;
+        dict.set_item("execution_mode", cached.execution_mode.as_str())?;
         return Ok(dict);
     }
 
@@ -1792,6 +1836,7 @@ fn compile_query_from_spec<'py>(
         params_dict.set_item(k, literal_to_py(&v, py)?)?;
     }
     dict.set_item("parameters", params_dict)?;
+    dict.set_item("execution_mode", compiled.execution_mode.as_str())?;
 
     Ok(dict)
 }

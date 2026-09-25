@@ -253,6 +253,60 @@ impl fmt::Display for AggregationFunc {
     }
 }
 
+/// Execution mode for graph query statements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum ExecutionMode {
+    /// Standard query execution without plan inspection.
+    #[default]
+    Normal,
+    /// Dry run plan explanation without query execution.
+    Explain,
+    /// Live query execution with runtime profiling metrics.
+    Profile,
+    /// Both plan explanation and runtime profiling metrics requested.
+    ExplainAndProfile,
+}
+
+impl ExecutionMode {
+    /// Combines the current mode with explain.
+    #[inline]
+    pub fn with_explain(self) -> Self {
+        match self {
+            Self::Normal => Self::Explain,
+            Self::Explain => Self::Explain,
+            Self::Profile | Self::ExplainAndProfile => Self::ExplainAndProfile,
+        }
+    }
+
+    /// Combines the current mode with profile.
+    #[inline]
+    pub fn with_profile(self) -> Self {
+        match self {
+            Self::Normal => Self::Profile,
+            Self::Profile => Self::Profile,
+            Self::Explain | Self::ExplainAndProfile => Self::ExplainAndProfile,
+        }
+    }
+
+    /// Returns the string representation.
+    #[inline]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Explain => "explain",
+            Self::Profile => "profile",
+            Self::ExplainAndProfile => "explain_and_profile",
+        }
+    }
+}
+
+impl fmt::Display for ExecutionMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// Projection column item inside a RETURN or SELECT clause.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -448,6 +502,8 @@ pub enum AstNode {
     },
     /// Database procedure / function call (e.g. `CALL apoc.path.subgraphNodes(...) YIELD node`).
     ProcedureCall {
+        /// Execution mode (Normal, Explain, Profile, ExplainAndProfile)
+        execution_mode: ExecutionMode,
         /// Procedure namespace (e.g. `Some("apoc.path")`)
         namespace: Option<String>,
         /// Procedure name (e.g. `"subgraphNodes"`)
@@ -523,6 +579,8 @@ pub enum AstNode {
     },
     /// Complete graph query statement combining load csv, unwinds, match blocks, with pipelines, mutations, and projections.
     QueryStatement {
+        /// Execution mode (Normal, Explain, Profile, ExplainAndProfile)
+        execution_mode: ExecutionMode,
         /// Optional LOAD CSV clause
         load_csv: Option<NodeHandle>,
         /// Sequence of UNWIND clauses
