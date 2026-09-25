@@ -1,7 +1,7 @@
 """Tests for the rule-based AST Query Optimizer & Predicate Pushdown Pass."""
 
 import pytest
-from voyager_ogm import Field, Query, node, relationship
+from voyager_ogm import Field, Node, Query, node, relationship
 
 
 @node(label="Person")
@@ -241,3 +241,62 @@ def test_optimizer_constant_folding_in_python_queries():
     assert "(p.age + $p0) > $p1" in compiled2.statement
     assert compiled2.parameters["p0"] == 30
     assert compiled2.parameters["p1"] == 50
+
+
+def test_optimizer_linear_clauses_and_mutation_tracking():
+    """Verify that linear clauses (LET/FILTER), mutations, and path variables are properly tracked and optimized."""
+    from voyager_ogm import fn, lit
+
+    # 1. Constant folding and variable tracking in LET and FILTER
+    n = Node("_n0", label="Person")
+    q = (
+        Query.match(n)
+        .let_(total=lit(10) + lit(20))
+        .filter_(n.age > lit(5) * lit(4))
+        .return_("total")
+        .optimize(level="aggressive")
+    )
+    c_gql = q.compile("iso_gql")
+    assert c_gql.parameters["p0"] == 30
+    assert c_gql.parameters["p1"] == 20
+    assert "MATCH (_n0:Node)" in c_gql.statement  # _n0 tracked in filter_, NOT pruned
+    assert "LET total = $p0" in c_gql.statement
+    assert "FILTER _n0.age > $p1" in c_gql.statement
+
+    # 2. Variable tracking in CREATE mutation
+    n_mut = Node("_n0", label="Person")
+    q_mut = (
+        Query.match(n_mut)
+        .create()
+        .node("p", labels=["LivePerson"])
+        .to("OWNED_BY")
+        .node(n_mut)
+        .optimize(level="aggressive")
+    )
+    c_cypher = q_mut.compile("cypher")
+    assert "MATCH (_n0:Node)" in c_cypher.statement  # _n0 tracked in create, NOT pruned
+    assert "CREATE (p:LivePerson)-[:OWNED_BY]->(_n0:Node)" in c_cypher.statement
+
+    # 3. Path variable pruning (unreferenced vs referenced in LET)
+    q_unref = (
+        Query.match()
+        .trail("_p0")
+        .node("a", labels=["Person"])
+        .to("KNOWS")
+        .node("b", labels=["Person"])
+        .return_("a.name")
+        .optimize(level="aggressive")
+    )
+    assert "_p0 =" not in q_unref.compile("iso_gql").statement
+
+    q_ref = (
+        Query.match()
+        .trail("_p0")
+        .node("a", labels=["Person"])
+        .to("KNOWS")
+        .node("b", labels=["Person"])
+        .let_(len_p=fn.path_length("_p0"))
+        .return_("len_p")
+        .optimize(level="aggressive")
+    )
+    assert "_p0 = TRAIL" in q_ref.compile("iso_gql").statement
