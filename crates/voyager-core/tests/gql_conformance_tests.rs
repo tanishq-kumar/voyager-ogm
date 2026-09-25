@@ -571,3 +571,127 @@ fn test_gql_edge_pattern_predicates_conformance() {
         Some(&LiteralValue::Int64(2020))
     );
 }
+
+#[test]
+fn test_gql_path_search_modes_and_variables() {
+    use voyager_core::emitters::cypher::CypherEmitter;
+
+    let mut b = QueryBuilder::new();
+    let p_ident = b.ident("p");
+    b.r#match()
+        .path_variable("p")
+        .trail()
+        .node(Some("a"), vec!["Person"])
+        .to(vec!["KNOWS"], None::<String>)
+        .node(Some("b"), vec!["Person"])
+        .r#return()
+        .select_expr(p_ident, None::<String>);
+
+    let (arena, root) = b.build();
+
+    let mut gql = IsoGqlEmitter::new();
+    let res_gql = gql.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res_gql.statement,
+        "MATCH p = TRAIL (a:Person)-[:KNOWS]->(b:Person) RETURN p"
+    );
+
+    let mut cypher = CypherEmitter::new();
+    let res_cypher = cypher.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res_cypher.statement,
+        "MATCH p = (a:Person)-[:KNOWS]->(b:Person) RETURN p"
+    );
+
+    // SIMPLE without variable
+    let mut b2 = QueryBuilder::new();
+    let a_ident = b2.ident("a");
+    b2.r#match()
+        .simple()
+        .node(Some("a"), vec!["Person"])
+        .to(vec!["KNOWS"], None::<String>)
+        .node(Some("b"), vec!["Person"])
+        .r#return()
+        .select_expr(a_ident, None::<String>);
+
+    let (arena2, root2) = b2.build();
+    let mut gql2 = IsoGqlEmitter::new();
+    assert_eq!(
+        gql2.visit_query(&arena2, root2).unwrap().statement,
+        "MATCH SIMPLE (a:Person)-[:KNOWS]->(b:Person) RETURN a"
+    );
+    let mut cypher2 = CypherEmitter::new();
+    assert_eq!(
+        cypher2.visit_query(&arena2, root2).unwrap().statement,
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a"
+    );
+}
+
+#[test]
+fn test_gql_label_expressions_ast() {
+    use voyager_core::emitters::cypher::CypherEmitter;
+
+    let mut b = QueryBuilder::new();
+    let n_ident = b.ident("n");
+    b.r#match()
+        .node(Some("n"), vec!["Person | Company", "!Inactive"])
+        .r#return()
+        .select_expr(n_ident, None::<String>);
+
+    let (arena, root) = b.build();
+
+    let mut gql = IsoGqlEmitter::new();
+    assert_eq!(
+        gql.visit_query(&arena, root).unwrap().statement,
+        "MATCH (n:(Person|Company)&!Inactive) RETURN n"
+    );
+
+    let mut cypher = CypherEmitter::new();
+    assert_eq!(
+        cypher.visit_query(&arena, root).unwrap().statement,
+        "MATCH (n:(Person|Company)&!Inactive) RETURN n"
+    );
+}
+
+#[test]
+fn test_gql_linear_clauses_let_filter() {
+    use voyager_core::emitters::cypher::CypherEmitter;
+
+    let mut b = QueryBuilder::new();
+    let first = b.prop("p", "firstName");
+    let space = b.literal(" ");
+    let last = b.prop("p", "lastName");
+    let c1 = b.binary_expr(first, BinaryOp::Add, space);
+    let full_name_expr = b.binary_expr(c1, BinaryOp::Add, last);
+
+    let age_prop = b.prop("p", "age");
+    let min_age = b.literal(60i64);
+    let filter_pred = b.binary_expr(age_prop, BinaryOp::Gte, min_age);
+
+    let full_name_ident = b.ident("fullName");
+
+    b.r#match()
+        .node(Some("p"), vec!["Person"])
+        .let_("fullName", full_name_expr)
+        .filter_(filter_pred)
+        .r#return()
+        .select_expr(full_name_ident, None::<String>)
+        .offset(15)
+        .limit(10);
+
+    let (arena, root) = b.build();
+
+    let mut gql = IsoGqlEmitter::new();
+    let res_gql = gql.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res_gql.statement,
+        "MATCH (p:Person) LET fullName = (p.firstName || $p0) || p.lastName FILTER p.age >= $p1 RETURN fullName OFFSET 15 LIMIT 10"
+    );
+
+    let mut cypher = CypherEmitter::new();
+    let res_cypher = cypher.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res_cypher.statement,
+        "MATCH (p:Person) WITH *, (p.firstName + $p0) + p.lastName AS fullName WHERE p.age >= $p1 RETURN fullName SKIP 15 LIMIT 10"
+    );
+}

@@ -150,7 +150,20 @@ impl SqlPgqEmitter {
         let node = arena.get(handle)?;
         match node {
             AstNode::NodePattern { .. } => self.emit_node_pattern(arena, handle),
-            AstNode::PathChain { start_node, edges } => {
+            AstNode::PathChain {
+                path_variable,
+                path_mode,
+                start_node,
+                edges,
+            } => {
+                if let Some(var) = path_variable {
+                    self.buffer.push_str(var);
+                    self.buffer.push_str(" = ");
+                }
+                if *path_mode != crate::ast::PathMode::None {
+                    self.buffer.push_str(path_mode.as_str());
+                    self.buffer.push(' ');
+                }
                 self.emit_node_pattern(arena, *start_node)?;
                 for &edge_handle in edges {
                     self.emit_edge_pattern(arena, edge_handle)?;
@@ -535,6 +548,7 @@ impl AstVisitor for SqlPgqEmitter {
             load_csv: _,
             unwinds,
             matches,
+            linear_clauses: _,
             with_clauses,
             mutations,
             return_clause,

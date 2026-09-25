@@ -75,10 +75,14 @@ from voyager_ogm.query import (
     CompiledQuery,
     Path,
     Query,
+    acyclic,
     explain,
     load_csv,
     profile,
+    simple,
+    trail,
     unwind,
+    walk,
 )
 from voyager_ogm.schema import SchemaManager
 from voyager_ogm.session import (
@@ -169,6 +173,7 @@ __all__ = [
     "SubqueryExpr",
     "Transaction",
     "VoyagerConfig",
+    "acyclic",
     "as_cte",
     "case",
     "chunk_dataframe",
@@ -204,11 +209,14 @@ __all__ = [
     "reset_alias_counters",
     "reset_config",
     "show",
+    "simple",
     "to_arrow",
     "to_expression",
     "to_polars",
+    "trail",
     "unwind",
     "version",
     "view_graph",
     "visualize_query",
+    "walk",
 ]

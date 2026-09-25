@@ -28,7 +28,7 @@ use std::collections::HashSet;
 
 use crate::ast::{
     AggregationFunc, AstNode, BinaryOp, Direction, ExecutionMode, LiteralValue, NodeHandle,
-    ProjectionItem, QueryAstArena, UnaryOp,
+    PathMode, ProjectionItem, QueryAstArena, UnaryOp,
 };
 
 #[derive(Debug, Clone)]
@@ -57,12 +57,15 @@ pub struct QueryBuilder {
     load_csv: Option<NodeHandle>,
     unwind_clauses: Vec<NodeHandle>,
     match_clauses: Vec<NodeHandle>,
+    linear_clauses: Vec<NodeHandle>,
     with_clauses: Vec<NodeHandle>,
     mutation_clauses: Vec<NodeHandle>,
     procedure_call: Option<NodeHandle>,
     clause_mode: Option<ClauseMode>,
     is_optional_match: bool,
     current_path_start: Option<NodeHandle>,
+    current_path_mode: PathMode,
+    current_path_variable: Option<String>,
     current_edges: Vec<NodeHandle>,
     current_match_paths: Vec<NodeHandle>,
     pending_edge: Option<PendingEdge>,
@@ -689,6 +692,44 @@ impl QueryBuilder {
         self
     }
 
+    /// Sets traversal search mode to TRAIL (prevents duplicate edges, ISO GQL standard).
+    pub fn trail(&mut self) -> &mut Self {
+        self.apply_path_mode(PathMode::Trail)
+    }
+
+    /// Sets traversal search mode to SIMPLE (prevents duplicate nodes, except closed cycles, ISO GQL standard).
+    pub fn simple(&mut self) -> &mut Self {
+        self.apply_path_mode(PathMode::Simple)
+    }
+
+    /// Sets traversal search mode to ACYCLIC (strictly prevents cycles, ISO GQL standard).
+    pub fn acyclic(&mut self) -> &mut Self {
+        self.apply_path_mode(PathMode::Acyclic)
+    }
+
+    /// Sets traversal search mode to WALK (allows repeated elements, ISO GQL standard).
+    pub fn walk(&mut self) -> &mut Self {
+        self.apply_path_mode(PathMode::Walk)
+    }
+
+    /// Internal helper to set path mode.
+    fn apply_path_mode(&mut self, mode: PathMode) -> &mut Self {
+        self.current_path_mode = mode;
+        self
+    }
+
+    /// Sets an explicit path variable alias (e.g. `p` in `p = TRAIL ...`).
+    pub fn path_variable(&mut self, variable: impl Into<String>) -> &mut Self {
+        self.current_path_variable = Some(variable.into());
+        self
+    }
+
+    /// Sets the traversal search mode explicitly.
+    pub fn path_mode(&mut self, mode: PathMode) -> &mut Self {
+        self.current_path_mode = mode;
+        self
+    }
+
     // ========================================================
     // WHERE Predicates & Filters
     // ========================================================
@@ -986,11 +1027,21 @@ impl QueryBuilder {
     /// Starts an additional branching path pattern within the current MATCH or CREATE clause: `MATCH p1, p2`.
     pub fn pattern(&mut self) -> &mut Self {
         if let Some(start_node) = self.current_path_start.take() {
-            let path_handle = if self.current_edges.is_empty() {
+            let path_mode = std::mem::take(&mut self.current_path_mode);
+            let path_variable = self.current_path_variable.take();
+            let path_handle = if self.current_edges.is_empty()
+                && path_mode == PathMode::None
+                && path_variable.is_none()
+            {
                 start_node
             } else {
                 let edges = std::mem::take(&mut self.current_edges);
-                self.arena.alloc(AstNode::PathChain { start_node, edges })
+                self.arena.alloc(AstNode::PathChain {
+                    path_variable,
+                    path_mode,
+                    start_node,
+                    edges,
+                })
             };
             self.current_match_paths.push(path_handle);
         }
@@ -1006,6 +1057,31 @@ impl QueryBuilder {
     /// Sets query pagination offset / skip.
     pub fn skip(&mut self, skip: u64) -> &mut Self {
         self.skip = Some(skip);
+        self
+    }
+
+    /// Sets query pagination offset / skip (first-class alias for [`Self::skip`]).
+    #[inline(always)]
+    pub fn offset(&mut self, offset: u64) -> &mut Self {
+        self.skip(offset)
+    }
+
+    /// Adds a `LET variable = expression` linear statement (ISO GQL standard).
+    pub fn let_(&mut self, variable: impl Into<String>, expression: NodeHandle) -> &mut Self {
+        self.flush_current_path();
+        let let_h = self.arena.alloc(AstNode::LetClause {
+            variable: variable.into(),
+            expression,
+        });
+        self.linear_clauses.push(let_h);
+        self
+    }
+
+    /// Adds a `FILTER predicate` standalone linear record filter statement (ISO GQL standard).
+    pub fn filter_(&mut self, predicate: NodeHandle) -> &mut Self {
+        self.flush_current_path();
+        let filter_h = self.arena.alloc(AstNode::FilterClause { predicate });
+        self.linear_clauses.push(filter_h);
         self
     }
 
@@ -1062,11 +1138,21 @@ impl QueryBuilder {
 
         let mut paths = std::mem::take(&mut self.current_match_paths);
         if let Some(start_node) = self.current_path_start.take() {
-            let path_handle = if self.current_edges.is_empty() {
+            let path_mode = std::mem::take(&mut self.current_path_mode);
+            let path_variable = self.current_path_variable.take();
+            let path_handle = if self.current_edges.is_empty()
+                && path_mode == PathMode::None
+                && path_variable.is_none()
+            {
                 start_node
             } else {
                 let edges = std::mem::take(&mut self.current_edges);
-                self.arena.alloc(AstNode::PathChain { start_node, edges })
+                self.arena.alloc(AstNode::PathChain {
+                    path_variable,
+                    path_mode,
+                    start_node,
+                    edges,
+                })
             };
             paths.push(path_handle);
         }
@@ -1159,6 +1245,7 @@ impl QueryBuilder {
             load_csv: self.load_csv,
             unwinds: self.unwind_clauses,
             matches: self.match_clauses,
+            linear_clauses: self.linear_clauses,
             with_clauses: self.with_clauses,
             mutations: self.mutation_clauses,
             return_clause,
@@ -1264,7 +1351,9 @@ impl QueryBuilder {
                         };
                         self.node(var, lbls);
                     }
-                    Ok(AstNode::PathChain { start_node, edges }) => {
+                    Ok(AstNode::PathChain {
+                        start_node, edges, ..
+                    }) => {
                         let start_handle = *start_node;
                         let edge_handles = edges.clone();
 
@@ -1383,7 +1472,9 @@ fn remap_ast_node(node: &mut AstNode, offset: u32) {
             }
             *target_node = remap_handle(*target_node, offset);
         }
-        AstNode::PathChain { start_node, edges } => {
+        AstNode::PathChain {
+            start_node, edges, ..
+        } => {
             *start_node = remap_handle(*start_node, offset);
             for e in edges {
                 *e = remap_handle(*e, offset);
@@ -1544,10 +1635,17 @@ fn remap_ast_node(node: &mut AstNode, offset: u32) {
                 *wh = remap_handle(*wh, offset);
             }
         }
+        AstNode::LetClause { expression, .. } => {
+            *expression = remap_handle(*expression, offset);
+        }
+        AstNode::FilterClause { predicate } => {
+            *predicate = remap_handle(*predicate, offset);
+        }
         AstNode::QueryStatement {
             load_csv,
             unwinds,
             matches,
+            linear_clauses,
             with_clauses,
             mutations,
             return_clause,
@@ -1561,6 +1659,9 @@ fn remap_ast_node(node: &mut AstNode, offset: u32) {
             }
             for m in matches {
                 *m = remap_handle(*m, offset);
+            }
+            for l in linear_clauses {
+                *l = remap_handle(*l, offset);
             }
             for w in with_clauses {
                 *w = remap_handle(*w, offset);

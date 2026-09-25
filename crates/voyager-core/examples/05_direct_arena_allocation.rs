@@ -50,6 +50,7 @@ fn main() {
         load_csv: None,
         unwinds: vec![],
         matches: vec![match_handle],
+        linear_clauses: vec![],
         with_clauses: vec![],
         mutations: vec![],
         return_clause: Some(return_handle),

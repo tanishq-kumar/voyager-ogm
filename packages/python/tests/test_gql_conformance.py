@@ -347,3 +347,225 @@ def test_gql_standard_functions_and_concatenation():
     assert "char_length(p.city) AS city_len" in compiled.statement
     assert "cardinality(p.skills) AS skill_count" in compiled.statement
     assert "p.name || $p0 AS full_greeting" in compiled.statement
+
+
+# ---------------------------------------------------------------------------
+# 7. ISO GQL Path Search Modes & Traversal Modifiers (#56)
+# ---------------------------------------------------------------------------
+
+
+def test_gql_path_search_modes():
+    """ISO GQL: Traversal search modes (TRAIL, SIMPLE, ACYCLIC, WALK) and Cypher compatibility."""
+    from voyager_ogm import acyclic, simple, trail, walk
+
+    p = Person(alias="a")
+    f = Person(alias="b")
+
+    # TRAIL with path variable
+    q_trail = Query.match(p).trail("path").to("KNOWS").node(f).return_("path")
+    comp_gql = q_trail.compile(dialect="iso_gql")
+    assert comp_gql.statement == "MATCH path = TRAIL (a:Person)-[:KNOWS]->(b:Person) RETURN path"
+    comp_cypher = q_trail.compile(dialect="cypher")
+    assert comp_cypher.statement == "MATCH path = (a:Person)-[:KNOWS]->(b:Person) RETURN path"
+
+    # TRAIL without path variable
+    q_trail_novar = Query.match(p).trail().to("KNOWS").node(f).return_(a=p.name)
+    assert (
+        q_trail_novar.compile(dialect="iso_gql").statement
+        == "MATCH TRAIL (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS a"
+    )
+    assert (
+        q_trail_novar.compile(dialect="cypher").statement
+        == "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS a"
+    )
+
+    # SIMPLE mode
+    q_simple = Query.match(p).simple("sp").to("KNOWS").node(f).return_("sp")
+    assert (
+        q_simple.compile(dialect="iso_gql").statement
+        == "MATCH sp = SIMPLE (a:Person)-[:KNOWS]->(b:Person) RETURN sp"
+    )
+    assert (
+        q_simple.compile(dialect="cypher").statement
+        == "MATCH sp = (a:Person)-[:KNOWS]->(b:Person) RETURN sp"
+    )
+
+    # ACYCLIC mode
+    q_acyc = Query.match(p).acyclic("ap").to("KNOWS").node(f).return_("ap")
+    assert (
+        q_acyc.compile(dialect="iso_gql").statement
+        == "MATCH ap = ACYCLIC (a:Person)-[:KNOWS]->(b:Person) RETURN ap"
+    )
+    assert (
+        q_acyc.compile(dialect="cypher").statement
+        == "MATCH ap = (a:Person)-[:KNOWS]->(b:Person) RETURN ap"
+    )
+
+    # WALK mode
+    q_walk = Query.match(p).walk("wp").to("KNOWS").node(f).return_("wp")
+    assert (
+        q_walk.compile(dialect="iso_gql").statement
+        == "MATCH wp = WALK (a:Person)-[:KNOWS]->(b:Person) RETURN wp"
+    )
+    assert (
+        q_walk.compile(dialect="cypher").statement
+        == "MATCH wp = (a:Person)-[:KNOWS]->(b:Person) RETURN wp"
+    )
+
+    # Top-level standalone functions & path_variable()
+    q_module_trail = trail("my_path").match(p).to("KNOWS").node(f).return_("my_path")
+    assert (
+        q_module_trail.compile(dialect="iso_gql").statement
+        == "MATCH my_path = TRAIL (a:Person)-[:KNOWS]->(b:Person) RETURN my_path"
+    )
+
+    q_module_simple = simple("my_sp").match(p).to("KNOWS").node(f).return_("my_sp")
+    assert (
+        q_module_simple.compile(dialect="iso_gql").statement
+        == "MATCH my_sp = SIMPLE (a:Person)-[:KNOWS]->(b:Person) RETURN my_sp"
+    )
+
+    q_module_acyclic = acyclic().match(p).to("KNOWS").node(f).return_(p=p.name)
+    assert (
+        q_module_acyclic.compile(dialect="iso_gql").statement
+        == "MATCH ACYCLIC (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS p"
+    )
+
+    q_module_walk = walk("my_wp").match(p).to("KNOWS").node(f).return_("my_wp")
+    assert (
+        q_module_walk.compile(dialect="iso_gql").statement
+        == "MATCH my_wp = WALK (a:Person)-[:KNOWS]->(b:Person) RETURN my_wp"
+    )
+
+    q_pv = (
+        Query.match(p)
+        .path_variable("custom_p")
+        .path_mode("trail")
+        .to("KNOWS")
+        .node(f)
+        .return_("custom_p")
+    )
+    assert (
+        q_pv.compile(dialect="iso_gql").statement
+        == "MATCH custom_p = TRAIL (a:Person)-[:KNOWS]->(b:Person) RETURN custom_p"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 8. ISO GQL Label Expressions (OR | and NOT !) (#56)
+# ---------------------------------------------------------------------------
+
+
+def test_gql_label_expressions():
+    """ISO GQL: Label expressions `(A|B)&!C` conformance across GQL and Cypher 5."""
+    # Disjunction with negation
+    q1 = Query.match().node("n", labels=["Person | Company", "!Inactive"]).return_("n")
+    assert (
+        q1.compile(dialect="iso_gql").statement == "MATCH (n:(Person|Company)&!Inactive) RETURN n"
+    )
+    assert q1.compile(dialect="cypher").statement == "MATCH (n:(Person|Company)&!Inactive) RETURN n"
+
+    # Triple disjunction
+    q2 = Query.match().node("n", labels=["Admin | SuperUser | Manager"]).return_("n")
+    assert q2.compile(dialect="iso_gql").statement == "MATCH (n:(Admin|SuperUser|Manager)) RETURN n"
+    assert q2.compile(dialect="cypher").statement == "MATCH (n:(Admin|SuperUser|Manager)) RETURN n"
+
+    # Single negation
+    q3 = Query.match().node("n", labels=["!Deleted"]).return_("n")
+    assert q3.compile(dialect="iso_gql").statement == "MATCH (n:!Deleted) RETURN n"
+    assert q3.compile(dialect="cypher").statement == "MATCH (n:!Deleted) RETURN n"
+
+    # Multi-label conjunction (standard GQL & vs Cypher :A:B)
+    q4 = Query.match().node("n", labels=["Person", "Employee"]).return_("n")
+    assert q4.compile(dialect="iso_gql").statement == "MATCH (n:Person&Employee) RETURN n"
+    assert q4.compile(dialect="cypher").statement == "MATCH (n:Person:Employee) RETURN n"
+
+
+# ---------------------------------------------------------------------------
+# 9. GQL Linear Statements & Pagination (LET, FILTER, OFFSET) (#56)
+# ---------------------------------------------------------------------------
+
+
+def test_gql_linear_statements_and_pagination():
+    """ISO GQL: Linear LET and FILTER clauses, and OFFSET pagination."""
+    p = Person(alias="p")
+
+    # LET and FILTER
+    q = (
+        Query.match(p)
+        .let_(fullName=p.name + " Senior")
+        .filter_(p.age >= 60)
+        .return_("fullName")
+        .offset(15)
+        .limit(10)
+    )
+
+    comp_gql = q.compile(dialect="iso_gql")
+    assert (
+        comp_gql.statement
+        == "MATCH (p:Person) LET fullName = p.name || $p0 FILTER p.age >= $p1 RETURN fullName OFFSET 15 LIMIT 10"
+    )
+    assert comp_gql.parameters == {"p0": " Senior", "p1": 60}
+
+    comp_cypher = q.compile(dialect="cypher")
+    assert (
+        comp_cypher.statement
+        == "MATCH (p:Person) WITH *, p.name + $p0 AS fullName WHERE p.age >= $p1 RETURN fullName SKIP 15 LIMIT 10"
+    )
+    assert comp_cypher.parameters == {"p0": " Senior", "p1": 60}
+
+
+# ---------------------------------------------------------------------------
+# 10. String Concatenation (||) & Standard Function Helpers (#56)
+# ---------------------------------------------------------------------------
+
+
+def test_gql_string_concatenation_and_helpers():
+    """ISO GQL: Nested string additions emit || in GQL and +, helper methods on expressions."""
+    from voyager_ogm import fn
+
+    p = Person(alias="p")
+
+    # Nested addition p.name + " lives in " + p.city
+    q_str = Query.match(p).return_(
+        info=p.name + " lives in " + p.city,
+    )
+    comp_gql = q_str.compile(dialect="iso_gql")
+    assert comp_gql.statement == "MATCH (p:Person) RETURN (p.name || $p0) || p.city AS info"
+    comp_cypher = q_str.compile(dialect="cypher")
+    assert comp_cypher.statement == "MATCH (p:Person) RETURN (p.name + $p0) + p.city AS info"
+
+    # Expression methods: .char_length(), .upper(), .lower()
+    q_helpers = Query.match(p).return_(
+        c_len=p.city.char_length(),
+        u_name=p.name.upper(),
+        l_name=p.name.lower(),
+    )
+    comp_helpers_gql = q_helpers.compile(dialect="iso_gql")
+    assert "char_length(p.city) AS c_len" in comp_helpers_gql.statement
+    assert "upper(p.name) AS u_name" in comp_helpers_gql.statement
+    assert "lower(p.name) AS l_name" in comp_helpers_gql.statement
+
+    comp_helpers_cypher = q_helpers.compile(dialect="cypher")
+    assert "toUpper(p.name) AS u_name" in comp_helpers_cypher.statement
+    assert "toLower(p.name) AS l_name" in comp_helpers_cypher.statement
+
+    # Graph/path functions: fn.elements(p), fn.path_length(p)
+    q_path_fn = (
+        Query.match()
+        .trail("p")
+        .node("a")
+        .to("KNOWS")
+        .node("b")
+        .return_(
+            elems=fn.elements("p"),
+            plen=fn.path_length("p"),
+        )
+    )
+    comp_pfn_gql = q_path_fn.compile(dialect="iso_gql")
+    assert "elements(p) AS elems" in comp_pfn_gql.statement
+    assert "path_length(p) AS plen" in comp_pfn_gql.statement
+
+    comp_pfn_cypher = q_path_fn.compile(dialect="cypher")
+    assert "elements(p) AS elems" in comp_pfn_cypher.statement
+    assert "length(p) AS plen" in comp_pfn_cypher.statement

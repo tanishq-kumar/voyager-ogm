@@ -63,6 +63,43 @@ impl fmt::Display for Direction {
     }
 }
 
+/// Path traversal search mode (ISO/IEC 39075:2024 GQL).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum PathMode {
+    /// Standard / Default traversal without explicit path mode modifier.
+    #[default]
+    None,
+    /// WALK traversal mode (allows repeated nodes and relationships).
+    Walk,
+    /// TRAIL traversal mode (allows repeated nodes, but forbids duplicate relationships).
+    Trail,
+    /// SIMPLE traversal mode (forbids repeated nodes, except when start and end nodes are identical).
+    Simple,
+    /// ACYCLIC traversal mode (strictly forbids repeated nodes and cycles).
+    Acyclic,
+}
+
+impl PathMode {
+    /// Returns the uppercase keyword string representation.
+    #[inline]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "",
+            Self::Walk => "WALK",
+            Self::Trail => "TRAIL",
+            Self::Simple => "SIMPLE",
+            Self::Acyclic => "ACYCLIC",
+        }
+    }
+}
+
+impl fmt::Display for PathMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// Unary operators for boolean negation, arithmetic inversion, and null checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -384,6 +421,10 @@ pub enum AstNode {
     },
     /// Connected path sequence starting at a node followed by 1..N edge patterns.
     PathChain {
+        /// Optional path variable alias (e.g. `p` in `p = ...`)
+        path_variable: Option<String>,
+        /// Path traversal search mode (WALK, TRAIL, SIMPLE, ACYCLIC)
+        path_mode: PathMode,
         /// Starting node handle
         start_node: NodeHandle,
         /// Sequence of connected edge pattern handles
@@ -577,7 +618,19 @@ pub enum AstNode {
         /// Optional WHERE filter attached directly to this WITH clause
         where_clause: Option<NodeHandle>,
     },
-    /// Complete graph query statement combining load csv, unwinds, match blocks, with pipelines, mutations, and projections.
+    /// LET linear computed variable assignment statement: `LET var = expression`.
+    LetClause {
+        /// Target computed variable alias name
+        variable: String,
+        /// Expression handle
+        expression: NodeHandle,
+    },
+    /// FILTER standalone linear record filter statement: `FILTER predicate`.
+    FilterClause {
+        /// Filter predicate expression handle
+        predicate: NodeHandle,
+    },
+    /// Complete graph query statement combining load csv, unwinds, match blocks, linear statements, with pipelines, mutations, and projections.
     QueryStatement {
         /// Execution mode (Normal, Explain, Profile, ExplainAndProfile)
         execution_mode: ExecutionMode,
@@ -587,6 +640,8 @@ pub enum AstNode {
         unwinds: Vec<NodeHandle>,
         /// Sequence of MATCH clauses
         matches: Vec<NodeHandle>,
+        /// Sequence of linear statements (LET, FILTER)
+        linear_clauses: Vec<NodeHandle>,
         /// Sequence of intermediate WITH clauses
         with_clauses: Vec<NodeHandle>,
         /// Sequence of mutation clauses (CREATE, MERGE, SET, DELETE, REMOVE)

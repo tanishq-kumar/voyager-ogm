@@ -154,6 +154,24 @@ class Expression:
         """Constructs an `IS NOT NULL` unary predicate expression."""
         return UnaryExpr("IS NOT NULL", self)
 
+    def char_length(self) -> FunctionExpr:
+        """Standard ISO GQL / SQL length function `char_length(expr)`."""
+        from voyager_ogm.fn import char_length
+
+        return char_length(self)
+
+    def upper(self) -> FunctionExpr:
+        """Standard uppercase conversion function `upper(expr)`."""
+        from voyager_ogm.fn import upper
+
+        return upper(self)
+
+    def lower(self) -> FunctionExpr:
+        """Standard lowercase conversion function `lower(expr)`."""
+        from voyager_ogm.fn import lower
+
+        return lower(self)
+
 
 class PropExpr(Expression):
     """Property expression accessing a property on an aliased node or edge variable: `var.prop`."""

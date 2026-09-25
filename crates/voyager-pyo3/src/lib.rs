@@ -805,6 +805,24 @@ fn build_query_from_spec_internal(
                     builder.r#match();
                 }
 
+                if let Some(mode_item) = m_dict.get_item("path_mode")? {
+                    if let Ok(m_str) = mode_item.extract::<String>() {
+                        let m = match m_str.to_ascii_lowercase().as_str() {
+                            "trail" => voyager_core::ast::PathMode::Trail,
+                            "simple" => voyager_core::ast::PathMode::Simple,
+                            "acyclic" => voyager_core::ast::PathMode::Acyclic,
+                            "walk" => voyager_core::ast::PathMode::Walk,
+                            _ => voyager_core::ast::PathMode::None,
+                        };
+                        builder.path_mode(m);
+                    }
+                }
+                if let Some(var_item) = m_dict.get_item("path_variable")? {
+                    if let Ok(v_str) = var_item.extract::<String>() {
+                        builder.path_variable(v_str);
+                    }
+                }
+
                 if let Some(paths_item) = m_dict.get_item("paths")? {
                     if let Ok(paths_list) = paths_item.downcast::<PyList>() {
                         for (p_idx, p_steps) in paths_list.iter().enumerate() {
@@ -1116,9 +1134,36 @@ fn build_query_from_spec_internal(
         }
     }
 
+    if let Some(offset_item) = spec.get_item("offset")? {
+        if let Ok(offset) = offset_item.extract::<u64>() {
+            builder.offset(offset);
+        }
+    }
+
     if let Some(limit_item) = spec.get_item("limit")? {
         if let Ok(limit) = limit_item.extract::<u64>() {
             builder.limit(limit);
+        }
+    }
+
+    if let Some(linear_item) = spec.get_item("linear_clauses")? {
+        if let Ok(linear_list) = linear_item.downcast::<PyList>() {
+            for item in linear_list {
+                let tuple = item.downcast::<PyTuple>()?;
+                let tag: String = tuple.get_item(0)?.extract()?;
+                match tag.as_str() {
+                    "let" => {
+                        let var: String = tuple.get_item(1)?.extract()?;
+                        let expr_h = py_to_node_handle(builder, &tuple.get_item(2)?)?;
+                        builder.let_(var, expr_h);
+                    }
+                    "filter" => {
+                        let pred_h = py_to_node_handle(builder, &tuple.get_item(1)?)?;
+                        builder.filter_(pred_h);
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -1261,6 +1306,59 @@ impl PyQueryBuilder {
 
     fn hops(&mut self, min: u32, max: u32) {
         self.inner.hops(min, max);
+    }
+
+    #[pyo3(signature = (variable=None))]
+    fn trail(&mut self, variable: Option<String>) {
+        self.inner.trail();
+        if let Some(v) = variable {
+            self.inner.path_variable(v);
+        }
+    }
+
+    #[pyo3(signature = (variable=None))]
+    fn simple(&mut self, variable: Option<String>) {
+        self.inner.simple();
+        if let Some(v) = variable {
+            self.inner.path_variable(v);
+        }
+    }
+
+    #[pyo3(signature = (variable=None))]
+    fn acyclic(&mut self, variable: Option<String>) {
+        self.inner.acyclic();
+        if let Some(v) = variable {
+            self.inner.path_variable(v);
+        }
+    }
+
+    #[pyo3(signature = (variable=None))]
+    fn walk(&mut self, variable: Option<String>) {
+        self.inner.walk();
+        if let Some(v) = variable {
+            self.inner.path_variable(v);
+        }
+    }
+
+    fn path_variable(&mut self, variable: String) {
+        self.inner.path_variable(variable);
+    }
+
+    fn path_mode(&mut self, mode: String) -> PyResult<()> {
+        let m = match mode.to_ascii_lowercase().as_str() {
+            "trail" => voyager_core::ast::PathMode::Trail,
+            "simple" => voyager_core::ast::PathMode::Simple,
+            "acyclic" => voyager_core::ast::PathMode::Acyclic,
+            "walk" => voyager_core::ast::PathMode::Walk,
+            "none" | "" => voyager_core::ast::PathMode::None,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "Unknown path mode '{other}'. Expected trail, simple, acyclic, walk, or none."
+                )));
+            }
+        };
+        self.inner.path_mode(m);
+        Ok(())
     }
 
     fn where_expr(&mut self, expr: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -1498,6 +1596,22 @@ impl PyQueryBuilder {
 
     fn skip(&mut self, skip: u64) {
         self.inner.skip(skip);
+    }
+
+    fn offset(&mut self, offset: u64) {
+        self.inner.offset(offset);
+    }
+
+    fn let_(&mut self, variable: String, expr: &Bound<'_, PyAny>) -> PyResult<()> {
+        let h = py_to_node_handle(&mut self.inner, expr)?;
+        self.inner.let_(variable, h);
+        Ok(())
+    }
+
+    fn filter_(&mut self, predicate: &Bound<'_, PyAny>) -> PyResult<()> {
+        let h = py_to_node_handle(&mut self.inner, predicate)?;
+        self.inner.filter_(h);
+        Ok(())
     }
 
     #[pyo3(signature = (procedure_name, args=vec![], kwargs=std::collections::HashMap::new()))]
