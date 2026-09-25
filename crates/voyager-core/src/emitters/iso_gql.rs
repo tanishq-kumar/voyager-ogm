@@ -1,8 +1,8 @@
 //! ISO/IEC 39075:2024 Graph Query Language (GQL) Standard Emitter.
 
 use crate::ast::{
-    AggregationFunc, AstNode, BinaryOp, Direction, LiteralValue, NodeHandle, ProjectionItem,
-    QueryAstArena, UnaryOp,
+    AggregationFunc, AstNode, BinaryOp, Direction, ExecutionMode, LiteralValue, NodeHandle,
+    ProjectionItem, QueryAstArena, UnaryOp,
 };
 use crate::error::{Error, Result};
 use crate::visitor::{AstVisitor, CompiledQuery};
@@ -14,6 +14,7 @@ pub struct IsoGqlEmitter {
     param_counter: usize,
     parameters: HashMap<String, LiteralValue>,
     buffer: String,
+    ignore_execution_mode: bool,
 }
 
 impl IsoGqlEmitter {
@@ -23,7 +24,14 @@ impl IsoGqlEmitter {
             param_counter: 0,
             parameters: HashMap::new(),
             buffer: String::with_capacity(256),
+            ignore_execution_mode: false,
         }
+    }
+
+    /// Configures the emitter to ignore execution mode prefixes (used by subqueries).
+    pub fn without_execution_mode(mut self) -> Self {
+        self.ignore_execution_mode = true;
+        self
     }
 
     fn emit_pattern_predicate(
@@ -551,7 +559,7 @@ impl IsoGqlEmitter {
                 }
             }
             AstNode::QueryStatement { .. } => {
-                let mut nested_emitter = IsoGqlEmitter::new();
+                let mut nested_emitter = IsoGqlEmitter::new().without_execution_mode();
                 nested_emitter.param_counter = self.param_counter;
                 let compiled = nested_emitter.visit_query(arena, handle)?;
                 self.buffer.push_str(&compiled.statement);
@@ -862,12 +870,25 @@ impl AstVisitor for IsoGqlEmitter {
 
         let root_node = arena.get(root)?;
         if let AstNode::ProcedureCall {
+            execution_mode,
             namespace,
             procedure,
             arguments,
             yield_items,
         } = root_node
         {
+            if !self.ignore_execution_mode {
+                match execution_mode {
+                    ExecutionMode::Normal => {}
+                    ExecutionMode::Explain => {
+                        self.buffer.push_str("EXPLAIN ");
+                    }
+                    ExecutionMode::Profile | ExecutionMode::ExplainAndProfile => {
+                        self.buffer.push_str("PROFILE ");
+                    }
+                }
+            }
+
             self.buffer.push_str("CALL ");
             if let Some(ns) = namespace {
                 self.buffer.push_str(ns);
@@ -886,13 +907,22 @@ impl AstVisitor for IsoGqlEmitter {
                 self.buffer.push_str(" YIELD ");
                 self.buffer.push_str(&yield_items.join(", "));
             }
-            return Ok(CompiledQuery::new(
+
+            let final_mode = if self.ignore_execution_mode {
+                ExecutionMode::Normal
+            } else {
+                *execution_mode
+            };
+
+            return Ok(CompiledQuery::with_execution_mode(
                 std::mem::take(&mut self.buffer),
                 std::mem::take(&mut self.parameters),
+                final_mode,
             ));
         }
 
         if let AstNode::QueryStatement {
+            execution_mode,
             load_csv: _,
             unwinds,
             matches,
@@ -901,6 +931,18 @@ impl AstVisitor for IsoGqlEmitter {
             return_clause,
         } = root_node
         {
+            if !self.ignore_execution_mode {
+                match execution_mode {
+                    ExecutionMode::Normal => {}
+                    ExecutionMode::Explain => {
+                        self.buffer.push_str("EXPLAIN ");
+                    }
+                    ExecutionMode::Profile | ExecutionMode::ExplainAndProfile => {
+                        self.buffer.push_str("PROFILE ");
+                    }
+                }
+            }
+
             let mut has_emitted = false;
 
             for &unwind_handle in unwinds {
@@ -987,9 +1029,16 @@ impl AstVisitor for IsoGqlEmitter {
                 }
             }
 
-            Ok(CompiledQuery::new(
+            let final_mode = if self.ignore_execution_mode {
+                ExecutionMode::Normal
+            } else {
+                *execution_mode
+            };
+
+            Ok(CompiledQuery::with_execution_mode(
                 std::mem::take(&mut self.buffer),
                 std::mem::take(&mut self.parameters),
+                final_mode,
             ))
         } else {
             Err(Error::AstInvariantViolation(format!(

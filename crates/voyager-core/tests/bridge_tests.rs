@@ -6,19 +6,13 @@ use voyager_core::visitor::CompiledQuery;
 fn test_mock_database_bridge_execution_recording() {
     let bridge = MockDatabaseBridge::new();
 
-    let query1 = CompiledQuery {
-        statement: "MATCH (p:Person) RETURN p.name".to_string(),
-        parameters: HashMap::new(),
-    };
+    let query1 = CompiledQuery::new("MATCH (p:Person) RETURN p.name".to_string(), HashMap::new());
 
-    let query2 = CompiledQuery {
-        statement: "CREATE (p:Person {name: $p0})".to_string(),
-        parameters: {
-            let mut map = HashMap::new();
-            map.insert("p0".to_string(), "Alice".into());
-            map
-        },
-    };
+    let query2 = CompiledQuery::new("CREATE (p:Person {name: $p0})".to_string(), {
+        let mut map = HashMap::new();
+        map.insert("p0".to_string(), "Alice".into());
+        map
+    });
 
     let res1 = bridge.execute(&query1).unwrap();
     assert!(res1.rows.is_empty());
@@ -53,10 +47,10 @@ fn test_mock_database_bridge_canned_results() {
 
     bridge.queue_result(canned);
 
-    let query = CompiledQuery {
-        statement: "MATCH (p:Person) RETURN p.name, p.age".to_string(),
-        parameters: HashMap::new(),
-    };
+    let query = CompiledQuery::new(
+        "MATCH (p:Person) RETURN p.name, p.age".to_string(),
+        HashMap::new(),
+    );
 
     let result = bridge.execute(&query).unwrap();
     assert_eq!(result.columns, vec!["name", "age"]);

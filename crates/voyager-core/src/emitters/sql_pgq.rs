@@ -1,8 +1,8 @@
 //! SQL:2023 Property Graph Queries (PGQ) & DuckPGQ Emitter.
 
 use crate::ast::{
-    AggregationFunc, AstNode, BinaryOp, Direction, LiteralValue, NodeHandle, ProjectionItem,
-    QueryAstArena, UnaryOp,
+    AggregationFunc, AstNode, BinaryOp, Direction, ExecutionMode, LiteralValue, NodeHandle,
+    ProjectionItem, QueryAstArena, UnaryOp,
 };
 use crate::error::{Error, Result};
 use crate::visitor::{AstVisitor, CompiledQuery};
@@ -531,6 +531,7 @@ impl AstVisitor for SqlPgqEmitter {
 
         let root_node = arena.get(root)?;
         if let AstNode::QueryStatement {
+            execution_mode,
             load_csv: _,
             unwinds,
             matches,
@@ -581,6 +582,12 @@ impl AstVisitor for SqlPgqEmitter {
                     skip_clause = *skip;
                 }
             }
+
+            let prefix = match execution_mode {
+                ExecutionMode::Normal => "",
+                ExecutionMode::Explain => "EXPLAIN ",
+                ExecutionMode::Profile | ExecutionMode::ExplainAndProfile => "EXPLAIN ANALYZE ",
+            };
 
             let has_aggregates = projections_list.iter().any(|p| p.aggregation.is_some());
 
@@ -651,6 +658,7 @@ impl AstVisitor for SqlPgqEmitter {
                     }
                 }
 
+                self.buffer.push_str(prefix);
                 self.buffer.push_str("SELECT ");
                 for (i, item) in outer_select_items.iter().enumerate() {
                     if i > 0 {
@@ -685,6 +693,7 @@ impl AstVisitor for SqlPgqEmitter {
                     }
                 }
             } else {
+                self.buffer.push_str(prefix);
                 self.buffer.push_str("SELECT * FROM GRAPH_TABLE (");
                 self.buffer.push_str(&self.graph_name);
                 self.buffer.push_str(" MATCH ");
@@ -726,9 +735,10 @@ impl AstVisitor for SqlPgqEmitter {
                 self.buffer.push_str(&format!(" OFFSET {skip}"));
             }
 
-            Ok(CompiledQuery::new(
+            Ok(CompiledQuery::with_execution_mode(
                 std::mem::take(&mut self.buffer),
                 std::mem::take(&mut self.parameters),
+                *execution_mode,
             ))
         } else {
             Err(Error::AstInvariantViolation(format!(

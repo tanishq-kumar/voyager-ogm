@@ -176,6 +176,7 @@ fn test_procedure_call_ast_node() {
     let arg1 = arena.alloc(AstNode::Literal(LiteralValue::String("param1".into())));
 
     let proc_handle = arena.alloc(AstNode::ProcedureCall {
+        execution_mode: ExecutionMode::Normal,
         namespace: Some("apoc.path".into()),
         procedure: "subgraphNodes".into(),
         arguments: vec![arg1],
@@ -188,6 +189,7 @@ fn test_procedure_call_ast_node() {
         procedure,
         arguments,
         yield_items,
+        ..
     } = node
     {
         assert_eq!(namespace.as_deref(), Some("apoc.path"));

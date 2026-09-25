@@ -1,6 +1,6 @@
 //! Apache AGE (PostgreSQL Embedded Cypher) Emitter.
 
-use crate::ast::{AstNode, NodeHandle, QueryAstArena};
+use crate::ast::{AstNode, ExecutionMode, NodeHandle, QueryAstArena};
 use crate::emitters::cypher::CypherEmitter;
 use crate::error::Result;
 use crate::visitor::{AstVisitor, CompiledQuery};
@@ -29,17 +29,20 @@ impl Default for AgeEmitter {
 
 impl AstVisitor for AgeEmitter {
     fn visit_query(&mut self, arena: &QueryAstArena, root: NodeHandle) -> Result<CompiledQuery> {
-        let mut cypher_emitter = CypherEmitter::new();
+        let mut cypher_emitter = CypherEmitter::new().without_execution_mode();
         let cypher_compiled = cypher_emitter.visit_query(arena, root)?;
 
         let root_node = arena.get(root)?;
         let mut column_defs = Vec::new();
+        let mut execution_mode = ExecutionMode::Normal;
 
         if let AstNode::QueryStatement {
+            execution_mode: mode,
             return_clause: Some(ret_handle),
             ..
         } = root_node
         {
+            execution_mode = *mode;
             let ret_node = arena.get(*ret_handle)?;
             if let AstNode::ReturnClause { projections, .. } = ret_node {
                 for proj in projections {
@@ -61,6 +64,18 @@ impl AstVisitor for AgeEmitter {
                     column_defs.push(format!("{col_name} agtype"));
                 }
             }
+        } else if let AstNode::QueryStatement {
+            execution_mode: mode,
+            ..
+        } = root_node
+        {
+            execution_mode = *mode;
+        } else if let AstNode::ProcedureCall {
+            execution_mode: mode,
+            ..
+        } = root_node
+        {
+            execution_mode = *mode;
         }
 
         let as_clause = if column_defs.is_empty() {
@@ -75,14 +90,21 @@ impl AstVisitor for AgeEmitter {
             ", %s".to_string()
         };
 
+        let prefix = match execution_mode {
+            ExecutionMode::Normal => "",
+            ExecutionMode::Explain => "EXPLAIN ",
+            ExecutionMode::Profile | ExecutionMode::ExplainAndProfile => "EXPLAIN ANALYZE ",
+        };
+
         let wrapped_statement = format!(
-            "SELECT * FROM cypher('{}', $$ {} $${}) {}",
-            self.graph_name, cypher_compiled.statement, params_arg, as_clause
+            "{}SELECT * FROM cypher('{}', $$ {} $${}) {}",
+            prefix, self.graph_name, cypher_compiled.statement, params_arg, as_clause
         );
 
-        Ok(CompiledQuery::new(
+        Ok(CompiledQuery::with_execution_mode(
             wrapped_statement,
             cypher_compiled.parameters,
+            execution_mode,
         ))
     }
 }

@@ -46,6 +46,7 @@ fn main() {
 
     // 4. Combine into root QueryStatement
     let root_handle = arena.alloc(AstNode::QueryStatement {
+        execution_mode: ExecutionMode::Normal,
         load_csv: None,
         unwinds: vec![],
         matches: vec![match_handle],

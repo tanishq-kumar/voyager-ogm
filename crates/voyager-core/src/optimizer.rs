@@ -217,6 +217,7 @@ impl AstOptimizer {
             with_clauses,
             mutations,
             return_clause,
+            ..
         } = root_node
         {
             if let Some(load_h) = load_csv {

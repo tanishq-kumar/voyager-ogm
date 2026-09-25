@@ -168,6 +168,7 @@ fn snapshot_vendor_procedure_call() {
     let arg2 = arena.alloc(AstNode::Literal(LiteralValue::Int64(3)));
 
     let proc_handle = arena.alloc(AstNode::ProcedureCall {
+        execution_mode: ExecutionMode::Normal,
         namespace: Some("apoc.path".into()),
         procedure: "subgraphNodes".into(),
         arguments: vec![arg1, arg2],

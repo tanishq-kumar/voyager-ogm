@@ -3,7 +3,7 @@
 //! Generates parameterized batch queries leveraging `UNWIND $batch AS row`
 //! for million-row bulk creations and upserts across graph dialects.
 
-use crate::ast::{AstNode, Direction, QueryAstArena};
+use crate::ast::{AstNode, Direction, ExecutionMode, QueryAstArena};
 use crate::emitters::{CypherEmitter, IsoGqlEmitter};
 use crate::error::Result;
 use crate::visitor::{AstVisitor, CompiledQuery};
@@ -76,6 +76,7 @@ pub fn compile_bulk_create(
     }
 
     let root_handle = arena.alloc(AstNode::QueryStatement {
+        execution_mode: ExecutionMode::Normal,
         load_csv: None,
         unwinds: vec![unwind_handle],
         matches: Vec::new(),
@@ -176,6 +177,7 @@ pub fn compile_bulk_merge(
     });
 
     let root_handle = arena.alloc(AstNode::QueryStatement {
+        execution_mode: ExecutionMode::Normal,
         load_csv: None,
         unwinds: vec![unwind_handle],
         matches: Vec::new(),
@@ -325,6 +327,7 @@ pub fn compile_bulk_create_rel(
     }
 
     let root_handle = arena.alloc(AstNode::QueryStatement {
+        execution_mode: ExecutionMode::Normal,
         load_csv: None,
         unwinds: vec![unwind_handle],
         matches: vec![match_handle],

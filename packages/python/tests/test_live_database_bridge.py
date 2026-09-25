@@ -367,3 +367,99 @@ def test_live_neo4j_bulk_create_relationships_string_descriptor(clean_neo4j):
     assert len(rows) == 1
     assert rows[0]["since"] == 2023
     assert rows[0]["role"] == "lead"
+
+
+@node("LiveSimultaneousPerson")
+class LiveSimultaneousPerson(Node):
+    id: int = Field(primary_key=True)
+    name: str
+    age: int
+
+
+@pytest.mark.skipif(not NEO4J_ONLINE, reason="Live Neo4j instance not online on localhost:7687")
+@pytest.mark.asyncio
+async def test_live_neo4j_async_simultaneous_explain_and_profile():
+    """Test 2 simultaneous connections executing explain and profile queries concurrently on live Neo4j."""
+    import asyncio
+
+    async_driver = AsyncGraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
+    try:
+        session1 = AsyncSession(bridge=async_driver, dialect="cypher")
+        session2 = AsyncSession(bridge=async_driver, dialect="cypher")
+
+        # 1. Seed data
+        await session1.execute("MATCH (n:LiveSimultaneousPerson) DETACH DELETE n")
+        await session1.execute(
+            "CREATE (:LiveSimultaneousPerson {id: 1, name: 'Alice', age: 30}), "
+            "(:LiveSimultaneousPerson {id: 2, name: 'Bob', age: 25})"
+        )
+
+        p = LiveSimultaneousPerson()
+
+        # Build explain query (Query.explain())
+        q_explain = Query.match(p).where(p.age >= 20).return_(p.name).order_by(p.age).explain()
+        assert q_explain.execution_mode == "explain"
+
+        # Build profile query (Query.profile())
+        q_profile = Query.match(p).where(p.age >= 20).return_(p.name).order_by(p.age).profile()
+        assert q_profile.execution_mode == "profile"
+
+        # 2. Run both queries simultaneously across two separate sessions / connections
+        res_explain, res_profile = await asyncio.gather(
+            session1.execute(q_explain),
+            session2.execute(q_profile),
+        )
+
+        assert res_explain is not None
+        assert res_profile is not None
+
+        # In Neo4j Bolt, EXPLAIN plans without returning data records
+        assert len(res_explain.all()) == 0
+
+        # In Neo4j Bolt, PROFILE plans and returns data records
+        names = res_profile.scalars().all()
+        assert len(names) == 2
+        assert names == ["Bob", "Alice"]
+
+        # 3. Clean up
+        await session1.execute("MATCH (n:LiveSimultaneousPerson) DETACH DELETE n")
+    finally:
+        await async_driver.close()
+
+
+@pytest.mark.skipif(not NEO4J_ONLINE, reason="Live Neo4j instance not online on localhost:7687")
+def test_live_neo4j_sync_simultaneous_explain_and_profile():
+    """Test 2 simultaneous sync connections executing explain and profile queries concurrently on live Neo4j."""
+    import concurrent.futures
+
+    driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
+    try:
+        session_setup = Session(bridge=driver, dialect="cypher")
+        session_setup.execute("MATCH (n:LiveSimultaneousPerson) DETACH DELETE n")
+        session_setup.execute(
+            "CREATE (:LiveSimultaneousPerson {id: 1, name: 'Alice', age: 30}), "
+            "(:LiveSimultaneousPerson {id: 2, name: 'Bob', age: 25})"
+        )
+
+        p = LiveSimultaneousPerson()
+        q_explain = Query.match(p).where(p.age >= 20).return_(p.name).order_by(p.age).explain()
+        q_profile = Query.match(p).where(p.age >= 20).return_(p.name).order_by(p.age).profile()
+
+        def run_query(query):
+            s = Session(bridge=driver, dialect="cypher")
+            return s.execute(query)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            fut_explain = executor.submit(run_query, q_explain)
+            fut_profile = executor.submit(run_query, q_profile)
+            res_explain = fut_explain.result()
+            res_profile = fut_profile.result()
+
+        assert len(res_explain.all()) == 0
+        names = res_profile.scalars().all()
+        assert len(names) == 2
+        assert names == ["Bob", "Alice"]
+
+        session_setup.execute("MATCH (n:LiveSimultaneousPerson) DETACH DELETE n")
+    finally:
+        driver.close()

@@ -1,6 +1,6 @@
 //! AST Visitor Trait and Compiled Query Container.
 
-use crate::ast::{LiteralValue, NodeHandle, QueryAstArena};
+use crate::ast::{ExecutionMode, LiteralValue, NodeHandle, QueryAstArena};
 use crate::error::Result;
 use std::collections::HashMap;
 
@@ -12,14 +12,30 @@ pub struct CompiledQuery {
     pub statement: String,
     /// Parameter key-value map extracted during emission (e.g. `{"p0": Int64(21)}`).
     pub parameters: HashMap<String, LiteralValue>,
+    /// Execution mode of the query (Normal, Explain, Profile, ExplainAndProfile).
+    pub execution_mode: ExecutionMode,
 }
 
 impl CompiledQuery {
-    /// Creates a new compiled query result.
+    /// Creates a new compiled query result with default Normal execution mode.
     pub fn new(statement: String, parameters: HashMap<String, LiteralValue>) -> Self {
         Self {
             statement,
             parameters,
+            execution_mode: ExecutionMode::Normal,
+        }
+    }
+
+    /// Creates a new compiled query result with an explicit execution mode.
+    pub fn with_execution_mode(
+        statement: String,
+        parameters: HashMap<String, LiteralValue>,
+        execution_mode: ExecutionMode,
+    ) -> Self {
+        Self {
+            statement,
+            parameters,
+            execution_mode,
         }
     }
 
