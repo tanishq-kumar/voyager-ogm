@@ -21,6 +21,8 @@ cargo run --example <example_name>
 | [`04_expression_tree_builder.rs`](../crates/voyager-core/examples/04_expression_tree_builder.rs) | **Nested Expression Trees** | Boolean predicate trees with `AND`, `OR`, `XOR`, and property comparisons. |
 | [`05_direct_arena_allocation.rs`](../crates/voyager-core/examples/05_direct_arena_allocation.rs) | **Direct AST Allocation** | Direct AST allocation using `QueryAstArena`. |
 | [`06_ast_optimizer_constant_folding.rs`](../crates/voyager-core/examples/06_ast_optimizer_constant_folding.rs) | **AST Optimizer & Constant Folding** | Compile-time arithmetic folding, boolean simplification, and predicate pushdown. |
+| [`07_explain_and_profile_queries.rs`](../crates/voyager-core/examples/07_explain_and_profile_queries.rs) | **Query Profiling & Plan Explanation** | ExecutionMode (`EXPLAIN` / `PROFILE`), fluent modifiers, and multi-dialect emission. |
+| [`live_explain_and_profile.rs`](../crates/voyager-net/examples/live_explain_and_profile.rs) | **Live Engine Profiling & Plan Explanation** | Live Bolt execution against Neo4j and Memgraph with QueryBuilder seeding and profiling. |
 
 ---
 
@@ -46,4 +48,6 @@ uv run python examples/python/<example_name>.py
 | 9 | [`09_query_path_visualization.py`](python/09_query_path_visualization.py) | **Interactive Graph Explorer** | Local interactive UI server for exploring multi-hop subgraphs. |
 | 10 | [`10_live_neo4j_execution_demo.py`](python/10_live_neo4j_execution_demo.py) | **Live Neo4j Database Execution** | Real Bolt protocol execution, fraud detection graph seed, and path visualization. |
 | 11 | [`11_query_optimizer_constant_folding.py`](python/11_query_optimizer_constant_folding.py) | **AST Constant Folding & Optimizer** | Compile-time arithmetic reduction, associative reassociation, and index seek hoisting. |
+| 12 | [`12_query_profiling_and_plan_explanation.py`](python/12_query_profiling_and_plan_explanation.py) | **Query Profiling & Plan Explanation** | Fluent `.explain()`/`.profile()`, functional `explain()`/`profile()`, and multi-dialect emission. |
+
 
