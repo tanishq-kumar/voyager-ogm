@@ -78,6 +78,7 @@ class Query:
         self._native = NativeQueryBuilder()
         self._optimize: bool | None = None
         self._optimization_level: str | None = None
+        self._path_mode: str | None = None
 
     def has_mutations(self) -> bool:
         """Returns True if this query contains any mutating clauses (CREATE, MERGE, SET, DELETE, REMOVE)."""
@@ -115,6 +116,7 @@ class Query:
         q._native = self._native.clone_builder()
         q._optimize = self._optimize
         q._optimization_level = self._optimization_level
+        q._path_mode = self._path_mode
         return q
 
     def __copy__(self) -> Query:
@@ -663,6 +665,7 @@ class Query:
             q = self()
         else:
             q = self
+        q._path_mode = "TRAIL"
         q._native.trail(variable)
         return q
 
@@ -680,6 +683,7 @@ class Query:
             q = self()
         else:
             q = self
+        q._path_mode = "SIMPLE"
         q._native.simple(variable)
         return q
 
@@ -697,6 +701,7 @@ class Query:
             q = self()
         else:
             q = self
+        q._path_mode = "ACYCLIC"
         q._native.acyclic(variable)
         return q
 
@@ -714,6 +719,7 @@ class Query:
             q = self()
         else:
             q = self
+        q._path_mode = "WALK"
         q._native.walk(variable)
         return q
 
@@ -738,6 +744,7 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
+        self._path_mode = mode.upper() if mode else None
         self._native.path_mode(mode)
         return self
 
@@ -1016,22 +1023,38 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
 
+        Raises:
+            ValueError: If called with no assignments or invalid positional arguments.
+
         Example:
             >>> query.let_(fullName=p.firstName + " " + p.lastName)
             >>> query.let_("total", p.salary * 1.1)
         """
+        if not args and not kwargs:
+            raise ValueError(
+                "let_() requires at least one variable assignment (e.g. let_(var=expr) or let_('var', expr))"
+            )
         if len(args) == 2:
             var_name = str(args[0])
             expr = to_expression(args[1])
             nat = getattr(expr, "_native_expr", None)
             expr_spec = expr.to_spec() if nat is None else nat
             self._native.let_(var_name, expr_spec)
-        elif len(args) == 1 and isinstance(args[0], dict):
+        elif len(args) == 1:
+            if not isinstance(args[0], dict):
+                raise ValueError(
+                    f"let_() single positional argument must be a dict of assignments, got {type(args[0]).__name__}"
+                )
             for k, v in args[0].items():
                 expr = to_expression(v)
                 nat = getattr(expr, "_native_expr", None)
                 expr_spec = expr.to_spec() if nat is None else nat
                 self._native.let_(k, expr_spec)
+        elif len(args) > 2:
+            raise ValueError(
+                f"let_() accepts at most 2 positional arguments (var_name, expr), got {len(args)}"
+            )
+
         for k, v in kwargs.items():
             expr = to_expression(v)
             nat = getattr(expr, "_native_expr", None)
@@ -1039,8 +1062,12 @@ class Query:
             self._native.let_(k, expr_spec)
         return self
 
-    def filter_(self, *predicates: Any) -> Query:
+    def linear_filter(self, *predicates: Any) -> Query:
         """Adds a linear `FILTER predicate` statement (ISO GQL standard; emitted as `WHERE predicate` in Cypher).
+
+        Note:
+            To attach WHERE filter predicates to a preceding MATCH pattern, use `where()`.
+            `linear_filter()` adds an independent linear record filtering clause.
 
         Args:
             *predicates: Predicate expressions.
@@ -1048,9 +1075,14 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
 
+        Raises:
+            ValueError: If called with no predicates.
+
         Example:
-            >>> query.filter_(p.age > 21)
+            >>> query.linear_filter(p.age > 21)
         """
+        if not predicates:
+            raise ValueError("linear_filter() requires at least one predicate expression")
         for pred in predicates:
             nat = getattr(pred, "_native_expr", None)
             if nat is not None:
@@ -1062,6 +1094,9 @@ class Query:
             else:
                 self._native.filter_(to_expression(pred).to_spec())
         return self
+
+    # Ergonomic alias for ISO GQL FILTER statement
+    filter_ = linear_filter
 
     def return_(
         self,
@@ -1257,6 +1292,21 @@ class Query:
         else:
             opt_level = cfg.optimization_level
 
+        dialect_clean = dialect.strip().lower()
+        if (
+            dialect_clean in ("cypher", "opencypher", "neo4j", "memgraph")
+            and getattr(self, "_path_mode", None) is not None
+            and self._path_mode != "NONE"
+        ):
+            import warnings
+
+            warnings.warn(
+                f"Dialect '{dialect}' does not support explicit path search modes ('{self._path_mode}'). "
+                "Cypher default traversal semantics (trail) will be used and the search mode keyword was omitted.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         res = self._native.compile(
             dialect,
             graph_name,
@@ -1362,37 +1412,13 @@ def profile(target: Query) -> Query:
     return target.clone().profile()
 
 
-def trail(variable: str | None = None) -> Query:
-    """Starts a TRAIL traversal path query."""
-    return Query.trail(variable)
-
-
-def simple(variable: str | None = None) -> Query:
-    """Starts a SIMPLE traversal path query."""
-    return Query.simple(variable)
-
-
-def acyclic(variable: str | None = None) -> Query:
-    """Starts an ACYCLIC traversal path query."""
-    return Query.acyclic(variable)
-
-
-def walk(variable: str | None = None) -> Query:
-    """Starts a WALK traversal path query."""
-    return Query.walk(variable)
-
-
 __all__ = [
     "CompiledQuery",
     "Path",
     "Query",
-    "acyclic",
     "explain",
     "hybridmethod",
     "load_csv",
     "profile",
-    "simple",
-    "trail",
     "unwind",
-    "walk",
 ]

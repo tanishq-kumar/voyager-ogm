@@ -73,48 +73,6 @@ impl CypherEmitter {
         self.emit_expression(arena, pred_handle, false)
     }
 
-    fn emit_cypher_label_expression(buffer: &mut String, labels: &[String]) {
-        if labels.is_empty() {
-            return;
-        }
-        let has_expr = labels
-            .iter()
-            .any(|l| l.contains('|') || l.contains('&') || l.contains('!'));
-        if !has_expr {
-            for label in labels {
-                buffer.push(':');
-                buffer.push_str(label);
-            }
-            return;
-        }
-        buffer.push(':');
-        for (i, label) in labels.iter().enumerate() {
-            if i > 0 {
-                buffer.push('&');
-            }
-            let trimmed = label.trim();
-            if let Some(inner) = trimmed.strip_prefix('!') {
-                let inner_trimmed = inner.trim();
-                if inner_trimmed.contains('|') && !inner_trimmed.starts_with('(') {
-                    let parts: Vec<&str> = inner_trimmed.split('|').map(|s| s.trim()).collect();
-                    buffer.push_str("!(");
-                    buffer.push_str(&parts.join("|"));
-                    buffer.push(')');
-                } else {
-                    buffer.push('!');
-                    buffer.push_str(inner_trimmed);
-                }
-            } else if trimmed.contains('|') && !trimmed.starts_with('(') {
-                let parts: Vec<&str> = trimmed.split('|').map(|s| s.trim()).collect();
-                buffer.push('(');
-                buffer.push_str(&parts.join("|"));
-                buffer.push(')');
-            } else {
-                buffer.push_str(trimmed);
-            }
-        }
-    }
-
     fn emit_node_pattern(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
         let node = arena.get(handle)?;
         if let AstNode::NodePattern {
@@ -127,7 +85,7 @@ impl CypherEmitter {
             if let Some(var) = variable {
                 self.buffer.push_str(var);
             }
-            Self::emit_cypher_label_expression(&mut self.buffer, labels);
+            crate::emitters::emit_label_expression(&mut self.buffer, labels, true);
             if !predicates.is_empty() {
                 self.buffer.push_str(" {");
                 for (i, &pred_handle) in predicates.iter().enumerate() {
@@ -219,10 +177,17 @@ impl CypherEmitter {
             AstNode::NodePattern { .. } => self.emit_node_pattern(arena, handle),
             AstNode::PathChain {
                 path_variable,
+                path_mode,
                 start_node,
                 edges,
-                ..
             } => {
+                if *path_mode != crate::ast::PathMode::None {
+                    tracing::warn!(
+                        mode = path_mode.as_str(),
+                        "Cypher does not support explicit path search modes ({}); omitting mode keyword to maintain syntax compatibility",
+                        path_mode.as_str()
+                    );
+                }
                 if let Some(var) = path_variable {
                     self.buffer.push_str(var);
                     self.buffer.push_str(" = ");

@@ -8,38 +8,13 @@ use crate::error::{Error, Result};
 use crate::visitor::{AstVisitor, CompiledQuery};
 use std::collections::HashMap;
 
-fn emit_gql_label_expression(buffer: &mut String, labels: &[String]) {
-    if labels.is_empty() {
-        return;
-    }
-    buffer.push(':');
-    for (i, label) in labels.iter().enumerate() {
-        if i > 0 {
-            buffer.push('&');
-        }
-        let trimmed = label.trim();
-        if let Some(inner) = trimmed.strip_prefix('!') {
-            let inner_trimmed = inner.trim();
-            if inner_trimmed.contains('|') && !inner_trimmed.starts_with('(') {
-                let parts: Vec<&str> = inner_trimmed.split('|').map(|s| s.trim()).collect();
-                buffer.push_str("!(");
-                buffer.push_str(&parts.join("|"));
-                buffer.push(')');
-            } else {
-                buffer.push('!');
-                buffer.push_str(inner_trimmed);
-            }
-        } else if trimmed.contains('|') && !trimmed.starts_with('(') {
-            let parts: Vec<&str> = trimmed.split('|').map(|s| s.trim()).collect();
-            buffer.push('(');
-            buffer.push_str(&parts.join("|"));
-            buffer.push(')');
-        } else {
-            buffer.push_str(trimmed);
-        }
-    }
-}
-
+/// Detects whether an expression is likely to produce a string value.
+///
+/// # Heuristic Ceiling
+/// GQL strictly requires `||` for string concatenation and forbids `+`. When property expressions
+/// whose schema types are unknown at compile time are concatenated with `+` (e.g. `p.firstName + p.lastName`),
+/// without schema metadata they default to numeric addition `+`. Literals, known string functions,
+/// and explicit `BinaryOp::Concat` (`||`) are recursively detected.
 fn is_likely_string_expr(arena: &QueryAstArena, handle: NodeHandle) -> bool {
     let Ok(node) = arena.get(handle) else {
         return false;
@@ -155,7 +130,7 @@ impl IsoGqlEmitter {
             if let Some(var) = variable {
                 self.buffer.push_str(var);
             }
-            emit_gql_label_expression(&mut self.buffer, labels);
+            crate::emitters::emit_label_expression(&mut self.buffer, labels, false);
             if !predicates.is_empty() {
                 self.buffer.push_str(" {");
                 for (i, &pred_handle) in predicates.iter().enumerate() {

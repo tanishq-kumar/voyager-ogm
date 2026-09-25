@@ -356,8 +356,6 @@ def test_gql_standard_functions_and_concatenation():
 
 def test_gql_path_search_modes():
     """ISO GQL: Traversal search modes (TRAIL, SIMPLE, ACYCLIC, WALK) and Cypher compatibility."""
-    from voyager_ogm import acyclic, simple, trail, walk
-
     p = Person(alias="a")
     f = Person(alias="b")
 
@@ -365,8 +363,17 @@ def test_gql_path_search_modes():
     q_trail = Query.match(p).trail("path").to("KNOWS").node(f).return_("path")
     comp_gql = q_trail.compile(dialect="iso_gql")
     assert comp_gql.statement == "MATCH path = TRAIL (a:Person)-[:KNOWS]->(b:Person) RETURN path"
-    comp_cypher = q_trail.compile(dialect="cypher")
+
+    # Dialect cypher emits UserWarning when path mode is specified and omits keyword
+    with pytest.warns(UserWarning, match="does not support explicit path search modes"):
+        comp_cypher = q_trail.compile(dialect="cypher")
     assert comp_cypher.statement == "MATCH path = (a:Person)-[:KNOWS]->(b:Person) RETURN path"
+
+    # SQL:PGQ raises UnsupportedFeature on path variables and path search modes
+    with pytest.raises(ValueError, match="does not support path variables"):
+        Query.match(p).path_variable("pv").to("KNOWS").node(f).compile(dialect="sql_pgq")
+    with pytest.raises(ValueError, match="does not support traversal search modes"):
+        Query.match(p).trail().to("KNOWS").node(f).compile(dialect="sql_pgq")
 
     # TRAIL without path variable
     q_trail_novar = Query.match(p).trail().to("KNOWS").node(f).return_(a=p.name)
@@ -374,10 +381,9 @@ def test_gql_path_search_modes():
         q_trail_novar.compile(dialect="iso_gql").statement
         == "MATCH TRAIL (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS a"
     )
-    assert (
-        q_trail_novar.compile(dialect="cypher").statement
-        == "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS a"
-    )
+    with pytest.warns(UserWarning, match="does not support explicit path search modes"):
+        comp_cypher_novar = q_trail_novar.compile(dialect="cypher")
+    assert comp_cypher_novar.statement == "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS a"
 
     # SIMPLE mode
     q_simple = Query.match(p).simple("sp").to("KNOWS").node(f).return_("sp")
@@ -385,10 +391,9 @@ def test_gql_path_search_modes():
         q_simple.compile(dialect="iso_gql").statement
         == "MATCH sp = SIMPLE (a:Person)-[:KNOWS]->(b:Person) RETURN sp"
     )
-    assert (
-        q_simple.compile(dialect="cypher").statement
-        == "MATCH sp = (a:Person)-[:KNOWS]->(b:Person) RETURN sp"
-    )
+    with pytest.warns(UserWarning, match="does not support explicit path search modes"):
+        comp_simple_cypher = q_simple.compile(dialect="cypher")
+    assert comp_simple_cypher.statement == "MATCH sp = (a:Person)-[:KNOWS]->(b:Person) RETURN sp"
 
     # ACYCLIC mode
     q_acyc = Query.match(p).acyclic("ap").to("KNOWS").node(f).return_("ap")
@@ -396,10 +401,9 @@ def test_gql_path_search_modes():
         q_acyc.compile(dialect="iso_gql").statement
         == "MATCH ap = ACYCLIC (a:Person)-[:KNOWS]->(b:Person) RETURN ap"
     )
-    assert (
-        q_acyc.compile(dialect="cypher").statement
-        == "MATCH ap = (a:Person)-[:KNOWS]->(b:Person) RETURN ap"
-    )
+    with pytest.warns(UserWarning, match="does not support explicit path search modes"):
+        comp_acyc_cypher = q_acyc.compile(dialect="cypher")
+    assert comp_acyc_cypher.statement == "MATCH ap = (a:Person)-[:KNOWS]->(b:Person) RETURN ap"
 
     # WALK mode
     q_walk = Query.match(p).walk("wp").to("KNOWS").node(f).return_("wp")
@@ -407,33 +411,32 @@ def test_gql_path_search_modes():
         q_walk.compile(dialect="iso_gql").statement
         == "MATCH wp = WALK (a:Person)-[:KNOWS]->(b:Person) RETURN wp"
     )
-    assert (
-        q_walk.compile(dialect="cypher").statement
-        == "MATCH wp = (a:Person)-[:KNOWS]->(b:Person) RETURN wp"
-    )
+    with pytest.warns(UserWarning, match="does not support explicit path search modes"):
+        comp_walk_cypher = q_walk.compile(dialect="cypher")
+    assert comp_walk_cypher.statement == "MATCH wp = (a:Person)-[:KNOWS]->(b:Person) RETURN wp"
 
-    # Top-level standalone functions & path_variable()
-    q_module_trail = trail("my_path").match(p).to("KNOWS").node(f).return_("my_path")
+    # Query hybrid starters (Query.trail, Query.simple, Query.acyclic, Query.walk)
+    q_starter_trail = Query.trail("my_path").match(p).to("KNOWS").node(f).return_("my_path")
     assert (
-        q_module_trail.compile(dialect="iso_gql").statement
+        q_starter_trail.compile(dialect="iso_gql").statement
         == "MATCH my_path = TRAIL (a:Person)-[:KNOWS]->(b:Person) RETURN my_path"
     )
 
-    q_module_simple = simple("my_sp").match(p).to("KNOWS").node(f).return_("my_sp")
+    q_starter_simple = Query.simple("my_sp").match(p).to("KNOWS").node(f).return_("my_sp")
     assert (
-        q_module_simple.compile(dialect="iso_gql").statement
+        q_starter_simple.compile(dialect="iso_gql").statement
         == "MATCH my_sp = SIMPLE (a:Person)-[:KNOWS]->(b:Person) RETURN my_sp"
     )
 
-    q_module_acyclic = acyclic().match(p).to("KNOWS").node(f).return_(p=p.name)
+    q_starter_acyclic = Query.acyclic().match(p).to("KNOWS").node(f).return_(p=p.name)
     assert (
-        q_module_acyclic.compile(dialect="iso_gql").statement
+        q_starter_acyclic.compile(dialect="iso_gql").statement
         == "MATCH ACYCLIC (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS p"
     )
 
-    q_module_walk = walk("my_wp").match(p).to("KNOWS").node(f).return_("my_wp")
+    q_starter_walk = Query.walk("my_wp").match(p).to("KNOWS").node(f).return_("my_wp")
     assert (
-        q_module_walk.compile(dialect="iso_gql").statement
+        q_starter_walk.compile(dialect="iso_gql").statement
         == "MATCH my_wp = WALK (a:Person)-[:KNOWS]->(b:Person) RETURN my_wp"
     )
 
@@ -490,11 +493,11 @@ def test_gql_linear_statements_and_pagination():
     """ISO GQL: Linear LET and FILTER clauses, and OFFSET pagination."""
     p = Person(alias="p")
 
-    # LET and FILTER
+    # LET and linear_filter
     q = (
         Query.match(p)
         .let_(fullName=p.name + " Senior")
-        .filter_(p.age >= 60)
+        .linear_filter(p.age >= 60)
         .return_("fullName")
         .offset(15)
         .limit(10)
@@ -513,6 +516,37 @@ def test_gql_linear_statements_and_pagination():
         == "MATCH (p:Person) WITH *, p.name + $p0 AS fullName WHERE p.age >= $p1 RETURN fullName SKIP 15 LIMIT 10"
     )
     assert comp_cypher.parameters == {"p0": " Senior", "p1": 60}
+
+    # filter_ alias works identically
+    q_alias = Query.match(p).filter_(p.age >= 60).return_("p.name")
+    assert "FILTER p.age >= $p0" in q_alias.compile(dialect="iso_gql").statement
+    assert "WHERE p.age >= $p0" in q_alias.compile(dialect="cypher").statement
+
+    # Positional let_ and dict let_
+    q_pos = Query.match(p).let_("n", p.name).return_("n")
+    assert "LET n = p.name" in q_pos.compile(dialect="iso_gql").statement
+
+    q_dict = Query.match(p).let_({"n": p.name, "a": p.age}).return_("n")
+    assert "LET n = p.name LET a = p.age" in q_dict.compile(dialect="iso_gql").statement
+
+    # SQL:PGQ rejects linear statements (LET, FILTER)
+    with pytest.raises(ValueError, match="does not support linear statements"):
+        Query.match(p).let_(x=1).compile(dialect="sql_pgq")
+    with pytest.raises(ValueError, match="does not support linear statements"):
+        Query.match(p).linear_filter(p.age > 20).compile(dialect="sql_pgq")
+
+    # Validation: empty/malformed let_ and linear_filter must raise ValueError
+    with pytest.raises(ValueError, match="requires at least one variable assignment"):
+        Query.match(p).let_()
+
+    with pytest.raises(ValueError, match="single positional argument must be a dict"):
+        Query.match(p).let_("malformed")
+
+    with pytest.raises(ValueError, match="accepts at most 2 positional arguments"):
+        Query.match(p).let_("a", 1, 2)
+
+    with pytest.raises(ValueError, match="requires at least one predicate expression"):
+        Query.match(p).linear_filter()
 
 
 # ---------------------------------------------------------------------------
@@ -566,6 +600,7 @@ def test_gql_string_concatenation_and_helpers():
     assert "elements(p) AS elems" in comp_pfn_gql.statement
     assert "path_length(p) AS plen" in comp_pfn_gql.statement
 
-    comp_pfn_cypher = q_path_fn.compile(dialect="cypher")
+    with pytest.warns(UserWarning, match="does not support explicit path search modes"):
+        comp_pfn_cypher = q_path_fn.compile(dialect="cypher")
     assert "elements(p) AS elems" in comp_pfn_cypher.statement
     assert "length(p) AS plen" in comp_pfn_cypher.statement

@@ -625,6 +625,28 @@ fn test_gql_path_search_modes_and_variables() {
         cypher2.visit_query(&arena2, root2).unwrap().statement,
         "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a"
     );
+
+    // SQL:PGQ rejects path variables and search modes
+    use voyager_core::emitters::sql_pgq::SqlPgqEmitter;
+    let mut pgq = SqlPgqEmitter::new("graph");
+    let err = pgq.visit_query(&arena, root).unwrap_err();
+    match err {
+        voyager_core::Error::UnsupportedFeature { dialect, feature } => {
+            assert_eq!(dialect, "sql_pgq");
+            assert!(feature.contains("Path variable assignment"));
+        }
+        other => panic!("Expected UnsupportedFeature, got {other:?}"),
+    }
+
+    let mut pgq2 = SqlPgqEmitter::new("graph");
+    let err2 = pgq2.visit_query(&arena2, root2).unwrap_err();
+    match err2 {
+        voyager_core::Error::UnsupportedFeature { dialect, feature } => {
+            assert_eq!(dialect, "sql_pgq");
+            assert!(feature.contains("Path search mode"));
+        }
+        other => panic!("Expected UnsupportedFeature, got {other:?}"),
+    }
 }
 
 #[test]
@@ -694,4 +716,16 @@ fn test_gql_linear_clauses_let_filter() {
         res_cypher.statement,
         "MATCH (p:Person) WITH *, (p.firstName + $p0) + p.lastName AS fullName WHERE p.age >= $p1 RETURN fullName SKIP 15 LIMIT 10"
     );
+
+    // SQL:PGQ rejects linear statements (LET, FILTER)
+    use voyager_core::emitters::sql_pgq::SqlPgqEmitter;
+    let mut pgq = SqlPgqEmitter::new("graph");
+    let err = pgq.visit_query(&arena, root).unwrap_err();
+    match err {
+        voyager_core::Error::UnsupportedFeature { dialect, feature } => {
+            assert_eq!(dialect, "sql_pgq");
+            assert!(feature.contains("Linear statements (LET, FILTER)"));
+        }
+        other => panic!("Expected UnsupportedFeature, got {other:?}"),
+    }
 }

@@ -554,20 +554,36 @@ def test_live_neo4j_gql_capabilities():
         names = [row["n.name"] for row in res_labels.all()]
         assert names == ["Acme Corp", "Alice Smith"]
 
-        # 4. Traversal path variable with trail()
-        q_trail = (
+        # 4. Traversal path variable with trail() and warning surface
+        # Note: Cypher relationship traversal is trail by default. Dialect "cypher" omits the
+        # TRAIL keyword to avoid syntax errors in Neo4j, while retaining path variable binding
+        # 'path_var = (...)'. It emits a UserWarning to alert the user about mode degradation.
+        with pytest.warns(UserWarning, match="does not support explicit path search modes"):
+            q_trail = (
+                Query.match()
+                .trail("path_var")
+                .node("a", labels=["LiveGqlPerson"])
+                .to("LIVE_EMPLOYED_AT")
+                .node("b", labels=["LiveGqlCompany"])
+                .return_("a.name", "b.name")
+            )
+            res_trail = session.execute(q_trail)
+        records = res_trail.all()
+        assert len(records) == 1
+        assert records[0]["a.name"] == "Alice Smith"
+        assert records[0]["b.name"] == "Acme Corp"
+
+        # Traversal with path_variable() directly without warning
+        q_path_var = (
             Query.match()
-            .trail("path_var")
+            .path_variable("p_direct")
             .node("a", labels=["LiveGqlPerson"])
             .to("LIVE_EMPLOYED_AT")
             .node("b", labels=["LiveGqlCompany"])
             .return_("a.name", "b.name")
         )
-        res_trail = session.execute(q_trail)
-        records = res_trail.all()
-        assert len(records) == 1
-        assert records[0]["a.name"] == "Alice Smith"
-        assert records[0]["b.name"] == "Acme Corp"
+        res_path_var = session.execute(q_path_var)
+        assert len(res_path_var.all()) == 1
 
         # 5. Linear LET and FILTER clauses, plus OFFSET
         p = LiveGqlPerson(alias="p")
