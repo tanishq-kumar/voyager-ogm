@@ -439,6 +439,8 @@ class Node:
         elif not getattr(cls, "__labels__", None):
             cls.__labels__ = [cls.__name__]
 
+        cls._cached_labels = list(cls.__labels__)
+        cls._cached_label = cls.__labels__[0] if cls.__labels__ else cls.__name__
         _process_type_annotations(cls)
 
     def __init__(self, alias: str | None = None, **values: Any) -> None:
@@ -449,8 +451,12 @@ class Node:
                 (e.g. `_person_0`) is deterministically generated.
             **values: Property key-value pairs, or optional `session` reference.
         """
-        label = self.__labels__[0] if self.__labels__ else self.__class__.__name__
-        self._alias = alias or _get_next_alias(label)
+        cached_label = getattr(self.__class__, "_cached_label", None)
+        if cached_label is None:
+            cached_label = self.__labels__[0] if self.__labels__ else self.__class__.__name__
+        self._alias = alias or _get_next_alias(cached_label)
+        self._cached_alias = self._alias
+        self._cached_labels = getattr(self.__class__, "_cached_labels", [cached_label])
         self._bound_fields: dict[str, BoundField] = {}
         session = values.pop("session", None)
         self._session_ref: weakref.ref[Any] | None = (
@@ -669,6 +675,8 @@ class Relationship:
         super().__init_subclass__(**kwargs)
         cls.__type__ = type_name or cls.__name__.upper()
         cls.__direction__ = direction
+        cls._cached_type = cls.__type__
+        cls._cached_types = [cls.__type__]
         _process_type_annotations(cls)
 
     def __init__(self, alias: str | None = None, **values: Any) -> None:
@@ -679,10 +687,16 @@ class Relationship:
                 (e.g. `_acted_in_0`) is generated.
             **values: Edge property key-value pairs.
         """
+        cached_type = getattr(self.__class__, "_cached_type", None)
         rel_type = (
-            getattr(self, "__edge_type__", None) or self.__type__ or self.__class__.__name__.upper()
+            getattr(self, "__edge_type__", None)
+            or cached_type
+            or self.__type__
+            or self.__class__.__name__.upper()
         )
         self._alias = alias or _get_next_alias(rel_type)
+        self._cached_alias = self._alias
+        self._cached_types = getattr(self.__class__, "_cached_types", [rel_type])
         self._bound_fields: dict[str, BoundField] = {}
         self._values = values
 
@@ -756,11 +770,15 @@ def node(target: type | str | list[str] | None = None, **kwargs: Any) -> Any:
         if not issubclass(cls, Node):
             ns = dict(cls.__dict__)
             ns["__labels__"] = cls_labels
+            ns["_cached_labels"] = cls_labels
+            ns["_cached_label"] = cls_labels[0] if cls_labels else cls.__name__
             ns["_schema_fields"] = fields_map
             derived = type(cls.__name__, (cls, Node), ns)
             return derived
         else:
             cls.__labels__ = cls_labels  # type: ignore[attr-defined]
+            cls._cached_labels = cls_labels  # type: ignore[attr-defined]
+            cls._cached_label = cls_labels[0] if cls_labels else cls.__name__  # type: ignore[attr-defined]
             cls._schema_fields = fields_map  # type: ignore[attr-defined]
             return cls
 
@@ -799,12 +817,16 @@ def relationship(target: type | str | None = None, **kwargs: Any) -> Any:
             ns = dict(cls.__dict__)
             ns["__type__"] = rel_type
             ns["__direction__"] = direction
+            ns["_cached_type"] = rel_type
+            ns["_cached_types"] = [rel_type]
             ns["_schema_fields"] = fields_map
             derived = type(cls.__name__, (cls, Relationship), ns)
             return derived
         else:
             cls.__type__ = rel_type  # type: ignore[attr-defined]
             cls.__direction__ = direction  # type: ignore[attr-defined]
+            cls._cached_type = rel_type  # type: ignore[attr-defined]
+            cls._cached_types = [rel_type]  # type: ignore[attr-defined]
             cls._schema_fields = fields_map  # type: ignore[attr-defined]
             return cls
 

@@ -365,8 +365,6 @@ def _has_mutations(target: Any) -> bool:
         and callable(target._native.has_mutations)
     ):
         return bool(target._native.has_mutations())
-    if hasattr(target, "_mutations") and target._mutations:
-        return True
     return False
 
 
@@ -375,7 +373,6 @@ def _is_query_like(target: Any) -> bool:
     return (
         hasattr(target, "compile")
         or hasattr(target, "_native")
-        or hasattr(target, "_match_clauses")
         or type(target).__name__ in ("Query", "Path")
     )
 

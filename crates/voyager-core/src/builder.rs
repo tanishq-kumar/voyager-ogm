@@ -1133,6 +1133,18 @@ impl QueryBuilder {
         (self.arena, root_handle)
     }
 
+    /// Returns an immutable reference to the internal arena.
+    #[inline(always)]
+    pub fn arena(&self) -> &QueryAstArena {
+        &self.arena
+    }
+
+    /// Consumes the builder and returns the underlying arena without wrapping in a QueryStatement.
+    #[inline(always)]
+    pub fn into_arena(self) -> QueryAstArena {
+        self.arena
+    }
+
     /// Imports nodes from an external arena into this builder's arena, remapping all internal handles.
     pub fn import_subarena(
         &mut self,

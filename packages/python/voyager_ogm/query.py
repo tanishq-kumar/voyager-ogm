@@ -19,6 +19,7 @@ from voyager_ogm.models import (
     Node,
     PredicateExpr,
     Relationship,
+    _get_next_alias,
 )
 
 
@@ -75,27 +76,13 @@ class Query:
         self._native = NativeQueryBuilder()
         self._optimize: bool | None = None
         self._optimization_level: str | None = None
-        self._clause_mode: str = "match"
-        self._match_clauses: list[dict[str, Any]] = []
-        self._mutations: list[tuple[Any, ...] | list[Any]] = []
-        self._current_paths: list[list[Any]] = [[]]
-        self._where_specs: list[Any] = []
-        self._with_clauses: list[dict[str, Any]] = []
-        self._projections: list[Any] = []
-        self._order_bys: list[Any] = []
-        self._skip: int | None = None
-        self._limit: int | None = None
-        self._distinct: bool = False
-        self._is_optional: bool = False
-        self._unwinds: list[tuple[str, str]] = []
-        self._load_csv: tuple[str, bool, str] | None = None
 
     def has_mutations(self) -> bool:
         """Returns True if this query contains any mutating clauses (CREATE, MERGE, SET, DELETE, REMOVE)."""
         has_mut = getattr(self._native, "has_mutations", None)
         if callable(has_mut):
             return bool(has_mut())
-        return bool(getattr(self, "_mutations", False))
+        return False
 
     @staticmethod
     def exists(subquery_or_pattern: Any) -> Any:
@@ -107,8 +94,6 @@ class Query:
             and hasattr(subquery_or_pattern._native, "has_mutations")
             and subquery_or_pattern._native.has_mutations()
         ):
-            raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
-        elif hasattr(subquery_or_pattern, "_mutations") and subquery_or_pattern._mutations:
             raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
         from voyager_ogm.fn import exists as fn_exists
 
@@ -125,70 +110,21 @@ class Query:
             and subquery_or_expr._native.has_mutations()
         ):
             raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
-        elif hasattr(subquery_or_expr, "_mutations") and subquery_or_expr._mutations:
-            raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
         from voyager_ogm.fn import count as fn_count
 
         return fn_count(subquery_or_expr)
 
     def _start_match_clause(self, optional: bool = False) -> None:
-        self._clause_mode = "match"
         if optional:
-            self._is_optional = True
             self._native.optional_match()
         else:
             self._native.match()
 
-        if (
-            len(self._match_clauses) == 1
-            and not any(self._match_clauses[0]["paths"])
-            and not self._match_clauses[0]["where"]
-        ):
-            self._match_clauses[0]["optional"] = optional
-            return
-
-        new_path: list[Any] = []
-        clause: dict[str, Any] = {
-            "optional": optional,
-            "paths": [new_path],
-            "where": [],
-        }
-        self._match_clauses.append(clause)
-        if len(self._current_paths) == 1 and not self._current_paths[0]:
-            self._current_paths[0] = new_path
-        else:
-            self._current_paths.append(new_path)
-
     def _start_create_clause(self) -> None:
-        self._clause_mode = "create"
         self._native.create()
-        new_path: list[Any] = []
-        self._mutations.append(["create", [new_path]])
-        if len(self._current_paths) == 1 and not self._current_paths[0]:
-            self._current_paths[0] = new_path
-        else:
-            self._current_paths.append(new_path)
 
     def _start_merge_clause(self) -> None:
-        self._clause_mode = "merge"
         self._native.merge()
-        merge_path: list[Any] = []
-        on_creates: list[tuple[str, str, Any]] = []
-        on_matches: list[tuple[str, str, Any]] = []
-        self._mutations.append(["merge", merge_path, on_creates, on_matches])
-        if len(self._current_paths) == 1 and not self._current_paths[0]:
-            self._current_paths[0] = merge_path
-        else:
-            self._current_paths.append(merge_path)
-
-    def _record_merge_set(self, kind: str, var: str, prop: str, val_spec: Any) -> None:
-        for mut in reversed(self._mutations):
-            if mut[0] == "merge":
-                if kind == "on_create":
-                    mut[2].append((var, prop, val_spec))
-                else:
-                    mut[3].append((var, prop, val_spec))
-                break
 
     @hybridmethod
     def match(
@@ -240,7 +176,6 @@ class Query:
         else:
             q = self
 
-        q._clause_mode = "match"
         q._native.match()
         seen_vars: set[str] = set()
         first_pattern = True
@@ -251,8 +186,6 @@ class Query:
                     raise ValueError("Cannot import mutating query into MATCH clause")
                 first_pattern = False
                 seen_vars = set(q._native.import_match_patterns(pat._native, list(seen_vars)))
-                for w in pat._where_specs:
-                    q._where_specs.append(w)
             elif isinstance(pat, Node):
                 if not first_pattern:
                     q.pattern()
@@ -379,7 +312,6 @@ class Query:
         else:
             q = self
         param_clean = batch_param.lstrip("$")
-        q._unwinds.append((param_clean, alias))
         q._native.unwind(param_clean, alias)
         return q
 
@@ -404,7 +336,6 @@ class Query:
             q = self()
         else:
             q = self
-        q._load_csv = (url, with_headers, alias)
         q._native.load_csv(url, with_headers, alias)
         return q
 
@@ -419,7 +350,6 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
-        self._load_csv = (url, with_headers, alias)
         self._native.load_csv(url, with_headers, alias)
         return self
 
@@ -446,7 +376,6 @@ class Query:
             The Query instance for fluent chaining.
         """
         param_clean = batch_param.lstrip("$")
-        self._unwinds.append((param_clean, alias))
         self._native.unwind(param_clean, alias)
         return self
 
@@ -541,24 +470,25 @@ class Query:
         Example:
             >>> query.node("p", labels=["Person", "Actor"])
         """
-        if not self._match_clauses and not self._mutations:
-            self._start_match_clause(optional=False)
-
         if variable is not None and node_or_var is None:
             node_or_var = variable
-        var_name: str | None = None
-        lbls: list[str] = []
         if isinstance(node_or_var, Node):
-            var_name = node_or_var.alias
-            lbls = node_or_var.labels
-            self._native.node(node_or_var.alias, node_or_var.labels)
+            lbls = getattr(node_or_var, "_cached_labels", None)
+            if lbls is None:
+                lbls = node_or_var.labels
+            self._native.node(node_or_var._alias, lbls)
         elif isinstance(node_or_var, type) and issubclass(node_or_var, Node):
-            instance = node_or_var()
-            var_name = instance.alias
-            lbls = instance.labels
-            self._native.node(instance.alias, instance.labels)
+            lbls = getattr(node_or_var, "_cached_labels", None)
+            if lbls is None:
+                lbls = getattr(node_or_var, "__labels__", [node_or_var.__name__])
+            cached_label = getattr(
+                node_or_var,
+                "_cached_label",
+                lbls[0] if lbls else node_or_var.__name__,
+            )
+            alias = _get_next_alias(cached_label)
+            self._native.node(alias, lbls)
         elif isinstance(node_or_var, str):
-            var_name = node_or_var
             lbls = [labels] if isinstance(labels, str) else (labels or [])
             self._native.node(node_or_var, lbls)
         elif labels is not None:
@@ -566,7 +496,6 @@ class Query:
             self._native.node(None, lbls)
         else:
             self._native.node(None, [])
-        self._current_paths[-1].append(("node", var_name, lbls))
         return self
 
     def _extract_rel_info(
@@ -579,8 +508,18 @@ class Query:
         actual_rel = rel if rel is not None else edge_type
         actual_var = var if var is not None else variable
         if isinstance(actual_rel, Relationship):
-            return [actual_rel.edge_type], actual_rel.alias
+            cached_types = getattr(actual_rel, "_cached_types", None)
+            return (cached_types or [actual_rel.edge_type]), actual_rel._alias
         elif isinstance(actual_rel, type) and issubclass(actual_rel, Relationship):
+            cached_types = getattr(actual_rel, "_cached_types", None)
+            if cached_types is not None:
+                cached_type = getattr(
+                    actual_rel,
+                    "_cached_type",
+                    cached_types[0] if cached_types else actual_rel.__name__.upper(),
+                )
+                alias = actual_var or _get_next_alias(cached_type)
+                return cached_types, alias
             instance = actual_rel()
             return [instance.edge_type], actual_var or instance.alias
         elif isinstance(actual_rel, str):
@@ -610,7 +549,6 @@ class Query:
         """
         types, edge_var = self._extract_rel_info(rel, var, edge_type=edge_type, variable=variable)
         self._native.to(types, edge_var)
-        self._current_paths[-1].append(["edge", "out", types, edge_var, 1, 1])
         return self
 
     def from_(
@@ -634,7 +572,6 @@ class Query:
         """
         types, edge_var = self._extract_rel_info(rel, var, edge_type=edge_type, variable=variable)
         self._native.from_edge(types, edge_var)
-        self._current_paths[-1].append(["edge", "in", types, edge_var, 1, 1])
         return self
 
     def edge(
@@ -658,7 +595,6 @@ class Query:
         """
         types, edge_var = self._extract_rel_info(rel, var, edge_type=edge_type, variable=variable)
         self._native.edge(types, edge_var)
-        self._current_paths[-1].append(["edge", "undirected", types, edge_var, 1, 1])
         return self
 
     def hops(self, min_hops: int, max_hops: int) -> Query:
@@ -672,13 +608,6 @@ class Query:
             The Query instance for fluent chaining.
         """
         self._native.hops(min_hops, max_hops)
-        if (
-            self._current_paths[-1]
-            and isinstance(self._current_paths[-1][-1], list)
-            and self._current_paths[-1][-1][0] == "edge"
-        ):
-            self._current_paths[-1][-1][4] = min_hops
-            self._current_paths[-1][-1][5] = max_hops
         return self
 
     def pattern(self) -> Query:
@@ -688,12 +617,6 @@ class Query:
             The Query instance for fluent chaining.
         """
         self._native.pattern()
-        new_path: list[Any] = []
-        if self._clause_mode == "create" and self._mutations and self._mutations[-1][0] == "create":
-            self._mutations[-1][1].append(new_path)
-        elif self._match_clauses:
-            self._match_clauses[-1]["paths"].append(new_path)
-        self._current_paths.append(new_path)
         return self
 
     def where(self, *predicates: Any) -> Query:
@@ -713,6 +636,13 @@ class Query:
         if not predicates:
             raise ValueError("where() requires at least one predicate condition")
         for pred in predicates:
+            if isinstance(pred, PredicateExpr) and not isinstance(pred.value, Expression):
+                self._native.where_property(pred.target, pred.field, pred.op, pred.value)
+                continue
+            native_expr = getattr(pred, "_native_expr", None)
+            if native_expr is not None:
+                self._native.where_expr(native_expr)
+                continue
             if isinstance(pred, Expression) or hasattr(pred, "to_spec"):
                 spec = pred.to_spec()
             elif isinstance(pred, PredicateExpr):
@@ -720,96 +650,12 @@ class Query:
             else:
                 spec = to_expression(pred).to_spec()
 
-            if self._clause_mode == "with" and self._with_clauses:
-                self._with_clauses[-1]["where"].append(spec)
-            elif self._match_clauses:
-                self._match_clauses[-1]["where"].append(spec)
-                self._where_specs.append(spec)
-            else:
-                self._where_specs.append(spec)
             self._native.where_expr(spec)
         return self
 
     def to_spec(self) -> Any:
-        """Converts the query AST into a dictionary or path list spec for native subquery embedding."""
-        paths = [
-            [tuple(x) if isinstance(x, list) else x for x in p] for p in self._current_paths if p
-        ]
-        if (
-            not self._mutations
-            and not self._where_specs
-            and not self._projections
-            and not self._with_clauses
-            and not self._unwinds
-            and not self._load_csv
-            and not self._order_bys
-            and self._skip is None
-            and self._limit is None
-            and not self._distinct
-            and not self._is_optional
-            and len(self._match_clauses) <= 1
-            and len(paths) == 1
-        ):
-            return paths[0]
-
-        matches_spec: list[dict[str, Any]] = []
-        for clause in self._match_clauses:
-            clause_paths = [
-                [tuple(x) if isinstance(x, list) else x for x in p]
-                for p in clause.get("paths", [])
-                if p
-            ]
-            if clause_paths or clause.get("where"):
-                matches_spec.append(
-                    {
-                        "optional": clause.get("optional", False),
-                        "paths": clause_paths,
-                        "where": clause.get("where", []),
-                    }
-                )
-
-        if not matches_spec and paths and not self._mutations:
-            matches_spec.append(
-                {
-                    "optional": self._is_optional,
-                    "paths": paths,
-                    "where": self._where_specs,
-                }
-            )
-
-        spec: dict[str, Any] = {
-            "matches": matches_spec,
-            "with_clauses": self._with_clauses,
-            "projections": self._projections,
-            "order_by": self._order_bys,
-            "skip": self._skip,
-            "limit": self._limit,
-            "distinct": self._distinct,
-        }
-
-        if self._mutations:
-            mut_specs: list[tuple[Any, ...]] = []
-            for m in self._mutations:
-                tag = m[0]
-                if tag == "create":
-                    raw_paths = m[1]
-                    norm_paths = [
-                        [tuple(x) if isinstance(x, list) else x for x in p] for p in raw_paths if p
-                    ]
-                    mut_specs.append(("create", norm_paths))
-                elif tag == "merge":
-                    raw_path = m[1]
-                    norm_path = [tuple(x) if isinstance(x, list) else x for x in raw_path]
-                    mut_specs.append(("merge", norm_path, list(m[2]), list(m[3])))
-                else:
-                    mut_specs.append(tuple(m))
-            spec["mutations"] = mut_specs
-
-        if self._unwinds:
-            spec["unwinds"] = self._unwinds
-        if self._load_csv:
-            spec["load_csv"] = self._load_csv
-        return spec
+        """Returns the underlying native query builder handle for subquery embedding."""
+        return self._native
 
     filter = where
 
@@ -829,15 +675,12 @@ class Query:
             raise ValueError("where_not() requires at least one predicate condition")
         for pred in predicates:
             expr = to_expression(pred)
-            spec = (~expr).to_spec()
-            if self._clause_mode == "with" and self._with_clauses:
-                self._with_clauses[-1]["where"].append(spec)
-            elif self._match_clauses:
-                self._match_clauses[-1]["where"].append(spec)
-                self._where_specs.append(spec)
+            not_expr = ~expr
+            native_expr = getattr(not_expr, "_native_expr", None)
+            if native_expr is not None:
+                self._native.where_expr(native_expr)
             else:
-                self._where_specs.append(spec)
-            self._native.where_expr(spec)
+                self._native.where_expr(not_expr.to_spec())
         return self
 
     def on_create_set(self, *assignments: PredicateExpr, **kwargs: Any) -> Query:
@@ -852,20 +695,10 @@ class Query:
         """
         for assign in assignments:
             self._native.on_create_set(assign.target, assign.field, assign.value)
-            val_spec = (
-                assign.value.to_spec()
-                if hasattr(assign.value, "to_spec")
-                else to_expression(assign.value).to_spec()
-            )
-            self._record_merge_set("on_create", assign.target, assign.field, val_spec)
         for key, val in kwargs.items():
             if "." in key:
                 var, prop = key.split(".", 1)
                 self._native.on_create_set(var, prop, val)
-                val_spec = (
-                    val.to_spec() if hasattr(val, "to_spec") else to_expression(val).to_spec()
-                )
-                self._record_merge_set("on_create", var, prop, val_spec)
         return self
 
     def on_match_set(self, *assignments: PredicateExpr, **kwargs: Any) -> Query:
@@ -880,20 +713,10 @@ class Query:
         """
         for assign in assignments:
             self._native.on_match_set(assign.target, assign.field, assign.value)
-            val_spec = (
-                assign.value.to_spec()
-                if hasattr(assign.value, "to_spec")
-                else to_expression(assign.value).to_spec()
-            )
-            self._record_merge_set("on_match", assign.target, assign.field, val_spec)
         for key, val in kwargs.items():
             if "." in key:
                 var, prop = key.split(".", 1)
                 self._native.on_match_set(var, prop, val)
-                val_spec = (
-                    val.to_spec() if hasattr(val, "to_spec") else to_expression(val).to_spec()
-                )
-                self._record_merge_set("on_match", var, prop, val_spec)
         return self
 
     def set(self, *assignments: PredicateExpr | Node, **kwargs: Any) -> Query:
@@ -910,27 +733,13 @@ class Query:
         for assign in assignments:
             if isinstance(assign, PredicateExpr):
                 self._native.set_property(assign.target, assign.field, assign.value)
-                val_spec = (
-                    assign.value.to_spec()
-                    if hasattr(assign.value, "to_spec")
-                    else to_expression(assign.value).to_spec()
-                )
-                self._mutations.append(("set", assign.target, assign.field, val_spec))
             elif isinstance(assign, Node):
                 for field_name, val in assign.dirty_fields.items():
                     self._native.set_property(assign.alias, field_name, val)
-                    val_spec = (
-                        val.to_spec() if hasattr(val, "to_spec") else to_expression(val).to_spec()
-                    )
-                    self._mutations.append(("set", assign.alias, field_name, val_spec))
         for key, val in kwargs.items():
             if "." in key:
                 var, prop = key.split(".", 1)
                 self._native.set_property(var, prop, val)
-                val_spec = (
-                    val.to_spec() if hasattr(val, "to_spec") else to_expression(val).to_spec()
-                )
-                self._mutations.append(("set", var, prop, val_spec))
         return self
 
     def delete(self, *targets: Node | Relationship | str) -> Query:
@@ -949,7 +758,6 @@ class Query:
             else:
                 names.append(str(t))
         self._native.delete(names)
-        self._mutations.append(("delete", False, names))
         return self
 
     def detach_delete(self, *targets: Node | Relationship | str) -> Query:
@@ -968,7 +776,6 @@ class Query:
             else:
                 names.append(str(t))
         self._native.detach_delete(names)
-        self._mutations.append(("delete", True, names))
         return self
 
     def remove(self, *properties: BoundField | str) -> Query:
@@ -983,34 +790,29 @@ class Query:
         for p in properties:
             if isinstance(p, BoundField):
                 self._native.remove_property(p.target_alias, p.field_name)
-                self._mutations.append(("remove", p.target_alias, p.field_name))
             elif isinstance(p, str) and "." in p:
                 var, prop = p.split(".", 1)
                 self._native.remove_property(var, prop)
-                self._mutations.append(("remove", var, prop))
         return self
 
-    def _project_field(self, field: Any, alias: str | None = None) -> tuple[Any, ...]:
+    def _project_field(self, field: Any, alias: str | None = None) -> None:
         if isinstance(field, AliasedExpr):
             final_alias = field.alias if alias is None else alias
-            expr_spec = field.expr.to_spec()
+            nat = getattr(field.expr, "_native_expr", None)
+            expr_spec = field.expr.to_spec() if nat is None else nat
             self._native.select_expr(expr_spec, final_alias)
-            return ("expr", expr_spec, final_alias)
         elif isinstance(field, AggregationExpr):
             self._native.aggregate(field.target_alias, field.field_name, field.func, alias)
-            return ("agg", field.target_alias, field.field_name, field.func, alias)
         elif isinstance(field, BoundField):
             self._native.field(field.target_alias, field.field_name, alias)
-            return ("field", field.target_alias, field.field_name, alias)
         elif isinstance(field, Expression):
-            expr_spec = field.to_spec()
+            nat = getattr(field, "_native_expr", None)
+            expr_spec = field.to_spec() if nat is None else nat
             self._native.select_expr(expr_spec, alias)
-            return ("expr", expr_spec, alias)
         elif isinstance(field, Field) or (hasattr(field, "name") and not hasattr(field, "alias")):
             var_name = getattr(field, "target_alias", "") or ""
             name = getattr(field, "name", "") or ""
             self._native.field(var_name, name, alias)
-            return ("field", var_name, name, alias)
         elif isinstance(field, str):
             parts = field.split()
             if len(parts) == 3 and parts[1].upper() == "AS":
@@ -1018,21 +820,18 @@ class Query:
                 if "." in parts[0]:
                     var_prop = parts[0].split(".", 1)
                     self._native.field(var_prop[0], var_prop[1], final_alias)
-                    return ("field", var_prop[0], var_prop[1], final_alias)
                 else:
                     self._native.field(parts[0], "", final_alias)
-                    return ("field", parts[0], "", final_alias)
             elif "." in parts[0]:
                 var_prop = parts[0].split(".", 1)
                 self._native.field(var_prop[0], var_prop[1], alias)
-                return ("field", var_prop[0], var_prop[1], alias)
             else:
                 self._native.field(parts[0], "", alias)
-                return ("field", parts[0], "", alias)
         else:
-            expr_spec = to_expression(field).to_spec()
+            expr_obj = to_expression(field)
+            nat = getattr(expr_obj, "_native_expr", None)
+            expr_spec = expr_obj.to_spec() if nat is None else nat
             self._native.select_expr(expr_spec, alias)
-            return ("expr", expr_spec, alias)
 
     def with_(
         self,
@@ -1064,28 +863,16 @@ class Query:
         if not fields and not aliased_fields:
             raise ValueError("with_() requires at least one projection field")
 
-        self._clause_mode = "with"
         self._native.with_()
-        with_entry: dict[str, Any] = {
-            "distinct": distinct,
-            "projections": [],
-            "where": [],
-            "order_by": [],
-            "skip": None,
-            "limit": None,
-        }
         if distinct:
             self._native.distinct()
 
         for field in fields:
-            proj = self._project_field(field, None)
-            with_entry["projections"].append(proj)
+            self._project_field(field, None)
 
         for alias, field in aliased_fields.items():
-            proj = self._project_field(field, alias)
-            with_entry["projections"].append(proj)
+            self._project_field(field, alias)
 
-        self._with_clauses.append(with_entry)
         return self
 
     def return_(
@@ -1108,19 +895,15 @@ class Query:
             >>> query.return_(p.name, p.age, distinct=True, user_city=p.city)
             >>> query.return_(fn.to_lower(p.name).as_("lower_name"), p.age + 5)
         """
-        self._clause_mode = "return"
         self._native.return_()
         if distinct:
-            self._distinct = True
             self._native.distinct()
 
         for field in fields:
-            proj = self._project_field(field, None)
-            self._projections.append(proj)
+            self._project_field(field, None)
 
         for alias, field in aliased_fields.items():
-            proj = self._project_field(field, alias)
-            self._projections.append(proj)
+            self._project_field(field, alias)
 
         return self
 
@@ -1130,10 +913,6 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
-        if self._clause_mode == "with" and self._with_clauses:
-            self._with_clauses[-1]["distinct"] = True
-        else:
-            self._distinct = True
         self._native.distinct()
         return self
 
@@ -1148,27 +927,23 @@ class Query:
             The Query instance for fluent chaining.
         """
         if isinstance(field, BoundField):
-            order_spec: Any = (field.target_alias, field.field_name, ascending)
             self._native.order_by(field.target_alias, field.field_name, ascending)
         elif isinstance(field, Expression) or hasattr(field, "to_spec"):
-            order_spec = (field.to_spec(), ascending)
-            self._native.order_by_expr(field.to_spec(), ascending)
+            nat = getattr(field, "_native_expr", None)
+            expr_spec = field.to_spec() if nat is None else nat
+            self._native.order_by_expr(expr_spec, ascending)
         elif isinstance(field, str) and "." in field:
             var_prop = field.split(".", 1)
-            order_spec = (var_prop[0], var_prop[1], ascending)
             self._native.order_by(var_prop[0], var_prop[1], ascending)
         elif isinstance(field, str):
-            order_spec = (field, "", ascending)
             self._native.order_by(field, "", ascending)
+        elif isinstance(field, tuple):
+            self._native.order_by_expr(field, ascending)
         else:
-            expr_spec = to_expression(field).to_spec()
-            order_spec = (expr_spec, ascending)
+            expr_obj = to_expression(field)
+            nat = getattr(expr_obj, "_native_expr", None)
+            expr_spec = expr_obj.to_spec() if nat is None else nat
             self._native.order_by_expr(expr_spec, ascending)
-
-        if self._clause_mode == "with" and self._with_clauses:
-            self._with_clauses[-1]["order_by"].append(order_spec)
-        else:
-            self._order_bys.append(order_spec)
         return self
 
     def order_by_desc(self, field: Any) -> Query:
@@ -1196,10 +971,6 @@ class Query:
         """
         if count < 0:
             raise ValueError(f"limit count must be non-negative, got {count}")
-        if self._clause_mode == "with" and self._with_clauses:
-            self._with_clauses[-1]["limit"] = count
-        else:
-            self._limit = count
         self._native.limit(count)
         return self
 
@@ -1217,10 +988,6 @@ class Query:
         """
         if count < 0:
             raise ValueError(f"skip count must be non-negative, got {count}")
-        if self._clause_mode == "with" and self._with_clauses:
-            self._with_clauses[-1]["skip"] = count
-        else:
-            self._skip = count
         self._native.skip(count)
         return self
 

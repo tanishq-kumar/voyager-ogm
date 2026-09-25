@@ -9,9 +9,19 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+try:
+    from voyager_ogm._voyager_rs import AstExpr
+
+    HAS_VOYAGER_RS = True
+except ImportError:
+    AstExpr = None  # type: ignore[assignment,misc]
+    HAS_VOYAGER_RS = False
+
 
 class Expression:
     """Base class for all Voyager OGM AST expressions."""
+
+    _native_expr: Any = None
 
     def to_spec(self) -> Any:
         """Converts this expression into an AST descriptor tuple recognized by the native Rust FFI engine."""
@@ -153,6 +163,11 @@ class PropExpr(Expression):
         self.field_name = field_name
         self.target = target_alias
         self.field = field_name
+        if HAS_VOYAGER_RS and AstExpr is not None:
+            try:
+                self._native_expr = AstExpr.prop(target_alias, field_name)
+            except Exception:
+                self._native_expr = None
 
     def to_spec(self) -> tuple[str, str, str]:
         """Converts this property access into an AST spec descriptor tuple."""
@@ -167,6 +182,11 @@ class IdentExpr(Expression):
 
     def __init__(self, name: str) -> None:
         self.name = name
+        if HAS_VOYAGER_RS and AstExpr is not None:
+            try:
+                self._native_expr = AstExpr.ident(name)
+            except Exception:
+                self._native_expr = None
 
     def to_spec(self) -> tuple[str, str]:
         """Converts this identifier into an AST spec descriptor tuple."""
@@ -195,6 +215,11 @@ class LiteralExpr(Expression):
 
     def __init__(self, value: Any) -> None:
         self.value = value
+        if HAS_VOYAGER_RS and AstExpr is not None:
+            try:
+                self._native_expr = AstExpr.literal(value)
+            except Exception:
+                self._native_expr = None
 
     def to_spec(self) -> tuple[str, Any]:
         """Converts this literal value into an AST spec descriptor tuple."""
@@ -232,6 +257,19 @@ class BinaryExpr(Expression):
             self.field = left.field_name
             self.value = getattr(right, "value", right)
 
+        if HAS_VOYAGER_RS and AstExpr is not None:
+            try:
+                l_nat = getattr(left, "_native_expr", None)
+                if l_nat is None:
+                    l_nat = left.to_spec()
+                r_nat = getattr(right, "_native_expr", None)
+                if r_nat is None:
+                    r_nat = right.to_spec()
+                op_norm = op.lower().replace(" ", "_")
+                self._native_expr = AstExpr.binary(l_nat, op_norm, r_nat)
+            except Exception:
+                self._native_expr = None
+
     def to_spec(self) -> tuple[str, str, Any, Any]:
         """Converts this binary expression into an AST spec descriptor tuple."""
         op_norm = self.op.lower().replace(" ", "_")
@@ -247,6 +285,14 @@ class UnaryExpr(Expression):
     def __init__(self, op: str, operand: Expression) -> None:
         self.op = op
         self.operand = operand
+        if HAS_VOYAGER_RS and AstExpr is not None:
+            try:
+                op_nat = getattr(operand, "_native_expr", None)
+                if op_nat is None:
+                    op_nat = operand.to_spec()
+                self._native_expr = AstExpr.unary(op, op_nat)
+            except Exception:
+                self._native_expr = None
 
     def to_spec(self) -> tuple[str, str, Any]:
         """Converts this unary expression into an AST spec descriptor tuple."""
@@ -264,6 +310,15 @@ class FunctionExpr(Expression):
     def __init__(self, name: str, args: Sequence[Expression]) -> None:
         self.name = name
         self.args = list(args)
+        if HAS_VOYAGER_RS and AstExpr is not None:
+            try:
+                arg_nats = []
+                for a in self.args:
+                    nat = getattr(a, "_native_expr", None)
+                    arg_nats.append(a.to_spec() if nat is None else nat)
+                self._native_expr = AstExpr.function(name, arg_nats)
+            except Exception:
+                self._native_expr = None
 
     def to_spec(self) -> tuple[str, str, list[Any]]:
         """Converts this function invocation into an AST spec descriptor tuple."""
@@ -385,8 +440,6 @@ def _has_mutations(target: Any) -> bool:
         and callable(target._native.has_mutations)
     ):
         return bool(target._native.has_mutations())
-    if hasattr(target, "_mutations") and target._mutations:
-        return True
     return False
 
 
