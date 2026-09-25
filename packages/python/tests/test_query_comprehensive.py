@@ -244,13 +244,10 @@ def test_query_subquery_with_and_projections_roundtrip():
         .order_by(c.name)
         .limit(1)
     )
-    spec = sub.to_spec()
-    assert "with_clauses" in spec
-    assert len(spec["with_clauses"]) == 1
-    assert spec["with_clauses"][0]["projections"] == [("field", "c", "name", None)]
-    assert len(spec["with_clauses"][0]["where"]) == 1
-    assert spec["projections"] == [("field", "c", "name", None)]
-    assert spec["limit"] == 1
+    compiled_sub = sub.compile("cypher")
+    assert "WITH c.name WHERE c.name = $p0" in compiled_sub.statement
+    assert "RETURN c.name" in compiled_sub.statement
+    assert "LIMIT 1" in compiled_sub.statement
 
     query = Query.match(p).where(Query.exists(sub)).return_(p.name)
     compiled = query.compile("cypher")
@@ -324,21 +321,30 @@ def test_query_multi_clause_match_optional_match_to_spec():
     c = Company("c")
 
     q = Query.match(p).where(p.age > 20).optional_match(c).where(c.name == "Acme")
-    spec = q.to_spec()
-    assert "matches" in spec
-    assert len(spec["matches"]) == 2
 
-    # Verify first clause is not optional and scoped with its own predicate
-    assert spec["matches"][0]["optional"] is False
-    assert spec["matches"][0]["paths"] == [[("node", "p", ["Person"])]]
-    assert len(spec["matches"][0]["where"]) == 1
+    # Verify query builder compiles correctly
+    compiled_q = q.compile("cypher")
+    assert "MATCH (p:Person)" in compiled_q.statement
+    assert "OPTIONAL MATCH (p:Person)" not in compiled_q.statement
+    assert "OPTIONAL MATCH (c:Company)" in compiled_q.statement
+    assert "WHERE p.age > $p0" in compiled_q.statement
+    assert "WHERE c.name = $p1" in compiled_q.statement
 
-    # Verify second clause is optional and scoped with its own predicate
-    assert spec["matches"][1]["optional"] is True
-    assert spec["matches"][1]["paths"] == [[("node", "c", ["Company"])]]
-    assert len(spec["matches"][1]["where"]) == 1
-
-    # Compile via compile_query_from_spec and verify OPTIONAL does not bleed
+    # Explicit spec passed to compile_query_from_spec verifying clause isolation
+    spec = {
+        "matches": [
+            {
+                "optional": False,
+                "paths": [[("node", "p", ["Person"])]],
+                "where": [(p.age > 20).to_spec()],
+            },
+            {
+                "optional": True,
+                "paths": [[("node", "c", ["Company"])]],
+                "where": [(c.name == "Acme").to_spec()],
+            },
+        ]
+    }
     compiled_spec = compile_query_from_spec(spec, "cypher")
     statement = compiled_spec["statement"]
     assert "MATCH (p:Person)" in statement
@@ -362,18 +368,21 @@ def test_query_to_spec_mutations_roundtrip():
 
     # MATCH then CREATE
     q_create = Query.match(p).create(c)
-    spec_create = q_create.to_spec()
-    assert "matches" in spec_create and len(spec_create["matches"]) == 1
-    assert "mutations" in spec_create
-    assert spec_create["mutations"] == [("create", [[("node", "c", ["Company"])]])]
+    assert q_create.compile("cypher").statement == "MATCH (p:Person) CREATE (c:Company)"
+    spec_create = {
+        "matches": [{"optional": False, "paths": [[("node", "p", ["Person"])]], "where": []}],
+        "mutations": [("create", [[("node", "c", ["Company"])]])],
+    }
     res_create = compile_query_from_spec(spec_create, "cypher")
     assert res_create["statement"] == "MATCH (p:Person) CREATE (c:Company)"
 
     # Standalone CREATE
     q_pure_create = Query.create(p)
-    spec_pure_create = q_pure_create.to_spec()
-    assert spec_pure_create["matches"] == []
-    assert spec_pure_create["mutations"] == [("create", [[("node", "p", ["Person"])]])]
+    assert q_pure_create.compile("cypher").statement == "CREATE (p:Person)"
+    spec_pure_create = {
+        "matches": [],
+        "mutations": [("create", [[("node", "p", ["Person"])]])],
+    }
     res_pure_create = compile_query_from_spec(spec_pure_create, "cypher")
     assert res_pure_create["statement"] == "CREATE (p:Person)"
 
@@ -381,13 +390,22 @@ def test_query_to_spec_mutations_roundtrip():
     q_merge = (
         Query.match(p).merge(c).on_create_set(c.name == "Acme").on_match_set(c.name == "AcmeCorp")
     )
-    spec_merge = q_merge.to_spec()
-    assert "mutations" in spec_merge
-    assert len(spec_merge["mutations"]) == 1
-    assert spec_merge["mutations"][0][0] == "merge"
-    assert spec_merge["mutations"][0][1] == [("node", "c", ["Company"])]
-    assert spec_merge["mutations"][0][2] == [("c", "name", ("lit", "Acme"))]
-    assert spec_merge["mutations"][0][3] == [("c", "name", ("lit", "AcmeCorp"))]
+    res_merge_builder = q_merge.compile("cypher")
+    assert "MATCH (p:Person) MERGE (c:Company)" in res_merge_builder.statement
+    assert "ON CREATE SET c.name = $p0" in res_merge_builder.statement
+    assert "ON MATCH SET c.name = $p1" in res_merge_builder.statement
+
+    spec_merge = {
+        "matches": [{"optional": False, "paths": [[("node", "p", ["Person"])]], "where": []}],
+        "mutations": [
+            (
+                "merge",
+                [("node", "c", ["Company"])],
+                [("c", "name", ("lit", "Acme"))],
+                [("c", "name", ("lit", "AcmeCorp"))],
+            )
+        ],
+    }
     res_merge = compile_query_from_spec(spec_merge, "cypher")
     assert "MATCH (p:Person) MERGE (c:Company)" in res_merge["statement"]
     assert "ON CREATE SET c.name = $p0" in res_merge["statement"]
@@ -395,23 +413,34 @@ def test_query_to_spec_mutations_roundtrip():
 
     # SET and DELETE
     q_set_del = Query.match(p).set(p.score == 99).delete(p)
-    spec_set_del = q_set_del.to_spec()
-    assert ("set", "p", "score", ("lit", 99)) in spec_set_del["mutations"]
-    assert ("delete", False, ["p"]) in spec_set_del["mutations"]
+    assert q_set_del.compile("cypher").statement == "MATCH (p:Person) SET p.score = $p0 DELETE p"
+
+    spec_set_del = {
+        "matches": [{"optional": False, "paths": [[("node", "p", ["Person"])]], "where": []}],
+        "mutations": [("set", "p", "score", ("lit", 99)), ("delete", False, ["p"])],
+    }
     res_set_del = compile_query_from_spec(spec_set_del, "cypher")
     assert res_set_del["statement"] == "MATCH (p:Person) SET p.score = $p0 DELETE p"
 
     # DETACH DELETE
     q_detach = Query.match(p).detach_delete(p)
-    spec_detach = q_detach.to_spec()
-    assert ("delete", True, ["p"]) in spec_detach["mutations"]
+    assert q_detach.compile("cypher").statement == "MATCH (p:Person) DETACH DELETE p"
+
+    spec_detach = {
+        "matches": [{"optional": False, "paths": [[("node", "p", ["Person"])]], "where": []}],
+        "mutations": [("delete", True, ["p"])],
+    }
     res_detach = compile_query_from_spec(spec_detach, "cypher")
     assert res_detach["statement"] == "MATCH (p:Person) DETACH DELETE p"
 
     # REMOVE
     q_remove = Query.match(p).remove(p.score)
-    spec_remove = q_remove.to_spec()
-    assert ("remove", "p", "score") in spec_remove["mutations"]
+    assert q_remove.compile("cypher").statement == "MATCH (p:Person) REMOVE p.score"
+
+    spec_remove = {
+        "matches": [{"optional": False, "paths": [[("node", "p", ["Person"])]], "where": []}],
+        "mutations": [("remove", "p", "score")],
+    }
     res_remove = compile_query_from_spec(spec_remove, "cypher")
     assert res_remove["statement"] == "MATCH (p:Person) REMOVE p.score"
 
@@ -469,46 +498,30 @@ def test_query_hybrid_chaining_path_boundaries():
 
     # q.match(p).match(c) should produce separate paths matching add_match
     q_match = Query.match(p).match(c)
-    assert len(q_match._current_paths) == 2
-    assert q_match._current_paths[0] == [("node", "p", ["Person"])]
-    assert q_match._current_paths[1] == [("node", "c", ["Company"])]
     assert q_match.compile("cypher").statement == "MATCH (p:Person) MATCH (c:Company)"
 
     q_add_match = Query.match(p).add_match(c)
-    assert q_add_match._current_paths == q_match._current_paths
     assert q_add_match.compile("cypher").statement == q_match.compile("cypher").statement
 
     # q.match(p).optional_match(c) should produce separate paths matching add_optional_match
     q_opt = Query.match(p).optional_match(c)
-    assert len(q_opt._current_paths) == 2
-    assert q_opt._current_paths[0] == [("node", "p", ["Person"])]
-    assert q_opt._current_paths[1] == [("node", "c", ["Company"])]
     assert q_opt.compile("cypher").statement == "MATCH (p:Person) OPTIONAL MATCH (c:Company)"
 
     q_add_opt = Query.match(p).add_optional_match(c)
-    assert q_add_opt._current_paths == q_opt._current_paths
     assert q_add_opt.compile("cypher").statement == q_opt.compile("cypher").statement
 
     # q.match(p).create(c) should produce separate paths matching add_create
     q_create = Query.match(p).create(c)
-    assert len(q_create._current_paths) == 2
-    assert q_create._current_paths[0] == [("node", "p", ["Person"])]
-    assert q_create._current_paths[1] == [("node", "c", ["Company"])]
     assert q_create.compile("cypher").statement == "MATCH (p:Person) CREATE (c:Company)"
 
     q_add_create = Query.match(p).add_create(c)
-    assert q_add_create._current_paths == q_create._current_paths
     assert q_add_create.compile("cypher").statement == q_create.compile("cypher").statement
 
     # q.match(p).merge(c) should produce separate paths matching add_merge
     q_merge = Query.match(p).merge(c)
-    assert len(q_merge._current_paths) == 2
-    assert q_merge._current_paths[0] == [("node", "p", ["Person"])]
-    assert q_merge._current_paths[1] == [("node", "c", ["Company"])]
     assert q_merge.compile("cypher").statement == "MATCH (p:Person) MERGE (c:Company)"
 
     q_add_merge = Query.match(p).add_merge(c)
-    assert q_add_merge._current_paths == q_merge._current_paths
     assert q_add_merge.compile("cypher").statement == q_merge.compile("cypher").statement
 
 
@@ -616,3 +629,25 @@ def test_query_match_patterns_native_composition():
     mut_path = Path.create(p)
     with pytest.raises(ValueError, match="Cannot import mutating query into MATCH clause"):
         Query.match_patterns(mut_path)
+
+
+def test_query_has_no_mirrored_python_collections():
+    q = Query()
+    stripped_attrs = [
+        "_mutations",
+        "_matches",
+        "_current_paths",
+        "_where_specs",
+        "_with_clauses",
+        "_order_bys",
+        "_skip",
+        "_limit",
+        "_distinct",
+        "_is_optional",
+        "_unwinds",
+        "_load_csv",
+        "_clause_mode",
+        "_match_clauses",
+    ]
+    for attr in stripped_attrs:
+        assert not hasattr(q, attr), f"Query still has stripped mirrored attribute {attr}"

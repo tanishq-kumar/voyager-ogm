@@ -385,8 +385,6 @@ def _has_mutations(target: Any) -> bool:
         and callable(target._native.has_mutations)
     ):
         return bool(target._native.has_mutations())
-    if hasattr(target, "_mutations") and target._mutations:
-        return True
     return False
 
 

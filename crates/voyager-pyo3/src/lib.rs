@@ -312,6 +312,17 @@ fn build_path_steps_into_builder(
 }
 
 fn build_path_from_py(builder: &mut QueryBuilder, spec: &Bound<'_, PyAny>) -> PyResult<NodeHandle> {
+    let target = if let Ok(native) = spec.getattr("_native") {
+        native
+    } else {
+        spec.clone()
+    };
+    if let Ok(py_builder) = target.extract::<PyRef<PyQueryBuilder>>() {
+        let sub = py_builder.inner.clone();
+        let (sub_arena, sub_handle) = sub.build();
+        let sub_h = builder.import_subarena(sub_arena, sub_handle);
+        return Ok(sub_h);
+    }
     if let Ok(list) = spec.downcast::<PyList>() {
         let list_cloned = list.clone();
         let sub_h = builder.subquery(move |q| {
@@ -327,6 +338,17 @@ fn build_subquery_from_py(
     builder: &mut QueryBuilder,
     spec: &Bound<'_, PyAny>,
 ) -> PyResult<NodeHandle> {
+    let target = if let Ok(native) = spec.getattr("_native") {
+        native
+    } else {
+        spec.clone()
+    };
+    if let Ok(py_builder) = target.extract::<PyRef<PyQueryBuilder>>() {
+        let sub = py_builder.inner.clone();
+        let (sub_arena, sub_handle) = sub.build();
+        let sub_h = builder.import_subarena(sub_arena, sub_handle);
+        return Ok(sub_h);
+    }
     if let Ok(dict) = spec.downcast::<PyDict>() {
         let dict_cloned = dict.clone();
         let sub_h = builder.subquery(move |q| {
