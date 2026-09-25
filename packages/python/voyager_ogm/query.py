@@ -90,10 +90,25 @@ class Query:
         self._unwinds: list[tuple[str, str]] = []
         self._load_csv: tuple[str, bool, str] | None = None
 
+    def has_mutations(self) -> bool:
+        """Returns True if this query contains any mutating clauses (CREATE, MERGE, SET, DELETE, REMOVE)."""
+        has_mut = getattr(self._native, "has_mutations", None)
+        if callable(has_mut):
+            return bool(has_mut())
+        return bool(getattr(self, "_mutations", False))
+
     @staticmethod
     def exists(subquery_or_pattern: Any) -> Any:
         """Creates an existential subquery expression `EXISTS { MATCH ... }`."""
-        if hasattr(subquery_or_pattern, "_mutations") and subquery_or_pattern._mutations:
+        if hasattr(subquery_or_pattern, "has_mutations") and subquery_or_pattern.has_mutations():
+            raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
+        elif (
+            hasattr(subquery_or_pattern, "_native")
+            and hasattr(subquery_or_pattern._native, "has_mutations")
+            and subquery_or_pattern._native.has_mutations()
+        ):
+            raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
+        elif hasattr(subquery_or_pattern, "_mutations") and subquery_or_pattern._mutations:
             raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
         from voyager_ogm.fn import exists as fn_exists
 
@@ -102,7 +117,15 @@ class Query:
     @staticmethod
     def count(subquery_or_expr: Any) -> Any:
         """Creates a scalar subquery `COUNT { MATCH ... }` or function `count(expr)`."""
-        if hasattr(subquery_or_expr, "_mutations") and subquery_or_expr._mutations:
+        if hasattr(subquery_or_expr, "has_mutations") and subquery_or_expr.has_mutations():
+            raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
+        elif (
+            hasattr(subquery_or_expr, "_native")
+            and hasattr(subquery_or_expr._native, "has_mutations")
+            and subquery_or_expr._native.has_mutations()
+        ):
+            raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
+        elif hasattr(subquery_or_expr, "_mutations") and subquery_or_expr._mutations:
             raise ValueError("Subqueries do not support mutating clauses (CREATE/MERGE/SET/DELETE)")
         from voyager_ogm.fn import count as fn_count
 
@@ -224,36 +247,12 @@ class Query:
 
         for pat in patterns:
             if isinstance(pat, Query):
-                for path in pat._current_paths:
-                    if not path:
-                        continue
-                    if not first_pattern:
-                        q.pattern()
-                    first_pattern = False
-                    for item in path:
-                        if item[0] == "node":
-                            _, var_name, lbls = item
-                            if var_name and var_name in seen_vars:
-                                q.node(var_name)
-                            else:
-                                if var_name:
-                                    seen_vars.add(var_name)
-                                q.node(var_name, labels=lbls)
-                        elif item[0] == "edge":
-                            _, direction, types, edge_var, min_hops, max_hops = item
-                            if edge_var:
-                                seen_vars.add(edge_var)
-                            if direction == "out":
-                                q.to(types, edge_var)
-                            elif direction == "in":
-                                q.from_(types, edge_var)
-                            else:
-                                q.edge(types, edge_var)
-                            if min_hops != 1 or max_hops != 1:
-                                q.hops(min_hops, max_hops)
+                if pat.has_mutations():
+                    raise ValueError("Cannot import mutating query into MATCH clause")
+                first_pattern = False
+                seen_vars = set(q._native.import_match_patterns(pat._native, list(seen_vars)))
                 for w in pat._where_specs:
                     q._where_specs.append(w)
-                    q._native.where_expr(w)
             elif isinstance(pat, Node):
                 if not first_pattern:
                     q.pattern()

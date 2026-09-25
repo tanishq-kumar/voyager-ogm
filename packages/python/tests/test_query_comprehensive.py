@@ -510,3 +510,109 @@ def test_query_hybrid_chaining_path_boundaries():
     q_add_merge = Query.match(p).add_merge(c)
     assert q_add_merge._current_paths == q_merge._current_paths
     assert q_add_merge.compile("cypher").statement == q_merge.compile("cypher").statement
+
+
+def test_query_has_mutations_native():
+    p = Person("p")
+
+    # Read queries
+    q_read = Query.match(p).where(p.age > 21).return_(p.name)
+    assert not q_read.has_mutations()
+    assert not q_read._native.has_mutations()
+
+    # Create
+    q_create = Query.create(p)
+    assert q_create.has_mutations()
+    assert q_create._native.has_mutations()
+
+    # Merge
+    q_merge = Query.merge(p)
+    assert q_merge.has_mutations()
+    assert q_merge._native.has_mutations()
+
+    # Set
+    q_set = Query.match(p).set(p.name == "Alice")
+    assert q_set.has_mutations()
+    assert q_set._native.has_mutations()
+
+    # Delete
+    q_delete = Query.match(p).delete(p)
+    assert q_delete.has_mutations()
+    assert q_delete._native.has_mutations()
+
+    # Detach Delete
+    q_detach = Query.match(p).detach_delete(p)
+    assert q_detach.has_mutations()
+    assert q_detach._native.has_mutations()
+
+    # Remove
+    q_remove = Query.match(p).remove(p.age)
+    assert q_remove.has_mutations()
+    assert q_remove._native.has_mutations()
+
+
+def test_aliased_expr_to_spec_preserves_alias():
+    p = Person("p")
+
+    aliased = p.name.as_("full_name")
+    spec = aliased.to_spec()
+    assert spec == ("alias", ("prop", "p", "name"), "full_name")
+
+    # Roundtrip in Query projection
+    query = Query.match(p).return_(aliased)
+    compiled = query.compile("cypher")
+    assert "RETURN p.name AS full_name" in compiled.statement
+
+    # Subquery WITH projection roundtrip via to_spec
+    q_with = Query.match(p).with_(aliased).return_("full_name")
+    assert "WITH p.name AS full_name" in q_with.compile("cypher").statement
+
+
+def test_fn_count_and_exists_decoupled_from_lazy_import():
+    from voyager_ogm import fn
+
+    p = Person("p")
+    c = Company("c")
+
+    # fn.count on field produces function call
+    agg = fn.count(p.name)
+    assert repr(agg) == "count(p.name)"
+    assert agg.to_spec() == ("fn", "count", [("prop", "p", "name")])
+
+    # fn.count on subquery produces scalar subquery
+    sub = Query.match(c).where(c.name == "Acme")
+    scalar_count = fn.count(sub)
+    assert repr(scalar_count) == f"COUNT {{ {sub!r} }}"
+    assert scalar_count.to_spec() == ("count", sub.to_spec())
+
+    # fn.exists on subquery produces existential subquery
+    exist_expr = fn.exists(sub)
+    assert repr(exist_expr) == f"EXISTS {{ {sub!r} }}"
+    assert exist_expr.to_spec() == ("exists", sub.to_spec())
+
+    # Mutating queries raise ValueError on exists and count
+    mut_q = Query.match(p).create(c)
+    with pytest.raises(ValueError, match="Subqueries do not support mutating clauses"):
+        fn.exists(mut_q)
+    with pytest.raises(ValueError, match="Subqueries do not support mutating clauses"):
+        fn.count(mut_q)
+
+
+def test_query_match_patterns_native_composition():
+    p = Person("p")
+    c = Company("c")
+
+    p1 = Path.match(p).to("WORKS_AT").node(c)
+    p2 = Path.match(p).to("MANAGES").node(c)
+
+    query = Query.match_patterns(p1, p2).where(c.name == "Acme").return_(p.name)
+    compiled = query.compile("cypher")
+    assert (
+        compiled.statement
+        == "MATCH (p:Person)-[:WORKS_AT]->(c:Company), (p)-[:MANAGES]->(c) WHERE c.name = $p0 RETURN p.name"
+    )
+
+    # Reject mutating queries in match_patterns
+    mut_path = Path.create(p)
+    with pytest.raises(ValueError, match="Cannot import mutating query into MATCH clause"):
+        Query.match_patterns(mut_path)

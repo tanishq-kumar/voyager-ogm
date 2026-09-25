@@ -618,6 +618,12 @@ impl QueryAstArena {
         }
     }
 
+    /// Returns an immutable slice of all nodes currently stored in the arena.
+    #[inline(always)]
+    pub fn nodes(&self) -> &[AstNode] {
+        &self.nodes
+    }
+
     /// Returns a mutable slice of all nodes currently stored in the arena.
     #[inline(always)]
     pub fn nodes_mut(&mut self) -> &mut [AstNode] {
