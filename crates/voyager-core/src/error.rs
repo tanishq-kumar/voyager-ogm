@@ -41,6 +41,10 @@ pub enum Error {
     #[error("Transaction error: {0}")]
     TransactionError(String),
 
+    /// Schema validation or registry error.
+    #[error("Schema error: {0}")]
+    SchemaError(String),
+
     /// I/O or serialization error.
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),

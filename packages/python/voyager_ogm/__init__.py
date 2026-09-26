@@ -7,6 +7,7 @@ from voyager_ogm._voyager_rs import (
     NativeClient,
     NativeQueryBuilder,
     NativeQueryResult,
+    NativeSchemaRegistry,
     generate_synthetic_stream,
     version,
 )
@@ -80,7 +81,7 @@ from voyager_ogm.query import (
     profile,
     unwind,
 )
-from voyager_ogm.schema import SchemaManager
+from voyager_ogm.schema import SchemaManager, SchemaRegistry
 from voyager_ogm.session import (
     AsyncSession,
     ExecutionResult,
@@ -149,6 +150,7 @@ __all__ = [
     "NativeClient",
     "NativeQueryBuilder",
     "NativeQueryResult",
+    "NativeSchemaRegistry",
     "Neo4jBoltBridge",
     "Node",
     "ParamExpr",
@@ -165,6 +167,7 @@ __all__ = [
     "SavepointContext",
     "ScalarsResult",
     "SchemaManager",
+    "SchemaRegistry",
     "Session",
     "SubqueryExpr",
     "Transaction",
