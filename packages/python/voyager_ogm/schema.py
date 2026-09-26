@@ -8,9 +8,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from voyager_ogm._voyager_rs import NativeSchemaRegistry
+
 if TYPE_CHECKING:
     from voyager_ogm.models import Node, Relationship
     from voyager_ogm.session import Session
+
+# Ergonomic alias for the centralized thread-safe native schema registry
+SchemaRegistry = NativeSchemaRegistry
 
 _PYTHON_TO_NEO4J_TYPES: dict[Any, str] = {
     str: "STRING",

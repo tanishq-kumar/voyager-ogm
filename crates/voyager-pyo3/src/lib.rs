@@ -13,6 +13,10 @@ use voyager_core::ast::{
 use voyager_core::builder::QueryBuilder;
 use voyager_core::emitters::{AgeEmitter, CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
 use voyager_core::optimizer::{AstOptimizer, OptimizationLevel};
+use voyager_core::schema::{
+    FieldDescriptor, FieldType, IndexType, NodeSchema, RelationshipSchema, SchemaRegistry,
+    global_schema_registry,
+};
 use voyager_core::visitor::AstVisitor;
 
 fn py_to_literal(val: &Bound<'_, PyAny>) -> PyResult<LiteralValue> {
@@ -2590,6 +2594,602 @@ impl PyNativeClient {
     }
 }
 
+fn parse_field_descriptor(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<FieldDescriptor> {
+    if let Ok(dict) = obj.downcast::<PyDict>() {
+        let field_name = if let Some(n) = dict.get_item("name")? {
+            if n.is_none() {
+                name.to_string()
+            } else {
+                let s: String = n.extract()?;
+                if s.is_empty() { name.to_string() } else { s }
+            }
+        } else {
+            name.to_string()
+        };
+
+        if field_name.is_empty() {
+            return Err(PyValueError::new_err(
+                "Field descriptor missing property name (key or 'name' attribute)",
+            ));
+        }
+
+        let primary_key = dict
+            .get_item("primary_key")?
+            .and_then(|v| v.extract::<bool>().ok())
+            .unwrap_or(false);
+
+        let unique = dict
+            .get_item("unique")?
+            .and_then(|v| v.extract::<bool>().ok())
+            .unwrap_or(primary_key);
+
+        let nullable = dict
+            .get_item("nullable")?
+            .and_then(|v| v.extract::<bool>().ok())
+            .unwrap_or(!primary_key);
+
+        let mut indexed = dict
+            .get_item("indexed")?
+            .or(dict.get_item("index")?)
+            .and_then(|v| v.extract::<bool>().ok())
+            .unwrap_or(false);
+
+        let index_type = if let Some(it) = dict.get_item("index_type")? {
+            if it.is_none() {
+                None
+            } else {
+                let it_str: String = it.extract()?;
+                indexed = true;
+                IndexType::parse_str(&it_str)
+            }
+        } else if indexed {
+            Some(IndexType::BTree)
+        } else {
+            None
+        };
+
+        let field_type = if let Some(t) = dict.get_item("type")?.or(dict.get_item("field_type")?) {
+            if let Ok(s) = t.extract::<String>() {
+                FieldType::parse_str(&s)
+            } else if t.hasattr("__name__")? {
+                let s: String = t.getattr("__name__")?.extract()?;
+                FieldType::parse_str(&s)
+            } else {
+                FieldType::Any
+            }
+        } else {
+            FieldType::Any
+        };
+
+        let default_value = if let Some(dv) = dict
+            .get_item("default_value")?
+            .or(dict.get_item("default")?)
+        {
+            if dv.is_none() {
+                None
+            } else {
+                py_to_literal(&dv).ok()
+            }
+        } else {
+            None
+        };
+
+        Ok(FieldDescriptor {
+            name: field_name,
+            field_type,
+            nullable,
+            primary_key,
+            unique,
+            indexed,
+            index_type,
+            default_value,
+        })
+    } else {
+        let field_name = if obj.hasattr("name")? {
+            let n = obj.getattr("name")?;
+            if n.is_none() {
+                name.to_string()
+            } else {
+                let s: String = n.extract()?;
+                if s.is_empty() { name.to_string() } else { s }
+            }
+        } else {
+            name.to_string()
+        };
+
+        if field_name.is_empty() {
+            return Err(PyValueError::new_err(
+                "Field descriptor missing property name (key or 'name' attribute)",
+            ));
+        }
+
+        let primary_key = if obj.hasattr("primary_key")? {
+            obj.getattr("primary_key")?
+                .extract::<bool>()
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        let unique = if obj.hasattr("unique")? {
+            obj.getattr("unique")?.extract::<bool>().unwrap_or(false) || primary_key
+        } else {
+            primary_key
+        };
+
+        let mut indexed = if obj.hasattr("index")? {
+            obj.getattr("index")?.extract::<bool>().unwrap_or(false)
+        } else if obj.hasattr("indexed")? {
+            obj.getattr("indexed")?.extract::<bool>().unwrap_or(false)
+        } else {
+            false
+        };
+
+        let nullable = if obj.hasattr("nullable")? {
+            obj.getattr("nullable")?
+                .extract::<bool>()
+                .unwrap_or(!primary_key)
+        } else {
+            !primary_key
+        };
+
+        let index_type = if obj.hasattr("index_type")? {
+            let it = obj.getattr("index_type")?;
+            if it.is_none() {
+                None
+            } else {
+                let it_str: String = it.extract()?;
+                indexed = true;
+                IndexType::parse_str(&it_str)
+            }
+        } else if indexed {
+            Some(IndexType::BTree)
+        } else {
+            None
+        };
+
+        let field_type = if obj.hasattr("type_annotation")? {
+            let ann = obj.getattr("type_annotation")?;
+            if ann.is_none() {
+                FieldType::Any
+            } else if let Ok(s) = ann.extract::<String>() {
+                FieldType::parse_str(&s)
+            } else if ann.hasattr("__name__")? {
+                let s: String = ann.getattr("__name__")?.extract()?;
+                FieldType::parse_str(&s)
+            } else {
+                FieldType::Any
+            }
+        } else if obj.hasattr("type")? {
+            let t = obj.getattr("type")?;
+            if let Ok(s) = t.extract::<String>() {
+                FieldType::parse_str(&s)
+            } else {
+                FieldType::Any
+            }
+        } else {
+            FieldType::Any
+        };
+
+        let default_value = if obj.hasattr("default")? {
+            let dv = obj.getattr("default")?;
+            if dv.is_none() {
+                None
+            } else {
+                py_to_literal(&dv).ok()
+            }
+        } else {
+            None
+        };
+
+        Ok(FieldDescriptor {
+            name: field_name,
+            field_type,
+            nullable,
+            primary_key,
+            unique,
+            indexed,
+            index_type,
+            default_value,
+        })
+    }
+}
+
+fn field_descriptor_to_py<'py>(
+    py: Python<'py>,
+    field: &FieldDescriptor,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("name", &field.name)?;
+    dict.set_item("type", field.field_type.as_str())?;
+    dict.set_item("nullable", field.nullable)?;
+    dict.set_item("primary_key", field.primary_key)?;
+    dict.set_item("unique", field.unique)?;
+    dict.set_item("indexed", field.indexed)?;
+    if let Some(it) = field.index_type {
+        dict.set_item("index_type", it.as_str())?;
+    } else {
+        dict.set_item("index_type", py.None())?;
+    }
+    if let Some(ref dv) = field.default_value {
+        dict.set_item("default_value", literal_to_py(dv, py)?)?;
+    } else {
+        dict.set_item("default_value", py.None())?;
+    }
+    Ok(dict)
+}
+
+fn node_schema_to_py<'py>(py: Python<'py>, node: &NodeSchema) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("name", &node.name)?;
+    dict.set_item("labels", &node.labels)?;
+    if let Some(ref pk) = node.primary_key {
+        dict.set_item("primary_key", pk)?;
+    } else {
+        dict.set_item("primary_key", py.None())?;
+    }
+    let fields_dict = PyDict::new(py);
+    for (k, v) in &node.fields {
+        fields_dict.set_item(k, field_descriptor_to_py(py, v)?)?;
+    }
+    dict.set_item("fields", fields_dict)?;
+    Ok(dict)
+}
+
+fn relationship_schema_to_py<'py>(
+    py: Python<'py>,
+    rel: &RelationshipSchema,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("name", &rel.name)?;
+    dict.set_item("type_name", &rel.type_name)?;
+    dict.set_item("source_labels", &rel.source_labels)?;
+    dict.set_item("target_labels", &rel.target_labels)?;
+    dict.set_item("directed", rel.directed)?;
+    let fields_dict = PyDict::new(py);
+    for (k, v) in &rel.fields {
+        fields_dict.set_item(k, field_descriptor_to_py(py, v)?)?;
+    }
+    dict.set_item("fields", fields_dict)?;
+    Ok(dict)
+}
+
+enum RegistryStorage {
+    Owned(Arc<SchemaRegistry>),
+    Global,
+}
+
+/// Centralized, thread-safe Native Schema Registry and metadata storage.
+#[pyclass(name = "NativeSchemaRegistry")]
+pub struct PyNativeSchemaRegistry {
+    storage: RegistryStorage,
+}
+
+impl PyNativeSchemaRegistry {
+    fn registry(&self) -> &SchemaRegistry {
+        match &self.storage {
+            RegistryStorage::Owned(r) => r.as_ref(),
+            RegistryStorage::Global => global_schema_registry(),
+        }
+    }
+}
+
+#[pymethods]
+impl PyNativeSchemaRegistry {
+    #[new]
+    fn new() -> Self {
+        Self {
+            storage: RegistryStorage::Owned(Arc::new(SchemaRegistry::new())),
+        }
+    }
+
+    /// Accesses the global singleton schema registry.
+    #[staticmethod]
+    fn global_registry() -> Self {
+        Self {
+            storage: RegistryStorage::Global,
+        }
+    }
+
+    /// Alias for `global_registry()`.
+    #[staticmethod]
+    fn global_() -> Self {
+        Self::global_registry()
+    }
+
+    /// Registers a node schema with labels, fields, and optional primary key.
+    #[pyo3(signature = (name, labels, fields, primary_key=None))]
+    fn register_node(
+        &self,
+        name: String,
+        labels: Vec<String>,
+        fields: &Bound<'_, PyAny>,
+        primary_key: Option<String>,
+    ) -> PyResult<()> {
+        let mut node_schema = NodeSchema::new(name, labels);
+        if let Ok(dict) = fields.downcast::<PyDict>() {
+            for (k, v) in dict {
+                let field_name: String = if let Ok(s) = k.downcast::<PyString>() {
+                    s.to_string_lossy().into_owned()
+                } else {
+                    k.extract()?
+                };
+                let desc = parse_field_descriptor(&field_name, &v)?;
+                node_schema = node_schema.with_field(desc);
+            }
+        } else if let Ok(list) = fields.downcast::<PyList>() {
+            for item in list {
+                let desc = parse_field_descriptor("", &item)?;
+                node_schema = node_schema.with_field(desc);
+            }
+        } else {
+            return Err(PyTypeError::new_err("fields must be a dict or list"));
+        }
+
+        if let Some(pk) = primary_key {
+            if let Some(f) = node_schema.fields.get_mut(&pk) {
+                f.primary_key = true;
+                f.unique = true;
+                f.nullable = false;
+            }
+            node_schema.primary_key = Some(pk);
+        }
+
+        self.registry()
+            .register_node(node_schema)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Registers a node schema from a dictionary specification.
+    fn register_node_schema(&self, schema: &Bound<'_, PyAny>) -> PyResult<()> {
+        if let Ok(dict) = schema.downcast::<PyDict>() {
+            let name: String = dict
+                .get_item("name")?
+                .ok_or_else(|| PyValueError::new_err("Missing required key 'name' in node schema"))?
+                .extract()?;
+            let labels: Vec<String> = if let Some(l) = dict.get_item("labels")? {
+                l.extract()?
+            } else {
+                vec![name.clone()]
+            };
+            let pk: Option<String> = dict
+                .get_item("primary_key")?
+                .and_then(|v| if v.is_none() { None } else { v.extract().ok() });
+            let empty_dict = PyDict::new(schema.py());
+            let fields_obj = if let Some(f) = dict.get_item("fields")? {
+                f
+            } else {
+                empty_dict.into_any()
+            };
+            self.register_node(name, labels, &fields_obj, pk)
+        } else {
+            Err(PyTypeError::new_err("schema must be a dict"))
+        }
+    }
+
+    /// Registers a relationship schema with endpoints, fields, and direction.
+    #[pyo3(signature = (name, type_name, source_labels=None, target_labels=None, fields=None, directed=true))]
+    fn register_relationship(
+        &self,
+        name: String,
+        type_name: String,
+        source_labels: Option<Vec<String>>,
+        target_labels: Option<Vec<String>>,
+        fields: Option<&Bound<'_, PyAny>>,
+        directed: bool,
+    ) -> PyResult<()> {
+        let mut rel_schema = RelationshipSchema::new(name, type_name).directed(directed);
+        if let (Some(src), Some(tgt)) = (source_labels, target_labels) {
+            rel_schema = rel_schema.with_endpoints(src, tgt);
+        }
+        if let Some(fields_any) = fields {
+            if let Ok(dict) = fields_any.downcast::<PyDict>() {
+                for (k, v) in dict {
+                    let field_name: String = if let Ok(s) = k.downcast::<PyString>() {
+                        s.to_string_lossy().into_owned()
+                    } else {
+                        k.extract()?
+                    };
+                    let desc = parse_field_descriptor(&field_name, &v)?;
+                    rel_schema = rel_schema.with_field(desc);
+                }
+            } else if let Ok(list) = fields_any.downcast::<PyList>() {
+                for item in list {
+                    let desc = parse_field_descriptor("", &item)?;
+                    rel_schema = rel_schema.with_field(desc);
+                }
+            }
+        }
+
+        self.registry()
+            .register_relationship(rel_schema)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Registers a relationship schema from a dictionary specification.
+    fn register_relationship_schema(&self, schema: &Bound<'_, PyAny>) -> PyResult<()> {
+        if let Ok(dict) = schema.downcast::<PyDict>() {
+            let name: String = dict
+                .get_item("name")?
+                .ok_or_else(|| {
+                    PyValueError::new_err("Missing required key 'name' in relationship schema")
+                })?
+                .extract()?;
+            let type_name: String =
+                if let Some(t) = dict.get_item("type_name")?.or(dict.get_item("type")?) {
+                    t.extract()?
+                } else {
+                    name.to_ascii_uppercase()
+                };
+            let source_labels: Option<Vec<String>> = dict
+                .get_item("source_labels")?
+                .or(dict.get_item("from_labels")?)
+                .and_then(|v| if v.is_none() { None } else { v.extract().ok() });
+            let target_labels: Option<Vec<String>> = dict
+                .get_item("target_labels")?
+                .or(dict.get_item("to_labels")?)
+                .and_then(|v| if v.is_none() { None } else { v.extract().ok() });
+            let directed: bool = dict
+                .get_item("directed")?
+                .and_then(|v| v.extract::<bool>().ok())
+                .unwrap_or(true);
+            let fields_obj = dict.get_item("fields")?;
+            self.register_relationship(
+                name,
+                type_name,
+                source_labels,
+                target_labels,
+                fields_obj.as_ref(),
+                directed,
+            )
+        } else {
+            Err(PyTypeError::new_err("schema must be a dict"))
+        }
+    }
+
+    /// Retrieves a node schema by model name.
+    fn get_node<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Option<Bound<'py, PyDict>>> {
+        if let Some(node) = self.registry().get_node(name) {
+            Ok(Some(node_schema_to_py(py, &node)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Retrieves a node schema by primary label.
+    fn get_node_by_label<'py>(
+        &self,
+        py: Python<'py>,
+        label: &str,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        if let Some(node) = self.registry().get_node_by_label(label) {
+            Ok(Some(node_schema_to_py(py, &node)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Retrieves a relationship schema by model name.
+    fn get_relationship<'py>(
+        &self,
+        py: Python<'py>,
+        name: &str,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        if let Some(rel) = self.registry().get_relationship(name) {
+            Ok(Some(relationship_schema_to_py(py, &rel)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Retrieves a relationship schema by graph relationship type (case-insensitive).
+    fn get_relationship_by_type<'py>(
+        &self,
+        py: Python<'py>,
+        type_name: &str,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        if let Some(rel) = self.registry().get_relationship_by_type(type_name) {
+            Ok(Some(relationship_schema_to_py(py, &rel)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Checks if a node schema is registered by name.
+    fn has_node(&self, name: &str) -> bool {
+        self.registry().has_node(name)
+    }
+
+    /// Checks if a relationship schema is registered by name.
+    fn has_relationship(&self, name: &str) -> bool {
+        self.registry().has_relationship(name)
+    }
+
+    /// Removes a node schema by model name, returning it if present.
+    fn remove_node<'py>(
+        &self,
+        py: Python<'py>,
+        name: &str,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        if let Some(node) = self.registry().remove_node(name) {
+            Ok(Some(node_schema_to_py(py, &node)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Removes a relationship schema by model name, returning it if present.
+    fn remove_relationship<'py>(
+        &self,
+        py: Python<'py>,
+        name: &str,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        if let Some(rel) = self.registry().remove_relationship(name) {
+            Ok(Some(relationship_schema_to_py(py, &rel)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Returns a list of all registered node schemas as dictionaries.
+    fn node_schemas<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let list = PyList::empty(py);
+        for n in self.registry().node_schemas() {
+            list.append(node_schema_to_py(py, &n)?)?;
+        }
+        Ok(list)
+    }
+
+    /// Returns a list of all registered relationship schemas as dictionaries.
+    fn relationship_schemas<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let list = PyList::empty(py);
+        for r in self.registry().relationship_schemas() {
+            list.append(relationship_schema_to_py(py, &r)?)?;
+        }
+        Ok(list)
+    }
+
+    /// Clears all schemas from the registry.
+    fn clear(&self) {
+        self.registry().clear();
+    }
+
+    /// Serializes all registered schemas to a JSON string.
+    fn to_json(&self) -> PyResult<String> {
+        self.registry()
+            .to_json()
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Deserializes and restores schemas from a JSON string into this registry.
+    #[allow(clippy::wrong_self_convention)]
+    fn from_json(&self, json_str: &str) -> PyResult<()> {
+        self.registry()
+            .from_json(json_str)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Deserializes and restores schemas from a JSON string into this registry.
+    fn load_json(&self, json_str: &str) -> PyResult<()> {
+        self.from_json(json_str)
+    }
+
+    /// Returns the total count of registered schemas.
+    fn __len__(&self) -> usize {
+        self.registry().len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "NativeSchemaRegistry(nodes={}, relationships={})",
+            self.registry().node_schemas().len(),
+            self.registry().relationship_schemas().len()
+        )
+    }
+}
+
 /// Native Python module definition for `_voyager_rs`.
 #[pymodule]
 fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -2609,6 +3209,7 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyNativeClient>()?;
     m.add_class::<PyUnitOfWork>()?;
     m.add_class::<PyTransaction>()?;
+    m.add_class::<PyNativeSchemaRegistry>()?;
     m.add("__version__", voyager_core::VERSION)?;
     Ok(())
 }
