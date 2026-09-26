@@ -729,3 +729,48 @@ fn test_gql_linear_clauses_let_filter() {
         other => panic!("Expected UnsupportedFeature, got {other:?}"),
     }
 }
+
+#[test]
+fn test_mutation_paths_ignore_path_modes_and_variables() {
+    use voyager_core::emitters::cypher::CypherEmitter;
+
+    // CREATE with trail() applied
+    let mut b1 = QueryBuilder::new();
+    let p_ident = b1.ident("p");
+    b1.create()
+        .trail()
+        .path_variable("pv")
+        .node(Some("p"), vec!["Person"])
+        .r#return()
+        .select_expr(p_ident, None::<String>);
+
+    let (arena1, root1) = b1.build();
+
+    let mut gql1 = IsoGqlEmitter::new();
+    let res_gql1 = gql1.visit_query(&arena1, root1).unwrap();
+    assert_eq!(res_gql1.statement, "INSERT (p:Person) RETURN p");
+
+    let mut cypher1 = CypherEmitter::new();
+    let res_cypher1 = cypher1.visit_query(&arena1, root1).unwrap();
+    assert_eq!(res_cypher1.statement, "CREATE (p:Person) RETURN p");
+
+    // MERGE with trail() applied
+    let mut b2 = QueryBuilder::new();
+    let p_ident2 = b2.ident("p");
+    b2.merge()
+        .trail()
+        .path_variable("pv")
+        .node(Some("p"), vec!["Person"])
+        .r#return()
+        .select_expr(p_ident2, None::<String>);
+
+    let (arena2, root2) = b2.build();
+
+    let mut gql2 = IsoGqlEmitter::new();
+    let res_gql2 = gql2.visit_query(&arena2, root2).unwrap();
+    assert_eq!(res_gql2.statement, "UPSERT (p:Person) RETURN p");
+
+    let mut cypher2 = CypherEmitter::new();
+    let res_cypher2 = cypher2.visit_query(&arena2, root2).unwrap();
+    assert_eq!(res_cypher2.statement, "MERGE (p:Person) RETURN p");
+}

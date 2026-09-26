@@ -1053,8 +1053,22 @@ impl QueryBuilder {
     /// Starts an additional branching path pattern within the current MATCH or CREATE clause: `MATCH p1, p2`.
     pub fn pattern(&mut self) -> &mut Self {
         if let Some(start_node) = self.current_path_start.take() {
-            let path_mode = std::mem::take(&mut self.current_path_mode);
-            let path_variable = self.current_path_variable.take();
+            let is_mutation = matches!(
+                self.clause_mode,
+                Some(ClauseMode::Create | ClauseMode::Merge)
+            );
+            let path_mode = if is_mutation {
+                self.current_path_mode = PathMode::None;
+                PathMode::None
+            } else {
+                std::mem::take(&mut self.current_path_mode)
+            };
+            let path_variable = if is_mutation {
+                self.current_path_variable = None;
+                None
+            } else {
+                self.current_path_variable.take()
+            };
             let path_handle = if self.current_edges.is_empty()
                 && path_mode == PathMode::None
                 && path_variable.is_none()
@@ -1164,8 +1178,22 @@ impl QueryBuilder {
 
         let mut paths = std::mem::take(&mut self.current_match_paths);
         if let Some(start_node) = self.current_path_start.take() {
-            let path_mode = std::mem::take(&mut self.current_path_mode);
-            let path_variable = self.current_path_variable.take();
+            let is_mutation = matches!(
+                self.clause_mode,
+                Some(ClauseMode::Create | ClauseMode::Merge)
+            );
+            let path_mode = if is_mutation {
+                self.current_path_mode = PathMode::None;
+                PathMode::None
+            } else {
+                std::mem::take(&mut self.current_path_mode)
+            };
+            let path_variable = if is_mutation {
+                self.current_path_variable = None;
+                None
+            } else {
+                self.current_path_variable.take()
+            };
             let path_handle = if self.current_edges.is_empty()
                 && path_mode == PathMode::None
                 && path_variable.is_none()

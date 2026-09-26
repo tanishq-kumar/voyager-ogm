@@ -476,6 +476,15 @@ def test_gql_path_search_modes():
         res_spec = compile_query_from_spec(spec_with_mode, dialect="cypher")
     assert res_spec["statement"] == "MATCH (a:Person) RETURN a.name"
 
+    # Invariant check: mutation paths ignore traversal search modes and path variables
+    q_create_trail = Query.create(p).trail("tp").return_(p.name)
+    assert q_create_trail.compile(dialect="iso_gql").statement == "INSERT (a:Person) RETURN a.name"
+    assert q_create_trail.compile(dialect="cypher").statement == "CREATE (a:Person) RETURN a.name"
+
+    q_merge_trail = Query.merge(p).trail("tp").return_(p.name)
+    assert q_merge_trail.compile(dialect="iso_gql").statement == "UPSERT (a:Person) RETURN a.name"
+    assert q_merge_trail.compile(dialect="cypher").statement == "MERGE (a:Person) RETURN a.name"
+
 
 # ---------------------------------------------------------------------------
 # 8. ISO GQL Label Expressions (OR | and NOT !) (#56)
