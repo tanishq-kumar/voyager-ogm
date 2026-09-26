@@ -1,0 +1,978 @@
+{
+  "aggregate_functions": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (p:Person)-[w:WORKS_AT]->(c:Company) RETURN c.name AS company, count(p) AS total, avg(p.age) AS avg_age, min(p.age) AS min_age, max(p.age) AS max_age",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (p:Person)-[w:WORKS_AT]->(c:Company) RETURN c.name AS company, count(p) AS total, avg(p.age) AS avg_age, min(p.age) AS min_age, max(p.age) AS max_age",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) -[w IS WORKS_AT]-> (c IS Company) COLUMNS (c.name AS company, count(p) AS total, avg(p.age) AS avg_age, min(p.age) AS min_age, max(p.age) AS max_age))",
+      "status": "ok"
+    }
+  },
+  "anonymous_edge_traversal": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (a:Person)-[]->(b:Person) RETURN a.name, b.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (a:Person)-[]->(b:Person) RETURN a.name, b.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (a IS Person) -[]-> (b IS Person) COLUMNS (a.name, b.name))",
+      "status": "ok"
+    }
+  },
+  "boolean_and_or_expressions": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 18,
+        "p1": 65
+      },
+      "statement": "MATCH (p:Person) WHERE (p.age > $p0) AND (p.age < $p1) RETURN p.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 18,
+        "p1": 65
+      },
+      "statement": "MATCH (p:Person) WHERE (p.age > $p0) AND (p.age < $p1) RETURN p.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 18,
+        "p1": 65
+      },
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) WHERE (p.age > $p0) AND (p.age < $p1) COLUMNS (p.name))",
+      "status": "ok"
+    }
+  },
+  "directed_incoming_traversal": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (a:Person)<-[w:WORKS_AT]-(c:Company) RETURN a.name, c.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (a:Person)<-[w:WORKS_AT]-(c:Company) RETURN a.name, c.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (a IS Person) <-[w IS WORKS_AT]- (c IS Company) COLUMNS (a.name, c.name))",
+      "status": "ok"
+    }
+  },
+  "directed_outgoing_traversal": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name, b.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name, b.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (a IS Person) -[r IS KNOWS]-> (b IS Person) COLUMNS (a.name, b.name))",
+      "status": "ok"
+    }
+  },
+  "distinct_projections": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (p:Person) RETURN DISTINCT p.city",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (p:Person) RETURN DISTINCT p.city",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) COLUMNS (p.city))",
+      "status": "ok"
+    }
+  },
+  "equality_inequality_predicates": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": "London",
+        "p1": "Bob"
+      },
+      "statement": "MATCH (p:Person) WHERE (p.city = $p0) AND (p.name != $p1) RETURN p.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": "London",
+        "p1": "Bob"
+      },
+      "statement": "MATCH (p:Person) WHERE (p.city = $p0) AND (p.name != $p1) RETURN p.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": "London",
+        "p1": "Bob"
+      },
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) WHERE (p.city = $p0) AND (p.name != $p1) COLUMNS (p.name))",
+      "status": "ok"
+    }
+  },
+  "execution_mode_explain": {
+    "cypher": {
+      "execution_mode": "explain",
+      "parameters": {},
+      "statement": "EXPLAIN MATCH (p:Person) RETURN p.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "explain",
+      "parameters": {},
+      "statement": "EXPLAIN MATCH (p:Person) RETURN p.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "explain",
+      "parameters": {},
+      "statement": "EXPLAIN SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) COLUMNS (p.name))",
+      "status": "ok"
+    }
+  },
+  "execution_mode_explain_and_profile": {
+    "cypher": {
+      "execution_mode": "explain_and_profile",
+      "parameters": {},
+      "statement": "PROFILE MATCH (p:Person) RETURN p.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "explain_and_profile",
+      "parameters": {},
+      "statement": "PROFILE MATCH (p:Person) RETURN p.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "explain_and_profile",
+      "parameters": {},
+      "statement": "EXPLAIN ANALYZE SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) COLUMNS (p.name))",
+      "status": "ok"
+    }
+  },
+  "execution_mode_profile": {
+    "cypher": {
+      "execution_mode": "profile",
+      "parameters": {},
+      "statement": "PROFILE MATCH (p:Person) RETURN p.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "profile",
+      "parameters": {},
+      "statement": "PROFILE MATCH (p:Person) RETURN p.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "profile",
+      "parameters": {},
+      "statement": "EXPLAIN ANALYZE SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) COLUMNS (p.name))",
+      "status": "ok"
+    }
+  },
+  "in_and_not_in_predicates": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": [
+          "London",
+          "Paris",
+          "Berlin"
+        ],
+        "p1": [
+          "Mallory"
+        ]
+      },
+      "statement": "MATCH (p:Person) WHERE (p.city IN $p0) AND (p.name NOT IN $p1) RETURN p.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": [
+          "London",
+          "Paris",
+          "Berlin"
+        ],
+        "p1": [
+          "Mallory"
+        ]
+      },
+      "statement": "MATCH (p:Person) WHERE (p.city IN $p0) AND (p.name NOT IN $p1) RETURN p.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": [
+          "London",
+          "Paris",
+          "Berlin"
+        ],
+        "p1": [
+          "Mallory"
+        ]
+      },
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) WHERE (p.city IN $p0) AND (p.name NOT IN $p1) COLUMNS (p.name))",
+      "status": "ok"
+    }
+  },
+  "label_expression_conjunction": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (n:Person:Developer) RETURN n.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (n:Person&Developer) RETURN n.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (n IS Person IS Developer) COLUMNS (n.name))",
+      "status": "ok"
+    }
+  },
+  "label_expression_disjunction": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (n:(Person|Company)) RETURN n.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (n:(Person|Company)) RETURN n.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (n IS Person | Company) COLUMNS (n.name))",
+      "status": "ok"
+    }
+  },
+  "label_expression_negation": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (n:!Inactive) RETURN n.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (n:!Inactive) RETURN n.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (n IS !Inactive) COLUMNS (n.name))",
+      "status": "ok"
+    }
+  },
+  "linear_let_and_linear_filter": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": " Senior",
+        "p1": 60
+      },
+      "statement": "MATCH (p:Person) WITH *, p.name + $p0 AS full_name WHERE p.age >= $p1 RETURN full_name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": " Senior",
+        "p1": 60
+      },
+      "statement": "MATCH (p:Person) LET full_name = p.name || $p0 FILTER p.age >= $p1 RETURN full_name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "error_message": "Dialect 'sql_pgq' does not support feature: Linear statements (LET, FILTER) - SQL:2023 PGQ GRAPH_TABLE does not support linear statements",
+      "error_type": "ValueError",
+      "status": "unsupported"
+    }
+  },
+  "load_csv": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": "file:///data.csv"
+      },
+      "statement": "LOAD CSV WITH HEADERS FROM $p0 AS row MATCH (p:Person) RETURN p.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (p:Person) RETURN p.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) COLUMNS (p.name))",
+      "status": "ok"
+    }
+  },
+  "math_arithmetic_expressions": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 2,
+        "p1": 10,
+        "p2": 5
+      },
+      "statement": "MATCH (p:Person) RETURN p.age * $p0 AS doubled, p.age + $p1 AS offset, p.age / $p2 AS ratio",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 2,
+        "p1": 10,
+        "p2": 5
+      },
+      "statement": "MATCH (p:Person) RETURN p.age * $p0 AS doubled, p.age + $p1 AS offset, p.age / $p2 AS ratio",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 2,
+        "p1": 10,
+        "p2": 5
+      },
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) COLUMNS (p.age * $p0 AS doubled, p.age + $p1 AS offset, p.age / $p2 AS ratio))",
+      "status": "ok"
+    }
+  },
+  "multi_pattern_branching": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (a:Person)-[r1:KNOWS]->(b:Person) MATCH (b:Person)-[r2:WORKS_AT]->(c:Company) RETURN a.name, b.name, c.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (a:Person)-[r1:KNOWS]->(b:Person) MATCH (b:Person)-[r2:WORKS_AT]->(c:Company) RETURN a.name, b.name, c.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (a IS Person) -[r1 IS KNOWS]-> (b IS Person), (b IS Person) -[r2 IS WORKS_AT]-> (c IS Company) COLUMNS (a.name, b.name, c.name))",
+      "status": "ok"
+    }
+  },
+  "mutation_create": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "CREATE (p:Person) RETURN p.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "INSERT (p:Person) RETURN p.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "error_message": "Dialect 'sql_pgq' does not support feature: DML mutations (CREATE, MERGE, SET, DELETE) - GRAPH_TABLE is a read-only query operator",
+      "error_type": "ValueError",
+      "status": "unsupported"
+    }
+  },
+  "mutation_delete": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 18
+      },
+      "statement": "MATCH (p:Person) WHERE p.age < $p0 DELETE p",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 18
+      },
+      "statement": "MATCH (p:Person) WHERE p.age < $p0 DELETE p",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "error_message": "Dialect 'sql_pgq' does not support feature: DML mutations (CREATE, MERGE, SET, DELETE) - GRAPH_TABLE is a read-only query operator",
+      "error_type": "ValueError",
+      "status": "unsupported"
+    }
+  },
+  "mutation_detach_delete": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 18
+      },
+      "statement": "MATCH (p:Person) WHERE p.age < $p0 DETACH DELETE p",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 18
+      },
+      "statement": "MATCH (p:Person) WHERE p.age < $p0 DELETE p",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "error_message": "Dialect 'sql_pgq' does not support feature: DML mutations (CREATE, MERGE, SET, DELETE) - GRAPH_TABLE is a read-only query operator",
+      "error_type": "ValueError",
+      "status": "unsupported"
+    }
+  },
+  "mutation_merge_with_on_create_on_match": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": "Alice",
+        "p1": "Paris"
+      },
+      "statement": "MERGE (p:Person) ON CREATE SET p.name = $p0 ON MATCH SET p.city = $p1 RETURN p.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": "Alice",
+        "p1": "Paris"
+      },
+      "statement": "UPSERT (p:Person) SET p.name = $p0, p.city = $p1 RETURN p.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "error_message": "Dialect 'sql_pgq' does not support feature: DML mutations (CREATE, MERGE, SET, DELETE) - GRAPH_TABLE is a read-only query operator",
+      "error_type": "ValueError",
+      "status": "unsupported"
+    }
+  },
+  "mutation_set_and_remove": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": "Alice",
+        "p1": 30
+      },
+      "statement": "MATCH (p:Person) WHERE p.name = $p0 SET p.age = $p1 REMOVE p.city RETURN p.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": "Alice",
+        "p1": 30
+      },
+      "statement": "MATCH (p:Person) WHERE p.name = $p0 SET p.age = $p1 REMOVE p.city RETURN p.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "error_message": "Dialect 'sql_pgq' does not support feature: DML mutations (CREATE, MERGE, SET, DELETE) - GRAPH_TABLE is a read-only query operator",
+      "error_type": "ValueError",
+      "status": "unsupported"
+    }
+  },
+  "null_and_not_null_predicates": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (p:Person) WHERE p.skills IS NULL AND p.city IS NOT NULL RETURN p.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (p:Person) WHERE p.skills IS NULL AND p.city IS NOT NULL RETURN p.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) WHERE p.skills IS NULL AND p.city IS NOT NULL COLUMNS (p.name))",
+      "status": "ok"
+    }
+  },
+  "optimizer_predicate_pushdown": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": "London"
+      },
+      "statement": "MATCH (p:Person {city: $p0}) RETURN p.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": "London"
+      },
+      "statement": "MATCH (p:Person {city: $p0}) RETURN p.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": "London"
+      },
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person WHERE p.city = $p0) COLUMNS (p.name))",
+      "status": "ok"
+    }
+  },
+  "order_by_multi_and_pagination": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (p:Person) RETURN p.name, p.age ORDER BY p.age DESC, p.name ASC SKIP 10 LIMIT 25",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (p:Person) RETURN p.name, p.age ORDER BY p.age DESC, p.name ASC OFFSET 10 LIMIT 25",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) COLUMNS (p.name, p.age)) ORDER BY age DESC, name ASC LIMIT 25 OFFSET 10",
+      "status": "ok"
+    }
+  },
+  "path_mode_acyclic": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH p = (a:Person)-[k:KNOWS]->(b:Person) RETURN p",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH p = ACYCLIC (a:Person)-[k:KNOWS]->(b:Person) RETURN p",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "error_message": "Dialect 'sql_pgq' does not support feature: Path variable assignment ('p = ...') - SQL:2023 PGQ GRAPH_TABLE does not support path variables",
+      "error_type": "ValueError",
+      "status": "unsupported"
+    }
+  },
+  "path_mode_simple": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH p = (a:Person)-[k:KNOWS]->(b:Person) RETURN p",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH p = SIMPLE (a:Person)-[k:KNOWS]->(b:Person) RETURN p",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "error_message": "Dialect 'sql_pgq' does not support feature: Path variable assignment ('p = ...') - SQL:2023 PGQ GRAPH_TABLE does not support path variables",
+      "error_type": "ValueError",
+      "status": "unsupported"
+    }
+  },
+  "path_mode_trail": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH p = (a:Person)-[k:KNOWS]->(b:Person) RETURN p",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH p = TRAIL (a:Person)-[k:KNOWS]->(b:Person) RETURN p",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "error_message": "Dialect 'sql_pgq' does not support feature: Path variable assignment ('p = ...') - SQL:2023 PGQ GRAPH_TABLE does not support path variables",
+      "error_type": "ValueError",
+      "status": "unsupported"
+    }
+  },
+  "path_mode_walk": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH p = (a:Person)-[k:KNOWS]->(b:Person) RETURN p",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH p = WALK (a:Person)-[k:KNOWS]->(b:Person) RETURN p",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "error_message": "Dialect 'sql_pgq' does not support feature: Path variable assignment ('p = ...') - SQL:2023 PGQ GRAPH_TABLE does not support path variables",
+      "error_type": "ValueError",
+      "status": "unsupported"
+    }
+  },
+  "path_variable_binding": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH p = (a:Person)-[k:KNOWS]->(b:Person) RETURN p",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH p = (a:Person)-[k:KNOWS]->(b:Person) RETURN p",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "error_message": "Dialect 'sql_pgq' does not support feature: Path variable assignment ('p = ...') - SQL:2023 PGQ GRAPH_TABLE does not support path variables",
+      "error_type": "ValueError",
+      "status": "unsupported"
+    }
+  },
+  "quantified_hops_exact": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (a:Person)-[r:KNOWS*2..2]->(b:Person) RETURN a.name, b.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH ((a:Person)-[r:KNOWS]->(b:Person)){2,2} RETURN a.name, b.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (a IS Person) -[r IS KNOWS]->{2,2} (b IS Person) COLUMNS (a.name, b.name))",
+      "status": "ok"
+    }
+  },
+  "quantified_hops_range": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (a:Person)-[r:KNOWS*1..3]->(b:Person) RETURN a.name, b.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH ((a:Person)-[r:KNOWS]->(b:Person)){1,3} RETURN a.name, b.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (a IS Person) -[r IS KNOWS]->{1,3} (b IS Person) COLUMNS (a.name, b.name))",
+      "status": "ok"
+    }
+  },
+  "relational_predicates_chained": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 21,
+        "p1": 65
+      },
+      "statement": "MATCH (p:Person) WHERE (p.age > $p0) AND (p.age <= $p1) RETURN p.name, p.age",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 21,
+        "p1": 65
+      },
+      "statement": "MATCH (p:Person) WHERE (p.age > $p0) AND (p.age <= $p1) RETURN p.name, p.age",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 21,
+        "p1": 65
+      },
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) WHERE (p.age > $p0) AND (p.age <= $p1) COLUMNS (p.name, p.age))",
+      "status": "ok"
+    }
+  },
+  "single_node_match": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (p:Person) RETURN p.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (p:Person) RETURN p.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) COLUMNS (p.name))",
+      "status": "ok"
+    }
+  },
+  "single_node_multi_label": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (p:Person:Employee) RETURN p.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (p:Person&Employee) RETURN p.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person IS Employee) COLUMNS (p.name))",
+      "status": "ok"
+    }
+  },
+  "string_concatenation_and_functions": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": " lives in "
+      },
+      "statement": "MATCH (p:Person) RETURN (p.name + $p0) + p.city AS greeting, toUpper(p.name) AS upper_name, toLower(p.city) AS lower_city",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": " lives in "
+      },
+      "statement": "MATCH (p:Person) RETURN (p.name || $p0) || p.city AS greeting, upper(p.name) AS upper_name, lower(p.city) AS lower_city",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": " lives in "
+      },
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) COLUMNS ((p.name + $p0) + p.city AS greeting, UPPER(p.name) AS upper_name, LOWER(p.city) AS lower_city))",
+      "status": "ok"
+    }
+  },
+  "string_predicates_starts_contains_ends": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": "Al",
+        "p1": "York",
+        "p2": "ce"
+      },
+      "statement": "MATCH (p:Person) WHERE ((p.name STARTS WITH $p0) AND (p.city CONTAINS $p1)) AND (p.name ENDS WITH $p2) RETURN p.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": "Al",
+        "p1": "York",
+        "p2": "ce"
+      },
+      "statement": "MATCH (p:Person) WHERE ((p.name STARTS WITH $p0) AND (p.city CONTAINS $p1)) AND (p.name ENDS WITH $p2) RETURN p.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": "Al",
+        "p1": "York",
+        "p2": "ce"
+      },
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) WHERE ((p.name LIKE $p0 || '%') AND (p.city LIKE '%' || $p1 || '%')) AND (p.name LIKE '%' || $p2) COLUMNS (p.name))",
+      "status": "ok"
+    }
+  },
+  "undirected_traversal": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (a:Person)-[r:KNOWS]-(b:Person) RETURN a.name, b.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (a:Person)-[r:KNOWS]-(b:Person) RETURN a.name, b.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (a IS Person) -[r IS KNOWS]- (b IS Person) COLUMNS (a.name, b.name))",
+      "status": "ok"
+    }
+  },
+  "unwind_batch": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "UNWIND $batch AS item MATCH (p:Person) RETURN p.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "UNWIND $batch AS item MATCH (p:Person) RETURN p.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "error_message": "Dialect 'sql_pgq' does not support feature: UNWIND clauses - GRAPH_TABLE is a read-only query operator",
+      "error_type": "ValueError",
+      "status": "unsupported"
+    }
+  },
+  "where_not_predicate": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 18
+      },
+      "statement": "MATCH (p:Person) WHERE NOT (p.age < $p0) RETURN p.name",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 18
+      },
+      "statement": "MATCH (p:Person) WHERE NOT (p.age < $p0) RETURN p.name",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 18
+      },
+      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) WHERE NOT (p.age < $p0) COLUMNS (p.name))",
+      "status": "ok"
+    }
+  },
+  "with_distinct_pipeline": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (p:Person) WITH DISTINCT p.city RETURN p.city",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {},
+      "statement": "MATCH (p:Person) WITH DISTINCT p.city RETURN p.city",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "error_message": "Dialect 'sql_pgq' does not support feature: WITH clauses - SQL:PGQ GRAPH_TABLE operator does not support Cypher-style intermediate WITH projection pipelines",
+      "error_type": "ValueError",
+      "status": "unsupported"
+    }
+  },
+  "with_pipeline_and_filtering": {
+    "cypher": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 21,
+        "p1": 50
+      },
+      "statement": "MATCH (p:Person) WHERE p.age > $p0 WITH p.name, p.age WHERE p.age < $p1 RETURN p.name LIMIT 10",
+      "status": "ok"
+    },
+    "iso_gql": {
+      "execution_mode": "normal",
+      "parameters": {
+        "p0": 21,
+        "p1": 50
+      },
+      "statement": "MATCH (p:Person) WHERE p.age > $p0 WITH p.name, p.age WHERE p.age < $p1 RETURN p.name LIMIT 10",
+      "status": "ok"
+    },
+    "sql_pgq": {
+      "error_message": "Dialect 'sql_pgq' does not support feature: WITH clauses - SQL:PGQ GRAPH_TABLE operator does not support Cypher-style intermediate WITH projection pipelines",
+      "error_type": "ValueError",
+      "status": "unsupported"
+    }
+  }
+}
