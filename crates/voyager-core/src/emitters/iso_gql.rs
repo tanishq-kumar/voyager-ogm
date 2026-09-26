@@ -2,11 +2,56 @@
 
 use crate::ast::{
     AggregationFunc, AstNode, BinaryOp, Direction, ExecutionMode, LiteralValue, NodeHandle,
-    ProjectionItem, QueryAstArena, UnaryOp,
+    PathMode, ProjectionItem, QueryAstArena, UnaryOp,
 };
 use crate::error::{Error, Result};
 use crate::visitor::{AstVisitor, CompiledQuery};
 use std::collections::HashMap;
+
+/// Detects whether an expression is likely to produce a string value.
+///
+/// # Heuristic Ceiling
+/// GQL strictly requires `||` for string concatenation and forbids `+`. When property expressions
+/// whose schema types are unknown at compile time are concatenated with `+` (e.g. `p.firstName + p.lastName`),
+/// without schema metadata they default to numeric addition `+`. Literals, known string functions,
+/// and explicit `BinaryOp::Concat` (`||`) are recursively detected.
+fn is_likely_string_expr(arena: &QueryAstArena, handle: NodeHandle) -> bool {
+    let Ok(node) = arena.get(handle) else {
+        return false;
+    };
+    match node {
+        AstNode::Literal(LiteralValue::String(_)) => true,
+        AstNode::BinaryExpression { left, op, right } => match op {
+            BinaryOp::Concat => true,
+            BinaryOp::Add => {
+                is_likely_string_expr(arena, *left) || is_likely_string_expr(arena, *right)
+            }
+            _ => false,
+        },
+        AstNode::FunctionCall { name, .. } => {
+            let lower = name.to_ascii_lowercase();
+            matches!(
+                lower.as_str(),
+                "tolower"
+                    | "lower"
+                    | "toupper"
+                    | "upper"
+                    | "trim"
+                    | "btrim"
+                    | "ltrim"
+                    | "rtrim"
+                    | "split"
+                    | "substring"
+                    | "replace"
+                    | "reverse"
+                    | "left"
+                    | "right"
+                    | "concat"
+            )
+        }
+        _ => false,
+    }
+}
 
 /// Emits standardized ISO/IEC 39075:2024 GQL statements.
 #[derive(Debug, Default)]
@@ -85,14 +130,7 @@ impl IsoGqlEmitter {
             if let Some(var) = variable {
                 self.buffer.push_str(var);
             }
-            for (i, label) in labels.iter().enumerate() {
-                if i == 0 {
-                    self.buffer.push(':');
-                } else {
-                    self.buffer.push('&');
-                }
-                self.buffer.push_str(label);
-            }
+            crate::emitters::emit_label_expression(&mut self.buffer, labels, false);
             if !predicates.is_empty() {
                 self.buffer.push_str(" {");
                 for (i, &pred_handle) in predicates.iter().enumerate() {
@@ -247,7 +285,24 @@ impl IsoGqlEmitter {
         let node = arena.get(handle)?;
         match node {
             AstNode::NodePattern { .. } => self.emit_node_pattern(arena, handle),
-            AstNode::PathChain { start_node, edges } => {
+            AstNode::PathChain {
+                path_variable,
+                path_mode,
+                start_node,
+                edges,
+            } => {
+                if let Some(var) = path_variable {
+                    self.buffer.push_str(var);
+                    self.buffer.push_str(" = ");
+                }
+                if *path_mode != PathMode::None {
+                    self.buffer.push_str(path_mode.as_str());
+                    self.buffer.push(' ');
+                }
+                if edges.is_empty() {
+                    self.emit_node_pattern(arena, *start_node)?;
+                    return Ok(());
+                }
                 if edges.len() == 1 {
                     let edge_node = arena.get(edges[0])?;
                     if let AstNode::EdgePattern {
@@ -351,13 +406,8 @@ impl IsoGqlEmitter {
                         self.buffer.push_str(" || ");
                     }
                     BinaryOp::Add => {
-                        let is_string_concat = matches!(
-                            arena.get(*left),
-                            Ok(AstNode::Literal(LiteralValue::String(_)))
-                        ) || matches!(
-                            arena.get(*right),
-                            Ok(AstNode::Literal(LiteralValue::String(_)))
-                        );
+                        let is_string_concat = is_likely_string_expr(arena, *left)
+                            || is_likely_string_expr(arena, *right);
                         if is_string_concat {
                             self.buffer.push_str(" || ");
                         } else {
@@ -404,6 +454,8 @@ impl IsoGqlEmitter {
                     "toupper" | "upper" => "upper",
                     "length" | "char_length" | "character_length" => "char_length",
                     "size" | "cardinality" => "cardinality",
+                    "path_length" => "path_length",
+                    "elements" => "elements",
                     "coalesce" => "coalesce",
                     "trim" => "trim",
                     "btrim" => "btrim",
@@ -926,6 +978,7 @@ impl AstVisitor for IsoGqlEmitter {
             load_csv: _,
             unwinds,
             matches,
+            linear_clauses,
             with_clauses,
             mutations,
             return_clause,
@@ -983,6 +1036,30 @@ impl AstVisitor for IsoGqlEmitter {
                     if let Some(wh) = where_clause {
                         self.emit_where(arena, *wh)?;
                     }
+                }
+            }
+
+            for &lin_handle in linear_clauses {
+                if has_emitted {
+                    self.buffer.push(' ');
+                }
+                has_emitted = true;
+                let lin_node = arena.get(lin_handle)?;
+                match lin_node {
+                    AstNode::LetClause {
+                        variable,
+                        expression,
+                    } => {
+                        self.buffer.push_str("LET ");
+                        self.buffer.push_str(variable);
+                        self.buffer.push_str(" = ");
+                        self.emit_expression(arena, *expression, false)?;
+                    }
+                    AstNode::FilterClause { predicate } => {
+                        self.buffer.push_str("FILTER ");
+                        self.emit_expression(arena, *predicate, false)?;
+                    }
+                    _ => {}
                 }
             }
 

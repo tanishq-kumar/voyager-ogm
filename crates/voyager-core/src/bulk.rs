@@ -80,6 +80,7 @@ pub fn compile_bulk_create(
         load_csv: None,
         unwinds: vec![unwind_handle],
         matches: Vec::new(),
+        linear_clauses: Vec::new(),
         with_clauses: Vec::new(),
         mutations,
         return_clause: None,
@@ -181,6 +182,7 @@ pub fn compile_bulk_merge(
         load_csv: None,
         unwinds: vec![unwind_handle],
         matches: Vec::new(),
+        linear_clauses: Vec::new(),
         with_clauses: Vec::new(),
         mutations: vec![merge_handle],
         return_clause: None,
@@ -293,6 +295,8 @@ pub fn compile_bulk_create_rel(
         predicates: Vec::new(),
     });
     let path_chain = arena.alloc(AstNode::PathChain {
+        path_variable: None,
+        path_mode: crate::ast::PathMode::None,
         start_node: src_node_ref,
         edges: vec![edge_pattern],
     });
@@ -331,6 +335,7 @@ pub fn compile_bulk_create_rel(
         load_csv: None,
         unwinds: vec![unwind_handle],
         matches: vec![match_handle],
+        linear_clauses: Vec::new(),
         with_clauses: Vec::new(),
         mutations,
         return_clause: None,

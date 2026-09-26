@@ -649,6 +649,98 @@ class Query:
         self._native.hops(min_hops, max_hops)
         return self
 
+    @hybridmethod
+    def trail(self: Any, variable: str | None = None) -> Query:
+        """Sets traversal search mode to TRAIL (edges cannot repeat, ISO GQL standard).
+
+        Args:
+            variable: Optional path variable name (e.g. 'p').
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        if isinstance(self, type):
+            q = self()
+        else:
+            q = self
+        q._native.trail(variable)
+        return q
+
+    @hybridmethod
+    def simple(self: Any, variable: str | None = None) -> Query:
+        """Sets traversal search mode to SIMPLE (nodes cannot repeat, except closed cycle, ISO GQL standard).
+
+        Args:
+            variable: Optional path variable name (e.g. 'p').
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        if isinstance(self, type):
+            q = self()
+        else:
+            q = self
+        q._native.simple(variable)
+        return q
+
+    @hybridmethod
+    def acyclic(self: Any, variable: str | None = None) -> Query:
+        """Sets traversal search mode to ACYCLIC (strictly no repeated vertices, ISO GQL standard).
+
+        Args:
+            variable: Optional path variable name (e.g. 'p').
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        if isinstance(self, type):
+            q = self()
+        else:
+            q = self
+        q._native.acyclic(variable)
+        return q
+
+    @hybridmethod
+    def walk(self: Any, variable: str | None = None) -> Query:
+        """Sets traversal search mode to WALK (all repeated edges and nodes permitted, ISO GQL standard).
+
+        Args:
+            variable: Optional path variable name (e.g. 'p').
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        if isinstance(self, type):
+            q = self()
+        else:
+            q = self
+        q._native.walk(variable)
+        return q
+
+    def path_variable(self, variable: str) -> Query:
+        """Sets an explicit path variable alias (e.g. `p` in `p = TRAIL (...)`).
+
+        Args:
+            variable: Path variable alias string.
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        self._native.path_variable(variable)
+        return self
+
+    def path_mode(self, mode: str) -> Query:
+        """Sets the traversal search mode ('trail', 'simple', 'acyclic', 'walk', 'none').
+
+        Args:
+            mode: Search mode string.
+
+        Returns:
+            The Query instance for fluent chaining.
+        """
+        self._native.path_mode(mode)
+        return self
+
     def pattern(self) -> Query:
         """Separates multiple graph patterns within the same MATCH or CREATE clause: `MATCH p1, p2, p3`.
 
@@ -913,6 +1005,91 @@ class Query:
             self._project_field(field, alias)
 
         return self
+
+    def let_(self, *args: Any, **kwargs: Any) -> Query:
+        """Adds a linear `LET var = expr` statement (ISO GQL standard; emitted as `WITH *, expr AS var` in Cypher).
+
+        Args:
+            *args: Either `(var_name, expr)` or a dict mapping variable names to expressions.
+            **kwargs: Keyword arguments mapping variable names to expressions.
+
+        Returns:
+            The Query instance for fluent chaining.
+
+        Raises:
+            ValueError: If called with no assignments or invalid positional arguments.
+
+        Example:
+            >>> query.let_(fullName=p.firstName + " " + p.lastName)
+            >>> query.let_("total", p.salary * 1.1)
+        """
+        if not args and not kwargs:
+            raise ValueError(
+                "let_() requires at least one variable assignment (e.g. let_(var=expr) or let_('var', expr))"
+            )
+        if len(args) == 2:
+            var_name = str(args[0])
+            expr = to_expression(args[1])
+            nat = getattr(expr, "_native_expr", None)
+            expr_spec = expr.to_spec() if nat is None else nat
+            self._native.let_(var_name, expr_spec)
+        elif len(args) == 1:
+            if not isinstance(args[0], dict):
+                raise ValueError(
+                    f"let_() single positional argument must be a dict of assignments, got {type(args[0]).__name__}"
+                )
+            for k, v in args[0].items():
+                expr = to_expression(v)
+                nat = getattr(expr, "_native_expr", None)
+                expr_spec = expr.to_spec() if nat is None else nat
+                self._native.let_(k, expr_spec)
+        elif len(args) > 2:
+            raise ValueError(
+                f"let_() accepts at most 2 positional arguments (var_name, expr), got {len(args)}"
+            )
+
+        for k, v in kwargs.items():
+            expr = to_expression(v)
+            nat = getattr(expr, "_native_expr", None)
+            expr_spec = expr.to_spec() if nat is None else nat
+            self._native.let_(k, expr_spec)
+        return self
+
+    def linear_filter(self, *predicates: Any) -> Query:
+        """Adds a linear `FILTER predicate` statement (ISO GQL standard; emitted as `WHERE predicate` in Cypher).
+
+        Note:
+            To attach WHERE filter predicates to a preceding MATCH pattern, use `where()`.
+            `linear_filter()` adds an independent linear record filtering clause.
+
+        Args:
+            *predicates: Predicate expressions.
+
+        Returns:
+            The Query instance for fluent chaining.
+
+        Raises:
+            ValueError: If called with no predicates.
+
+        Example:
+            >>> query.linear_filter(p.age > 21)
+        """
+        if not predicates:
+            raise ValueError("linear_filter() requires at least one predicate expression")
+        for pred in predicates:
+            nat = getattr(pred, "_native_expr", None)
+            if nat is not None:
+                self._native.filter_(nat)
+            elif isinstance(pred, Expression) or hasattr(pred, "to_spec"):
+                self._native.filter_(pred.to_spec())
+            elif isinstance(pred, PredicateExpr):
+                self._native.filter_(pred.to_spec())
+            else:
+                self._native.filter_(to_expression(pred).to_spec())
+        return self
+
+    # Ergonomic alias for ISO GQL FILTER statement
+    filter_ = linear_filter
 
     def return_(
         self,

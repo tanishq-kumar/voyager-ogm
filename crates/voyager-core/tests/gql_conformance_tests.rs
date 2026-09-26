@@ -571,3 +571,206 @@ fn test_gql_edge_pattern_predicates_conformance() {
         Some(&LiteralValue::Int64(2020))
     );
 }
+
+#[test]
+fn test_gql_path_search_modes_and_variables() {
+    use voyager_core::emitters::cypher::CypherEmitter;
+
+    let mut b = QueryBuilder::new();
+    let p_ident = b.ident("p");
+    b.r#match()
+        .path_variable("p")
+        .trail()
+        .node(Some("a"), vec!["Person"])
+        .to(vec!["KNOWS"], None::<String>)
+        .node(Some("b"), vec!["Person"])
+        .r#return()
+        .select_expr(p_ident, None::<String>);
+
+    let (arena, root) = b.build();
+
+    let mut gql = IsoGqlEmitter::new();
+    let res_gql = gql.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res_gql.statement,
+        "MATCH p = TRAIL (a:Person)-[:KNOWS]->(b:Person) RETURN p"
+    );
+
+    let mut cypher = CypherEmitter::new();
+    let res_cypher = cypher.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res_cypher.statement,
+        "MATCH p = (a:Person)-[:KNOWS]->(b:Person) RETURN p"
+    );
+
+    // SIMPLE without variable
+    let mut b2 = QueryBuilder::new();
+    let a_ident = b2.ident("a");
+    b2.r#match()
+        .simple()
+        .node(Some("a"), vec!["Person"])
+        .to(vec!["KNOWS"], None::<String>)
+        .node(Some("b"), vec!["Person"])
+        .r#return()
+        .select_expr(a_ident, None::<String>);
+
+    let (arena2, root2) = b2.build();
+    let mut gql2 = IsoGqlEmitter::new();
+    assert_eq!(
+        gql2.visit_query(&arena2, root2).unwrap().statement,
+        "MATCH SIMPLE (a:Person)-[:KNOWS]->(b:Person) RETURN a"
+    );
+    let mut cypher2 = CypherEmitter::new();
+    assert_eq!(
+        cypher2.visit_query(&arena2, root2).unwrap().statement,
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a"
+    );
+
+    // SQL:PGQ rejects path variables and search modes
+    use voyager_core::emitters::sql_pgq::SqlPgqEmitter;
+    let mut pgq = SqlPgqEmitter::new("graph");
+    let err = pgq.visit_query(&arena, root).unwrap_err();
+    match err {
+        voyager_core::Error::UnsupportedFeature { dialect, feature } => {
+            assert_eq!(dialect, "sql_pgq");
+            assert!(feature.contains("Path variable assignment"));
+        }
+        other => panic!("Expected UnsupportedFeature, got {other:?}"),
+    }
+
+    let mut pgq2 = SqlPgqEmitter::new("graph");
+    let err2 = pgq2.visit_query(&arena2, root2).unwrap_err();
+    match err2 {
+        voyager_core::Error::UnsupportedFeature { dialect, feature } => {
+            assert_eq!(dialect, "sql_pgq");
+            assert!(feature.contains("Path search mode"));
+        }
+        other => panic!("Expected UnsupportedFeature, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_gql_label_expressions_ast() {
+    use voyager_core::emitters::cypher::CypherEmitter;
+
+    let mut b = QueryBuilder::new();
+    let n_ident = b.ident("n");
+    b.r#match()
+        .node(Some("n"), vec!["Person | Company", "!Inactive"])
+        .r#return()
+        .select_expr(n_ident, None::<String>);
+
+    let (arena, root) = b.build();
+
+    let mut gql = IsoGqlEmitter::new();
+    assert_eq!(
+        gql.visit_query(&arena, root).unwrap().statement,
+        "MATCH (n:(Person|Company)&!Inactive) RETURN n"
+    );
+
+    let mut cypher = CypherEmitter::new();
+    assert_eq!(
+        cypher.visit_query(&arena, root).unwrap().statement,
+        "MATCH (n:(Person|Company)&!Inactive) RETURN n"
+    );
+}
+
+#[test]
+fn test_gql_linear_clauses_let_filter() {
+    use voyager_core::emitters::cypher::CypherEmitter;
+
+    let mut b = QueryBuilder::new();
+    let first = b.prop("p", "firstName");
+    let space = b.literal(" ");
+    let last = b.prop("p", "lastName");
+    let c1 = b.binary_expr(first, BinaryOp::Add, space);
+    let full_name_expr = b.binary_expr(c1, BinaryOp::Add, last);
+
+    let age_prop = b.prop("p", "age");
+    let min_age = b.literal(60i64);
+    let filter_pred = b.binary_expr(age_prop, BinaryOp::Gte, min_age);
+
+    let full_name_ident = b.ident("fullName");
+
+    b.r#match()
+        .node(Some("p"), vec!["Person"])
+        .let_("fullName", full_name_expr)
+        .filter_(filter_pred)
+        .r#return()
+        .select_expr(full_name_ident, None::<String>)
+        .offset(15)
+        .limit(10);
+
+    let (arena, root) = b.build();
+
+    let mut gql = IsoGqlEmitter::new();
+    let res_gql = gql.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res_gql.statement,
+        "MATCH (p:Person) LET fullName = (p.firstName || $p0) || p.lastName FILTER p.age >= $p1 RETURN fullName OFFSET 15 LIMIT 10"
+    );
+
+    let mut cypher = CypherEmitter::new();
+    let res_cypher = cypher.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res_cypher.statement,
+        "MATCH (p:Person) WITH *, (p.firstName + $p0) + p.lastName AS fullName WHERE p.age >= $p1 RETURN fullName SKIP 15 LIMIT 10"
+    );
+
+    // SQL:PGQ rejects linear statements (LET, FILTER)
+    use voyager_core::emitters::sql_pgq::SqlPgqEmitter;
+    let mut pgq = SqlPgqEmitter::new("graph");
+    let err = pgq.visit_query(&arena, root).unwrap_err();
+    match err {
+        voyager_core::Error::UnsupportedFeature { dialect, feature } => {
+            assert_eq!(dialect, "sql_pgq");
+            assert!(feature.contains("Linear statements (LET, FILTER)"));
+        }
+        other => panic!("Expected UnsupportedFeature, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_mutation_paths_ignore_path_modes_and_variables() {
+    use voyager_core::emitters::cypher::CypherEmitter;
+
+    // CREATE with trail() applied
+    let mut b1 = QueryBuilder::new();
+    let p_ident = b1.ident("p");
+    b1.create()
+        .trail()
+        .path_variable("pv")
+        .node(Some("p"), vec!["Person"])
+        .r#return()
+        .select_expr(p_ident, None::<String>);
+
+    let (arena1, root1) = b1.build();
+
+    let mut gql1 = IsoGqlEmitter::new();
+    let res_gql1 = gql1.visit_query(&arena1, root1).unwrap();
+    assert_eq!(res_gql1.statement, "INSERT (p:Person) RETURN p");
+
+    let mut cypher1 = CypherEmitter::new();
+    let res_cypher1 = cypher1.visit_query(&arena1, root1).unwrap();
+    assert_eq!(res_cypher1.statement, "CREATE (p:Person) RETURN p");
+
+    // MERGE with trail() applied
+    let mut b2 = QueryBuilder::new();
+    let p_ident2 = b2.ident("p");
+    b2.merge()
+        .trail()
+        .path_variable("pv")
+        .node(Some("p"), vec!["Person"])
+        .r#return()
+        .select_expr(p_ident2, None::<String>);
+
+    let (arena2, root2) = b2.build();
+
+    let mut gql2 = IsoGqlEmitter::new();
+    let res_gql2 = gql2.visit_query(&arena2, root2).unwrap();
+    assert_eq!(res_gql2.statement, "UPSERT (p:Person) RETURN p");
+
+    let mut cypher2 = CypherEmitter::new();
+    let res_cypher2 = cypher2.visit_query(&arena2, root2).unwrap();
+    assert_eq!(res_cypher2.statement, "MERGE (p:Person) RETURN p");
+}

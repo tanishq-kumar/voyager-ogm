@@ -460,6 +460,165 @@ def test_live_neo4j_sync_simultaneous_explain_and_profile():
         assert len(names) == 2
         assert names == ["Bob", "Alice"]
 
-        session_setup.execute("MATCH (n:LiveSimultaneousPerson) DETACH DELETE n")
+        p_del = LiveSimultaneousPerson(alias="n")
+        session_setup.execute(Query.match(p_del).detach_delete(p_del))
+    finally:
+        driver.close()
+
+
+@pytest.mark.skipif(not NEO4J_ONLINE, reason="Live Neo4j instance not online on localhost:7687")
+def test_live_neo4j_gql_capabilities():
+    """Verifies that GQL label expressions, path variables, LET/FILTER linear clauses, and offset execute against live Neo4j."""
+
+    @node(label="LiveGqlPerson")
+    class LiveGqlPerson(Node):
+        name = Field()
+        first_name = Field()
+        last_name = Field()
+        age = Field()
+        status = Field()
+
+    @node(label="LiveGqlCompany")
+    class LiveGqlCompany(Node):
+        name = Field()
+
+    driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
+    try:
+        session = Session(bridge=driver, dialect="cypher")
+
+        # 1. Clean up before seeding
+        n_p = LiveGqlPerson(alias="n")
+        session.execute(Query.match(n_p).detach_delete(n_p))
+        n_c = LiveGqlCompany(alias="c")
+        session.execute(Query.match(n_c).detach_delete(n_c))
+
+        # 2. Seed data via pure Query builder mutations
+        q_seed1 = (
+            Query.merge()
+            .node("p1", labels=["LiveGqlPerson"])
+            .on_create_set(
+                **{
+                    "p1.name": "Alice Smith",
+                    "p1.first_name": "Alice",
+                    "p1.last_name": "Smith",
+                    "p1.age": 30,
+                    "p1.status": "Active",
+                }
+            )
+        )
+        session.execute(q_seed1)
+
+        q_seed2 = (
+            Query.merge()
+            .node("p2", labels=["LiveGqlPerson", "Inactive"])
+            .on_create_set(
+                **{
+                    "p2.name": "Bob Jones",
+                    "p2.first_name": "Bob",
+                    "p2.last_name": "Jones",
+                    "p2.age": 65,
+                    "p2.status": "Retired",
+                }
+            )
+        )
+        session.execute(q_seed2)
+
+        q_seed3 = (
+            Query.merge()
+            .node("c1", labels=["LiveGqlCompany"])
+            .on_create_set(**{"c1.name": "Acme Corp"})
+        )
+        session.execute(q_seed3)
+
+        # Connect Alice to Acme
+        q_rel = (
+            Query.match(LiveGqlPerson(alias="p"))
+            .where(LiveGqlPerson("p").name == "Alice Smith")
+            .add_match(LiveGqlCompany(alias="c"))
+            .where(LiveGqlCompany("c").name == "Acme Corp")
+            .create()
+            .node("p")
+            .to("LIVE_EMPLOYED_AT")
+            .node("c")
+        )
+        session.execute(q_rel)
+
+        # 3. Label expressions: (LiveGqlPerson | LiveGqlCompany) & !Inactive
+        q_labels = (
+            Query.match()
+            .node("n", labels=["LiveGqlPerson | LiveGqlCompany", "!Inactive"])
+            .return_("n.name")
+            .order_by("n.name")
+        )
+        res_labels = session.execute(q_labels)
+        names = [row["n.name"] for row in res_labels.all()]
+        assert names == ["Acme Corp", "Alice Smith"]
+
+        # 4. Traversal path variable with trail() and warning surface
+        # Note: Cypher relationship traversal is trail by default. Dialect "cypher" omits the
+        # TRAIL keyword to avoid syntax errors in Neo4j, while retaining path variable binding
+        # 'path_var = (...)'. It emits a UserWarning to alert the user about mode degradation.
+        with pytest.warns(UserWarning, match="does not support explicit path search modes"):
+            q_trail = (
+                Query.match()
+                .trail("path_var")
+                .node("a", labels=["LiveGqlPerson"])
+                .to("LIVE_EMPLOYED_AT")
+                .node("b", labels=["LiveGqlCompany"])
+                .return_("a.name", "b.name")
+            )
+            res_trail = session.execute(q_trail)
+        records = res_trail.all()
+        assert len(records) == 1
+        assert records[0]["a.name"] == "Alice Smith"
+        assert records[0]["b.name"] == "Acme Corp"
+
+        # Traversal with path_variable() directly without warning
+        q_path_var = (
+            Query.match()
+            .path_variable("p_direct")
+            .node("a", labels=["LiveGqlPerson"])
+            .to("LIVE_EMPLOYED_AT")
+            .node("b", labels=["LiveGqlCompany"])
+            .return_("a.name", "b.name")
+        )
+        res_path_var = session.execute(q_path_var)
+        assert len(res_path_var.all()) == 1
+
+        # 5. Linear LET and FILTER clauses, plus OFFSET
+        p = LiveGqlPerson(alias="p")
+        q_linear = (
+            Query.match(p)
+            .let_(fullName=p.first_name + " " + p.last_name)
+            .filter_(p.age >= 25)
+            .return_("fullName")
+            .order_by("fullName")
+            .offset(0)
+            .limit(10)
+        )
+        res_linear = session.execute(q_linear)
+        rows_linear = res_linear.all()
+        assert len(rows_linear) == 2
+        assert [r["fullName"] for r in rows_linear] == ["Alice Smith", "Bob Jones"]
+
+        # 6. Function helpers: .upper(), .lower(), .char_length()
+        q_helpers = (
+            Query.match(p)
+            .where(p.name == "Alice Smith")
+            .return_(
+                u_first=p.first_name.upper(),
+                l_last=p.last_name.lower(),
+                c_len=p.first_name.char_length(),
+            )
+        )
+        res_helpers = session.execute(q_helpers)
+        row = res_helpers.all()[0]
+        assert row["u_first"] == "ALICE"
+        assert row["l_last"] == "smith"
+        assert row["c_len"] == 5
+
+        # 7. Clean up
+        session.execute(Query.match(n_p).detach_delete(n_p))
+        session.execute(Query.match(n_c).detach_delete(n_c))
     finally:
         driver.close()

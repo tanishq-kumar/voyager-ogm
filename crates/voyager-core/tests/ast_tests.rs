@@ -287,7 +287,10 @@ fn test_memgraph_gqlalchemy_chaining_style() {
             assert!(where_clause.is_some());
 
             let path = arena.get(paths[0]).unwrap();
-            if let AstNode::PathChain { start_node, edges } = path {
+            if let AstNode::PathChain {
+                start_node, edges, ..
+            } = path
+            {
                 let start = arena.get(*start_node).unwrap();
                 if let AstNode::NodePattern {
                     variable, labels, ..
@@ -445,7 +448,10 @@ fn test_query_builder_import_match_patterns_deduplication() {
             assert_eq!(paths.len(), 2);
 
             // Path 1 should have labels
-            if let AstNode::PathChain { start_node, edges } = arena.get(paths[0]).unwrap() {
+            if let AstNode::PathChain {
+                start_node, edges, ..
+            } = arena.get(paths[0]).unwrap()
+            {
                 if let AstNode::NodePattern {
                     variable, labels, ..
                 } = arena.get(*start_node).unwrap()
@@ -465,7 +471,10 @@ fn test_query_builder_import_match_patterns_deduplication() {
             }
 
             // Path 2 should have NO labels because p and c were in seen_vars
-            if let AstNode::PathChain { start_node, edges } = arena.get(paths[1]).unwrap() {
+            if let AstNode::PathChain {
+                start_node, edges, ..
+            } = arena.get(paths[1]).unwrap()
+            {
                 if let AstNode::NodePattern {
                     variable, labels, ..
                 } = arena.get(*start_node).unwrap()

@@ -85,10 +85,7 @@ impl CypherEmitter {
             if let Some(var) = variable {
                 self.buffer.push_str(var);
             }
-            for label in labels {
-                self.buffer.push(':');
-                self.buffer.push_str(label);
-            }
+            crate::emitters::emit_label_expression(&mut self.buffer, labels, true);
             if !predicates.is_empty() {
                 self.buffer.push_str(" {");
                 for (i, &pred_handle) in predicates.iter().enumerate() {
@@ -178,7 +175,23 @@ impl CypherEmitter {
         let node = arena.get(handle)?;
         match node {
             AstNode::NodePattern { .. } => self.emit_node_pattern(arena, handle),
-            AstNode::PathChain { start_node, edges } => {
+            AstNode::PathChain {
+                path_variable,
+                path_mode,
+                start_node,
+                edges,
+            } => {
+                if *path_mode != crate::ast::PathMode::None {
+                    tracing::warn!(
+                        mode = path_mode.as_str(),
+                        "Cypher does not support explicit path search modes ({}); omitting mode keyword to maintain syntax compatibility",
+                        path_mode.as_str()
+                    );
+                }
+                if let Some(var) = path_variable {
+                    self.buffer.push_str(var);
+                    self.buffer.push_str(" = ");
+                }
                 self.emit_node_pattern(arena, *start_node)?;
                 for &edge_handle in edges {
                     self.emit_edge_pattern(arena, edge_handle)?;
@@ -301,6 +314,9 @@ impl CypherEmitter {
                 let cypher_func = match name.to_ascii_lowercase().as_str() {
                     "cardinality" => "size",
                     "char_length" | "character_length" => "size",
+                    "lower" => "toLower",
+                    "upper" => "toUpper",
+                    "path_length" => "length",
                     _ => name.as_str(),
                 };
                 self.buffer.push_str(cypher_func);
@@ -774,6 +790,7 @@ impl AstVisitor for CypherEmitter {
                 load_csv,
                 unwinds,
                 matches,
+                linear_clauses,
                 with_clauses,
                 mutations,
                 return_clause,
@@ -834,6 +851,30 @@ impl AstVisitor for CypherEmitter {
                         if let Some(wh) = where_clause {
                             self.emit_where(arena, *wh)?;
                         }
+                    }
+                }
+
+                for &lin_handle in linear_clauses {
+                    if has_emitted {
+                        self.buffer.push(' ');
+                    }
+                    has_emitted = true;
+                    let lin_node = arena.get(lin_handle)?;
+                    match lin_node {
+                        AstNode::LetClause {
+                            variable,
+                            expression,
+                        } => {
+                            self.buffer.push_str("WITH *, ");
+                            self.emit_expression(arena, *expression, false)?;
+                            self.buffer.push_str(" AS ");
+                            self.buffer.push_str(variable);
+                        }
+                        AstNode::FilterClause { predicate } => {
+                            self.buffer.push_str("WHERE ");
+                            self.emit_expression(arena, *predicate, false)?;
+                        }
+                        _ => {}
                     }
                 }
 

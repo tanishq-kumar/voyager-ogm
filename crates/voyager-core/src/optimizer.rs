@@ -215,6 +215,7 @@ impl AstOptimizer {
             unwinds,
             matches,
             with_clauses,
+            linear_clauses,
             mutations,
             return_clause,
             ..
@@ -246,6 +247,25 @@ impl AstOptimizer {
 
             for with_h in with_clauses {
                 self.fold_with_clause(arena, with_h)?;
+            }
+
+            for &lin_h in &linear_clauses {
+                let lin_node = arena.get(lin_h)?.clone();
+                match lin_node {
+                    AstNode::LetClause { expression, .. } => {
+                        let folded_expr = self.fold_expression(arena, expression)?;
+                        if let AstNode::LetClause { expression: e, .. } = arena.get_mut(lin_h)? {
+                            *e = folded_expr;
+                        }
+                    }
+                    AstNode::FilterClause { predicate } => {
+                        let folded_pred = self.fold_expression(arena, predicate)?;
+                        if let AstNode::FilterClause { predicate: p } = arena.get_mut(lin_h)? {
+                            *p = folded_pred;
+                        }
+                    }
+                    _ => {}
+                }
             }
 
             for mut_h in mutations {
@@ -372,7 +392,9 @@ impl AstOptimizer {
                     *p = folded_preds;
                 }
             }
-            AstNode::PathChain { start_node, edges } => {
+            AstNode::PathChain {
+                start_node, edges, ..
+            } => {
                 self.fold_path_predicates(arena, start_node)?;
                 for edge_h in edges {
                     let edge_node = arena.get(edge_h)?.clone();
@@ -1132,9 +1154,9 @@ impl AstOptimizer {
                     NodeHandle::NULL,
                     Vec::new(),
                 ),
-                AstNode::PathChain { start_node, edges } => {
-                    (false, true, *start_node, edges.clone())
-                }
+                AstNode::PathChain {
+                    start_node, edges, ..
+                } => (false, true, *start_node, edges.clone()),
                 _ => (false, false, NodeHandle::NULL, Vec::new()),
             }
         };
@@ -1261,6 +1283,25 @@ impl AstOptimizer {
                 }
             }
 
+            if let AstNode::QueryStatement { linear_clauses, .. } = &root_node {
+                for &lin_h in linear_clauses {
+                    let lin_node = arena.get(lin_h)?;
+                    match lin_node {
+                        AstNode::LetClause {
+                            variable,
+                            expression,
+                        } => {
+                            used_vars.insert(variable.clone());
+                            self.collect_expr_vars(arena, *expression, used_vars)?;
+                        }
+                        AstNode::FilterClause { predicate } => {
+                            self.collect_expr_vars(arena, *predicate, used_vars)?;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
             for &with_h in with_clauses {
                 let with_node = arena.get(with_h)?;
                 if let AstNode::WithClause {
@@ -1302,17 +1343,49 @@ impl AstOptimizer {
             for &match_h in matches {
                 let match_node = arena.get(match_h)?;
                 if let AstNode::MatchClause {
-                    where_clause: Some(wh),
+                    paths,
+                    where_clause,
                     ..
                 } = match_node
                 {
-                    self.collect_expr_vars(arena, *wh, used_vars)?;
+                    if let Some(wh) = where_clause {
+                        self.collect_expr_vars(arena, *wh, used_vars)?;
+                    }
+                    for &p_h in paths {
+                        self.collect_path_vars(arena, p_h, used_vars, false)?;
+                    }
                 }
             }
 
             for &mut_h in mutations {
                 let mut_node = arena.get(mut_h)?;
                 match mut_node {
+                    AstNode::CreateClause { paths } => {
+                        for &p_h in paths {
+                            self.collect_path_vars(arena, p_h, used_vars, true)?;
+                        }
+                    }
+                    AstNode::MergeClause {
+                        path,
+                        on_create_set,
+                        on_match_set,
+                    } => {
+                        self.collect_path_vars(arena, *path, used_vars, true)?;
+                        for &item in on_create_set {
+                            let item_node = arena.get(item)?;
+                            if let AstNode::SetItem { target, value, .. } = item_node {
+                                self.collect_expr_vars(arena, *target, used_vars)?;
+                                self.collect_expr_vars(arena, *value, used_vars)?;
+                            }
+                        }
+                        for &item in on_match_set {
+                            let item_node = arena.get(item)?;
+                            if let AstNode::SetItem { target, value, .. } = item_node {
+                                self.collect_expr_vars(arena, *target, used_vars)?;
+                                self.collect_expr_vars(arena, *value, used_vars)?;
+                            }
+                        }
+                    }
                     AstNode::SetClause { items } => {
                         for &item in items {
                             let item_node = arena.get(item)?;
@@ -1325,6 +1398,11 @@ impl AstOptimizer {
                     AstNode::DeleteClause { targets, .. } => {
                         for &target in targets {
                             self.collect_expr_vars(arena, target, used_vars)?;
+                        }
+                    }
+                    AstNode::RemoveClause { items } => {
+                        for &item in items {
+                            self.collect_expr_vars(arena, item, used_vars)?;
                         }
                     }
                     _ => {}
@@ -1416,6 +1494,64 @@ impl AstOptimizer {
         Ok(())
     }
 
+    fn collect_path_vars(
+        &self,
+        arena: &QueryAstArena,
+        handle: NodeHandle,
+        used_vars: &mut HashSet<String>,
+        include_binding_vars: bool,
+    ) -> Result<()> {
+        let node = arena.get(handle)?;
+        match node {
+            AstNode::NodePattern {
+                variable,
+                predicates,
+                ..
+            } => {
+                if include_binding_vars && let Some(var) = variable {
+                    used_vars.insert(var.clone());
+                }
+                for &pred_h in predicates {
+                    self.collect_expr_vars(arena, pred_h, used_vars)?;
+                }
+            }
+            AstNode::EdgePattern {
+                variable,
+                predicates,
+                target_node,
+                ..
+            } => {
+                if include_binding_vars && let Some(var) = variable {
+                    used_vars.insert(var.clone());
+                }
+                for &pred_h in predicates {
+                    self.collect_expr_vars(arena, pred_h, used_vars)?;
+                }
+                if !target_node.is_null() {
+                    self.collect_path_vars(arena, *target_node, used_vars, include_binding_vars)?;
+                }
+            }
+            AstNode::PathChain {
+                path_variable,
+                start_node,
+                edges,
+                ..
+            } => {
+                if include_binding_vars && let Some(pv) = path_variable {
+                    used_vars.insert(pv.clone());
+                }
+                if !start_node.is_null() {
+                    self.collect_path_vars(arena, *start_node, used_vars, include_binding_vars)?;
+                }
+                for &edge_h in edges {
+                    self.collect_path_vars(arena, edge_h, used_vars, include_binding_vars)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn prune_path_variables(
         &self,
         arena: &mut QueryAstArena,
@@ -1433,8 +1569,18 @@ impl AstOptimizer {
                     };
                     (prunable, false, NodeHandle::NULL, Vec::new())
                 }
-                AstNode::PathChain { start_node, edges } => {
-                    (false, true, *start_node, edges.clone())
+                AstNode::PathChain {
+                    path_variable,
+                    start_node,
+                    edges,
+                    ..
+                } => {
+                    let prunable = if let Some(var) = path_variable {
+                        var.starts_with('_') && !used_vars.contains(var)
+                    } else {
+                        false
+                    };
+                    (prunable, true, *start_node, edges.clone())
                 }
                 _ => (false, false, NodeHandle::NULL, Vec::new()),
             }
@@ -1442,8 +1588,16 @@ impl AstOptimizer {
 
         if is_prunable {
             let node_mut = arena.get_mut(path_handle)?;
-            if let AstNode::NodePattern { variable: v, .. } = node_mut {
-                *v = None;
+            match node_mut {
+                AstNode::NodePattern { variable: v, .. } => {
+                    *v = None;
+                }
+                AstNode::PathChain {
+                    path_variable: pv, ..
+                } => {
+                    *pv = None;
+                }
+                _ => {}
             }
         }
 

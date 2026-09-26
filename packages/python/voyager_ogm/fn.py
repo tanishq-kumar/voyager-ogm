@@ -145,6 +145,23 @@ def properties(expr: Any) -> FunctionExpr:
     return FunctionExpr("properties", [to_expression(expr)])
 
 
+# Path & Graph Functions
+def elements(path: Any) -> FunctionExpr:
+    """Emits `elements(path)` (GQL standard path elements sequence)."""
+    from voyager_ogm.expressions import IdentExpr
+
+    arg = IdentExpr(path) if isinstance(path, str) else to_expression(path)
+    return FunctionExpr("elements", [arg])
+
+
+def path_length(path: Any) -> FunctionExpr:
+    """Emits `path_length(path)` (GQL standard path length; emitted as `length(path)` in Cypher)."""
+    from voyager_ogm.expressions import IdentExpr
+
+    arg = IdentExpr(path) if isinstance(path, str) else to_expression(path)
+    return FunctionExpr("path_length", [arg])
+
+
 # Mathematical / Scalar Functions
 def abs_(expr: Any) -> FunctionExpr:
     """Emits `abs(expr)`."""

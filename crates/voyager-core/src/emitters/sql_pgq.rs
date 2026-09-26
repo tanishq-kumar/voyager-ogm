@@ -150,7 +150,29 @@ impl SqlPgqEmitter {
         let node = arena.get(handle)?;
         match node {
             AstNode::NodePattern { .. } => self.emit_node_pattern(arena, handle),
-            AstNode::PathChain { start_node, edges } => {
+            AstNode::PathChain {
+                path_variable,
+                path_mode,
+                start_node,
+                edges,
+            } => {
+                if let Some(var) = path_variable {
+                    return Err(Error::UnsupportedFeature {
+                        dialect: "sql_pgq".to_string(),
+                        feature: format!(
+                            "Path variable assignment ('{var} = ...') - SQL:2023 PGQ GRAPH_TABLE does not support path variables"
+                        ),
+                    });
+                }
+                if *path_mode != crate::ast::PathMode::None {
+                    return Err(Error::UnsupportedFeature {
+                        dialect: "sql_pgq".to_string(),
+                        feature: format!(
+                            "Path search mode '{}' - SQL:2023 PGQ GRAPH_TABLE does not support traversal search modes",
+                            path_mode.as_str()
+                        ),
+                    });
+                }
                 self.emit_node_pattern(arena, *start_node)?;
                 for &edge_handle in edges {
                     self.emit_edge_pattern(arena, edge_handle)?;
@@ -535,6 +557,7 @@ impl AstVisitor for SqlPgqEmitter {
             load_csv: _,
             unwinds,
             matches,
+            linear_clauses,
             with_clauses,
             mutations,
             return_clause,
@@ -550,6 +573,13 @@ impl AstVisitor for SqlPgqEmitter {
                 return Err(Error::UnsupportedFeature {
                     dialect: "sql_pgq".to_string(),
                     feature: "UNWIND clauses - GRAPH_TABLE is a read-only query operator"
+                        .to_string(),
+                });
+            }
+            if !linear_clauses.is_empty() {
+                return Err(Error::UnsupportedFeature {
+                    dialect: "sql_pgq".to_string(),
+                    feature: "Linear statements (LET, FILTER) - SQL:2023 PGQ GRAPH_TABLE does not support linear statements"
                         .to_string(),
                 });
             }

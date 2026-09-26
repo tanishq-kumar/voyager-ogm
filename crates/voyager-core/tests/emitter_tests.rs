@@ -242,6 +242,70 @@ fn test_sql_pgq_emitter_rejects_with_clause() {
 }
 
 #[test]
+fn test_sql_pgq_emitter_rejects_linear_clauses() {
+    let mut builder = QueryBuilder::new();
+    let lit_expr = builder.literal(42i64);
+    builder
+        .r#match()
+        .node(Some("p"), vec!["Person"])
+        .let_("x", lit_expr)
+        .r#return()
+        .field("p", "name", None::<&str>);
+
+    let (arena, root) = builder.build();
+    let mut emitter = SqlPgqEmitter::new("social_graph");
+    let result = emitter.visit_query(&arena, root);
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        voyager_core::Error::UnsupportedFeature { dialect, feature } => {
+            assert_eq!(dialect, "sql_pgq");
+            assert!(feature.contains("Linear statements (LET, FILTER)"));
+        }
+        other => panic!("Expected UnsupportedFeature error, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_sql_pgq_emitter_rejects_path_variable_and_mode() {
+    let mut b1 = QueryBuilder::new();
+    b1.r#match()
+        .path_variable("p_var")
+        .node(Some("p"), vec!["Person"])
+        .r#return()
+        .field("p", "name", None::<&str>);
+    let (arena1, root1) = b1.build();
+    let mut emitter1 = SqlPgqEmitter::new("social_graph");
+    let res1 = emitter1.visit_query(&arena1, root1);
+    assert!(res1.is_err());
+    match res1.unwrap_err() {
+        voyager_core::Error::UnsupportedFeature { dialect, feature } => {
+            assert_eq!(dialect, "sql_pgq");
+            assert!(feature.contains("Path variable assignment"));
+        }
+        other => panic!("Expected UnsupportedFeature error, got {other:?}"),
+    }
+
+    let mut b2 = QueryBuilder::new();
+    b2.r#match()
+        .trail()
+        .node(Some("p"), vec!["Person"])
+        .r#return()
+        .field("p", "name", None::<&str>);
+    let (arena2, root2) = b2.build();
+    let mut emitter2 = SqlPgqEmitter::new("social_graph");
+    let res2 = emitter2.visit_query(&arena2, root2);
+    assert!(res2.is_err());
+    match res2.unwrap_err() {
+        voyager_core::Error::UnsupportedFeature { dialect, feature } => {
+            assert_eq!(dialect, "sql_pgq");
+            assert!(feature.contains("Path search mode"));
+        }
+        other => panic!("Expected UnsupportedFeature error, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_cypher_emitter_with_where_order_by_skip_limit() {
     let mut builder = QueryBuilder::new();
     builder

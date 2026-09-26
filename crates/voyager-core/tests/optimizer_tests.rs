@@ -632,3 +632,160 @@ fn test_optimizer_sql_pgq_hoisted_predicate_preserved() {
         res_pgq.statement
     );
 }
+
+#[test]
+fn test_optimizer_linear_clauses_constant_folding_and_variable_tracking() {
+    use voyager_core::ast::BinaryOp;
+    use voyager_core::emitters::iso_gql::IsoGqlEmitter;
+
+    let mut builder = QueryBuilder::new();
+    builder.match_node(Some("_n0"), vec!["Person"]);
+
+    // Constant folding in LET: 10 + 20 -> 30
+    let l10 = builder.literal(10i64);
+    let l20 = builder.literal(20i64);
+    let sum_expr = builder.binary_expr(l10, BinaryOp::Add, l20);
+    builder.let_("total", sum_expr);
+
+    // Constant folding and variable tracking in FILTER: _n0.age > (5 * 4) -> _n0.age > 20
+    let n_age = builder.prop("_n0", "age");
+    let l5 = builder.literal(5i64);
+    let l4 = builder.literal(4i64);
+    let mult_expr = builder.binary_expr(l5, BinaryOp::Mul, l4);
+    let filter_expr = builder.binary_expr(n_age, BinaryOp::Gt, mult_expr);
+    builder.filter_(filter_expr);
+
+    let total_ident = builder.ident("total");
+    builder.select_expr(total_ident, None::<&str>);
+
+    let (mut arena, root) = builder.build();
+    let optimizer = AstOptimizer::new(OptimizationLevel::Aggressive);
+    optimizer.optimize(&mut arena, root).unwrap();
+
+    let mut gql = IsoGqlEmitter::new();
+    let res = gql.visit_query(&arena, root).unwrap();
+
+    // Constant folding verified: $p0 is 30, $p1 is 20
+    assert_eq!(
+        res.parameters.get("p0"),
+        Some(&voyager_core::ast::LiteralValue::Int64(30))
+    );
+    assert_eq!(
+        res.parameters.get("p1"),
+        Some(&voyager_core::ast::LiteralValue::Int64(20))
+    );
+
+    // Variable tracking verified: _n0 referenced in FILTER must NOT be pruned!
+    assert!(
+        res.statement.contains("MATCH (_n0:Person)"),
+        "Expected _n0 to be preserved because it is used in FILTER, got: {}",
+        res.statement
+    );
+    assert!(
+        res.statement.contains("LET total = $p0"),
+        "Expected folded LET expression, got: {}",
+        res.statement
+    );
+    assert!(
+        res.statement.contains("FILTER _n0.age > $p1"),
+        "Expected folded FILTER predicate, got: {}",
+        res.statement
+    );
+}
+
+#[test]
+fn test_optimizer_mutations_create_merge_variable_tracking() {
+    let mut builder = QueryBuilder::new();
+    // MATCH (_n0:Person)
+    builder.match_node(Some("_n0"), vec!["Person"]);
+    // CREATE (p:Company)-[:CONNECTED_TO]->(_n0)
+    builder.create();
+    builder
+        .node(Some("c"), vec!["Company"])
+        .to(vec!["CONNECTED_TO"], None::<&str>)
+        .node(Some("_n0"), Vec::<&str>::new());
+
+    let (mut arena, root) = builder.build();
+    let optimizer = AstOptimizer::new(OptimizationLevel::Aggressive);
+    optimizer.optimize(&mut arena, root).unwrap();
+
+    let mut cypher = CypherEmitter::new();
+    let res = cypher.visit_query(&arena, root).unwrap();
+
+    // _n0 was matched and referenced in CREATE: it must NOT be pruned to an anonymous node!
+    assert!(
+        res.statement.contains("MATCH (_n0:Person)"),
+        "Expected _n0 to be preserved in MATCH because it is used in CREATE, got: {}",
+        res.statement
+    );
+    assert!(
+        res.statement
+            .contains("CREATE (c:Company)-[:CONNECTED_TO]->(_n0)"),
+        "Expected valid CREATE referencing _n0, got: {}",
+        res.statement
+    );
+}
+
+#[test]
+fn test_optimizer_path_variable_aggressive_pruning() {
+    use voyager_core::ast::PathMode;
+    use voyager_core::emitters::iso_gql::IsoGqlEmitter;
+
+    // Case 1: Synthetic path variable _p0 is UNREFERENCED -> must be pruned!
+    let mut b1 = QueryBuilder::new();
+    b1.match_node(Some("a"), vec!["Person"])
+        .to(vec!["KNOWS"], None::<&str>)
+        .node(Some("b"), vec!["Person"])
+        .path_mode(PathMode::Trail)
+        .path_variable("_p0")
+        .field("a", "name", None::<&str>);
+
+    let (mut arena1, root1) = b1.build();
+    let optimizer = AstOptimizer::new(OptimizationLevel::Aggressive);
+    optimizer.optimize(&mut arena1, root1).unwrap();
+
+    let mut gql1 = IsoGqlEmitter::new();
+    let res1 = gql1.visit_query(&arena1, root1).unwrap();
+    assert!(
+        !res1.statement.contains("_p0 ="),
+        "Expected unreferenced _p0 to be pruned, got: {}",
+        res1.statement
+    );
+    assert!(
+        res1.statement
+            .contains("MATCH TRAIL (a:Person)-[:KNOWS]->(b:Person)"),
+        "Expected TRAIL keyword preserved without unreferenced variable, got: {}",
+        res1.statement
+    );
+
+    // Case 2: Synthetic path variable _p0 is REFERENCED -> must NOT be pruned!
+    let mut b2 = QueryBuilder::new();
+    b2.match_node(Some("a"), vec!["Person"])
+        .to(vec!["KNOWS"], None::<&str>)
+        .node(Some("b"), vec!["Person"])
+        .path_mode(PathMode::Trail)
+        .path_variable("_p0");
+
+    let p_ident = b2.ident("_p0");
+    let fn_call = b2.function("path_length", vec![p_ident]);
+    b2.let_("len_p", fn_call);
+    let len_ident = b2.ident("len_p");
+    b2.select_expr(len_ident, None::<&str>);
+
+    let (mut arena2, root2) = b2.build();
+    optimizer.optimize(&mut arena2, root2).unwrap();
+
+    let mut gql2 = IsoGqlEmitter::new();
+    let res2 = gql2.visit_query(&arena2, root2).unwrap();
+    assert!(
+        res2.statement
+            .contains("MATCH _p0 = TRAIL (a:Person)-[:KNOWS]->(b:Person)"),
+        "Expected referenced _p0 to be preserved, got: {}",
+        res2.statement
+    );
+    assert!(
+        res2.statement.contains("LET len_p = path_length(_p0)"),
+        "Expected LET referencing _p0, got: {}",
+        res2.statement
+    );
+}
