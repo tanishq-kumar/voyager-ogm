@@ -78,7 +78,6 @@ class Query:
         self._native = NativeQueryBuilder()
         self._optimize: bool | None = None
         self._optimization_level: str | None = None
-        self._path_mode: str | None = None
 
     def has_mutations(self) -> bool:
         """Returns True if this query contains any mutating clauses (CREATE, MERGE, SET, DELETE, REMOVE)."""
@@ -116,7 +115,6 @@ class Query:
         q._native = self._native.clone_builder()
         q._optimize = self._optimize
         q._optimization_level = self._optimization_level
-        q._path_mode = self._path_mode
         return q
 
     def __copy__(self) -> Query:
@@ -665,7 +663,6 @@ class Query:
             q = self()
         else:
             q = self
-        q._path_mode = "TRAIL"
         q._native.trail(variable)
         return q
 
@@ -683,7 +680,6 @@ class Query:
             q = self()
         else:
             q = self
-        q._path_mode = "SIMPLE"
         q._native.simple(variable)
         return q
 
@@ -701,7 +697,6 @@ class Query:
             q = self()
         else:
             q = self
-        q._path_mode = "ACYCLIC"
         q._native.acyclic(variable)
         return q
 
@@ -719,7 +714,6 @@ class Query:
             q = self()
         else:
             q = self
-        q._path_mode = "WALK"
         q._native.walk(variable)
         return q
 
@@ -744,7 +738,6 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
-        self._path_mode = mode.upper() if mode else None
         self._native.path_mode(mode)
         return self
 
@@ -1291,21 +1284,6 @@ class Query:
             opt_level = self._optimization_level
         else:
             opt_level = cfg.optimization_level
-
-        dialect_clean = dialect.strip().lower()
-        if (
-            dialect_clean in ("cypher", "opencypher", "neo4j", "memgraph")
-            and getattr(self, "_path_mode", None) is not None
-            and self._path_mode != "NONE"
-        ):
-            import warnings
-
-            warnings.warn(
-                f"Dialect '{dialect}' does not support explicit path search modes ('{self._path_mode}'). "
-                "Cypher default traversal semantics (trail) will be used and the search mode keyword was omitted.",
-                UserWarning,
-                stacklevel=2,
-            )
 
         res = self._native.compile(
             dialect,

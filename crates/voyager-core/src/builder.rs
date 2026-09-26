@@ -730,6 +730,32 @@ impl QueryBuilder {
         self
     }
 
+    /// Returns the active or configured traversal path search mode if set, or None.
+    pub fn get_path_mode(&self) -> Option<String> {
+        if self.current_path_mode != PathMode::None {
+            return Some(self.current_path_mode.as_str().to_string());
+        }
+        for &p_h in &self.current_match_paths {
+            if let Ok(AstNode::PathChain { path_mode, .. }) = self.arena.get(p_h)
+                && *path_mode != PathMode::None
+            {
+                return Some(path_mode.as_str().to_string());
+            }
+        }
+        for &m_h in &self.match_clauses {
+            if let Ok(AstNode::MatchClause { paths, .. }) = self.arena.get(m_h) {
+                for &p_h in paths {
+                    if let Ok(AstNode::PathChain { path_mode, .. }) = self.arena.get(p_h)
+                        && *path_mode != PathMode::None
+                    {
+                        return Some(path_mode.as_str().to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
     // ========================================================
     // WHERE Predicates & Filters
     // ========================================================

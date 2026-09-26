@@ -453,6 +453,29 @@ def test_gql_path_search_modes():
         == "MATCH custom_p = TRAIL (a:Person)-[:KNOWS]->(b:Person) RETURN custom_p"
     )
 
+    # Invariant check: confirm Python Query has no mirrored _path_mode attribute (PR #83 / RFC-0004 thin wrapper)
+    q_pure = Query.match(p).trail("tp")
+    assert not hasattr(q_pure, "_path_mode")
+    assert q_pure._native.get_path_mode() == "TRAIL"
+
+    # Invariant check: compile_query_from_spec emits warning when targeting Cypher with path mode
+    from voyager_ogm._voyager_rs import compile_query_from_spec
+
+    spec_with_mode = {
+        "matches": [
+            {
+                "optional": False,
+                "path_mode": "trail",
+                "paths": [[("node", "a", ["Person"])]],
+                "where": [],
+            }
+        ],
+        "projections": [("field", "a", "name", None)],
+    }
+    with pytest.warns(UserWarning, match="does not support explicit path search modes"):
+        res_spec = compile_query_from_spec(spec_with_mode, dialect="cypher")
+    assert res_spec["statement"] == "MATCH (a:Person) RETURN a.name"
+
 
 # ---------------------------------------------------------------------------
 # 8. ISO GQL Label Expressions (OR | and NOT !) (#56)
@@ -547,6 +570,17 @@ def test_gql_linear_statements_and_pagination():
 
     with pytest.raises(ValueError, match="requires at least one predicate expression"):
         Query.match(p).linear_filter()
+
+    # Native builder directly supports linear_filter
+    from voyager_ogm._voyager_rs import NativeQueryBuilder
+
+    nb = NativeQueryBuilder()
+    nb.match()
+    nb.node("p", ["Person"])
+    nb.linear_filter((p.age >= 60).to_spec())
+    nb.return_()
+    nb.field("p", "name", None)
+    assert "FILTER p.age >= $p0" in nb.compile("iso_gql")["statement"]
 
 
 # ---------------------------------------------------------------------------

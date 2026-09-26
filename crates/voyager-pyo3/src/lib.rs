@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyUserWarning, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 use voyager_core::ast::{
@@ -1213,6 +1213,28 @@ fn literal_to_py<'py>(lit: &LiteralValue, py: Python<'py>) -> PyResult<Bound<'py
     }
 }
 
+fn check_warn_cypher_path_mode(
+    py: Python<'_>,
+    dialect: &str,
+    path_mode: Option<&str>,
+) -> PyResult<()> {
+    if matches!(
+        dialect.trim().to_ascii_lowercase().as_str(),
+        "cypher" | "opencypher" | "neo4j" | "memgraph"
+    ) && let Some(mode) = path_mode
+        && !mode.is_empty()
+        && !mode.eq_ignore_ascii_case("none")
+    {
+        let msg = format!(
+            "Dialect '{dialect}' does not support explicit path search modes ('{mode}'). Cypher default traversal semantics (trail) will be used and the search mode keyword was omitted."
+        );
+        let warnings = py.import("warnings")?;
+        let user_warning = py.get_type::<PyUserWarning>();
+        warnings.call_method1("warn", (msg, user_warning))?;
+    }
+    Ok(())
+}
+
 /// Native Rust Query Builder exposed to Python.
 #[pyclass(name = "NativeQueryBuilder")]
 #[derive(Default, Clone)]
@@ -1359,6 +1381,10 @@ impl PyQueryBuilder {
         };
         self.inner.path_mode(m);
         Ok(())
+    }
+
+    fn get_path_mode(&self) -> Option<String> {
+        self.inner.get_path_mode()
     }
 
     fn where_expr(&mut self, expr: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -1614,6 +1640,10 @@ impl PyQueryBuilder {
         Ok(())
     }
 
+    fn linear_filter(&mut self, predicate: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.filter_(predicate)
+    }
+
     #[pyo3(signature = (procedure_name, args=vec![], kwargs=std::collections::HashMap::new()))]
     fn call_procedure(
         &mut self,
@@ -1649,6 +1679,8 @@ impl PyQueryBuilder {
         optimization_level: &str,
         py: Python<'py>,
     ) -> PyResult<Bound<'py, PyDict>> {
+        check_warn_cypher_path_mode(py, dialect, self.inner.get_path_mode().as_deref())?;
+
         let (mut arena, root) = self.inner.clone().build();
 
         if optimize {
@@ -1894,6 +1926,7 @@ fn compile_query_from_spec<'py>(
 
     let mut builder = QueryBuilder::new();
     build_query_from_spec_internal(&mut builder, spec)?;
+    check_warn_cypher_path_mode(py, dialect, builder.get_path_mode().as_deref())?;
     let (mut arena, root) = builder.build();
 
     if optimize {
