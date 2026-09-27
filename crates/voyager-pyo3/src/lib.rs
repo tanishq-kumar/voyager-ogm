@@ -2854,6 +2854,176 @@ fn relationship_schema_to_py<'py>(
     Ok(dict)
 }
 
+fn extract_node_schema(obj: &Bound<'_, PyAny>) -> PyResult<NodeSchema> {
+    if let Ok(dict) = obj.downcast::<PyDict>() {
+        let name: String = dict
+            .get_item("name")?
+            .ok_or_else(|| PyValueError::new_err("Missing required key 'name' in node schema"))?
+            .extract()?;
+        let labels: Vec<String> = if let Some(l) = dict.get_item("labels")? {
+            l.extract()?
+        } else {
+            vec![name.clone()]
+        };
+        let pk: Option<String> = dict
+            .get_item("primary_key")?
+            .and_then(|v| if v.is_none() { None } else { v.extract().ok() });
+        let mut node = NodeSchema::new(name, labels);
+        if let Some(f_obj) = dict.get_item("fields")? {
+            if let Ok(f_dict) = f_obj.downcast::<PyDict>() {
+                for (k, v) in f_dict {
+                    let field_name: String = if let Ok(s) = k.downcast::<PyString>() {
+                        s.to_string_lossy().into_owned()
+                    } else {
+                        k.extract()?
+                    };
+                    let desc = parse_field_descriptor(&field_name, &v)?;
+                    node = node.with_field(desc);
+                }
+            } else if let Ok(f_list) = f_obj.downcast::<PyList>() {
+                for item in f_list {
+                    let desc = parse_field_descriptor("", &item)?;
+                    node = node.with_field(desc);
+                }
+            }
+        }
+        if let Some(pk_name) = pk {
+            if let Some(f) = node.fields.get_mut(&pk_name) {
+                f.primary_key = true;
+                f.unique = true;
+                f.nullable = false;
+            }
+            node.primary_key = Some(pk_name);
+        }
+        Ok(node)
+    } else {
+        let name: String = if obj.hasattr("__name__")? {
+            obj.getattr("__name__")?.extract()?
+        } else {
+            return Err(PyTypeError::new_err(
+                "Expected node class or schema dict with '__name__'",
+            ));
+        };
+        let labels: Vec<String> = if obj.hasattr("__labels__")? {
+            let l = obj.getattr("__labels__")?;
+            if let Ok(vec) = l.extract::<Vec<String>>() {
+                if vec.is_empty() {
+                    vec![name.clone()]
+                } else {
+                    vec
+                }
+            } else {
+                vec![name.clone()]
+            }
+        } else {
+            vec![name.clone()]
+        };
+        let mut node = NodeSchema::new(name, labels);
+        if obj.hasattr("_schema_fields")? {
+            let fields_any = obj.getattr("_schema_fields")?;
+            if let Ok(fields_dict) = fields_any.downcast::<PyDict>() {
+                for (k, v) in fields_dict {
+                    let field_name: String = if let Ok(s) = k.downcast::<PyString>() {
+                        s.to_string_lossy().into_owned()
+                    } else {
+                        k.extract()?
+                    };
+                    let desc = parse_field_descriptor(&field_name, &v)?;
+                    node = node.with_field(desc);
+                }
+            }
+        }
+        Ok(node)
+    }
+}
+
+fn extract_rel_schema(obj: &Bound<'_, PyAny>) -> PyResult<RelationshipSchema> {
+    if let Ok(dict) = obj.downcast::<PyDict>() {
+        let name: String = dict
+            .get_item("name")?
+            .ok_or_else(|| {
+                PyValueError::new_err("Missing required key 'name' in relationship schema")
+            })?
+            .extract()?;
+        let type_name: String =
+            if let Some(t) = dict.get_item("type_name")?.or(dict.get_item("type")?) {
+                t.extract()?
+            } else {
+                name.to_ascii_uppercase()
+            };
+        let source_labels: Vec<String> = dict
+            .get_item("source_labels")?
+            .or(dict.get_item("from_labels")?)
+            .and_then(|v| if v.is_none() { None } else { v.extract().ok() })
+            .unwrap_or_default();
+        let target_labels: Vec<String> = dict
+            .get_item("target_labels")?
+            .or(dict.get_item("to_labels")?)
+            .and_then(|v| if v.is_none() { None } else { v.extract().ok() })
+            .unwrap_or_default();
+        let directed: bool = dict
+            .get_item("directed")?
+            .and_then(|v| v.extract::<bool>().ok())
+            .unwrap_or(true);
+        let mut rel = RelationshipSchema::new(name, type_name)
+            .with_endpoints(source_labels, target_labels)
+            .directed(directed);
+        if let Some(f_obj) = dict.get_item("fields")? {
+            if let Ok(f_dict) = f_obj.downcast::<PyDict>() {
+                for (k, v) in f_dict {
+                    let field_name: String = if let Ok(s) = k.downcast::<PyString>() {
+                        s.to_string_lossy().into_owned()
+                    } else {
+                        k.extract()?
+                    };
+                    let desc = parse_field_descriptor(&field_name, &v)?;
+                    rel = rel.with_field(desc);
+                }
+            } else if let Ok(f_list) = f_obj.downcast::<PyList>() {
+                for item in f_list {
+                    let desc = parse_field_descriptor("", &item)?;
+                    rel = rel.with_field(desc);
+                }
+            }
+        }
+        Ok(rel)
+    } else {
+        let name: String = if obj.hasattr("__name__")? {
+            obj.getattr("__name__")?.extract()?
+        } else {
+            return Err(PyTypeError::new_err(
+                "Expected relationship class or schema dict with '__name__'",
+            ));
+        };
+        let type_name: String = if obj.hasattr("__type__")? {
+            let t: String = obj.getattr("__type__")?.extract()?;
+            if t.is_empty() {
+                name.to_ascii_uppercase()
+            } else {
+                t
+            }
+        } else {
+            name.to_ascii_uppercase()
+        };
+        let mut rel = RelationshipSchema::new(name, type_name);
+        if obj.hasattr("_schema_fields")? {
+            let fields_any = obj.getattr("_schema_fields")?;
+            if let Ok(fields_dict) = fields_any.downcast::<PyDict>() {
+                for (k, v) in fields_dict {
+                    let field_name: String = if let Ok(s) = k.downcast::<PyString>() {
+                        s.to_string_lossy().into_owned()
+                    } else {
+                        k.extract()?
+                    };
+                    let desc = parse_field_descriptor(&field_name, &v)?;
+                    rel = rel.with_field(desc);
+                }
+            }
+        }
+        Ok(rel)
+    }
+}
+
 enum RegistryStorage {
     Owned(Arc<SchemaRegistry>),
     Global,
@@ -3181,6 +3351,128 @@ impl PyNativeSchemaRegistry {
         self.registry().len()
     }
 
+    /// Generates openCypher constraint and index creation statements.
+    #[pyo3(signature = (include_type_constraints=false, model_name=None))]
+    fn generate_cypher_ddl(
+        &self,
+        include_type_constraints: bool,
+        model_name: Option<&str>,
+    ) -> PyResult<Vec<String>> {
+        if let Some(name) = model_name {
+            if let Some(stmts) = self
+                .registry()
+                .generate_node_cypher_ddl(name, include_type_constraints)
+            {
+                return Ok(stmts);
+            }
+            if let Some(stmts) = self
+                .registry()
+                .generate_rel_cypher_ddl(name, include_type_constraints)
+            {
+                return Ok(stmts);
+            }
+            Err(PyValueError::new_err(format!(
+                "No node or relationship registered with name '{name}'"
+            )))
+        } else {
+            Ok(self
+                .registry()
+                .generate_cypher_ddl(include_type_constraints))
+        }
+    }
+
+    /// Generates openCypher DROP statements.
+    #[pyo3(signature = (include_type_constraints=false, model_name=None))]
+    fn generate_cypher_drop_ddl(
+        &self,
+        include_type_constraints: bool,
+        model_name: Option<&str>,
+    ) -> PyResult<Vec<String>> {
+        if let Some(name) = model_name {
+            if let Some(stmts) = self
+                .registry()
+                .generate_node_cypher_drop_ddl(name, include_type_constraints)
+            {
+                return Ok(stmts);
+            }
+            if let Some(stmts) = self
+                .registry()
+                .generate_rel_cypher_drop_ddl(name, include_type_constraints)
+            {
+                return Ok(stmts);
+            }
+            Err(PyValueError::new_err(format!(
+                "No node or relationship registered with name '{name}'"
+            )))
+        } else {
+            Ok(self
+                .registry()
+                .generate_cypher_drop_ddl(include_type_constraints))
+        }
+    }
+
+    /// Emits an ISO GQL `CREATE GRAPH TYPE <name> AS { ... }` DDL statement.
+    #[pyo3(signature = (graph_type_name, model_names=None))]
+    fn generate_gql_graph_type_ddl(
+        &self,
+        graph_type_name: &str,
+        model_names: Option<Vec<String>>,
+    ) -> PyResult<String> {
+        if let Some(names) = model_names {
+            let str_names: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+            Ok(self
+                .registry()
+                .generate_gql_graph_type_ddl_for(graph_type_name, &str_names))
+        } else {
+            Ok(self.registry().generate_gql_graph_type_ddl(graph_type_name))
+        }
+    }
+
+    /// Emits an experimental ISO GQL `ALTER CURRENT GRAPH TYPE ADD NODE TYPE` DDL statement.
+    fn generate_gql_alter_node_ddl(&self, node_name: &str) -> PyResult<Option<String>> {
+        Ok(self.registry().generate_gql_alter_node_ddl(node_name))
+    }
+
+    /// Emits an experimental ISO GQL `ALTER CURRENT GRAPH TYPE ADD RELATIONSHIP TYPE` DDL statement.
+    #[pyo3(signature = (rel_name, source_label=None, target_label=None))]
+    fn generate_gql_alter_rel_ddl(
+        &self,
+        rel_name: &str,
+        source_label: Option<&str>,
+        target_label: Option<&str>,
+    ) -> PyResult<Option<String>> {
+        Ok(self
+            .registry()
+            .generate_gql_alter_rel_ddl(rel_name, source_label, target_label))
+    }
+
+    /// Emits an ISO GQL `DROP GRAPH TYPE` DDL statement.
+    fn generate_gql_drop_graph_type_ddl(&self, graph_type_name: &str) -> PyResult<String> {
+        Ok(self
+            .registry()
+            .generate_gql_drop_graph_type_ddl(graph_type_name))
+    }
+
+    /// Emits a SQL:2023 PGQ / DuckPGQ `CREATE PROPERTY GRAPH` DDL statement.
+    #[pyo3(signature = (graph_name, model_names=None))]
+    fn generate_pgq_ddl(
+        &self,
+        graph_name: &str,
+        model_names: Option<Vec<String>>,
+    ) -> PyResult<String> {
+        if let Some(names) = model_names {
+            let str_names: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+            Ok(self.registry().generate_pgq_ddl_for(graph_name, &str_names))
+        } else {
+            Ok(self.registry().generate_pgq_ddl(graph_name))
+        }
+    }
+
+    /// Emits a SQL:2023 PGQ / DuckPGQ `DROP PROPERTY GRAPH` DDL statement.
+    fn generate_pgq_drop_ddl(&self, graph_name: &str) -> PyResult<String> {
+        Ok(self.registry().generate_pgq_drop_ddl(graph_name))
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "NativeSchemaRegistry(nodes={}, relationships={})",
@@ -3188,6 +3480,143 @@ impl PyNativeSchemaRegistry {
             self.registry().relationship_schemas().len()
         )
     }
+}
+
+#[pyfunction]
+#[pyo3(signature = (node, include_type_constraints=false))]
+fn emit_cypher_node_ddl(
+    node: &Bound<'_, PyAny>,
+    include_type_constraints: bool,
+) -> PyResult<Vec<String>> {
+    let schema = extract_node_schema(node)?;
+    Ok(voyager_core::emit_cypher_node_ddl(
+        &schema,
+        include_type_constraints,
+    ))
+}
+
+#[pyfunction]
+#[pyo3(signature = (rel, include_type_constraints=false))]
+fn emit_cypher_rel_ddl(
+    rel: &Bound<'_, PyAny>,
+    include_type_constraints: bool,
+) -> PyResult<Vec<String>> {
+    let schema = extract_rel_schema(rel)?;
+    Ok(voyager_core::emit_cypher_rel_ddl(
+        &schema,
+        include_type_constraints,
+    ))
+}
+
+#[pyfunction]
+#[pyo3(signature = (node, include_type_constraints=false))]
+fn emit_cypher_drop_node_ddl(
+    node: &Bound<'_, PyAny>,
+    include_type_constraints: bool,
+) -> PyResult<Vec<String>> {
+    let schema = extract_node_schema(node)?;
+    Ok(voyager_core::emit_cypher_drop_node_ddl(
+        &schema,
+        include_type_constraints,
+    ))
+}
+
+#[pyfunction]
+#[pyo3(signature = (rel, include_type_constraints=false))]
+fn emit_cypher_drop_rel_ddl(
+    rel: &Bound<'_, PyAny>,
+    include_type_constraints: bool,
+) -> PyResult<Vec<String>> {
+    let schema = extract_rel_schema(rel)?;
+    Ok(voyager_core::emit_cypher_drop_rel_ddl(
+        &schema,
+        include_type_constraints,
+    ))
+}
+
+#[pyfunction]
+fn emit_gql_alter_node_ddl(node: &Bound<'_, PyAny>) -> PyResult<String> {
+    let schema = extract_node_schema(node)?;
+    Ok(voyager_core::emit_gql_alter_node_ddl(&schema))
+}
+
+#[pyfunction]
+#[pyo3(signature = (rel, source_label=None, target_label=None))]
+fn emit_gql_alter_rel_ddl(
+    rel: &Bound<'_, PyAny>,
+    source_label: Option<&str>,
+    target_label: Option<&str>,
+) -> PyResult<String> {
+    let schema = extract_rel_schema(rel)?;
+    Ok(voyager_core::emit_gql_alter_rel_ddl(
+        &schema,
+        source_label,
+        target_label,
+    ))
+}
+
+#[pyfunction]
+#[pyo3(signature = (graph_type_name, nodes=None, rels=None))]
+fn emit_gql_graph_type_ddl(
+    graph_type_name: &str,
+    nodes: Option<Vec<Bound<'_, PyAny>>>,
+    rels: Option<Vec<Bound<'_, PyAny>>>,
+) -> PyResult<String> {
+    let mut node_schemas = Vec::new();
+    if let Some(n_list) = nodes {
+        for n in &n_list {
+            node_schemas.push(extract_node_schema(n)?);
+        }
+    }
+    let mut rel_schemas = Vec::new();
+    if let Some(r_list) = rels {
+        for r in &r_list {
+            rel_schemas.push(extract_rel_schema(r)?);
+        }
+    }
+    let node_refs: Vec<&NodeSchema> = node_schemas.iter().collect();
+    let rel_refs: Vec<&RelationshipSchema> = rel_schemas.iter().collect();
+    Ok(voyager_core::emit_gql_graph_type_ddl(
+        graph_type_name,
+        &node_refs,
+        &rel_refs,
+    ))
+}
+
+#[pyfunction]
+fn emit_gql_drop_graph_type_ddl(graph_type_name: &str) -> PyResult<String> {
+    Ok(voyager_core::emit_gql_drop_graph_type_ddl(graph_type_name))
+}
+
+#[pyfunction]
+#[pyo3(signature = (graph_name, nodes=None, rels=None))]
+fn emit_pgq_property_graph_ddl(
+    graph_name: &str,
+    nodes: Option<Vec<Bound<'_, PyAny>>>,
+    rels: Option<Vec<Bound<'_, PyAny>>>,
+) -> PyResult<String> {
+    let mut node_schemas = Vec::new();
+    if let Some(n_list) = nodes {
+        for n in &n_list {
+            node_schemas.push(extract_node_schema(n)?);
+        }
+    }
+    let mut rel_schemas = Vec::new();
+    if let Some(r_list) = rels {
+        for r in &r_list {
+            rel_schemas.push(extract_rel_schema(r)?);
+        }
+    }
+    let node_refs: Vec<&NodeSchema> = node_schemas.iter().collect();
+    let rel_refs: Vec<&RelationshipSchema> = rel_schemas.iter().collect();
+    Ok(voyager_core::emit_pgq_property_graph_ddl(
+        graph_name, &node_refs, &rel_refs,
+    ))
+}
+
+#[pyfunction]
+fn emit_pgq_drop_property_graph_ddl(graph_name: &str) -> PyResult<String> {
+    Ok(voyager_core::emit_pgq_drop_property_graph_ddl(graph_name))
 }
 
 /// Native Python module definition for `_voyager_rs`.
@@ -3202,6 +3631,16 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_query_cache_stats, m)?)?;
     m.add_function(wrap_pyfunction!(clear_query_cache, m)?)?;
     m.add_function(wrap_pyfunction!(get_runtime_pid, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_cypher_node_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_cypher_rel_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_cypher_drop_node_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_cypher_drop_rel_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_gql_alter_node_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_gql_alter_rel_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_gql_graph_type_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_gql_drop_graph_type_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_pgq_property_graph_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_pgq_drop_property_graph_ddl, m)?)?;
     m.add_class::<PyQueryBuilder>()?;
     m.add_class::<PyAstExpr>()?;
     m.add_class::<PyArrowStream>()?;

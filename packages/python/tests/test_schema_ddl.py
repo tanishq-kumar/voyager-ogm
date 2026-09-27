@@ -120,7 +120,7 @@ def test_alter_current_graph_type_ddl():
     node_alter = SchemaManager.generate_alter_graph_type_ddl(User)
     assert (
         node_alter
-        == "ALTER CURRENT GRAPH TYPE ADD NODE TYPE (:User {user_id :: STRING, email :: STRING, age :: INTEGER?, bio :: STRING?})"
+        == "ALTER CURRENT GRAPH TYPE ADD NODE TYPE (:User {age :: INTEGER?, bio :: STRING?, email :: STRING, user_id :: STRING})"
     )
 
     rel_alter = SchemaManager.generate_alter_graph_type_ddl(
@@ -136,5 +136,61 @@ def test_gql_create_graph_type_ddl():
     """Verifies standard ISO GQL CREATE GRAPH TYPE statement definition."""
     gql_ddl = SchemaManager.generate_gql_graph_type_ddl("SocialGraphType", User, Follows)
     assert "CREATE GRAPH TYPE SocialGraphType AS {" in gql_ddl
-    assert "    NODE User (user_id STRING, email STRING, age INTEGER, bio STRING)" in gql_ddl
+    assert "    NODE User (age INTEGER, bio STRING, email STRING, user_id STRING)" in gql_ddl
     assert "    EDGE FOLLOWS (since INTEGER)" in gql_ddl
+
+    drop_ddl = SchemaManager.generate_gql_drop_graph_type_ddl("SocialGraphType")
+    assert drop_ddl == "DROP GRAPH TYPE SocialGraphType IF EXISTS"
+
+
+def test_pgq_property_graph_ddl():
+    """Verifies standard SQL:2023 PGQ / DuckPGQ CREATE PROPERTY GRAPH statements."""
+    pgq_ddl = SchemaManager.generate_pgq_ddl("social_pgq", User, Follows)
+    assert "CREATE PROPERTY GRAPH social_pgq" in pgq_ddl
+    assert "VERTEX TABLES (" in pgq_ddl
+    assert "user KEY (user_id) LABEL User" in pgq_ddl
+    assert "EDGE TABLES (" in pgq_ddl
+    assert "LABEL FOLLOWS" in pgq_ddl
+
+    drop_pgq = SchemaManager.generate_pgq_drop_ddl("social_pgq")
+    assert drop_pgq == "DROP PROPERTY GRAPH IF EXISTS social_pgq;"
+
+
+def test_native_schema_registry_ddl():
+    """Verifies DDL generation directly through NativeSchemaRegistry instance."""
+    from voyager_ogm import NativeSchemaRegistry
+
+    reg = NativeSchemaRegistry()
+    reg.register_node(
+        "Article",
+        ["Article"],
+        {
+            "id": {"type": "STRING", "primary_key": True},
+            "title": {"type": "STRING", "indexed": True},
+        },
+    )
+    reg.register_relationship(
+        "CitedBy",
+        "CITED_BY",
+        source_labels=["Article"],
+        target_labels=["Article"],
+        fields={"year": {"type": "INTEGER"}},
+        directed=True,
+    )
+
+    # 1. openCypher DDL
+    cypher_stmts = reg.generate_cypher_ddl(include_type_constraints=False)
+    assert any("CREATE CONSTRAINT constraint_article_id_unique" in s for s in cypher_stmts)
+    assert any("CREATE INDEX index_article_title" in s for s in cypher_stmts)
+
+    # 2. ISO GQL DDL
+    gql = reg.generate_gql_graph_type_ddl("ArticleGraph")
+    assert "CREATE GRAPH TYPE ArticleGraph AS {" in gql
+    assert "NODE Article (id STRING, title STRING)" in gql
+    assert "EDGE CITED_BY (year INTEGER)" in gql
+
+    # 3. SQL:2023 PGQ DDL
+    pgq = reg.generate_pgq_ddl("article_pgq")
+    assert "CREATE PROPERTY GRAPH article_pgq" in pgq
+    assert "article KEY (id) LABEL Article" in pgq
+    assert "LABEL CITED_BY" in pgq

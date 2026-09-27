@@ -549,6 +549,217 @@ impl SchemaRegistry {
             serde_json::from_str(json_str).map_err(|e| Error::SchemaError(e.to_string()))?;
         self.restore(snap)
     }
+
+    /// Generates openCypher constraint and index creation statements for all registered entities.
+    pub fn generate_cypher_ddl(&self, include_type_constraints: bool) -> Vec<String> {
+        let mut statements = Vec::new();
+        for node in self.node_schemas() {
+            statements.extend(crate::emitters::ddl::emit_cypher_node_ddl(
+                &node,
+                include_type_constraints,
+            ));
+        }
+        for rel in self.relationship_schemas() {
+            statements.extend(crate::emitters::ddl::emit_cypher_rel_ddl(
+                &rel,
+                include_type_constraints,
+            ));
+        }
+        statements
+    }
+
+    /// Generates openCypher DDL for a single node by model name or label.
+    pub fn generate_node_cypher_ddl(
+        &self,
+        node_name: &str,
+        include_type_constraints: bool,
+    ) -> Option<Vec<String>> {
+        let node = self
+            .get_node(node_name)
+            .or_else(|| self.get_node_by_label(node_name))?;
+        Some(crate::emitters::ddl::emit_cypher_node_ddl(
+            &node,
+            include_type_constraints,
+        ))
+    }
+
+    /// Generates openCypher DDL for a single relationship by model name or type.
+    pub fn generate_rel_cypher_ddl(
+        &self,
+        rel_name: &str,
+        include_type_constraints: bool,
+    ) -> Option<Vec<String>> {
+        let rel = self
+            .get_relationship(rel_name)
+            .or_else(|| self.get_relationship_by_type(rel_name))?;
+        Some(crate::emitters::ddl::emit_cypher_rel_ddl(
+            &rel,
+            include_type_constraints,
+        ))
+    }
+
+    /// Generates openCypher DROP statements for all registered entities.
+    pub fn generate_cypher_drop_ddl(&self, include_type_constraints: bool) -> Vec<String> {
+        let mut statements = Vec::new();
+        for node in self.node_schemas() {
+            statements.extend(crate::emitters::ddl::emit_cypher_drop_node_ddl(
+                &node,
+                include_type_constraints,
+            ));
+        }
+        for rel in self.relationship_schemas() {
+            statements.extend(crate::emitters::ddl::emit_cypher_drop_rel_ddl(
+                &rel,
+                include_type_constraints,
+            ));
+        }
+        statements
+    }
+
+    /// Generates openCypher DROP DDL for a single node by model name or label.
+    pub fn generate_node_cypher_drop_ddl(
+        &self,
+        node_name: &str,
+        include_type_constraints: bool,
+    ) -> Option<Vec<String>> {
+        let node = self
+            .get_node(node_name)
+            .or_else(|| self.get_node_by_label(node_name))?;
+        Some(crate::emitters::ddl::emit_cypher_drop_node_ddl(
+            &node,
+            include_type_constraints,
+        ))
+    }
+
+    /// Generates openCypher DROP DDL for a single relationship by model name or type.
+    pub fn generate_rel_cypher_drop_ddl(
+        &self,
+        rel_name: &str,
+        include_type_constraints: bool,
+    ) -> Option<Vec<String>> {
+        let rel = self
+            .get_relationship(rel_name)
+            .or_else(|| self.get_relationship_by_type(rel_name))?;
+        Some(crate::emitters::ddl::emit_cypher_drop_rel_ddl(
+            &rel,
+            include_type_constraints,
+        ))
+    }
+
+    /// Emits an ISO GQL `CREATE GRAPH TYPE <name> AS { ... }` definition for all registered entities.
+    pub fn generate_gql_graph_type_ddl(&self, graph_type_name: &str) -> String {
+        let nodes = self.node_schemas();
+        let rels = self.relationship_schemas();
+        let node_refs: Vec<&NodeSchema> = nodes.iter().collect();
+        let rel_refs: Vec<&RelationshipSchema> = rels.iter().collect();
+        crate::emitters::ddl::emit_gql_graph_type_ddl(graph_type_name, &node_refs, &rel_refs)
+    }
+
+    /// Emits an ISO GQL `CREATE GRAPH TYPE <name> AS { ... }` definition for specified model names or labels.
+    pub fn generate_gql_graph_type_ddl_for(
+        &self,
+        graph_type_name: &str,
+        model_names: &[&str],
+    ) -> String {
+        let all_nodes = self.node_schemas();
+        let all_rels = self.relationship_schemas();
+        let filtered_nodes: Vec<&NodeSchema> = all_nodes
+            .iter()
+            .filter(|n| {
+                model_names.contains(&n.name.as_str())
+                    || model_names
+                        .iter()
+                        .any(|m| n.labels.iter().any(|l| l.eq_ignore_ascii_case(m)))
+            })
+            .collect();
+        let filtered_rels: Vec<&RelationshipSchema> = all_rels
+            .iter()
+            .filter(|r| {
+                model_names.contains(&r.name.as_str())
+                    || model_names
+                        .iter()
+                        .any(|m| r.type_name.eq_ignore_ascii_case(m))
+            })
+            .collect();
+        crate::emitters::ddl::emit_gql_graph_type_ddl(
+            graph_type_name,
+            &filtered_nodes,
+            &filtered_rels,
+        )
+    }
+
+    /// Emits an experimental ISO GQL `ALTER CURRENT GRAPH TYPE ADD NODE TYPE` statement for a registered node.
+    pub fn generate_gql_alter_node_ddl(&self, node_name: &str) -> Option<String> {
+        let node = self
+            .get_node(node_name)
+            .or_else(|| self.get_node_by_label(node_name))?;
+        Some(crate::emitters::ddl::emit_gql_alter_node_ddl(&node))
+    }
+
+    /// Emits an experimental ISO GQL `ALTER CURRENT GRAPH TYPE ADD RELATIONSHIP TYPE` statement for a registered relationship.
+    pub fn generate_gql_alter_rel_ddl(
+        &self,
+        rel_name: &str,
+        source_label: Option<&str>,
+        target_label: Option<&str>,
+    ) -> Option<String> {
+        let rel = self
+            .get_relationship(rel_name)
+            .or_else(|| self.get_relationship_by_type(rel_name))?;
+        Some(crate::emitters::ddl::emit_gql_alter_rel_ddl(
+            &rel,
+            source_label,
+            target_label,
+        ))
+    }
+
+    /// Emits an ISO GQL `DROP GRAPH TYPE` statement.
+    pub fn generate_gql_drop_graph_type_ddl(&self, graph_type_name: &str) -> String {
+        crate::emitters::ddl::emit_gql_drop_graph_type_ddl(graph_type_name)
+    }
+
+    /// Emits a SQL:2023 PGQ / DuckPGQ `CREATE PROPERTY GRAPH` statement for all registered entities.
+    pub fn generate_pgq_ddl(&self, graph_name: &str) -> String {
+        let nodes = self.node_schemas();
+        let rels = self.relationship_schemas();
+        let node_refs: Vec<&NodeSchema> = nodes.iter().collect();
+        let rel_refs: Vec<&RelationshipSchema> = rels.iter().collect();
+        crate::emitters::ddl::emit_pgq_property_graph_ddl(graph_name, &node_refs, &rel_refs)
+    }
+
+    /// Emits a SQL:2023 PGQ / DuckPGQ `CREATE PROPERTY GRAPH` statement for specified model names.
+    pub fn generate_pgq_ddl_for(&self, graph_name: &str, model_names: &[&str]) -> String {
+        let all_nodes = self.node_schemas();
+        let all_rels = self.relationship_schemas();
+        let filtered_nodes: Vec<&NodeSchema> = all_nodes
+            .iter()
+            .filter(|n| {
+                model_names.contains(&n.name.as_str())
+                    || model_names
+                        .iter()
+                        .any(|m| n.labels.iter().any(|l| l.eq_ignore_ascii_case(m)))
+            })
+            .collect();
+        let filtered_rels: Vec<&RelationshipSchema> = all_rels
+            .iter()
+            .filter(|r| {
+                model_names.contains(&r.name.as_str())
+                    || model_names
+                        .iter()
+                        .any(|m| r.type_name.eq_ignore_ascii_case(m))
+            })
+            .collect();
+        crate::emitters::ddl::emit_pgq_property_graph_ddl(
+            graph_name,
+            &filtered_nodes,
+            &filtered_rels,
+        )
+    }
+
+    /// Emits a SQL:2023 PGQ / DuckPGQ `DROP PROPERTY GRAPH` statement.
+    pub fn generate_pgq_drop_ddl(&self, graph_name: &str) -> String {
+        crate::emitters::ddl::emit_pgq_drop_property_graph_ddl(graph_name)
+    }
 }
 
 /// Point-in-time snapshot of all registered node and relationship schemas.
