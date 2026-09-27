@@ -2945,12 +2945,15 @@ fn extract_rel_schema(obj: &Bound<'_, PyAny>) -> PyResult<RelationshipSchema> {
                 PyValueError::new_err("Missing required key 'name' in relationship schema")
             })?
             .extract()?;
-        let type_name: String =
-            if let Some(t) = dict.get_item("type_name")?.or(dict.get_item("type")?) {
-                t.extract()?
-            } else {
-                name.to_ascii_uppercase()
-            };
+        let type_name: String = if let Some(t) = dict
+            .get_item("type_name")?
+            .or(dict.get_item("type_")?)
+            .or(dict.get_item("type")?)
+        {
+            t.extract()?
+        } else {
+            name.to_ascii_uppercase()
+        };
         let source_labels: Vec<String> = dict
             .get_item("source_labels")?
             .or(dict.get_item("from_labels")?)
@@ -3187,12 +3190,15 @@ impl PyNativeSchemaRegistry {
                     PyValueError::new_err("Missing required key 'name' in relationship schema")
                 })?
                 .extract()?;
-            let type_name: String =
-                if let Some(t) = dict.get_item("type_name")?.or(dict.get_item("type")?) {
-                    t.extract()?
-                } else {
-                    name.to_ascii_uppercase()
-                };
+            let type_name: String = if let Some(t) = dict
+                .get_item("type_name")?
+                .or(dict.get_item("type_")?)
+                .or(dict.get_item("type")?)
+            {
+                t.extract()?
+            } else {
+                name.to_ascii_uppercase()
+            };
             let source_labels: Option<Vec<String>> = dict
                 .get_item("source_labels")?
                 .or(dict.get_item("from_labels")?)

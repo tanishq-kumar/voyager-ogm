@@ -662,6 +662,7 @@ class Relationship:
     def __init_subclass__(
         cls,
         type_name: str | None = None,
+        type_: str | None = None,
         direction: str = "outgoing",
         **kwargs: Any,
     ) -> None:
@@ -669,11 +670,13 @@ class Relationship:
 
         Args:
             type_name: Database edge type string. Defaults to uppercase class name.
+            type_: Alias for type_name.
             direction: Traversal direction ('outgoing', 'incoming', 'undirected').
             **kwargs: Extra keyword arguments passed to super.
         """
         super().__init_subclass__(**kwargs)
-        cls.__type__ = type_name or cls.__name__.upper()
+        resolved_type = type_name or type_ or kwargs.get("type") or cls.__name__.upper()
+        cls.__type__ = resolved_type
         cls.__direction__ = direction
         cls._cached_type = cls.__type__
         cls._cached_types = [cls.__type__]
@@ -808,7 +811,12 @@ def relationship(target: type | str | None = None, **kwargs: Any) -> Any:
     direction = kwargs.get("direction", "outgoing")
 
     def decorator(cls: type) -> type:
-        type_name = kwargs.get("type_name", target if isinstance(target, str) else None)
+        type_name = (
+            kwargs.get("type_name")
+            or kwargs.get("type_")
+            or kwargs.get("type")
+            or (target if isinstance(target, str) else None)
+        )
         rel_type = type_name or cls.__name__.upper()
 
         fields_map = _process_type_annotations(cls)
