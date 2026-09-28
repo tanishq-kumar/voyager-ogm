@@ -79,6 +79,7 @@ class Field(Generic[_T]):
         unique: bool = False,
         index: bool = False,
         primary_key: bool = False,
+        nullable: bool = True,
         type_annotation: Any = None,
     ) -> None:
         """Initializes a graph property Field descriptor.
@@ -90,6 +91,7 @@ class Field(Generic[_T]):
             unique: Whether to enforce a unique constraint.
             index: Whether to create a search index on this property.
             primary_key: Convenience flag setting both unique=True and index=True.
+            nullable: Whether the field can store null values. Defaults to True (False for primary_key).
             type_annotation: Python type annotation class.
         """
         self.default = (
@@ -102,6 +104,7 @@ class Field(Generic[_T]):
         self.primary_key = primary_key
         self.unique = unique or primary_key
         self.index = index or primary_key
+        self.nullable = False if primary_key else nullable
         if isinstance(type_annotation, str) and type_annotation in _BUILTIN_TYPES:
             self.type_annotation = _BUILTIN_TYPES[type_annotation]
         else:

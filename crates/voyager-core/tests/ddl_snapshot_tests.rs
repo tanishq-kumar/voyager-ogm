@@ -185,7 +185,7 @@ fn test_pgq_property_graph_ddl() {
     let node = create_test_node_schema();
     let rel = create_test_rel_schema();
 
-    let ddl = emit_pgq_property_graph_ddl("social_graph", &[&node], &[&rel]);
+    let ddl = emit_pgq_property_graph_ddl("social_graph", &[&node], &[&rel]).unwrap();
     let expected = "\
 CREATE PROPERTY GRAPH social_graph
   VERTEX TABLES (
@@ -201,6 +201,41 @@ CREATE PROPERTY GRAPH social_graph
 
     let drop_ddl = emit_pgq_drop_property_graph_ddl("social_graph");
     assert_eq!(drop_ddl, "DROP PROPERTY GRAPH IF EXISTS social_graph;");
+}
+
+#[test]
+fn test_pgq_missing_endpoints_error() {
+    let node = create_test_node_schema();
+    let rel_no_endpoints = RelationshipSchema::new("follows", "FOLLOWS");
+    let err = emit_pgq_property_graph_ddl("social_graph", &[&node], &[&rel_no_endpoints]);
+    assert!(err.is_err());
+    assert!(
+        err.unwrap_err()
+            .to_string()
+            .contains("missing source_labels")
+    );
+}
+
+#[test]
+fn test_cypher25_empty_and_composite_facets() {
+    // 1. Empty fields node and relationship have no dangling =>
+    let empty_node = NodeSchema::new("Empty", vec!["Empty".to_string()]);
+    let empty_rel = RelationshipSchema::new("EmptyRel", "EMPTY_REL")
+        .with_endpoints(vec!["Empty".to_string()], vec!["Empty".to_string()]);
+    let ddl = emit_cypher25_graph_type_ddl(&[&empty_node], &[&empty_rel]);
+    assert!(ddl.contains("(:Empty)"));
+    assert!(!ddl.contains("(:Empty =>)"));
+    assert!(ddl.contains("(:Empty)-[:EMPTY_REL]->(:Empty)"));
+    assert!(!ddl.contains("[:EMPTY_REL =>]"));
+
+    // 2. Composed NOT NULL and IS UNIQUE facets
+    let composite_node = NodeSchema::new("Member", vec!["Member".to_string()]).with_field(
+        FieldDescriptor::new("email", FieldType::String)
+            .unique()
+            .nullable(false),
+    );
+    let composite_ddl = emit_cypher25_graph_type_ddl(&[&composite_node], &[]);
+    assert!(composite_ddl.contains("email :: STRING NOT NULL IS UNIQUE"));
 }
 
 #[test]
@@ -233,6 +268,6 @@ fn test_schema_registry_ddl_methods() {
     let gql_ddl = registry.generate_gql_graph_type_ddl("NetworkGraph");
     assert!(gql_ddl.starts_with("CREATE GRAPH TYPE NetworkGraph AS {"));
 
-    let pgq_ddl = registry.generate_pgq_ddl("network_pgq");
+    let pgq_ddl = registry.generate_pgq_ddl("network_pgq").unwrap();
     assert!(pgq_ddl.starts_with("CREATE PROPERTY GRAPH network_pgq"));
 }

@@ -4,6 +4,7 @@
 //! across openCypher (Neo4j / Memgraph), ISO GQL, and SQL:2023 PGQ / DuckPGQ
 //! directly from native `SchemaRegistry` metadata.
 
+use crate::error::{Error, Result};
 use crate::schema::{FieldType, IndexType, NodeSchema, RelationshipSchema};
 
 /// Maps a canonical `FieldType` to the openCypher / Neo4j 5.x property type identifier.
@@ -305,13 +306,16 @@ pub fn emit_cypher25_graph_type_ddl(
         for field in node.fields.values() {
             let neo4j_type = field_type_to_neo4j(&field.field_type);
             let constraint_suffix = if field.primary_key {
-                " IS KEY"
-            } else if field.unique {
-                " IS UNIQUE"
-            } else if !field.nullable {
-                " NOT NULL"
+                " IS KEY".to_string()
             } else {
-                ""
+                let mut s = String::new();
+                if !field.nullable {
+                    s.push_str(" NOT NULL");
+                }
+                if field.unique {
+                    s.push_str(" IS UNIQUE");
+                }
+                s
             };
             prop_defs.push(format!("{} :: {neo4j_type}{constraint_suffix}", field.name));
         }
@@ -322,7 +326,11 @@ pub fn emit_cypher25_graph_type_ddl(
         };
 
         if implied_str.is_empty() {
-            elements.push(format!("    (:{primary_label} =>{props_str})"));
+            if props_str.is_empty() {
+                elements.push(format!("    (:{primary_label})"));
+            } else {
+                elements.push(format!("    (:{primary_label} =>{props_str})"));
+            }
         } else {
             elements.push(format!(
                 "    (:{primary_label} => {implied_str}{props_str})"
@@ -336,13 +344,16 @@ pub fn emit_cypher25_graph_type_ddl(
         for field in rel.fields.values() {
             let neo4j_type = field_type_to_neo4j(&field.field_type);
             let constraint_suffix = if field.primary_key {
-                " IS KEY"
-            } else if field.unique {
-                " IS UNIQUE"
-            } else if !field.nullable {
-                " NOT NULL"
+                " IS KEY".to_string()
             } else {
-                ""
+                let mut s = String::new();
+                if !field.nullable {
+                    s.push_str(" NOT NULL");
+                }
+                if field.unique {
+                    s.push_str(" IS UNIQUE");
+                }
+                s
             };
             prop_defs.push(format!("{} :: {neo4j_type}{constraint_suffix}", field.name));
         }
@@ -364,9 +375,13 @@ pub fn emit_cypher25_graph_type_ddl(
             _ => "()".to_string(),
         };
 
-        elements.push(format!(
-            "    {src_pattern}-[:{type_name} =>{props_str}]->{tgt_pattern}"
-        ));
+        if props_str.is_empty() {
+            elements.push(format!("    {src_pattern}-[:{type_name}]->{tgt_pattern}"));
+        } else {
+            elements.push(format!(
+                "    {src_pattern}-[:{type_name} =>{props_str}]->{tgt_pattern}"
+            ));
+        }
     }
 
     let body = elements.join(",\n");
@@ -520,11 +535,17 @@ pub fn emit_gql_drop_graph_type_ddl(graph_type_name: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Emits a SQL:2023 PGQ / DuckPGQ `CREATE PROPERTY GRAPH` DDL statement.
+///
+/// # Endpoints and Key Convention Note
+/// SQL:2023 PGQ edge tables require explicit vertex endpoints (`source_labels` and `target_labels`).
+/// If any relationship has empty endpoints, this function returns an `Err`.
+/// By convention, edge tables reference source and target vertex tables using foreign key column
+/// names `{src_table}_id` and `{tgt_table}_id` (e.g. `member_id`), referencing the target node's primary key.
 pub fn emit_pgq_property_graph_ddl(
     graph_name: &str,
     nodes: &[&NodeSchema],
     relationships: &[&RelationshipSchema],
-) -> String {
+) -> Result<String> {
     let mut v_clauses = Vec::new();
     for node in nodes {
         let primary_label = node.primary_label();
@@ -556,12 +577,24 @@ pub fn emit_pgq_property_graph_ddl(
             .source_labels
             .first()
             .map(|s| s.as_str())
-            .unwrap_or("source");
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                Error::SchemaError(format!(
+                    "Relationship '{}' is missing source_labels. SQL:2023 PGQ EDGE TABLES require explicit vertex source endpoints.",
+                    rel.name
+                ))
+            })?;
         let tgt_label = rel
             .target_labels
             .first()
             .map(|s| s.as_str())
-            .unwrap_or("target");
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                Error::SchemaError(format!(
+                    "Relationship '{}' is missing target_labels. SQL:2023 PGQ EDGE TABLES require explicit vertex target endpoints.",
+                    rel.name
+                ))
+            })?;
 
         let src_table = src_label.to_ascii_lowercase();
         let tgt_table = tgt_label.to_ascii_lowercase();
@@ -604,7 +637,7 @@ pub fn emit_pgq_property_graph_ddl(
         ddl.push_str(&format!("  EDGE TABLES (\n{edges_block}\n  )"));
     }
     ddl.push(';');
-    ddl
+    Ok(ddl)
 }
 
 /// Emits a SQL:2023 PGQ / DuckPGQ `DROP PROPERTY GRAPH` DDL statement.

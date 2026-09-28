@@ -3483,9 +3483,13 @@ impl PyNativeSchemaRegistry {
     ) -> PyResult<String> {
         if let Some(names) = model_names {
             let str_names: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-            Ok(self.registry().generate_pgq_ddl_for(graph_name, &str_names))
+            self.registry()
+                .generate_pgq_ddl_for(graph_name, &str_names)
+                .map_err(|e| PyValueError::new_err(e.to_string()))
         } else {
-            Ok(self.registry().generate_pgq_ddl(graph_name))
+            self.registry()
+                .generate_pgq_ddl(graph_name)
+                .map_err(|e| PyValueError::new_err(e.to_string()))
         }
     }
 
@@ -3651,9 +3655,8 @@ fn emit_pgq_property_graph_ddl(
     }
     let node_refs: Vec<&NodeSchema> = node_schemas.iter().collect();
     let rel_refs: Vec<&RelationshipSchema> = rel_schemas.iter().collect();
-    Ok(voyager_core::emit_pgq_property_graph_ddl(
-        graph_name, &node_refs, &rel_refs,
-    ))
+    voyager_core::emit_pgq_property_graph_ddl(graph_name, &node_refs, &rel_refs)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 #[pyfunction]

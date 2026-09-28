@@ -7,6 +7,7 @@ All DDL statements are deterministically emitted via native voyager-core Rust em
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from voyager_ogm._voyager_rs import (
@@ -33,6 +34,35 @@ if TYPE_CHECKING:
 SchemaRegistry = NativeSchemaRegistry
 
 
+def _is_relationship_model(model: Any) -> bool:
+    """Returns True if the model class or schema dict describes a Relationship entity."""
+    return (
+        hasattr(model, "__type__")
+        or (
+            hasattr(model, "__mro__")
+            and any(b.__name__ == "Relationship" for b in getattr(model, "__mro__", []))
+        )
+        or (
+            isinstance(model, dict)
+            and ("type_name" in model or "type" in model or "type_" in model)
+        )
+    )
+
+
+def _split_models(
+    models: Sequence[type[Node] | type[Relationship] | dict[str, Any]],
+) -> tuple[list[Any], list[Any]]:
+    """Partitions a collection of models into (nodes, relationships)."""
+    nodes: list[Any] = []
+    rels: list[Any] = []
+    for m in models:
+        if _is_relationship_model(m):
+            rels.append(m)
+        else:
+            nodes.append(m)
+    return nodes, rels
+
+
 class SchemaManager:
     """Manages schema constraints, indexes, graph types, and DDL migrations."""
 
@@ -57,14 +87,7 @@ class SchemaManager:
         Returns:
             List of executable DDL Cypher statement strings.
         """
-        if (
-            hasattr(model, "__type__")
-            or (
-                hasattr(model, "__mro__")
-                and any(b.__name__ == "Relationship" for b in getattr(model, "__mro__", []))
-            )
-            or (isinstance(model, dict) and ("type_name" in model or "type" in model))
-        ):
+        if _is_relationship_model(model):
             return emit_cypher_rel_ddl(model, include_type_constraints)
         return emit_cypher_node_ddl(model, include_type_constraints)
 
@@ -82,14 +105,7 @@ class SchemaManager:
         Returns:
             List of executable DROP statement strings.
         """
-        if (
-            hasattr(model, "__type__")
-            or (
-                hasattr(model, "__mro__")
-                and any(b.__name__ == "Relationship" for b in getattr(model, "__mro__", []))
-            )
-            or (isinstance(model, dict) and ("type_name" in model or "type" in model))
-        ):
+        if _is_relationship_model(model):
             return emit_cypher_drop_rel_ddl(model, include_type_constraints)
         return emit_cypher_drop_node_ddl(model, include_type_constraints)
 
@@ -250,10 +266,7 @@ class SchemaManager:
         Returns:
             Executable `ALTER CURRENT GRAPH TYPE` DDL string.
         """
-        if hasattr(model, "__type__") or (
-            hasattr(model, "__mro__")
-            and any(b.__name__ == "Relationship" for b in getattr(model, "__mro__", []))
-        ):
+        if _is_relationship_model(model):
             src_str = getattr(source_node, "__name__", str(source_node)) if source_node else None
             tgt_str = getattr(target_node, "__name__", str(target_node)) if target_node else None
             return emit_gql_alter_rel_ddl(model, src_str, tgt_str)
@@ -276,16 +289,7 @@ class SchemaManager:
         Returns:
             Executable Cypher 25 `ALTER CURRENT GRAPH TYPE SET { ... }` statement.
         """
-        nodes: list[Any] = []
-        rels: list[Any] = []
-        for m in models:
-            if hasattr(m, "__type__") or (
-                hasattr(m, "__mro__")
-                and any(b.__name__ == "Relationship" for b in getattr(m, "__mro__", []))
-            ):
-                rels.append(m)
-            else:
-                nodes.append(m)
+        nodes, rels = _split_models(models)
         return emit_cypher25_graph_type_ddl(nodes, rels)
 
     @staticmethod
@@ -308,16 +312,7 @@ class SchemaManager:
         Returns:
             Executable ISO GQL `CREATE GRAPH TYPE` statement.
         """
-        nodes: list[Any] = []
-        rels: list[Any] = []
-        for m in models:
-            if hasattr(m, "__type__") or (
-                hasattr(m, "__mro__")
-                and any(b.__name__ == "Relationship" for b in getattr(m, "__mro__", []))
-            ):
-                rels.append(m)
-            else:
-                nodes.append(m)
+        nodes, rels = _split_models(models)
         return emit_gql_graph_type_ddl(graph_type_name, nodes, rels)
 
     @staticmethod
@@ -347,16 +342,7 @@ class SchemaManager:
         Returns:
             Executable `CREATE PROPERTY GRAPH` statement.
         """
-        nodes: list[Any] = []
-        rels: list[Any] = []
-        for m in models:
-            if hasattr(m, "__type__") or (
-                hasattr(m, "__mro__")
-                and any(b.__name__ == "Relationship" for b in getattr(m, "__mro__", []))
-            ):
-                rels.append(m)
-            else:
-                nodes.append(m)
+        nodes, rels = _split_models(models)
         return emit_pgq_property_graph_ddl(graph_name, nodes, rels)
 
     @staticmethod

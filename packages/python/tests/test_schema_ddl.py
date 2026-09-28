@@ -52,7 +52,7 @@ class User(Node):
 class Follows(Relationship):
     """FOLLOWS edge with property constraint."""
 
-    since: int = Field(unique=True)
+    since: int = Field()
 
 
 def test_schema_ddl_generation():
@@ -72,6 +72,10 @@ def test_schema_ddl_generation():
         "CREATE CONSTRAINT constraint_user_email_unique IF NOT EXISTS FOR (n:User) REQUIRE n.email IS UNIQUE"
         in statements
     )
+
+    # Negative assertions: plain Field() and indexed Field() default to nullable (no NOT NULL constraint)
+    assert not any("constraint_user_age_not_null" in s for s in statements)
+    assert not any("constraint_user_bio_not_null" in s for s in statements)
 
     # Property Type Constraints (Graph Types)
     assert (
@@ -109,10 +113,37 @@ def test_cypher25_graph_type_ddl():
     assert "user_id :: STRING IS KEY" in cypher25_ddl
     assert "email :: STRING IS UNIQUE" in cypher25_ddl
     assert "(:User)-[:FOLLOWS =>" in cypher25_ddl
-    assert "since :: INTEGER IS UNIQUE" in cypher25_ddl
+    assert "since :: INTEGER" in cypher25_ddl
 
     drop_ddl = SchemaManager.generate_cypher25_drop_graph_type_ddl()
     assert drop_ddl == "ALTER CURRENT GRAPH TYPE SET {}"
+
+
+def test_cypher25_composite_facets_and_empty_entities():
+    """Verifies Cypher 25 composite facets (NOT NULL IS UNIQUE) and empty-entity grammar."""
+
+    @node(label="Tag")
+    class Tag(Node):
+        pass
+
+    @node(label="Member")
+    class Member(Node):
+        member_id: str = Field(primary_key=True)
+        login: str = Field(unique=True, nullable=False)
+
+    @relationship(type_name="TAGGED", source_node=Member, target_node=Tag)
+    class Tagged(Relationship):
+        pass
+
+    ddl = SchemaManager.generate_cypher25_graph_type_ddl(Tag, Member, Tagged)
+    # Empty node has no dangling =>
+    assert "(:Tag)" in ddl
+    assert "(:Tag =>)" not in ddl
+    # Empty rel has no dangling =>
+    assert "(:Member)-[:TAGGED]->(:Tag)" in ddl
+    assert "[:TAGGED =>]" not in ddl
+    # Composite facets
+    assert "login :: STRING NOT NULL IS UNIQUE" in ddl
 
 
 @pytest.mark.live
@@ -377,3 +408,11 @@ def test_dialect_ddl_error_handling():
     dropped_ddl = SchemaManager.drop_property_graph(pgq_sess, "my_graph")
     assert dropped_ddl == "DROP PROPERTY GRAPH IF EXISTS my_graph;"
     assert len(mock_pgq.executed_queries) == 2
+
+    # 5. Relationship missing endpoints raises ValueError in PGQ
+    @relationship(type_name="ORPHAN_REL")
+    class OrphanRel(Relationship):
+        weight: float = Field()
+
+    with pytest.raises(ValueError, match="missing source_labels"):
+        SchemaManager.generate_pgq_ddl("orphan_pgq", User, OrphanRel)

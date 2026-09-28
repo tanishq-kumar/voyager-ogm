@@ -758,7 +758,7 @@ impl SchemaRegistry {
     }
 
     /// Emits a SQL:2023 PGQ / DuckPGQ `CREATE PROPERTY GRAPH` statement for all registered entities.
-    pub fn generate_pgq_ddl(&self, graph_name: &str) -> String {
+    pub fn generate_pgq_ddl(&self, graph_name: &str) -> Result<String> {
         let nodes = self.node_schemas();
         let rels = self.relationship_schemas();
         let node_refs: Vec<&NodeSchema> = nodes.iter().collect();
@@ -767,7 +767,7 @@ impl SchemaRegistry {
     }
 
     /// Emits a SQL:2023 PGQ / DuckPGQ `CREATE PROPERTY GRAPH` statement for specified model names.
-    pub fn generate_pgq_ddl_for(&self, graph_name: &str, model_names: &[&str]) -> String {
+    pub fn generate_pgq_ddl_for(&self, graph_name: &str, model_names: &[&str]) -> Result<String> {
         let all_nodes = self.node_schemas();
         let all_rels = self.relationship_schemas();
         let filtered_nodes: Vec<&NodeSchema> = all_nodes
