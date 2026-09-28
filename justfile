@@ -132,6 +132,16 @@ sweep days="7":
 sweep-max size="4GB":
     cargo sweep --maxsize {{size}}
 
+# Prune stale rustc incremental sessions and test binaries while preserving dependency cache
+prune:
+    @if (Test-Path target/debug/incremental) { Remove-Item -Recurse -Force target/debug/incremental; Write-Host "[OK] Purged stale incremental cache in target/debug/incremental" -ForegroundColor Green }
+    @if (Test-Path target/release/incremental) { Remove-Item -Recurse -Force target/release/incremental; Write-Host "[OK] Purged stale incremental cache in target/release/incremental" -ForegroundColor Green }
+    @cargo sweep --maxsize 2GB
+    @Write-Host "[PASS] Stale debug & test artifacts pruned! Dependency cache preserved." -ForegroundColor Green
+
+# Quick alias to prune debug incremental build clutter
+prune-debug: prune
+
 
 # Run all Rust code examples
 examples-rust:

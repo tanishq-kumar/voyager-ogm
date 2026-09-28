@@ -718,6 +718,45 @@ impl SchemaRegistry {
         crate::emitters::ddl::emit_gql_drop_graph_type_ddl(graph_type_name)
     }
 
+    /// Emits a Neo4j Cypher 25 `ALTER CURRENT GRAPH TYPE SET { ... }` definition for all registered entities.
+    pub fn generate_cypher25_graph_type_ddl(&self) -> String {
+        let nodes = self.node_schemas();
+        let rels = self.relationship_schemas();
+        let node_refs: Vec<&NodeSchema> = nodes.iter().collect();
+        let rel_refs: Vec<&RelationshipSchema> = rels.iter().collect();
+        crate::emitters::ddl::emit_cypher25_graph_type_ddl(&node_refs, &rel_refs)
+    }
+
+    /// Emits a Neo4j Cypher 25 `ALTER CURRENT GRAPH TYPE SET { ... }` definition for specified model names or labels.
+    pub fn generate_cypher25_graph_type_ddl_for(&self, model_names: &[&str]) -> String {
+        let all_nodes = self.node_schemas();
+        let all_rels = self.relationship_schemas();
+        let filtered_nodes: Vec<&NodeSchema> = all_nodes
+            .iter()
+            .filter(|n| {
+                model_names.contains(&n.name.as_str())
+                    || model_names
+                        .iter()
+                        .any(|m| n.labels.iter().any(|l| l.eq_ignore_ascii_case(m)))
+            })
+            .collect();
+        let filtered_rels: Vec<&RelationshipSchema> = all_rels
+            .iter()
+            .filter(|r| {
+                model_names.contains(&r.name.as_str())
+                    || model_names
+                        .iter()
+                        .any(|m| r.type_name.eq_ignore_ascii_case(m))
+            })
+            .collect();
+        crate::emitters::ddl::emit_cypher25_graph_type_ddl(&filtered_nodes, &filtered_rels)
+    }
+
+    /// Emits a Neo4j Cypher 25 `ALTER CURRENT GRAPH TYPE SET {}` statement to reset the graph type.
+    pub fn generate_cypher25_drop_graph_type_ddl(&self) -> String {
+        crate::emitters::ddl::emit_cypher25_drop_graph_type_ddl()
+    }
+
     /// Emits a SQL:2023 PGQ / DuckPGQ `CREATE PROPERTY GRAPH` statement for all registered entities.
     pub fn generate_pgq_ddl(&self, graph_name: &str) -> String {
         let nodes = self.node_schemas();

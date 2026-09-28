@@ -8,8 +8,9 @@ use voyager_core::schema::{
 };
 use voyager_core::{
     emit_cypher_drop_node_ddl, emit_cypher_drop_rel_ddl, emit_cypher_node_ddl, emit_cypher_rel_ddl,
-    emit_gql_alter_node_ddl, emit_gql_alter_rel_ddl, emit_gql_drop_graph_type_ddl,
-    emit_gql_graph_type_ddl, emit_pgq_drop_property_graph_ddl, emit_pgq_property_graph_ddl,
+    emit_cypher25_drop_graph_type_ddl, emit_cypher25_graph_type_ddl, emit_gql_alter_node_ddl,
+    emit_gql_alter_rel_ddl, emit_gql_drop_graph_type_ddl, emit_gql_graph_type_ddl,
+    emit_pgq_drop_property_graph_ddl, emit_pgq_property_graph_ddl,
 };
 
 fn create_test_node_schema() -> NodeSchema {
@@ -33,7 +34,7 @@ fn test_cypher_node_ddl_and_drop() {
 
     // 1. DDL generation without property type constraints (Community Edition)
     let ddl = emit_cypher_node_ddl(&node, false);
-    assert_eq!(ddl.len(), 4);
+    assert_eq!(ddl.len(), 5);
     assert_eq!(
         ddl[0],
         "CREATE INDEX index_user_age IF NOT EXISTS FOR (n:User) ON (n.age)"
@@ -48,12 +49,16 @@ fn test_cypher_node_ddl_and_drop() {
     );
     assert_eq!(
         ddl[3],
+        "CREATE CONSTRAINT constraint_user_user_id_not_null IF NOT EXISTS FOR (n:User) REQUIRE n.user_id IS NOT NULL"
+    );
+    assert_eq!(
+        ddl[4],
         "CREATE CONSTRAINT constraint_user_user_id_unique IF NOT EXISTS FOR (n:User) REQUIRE n.user_id IS UNIQUE"
     );
 
     // 2. DDL generation with Neo4j 5.x property type constraints (Enterprise Edition)
     let enterprise_ddl = emit_cypher_node_ddl(&node, true);
-    assert_eq!(enterprise_ddl.len(), 8);
+    assert_eq!(enterprise_ddl.len(), 9);
     assert!(enterprise_ddl.contains(
         &"CREATE CONSTRAINT constraint_user_user_id_type IF NOT EXISTS FOR (n:User) REQUIRE n.user_id :: STRING".to_string()
     ));
@@ -66,7 +71,11 @@ fn test_cypher_node_ddl_and_drop() {
 
     // 3. DROP DDL generation
     let drop_ddl = emit_cypher_drop_node_ddl(&node, true);
-    assert_eq!(drop_ddl.len(), 8);
+    assert_eq!(drop_ddl.len(), 9);
+    assert!(
+        drop_ddl
+            .contains(&"DROP CONSTRAINT constraint_user_user_id_not_null IF EXISTS".to_string())
+    );
     assert!(
         drop_ddl.contains(&"DROP CONSTRAINT constraint_user_user_id_unique IF EXISTS".to_string())
     );
@@ -119,6 +128,24 @@ fn test_cypher_rel_ddl_and_drop() {
 }
 
 #[test]
+fn test_cypher25_graph_type_ddl() {
+    let node = create_test_node_schema();
+    let rel = create_test_rel_schema();
+
+    let ddl = emit_cypher25_graph_type_ddl(&[&node], &[&rel]);
+    let expected = "\
+ALTER CURRENT GRAPH TYPE SET {
+    (:User => :Account {age :: INTEGER, bio :: STRING, email :: STRING IS UNIQUE, user_id :: STRING IS KEY}),
+    (:User)-[:FOLLOWS => {role :: STRING, since :: INTEGER NOT NULL}]->(:User)
+}";
+    assert_eq!(ddl, expected);
+    assert_eq!(
+        emit_cypher25_drop_graph_type_ddl(),
+        "ALTER CURRENT GRAPH TYPE SET {}"
+    );
+}
+
+#[test]
 fn test_gql_create_graph_type_ddl() {
     let node = create_test_node_schema();
     let rel = create_test_rel_schema();
@@ -126,8 +153,8 @@ fn test_gql_create_graph_type_ddl() {
     let ddl = emit_gql_graph_type_ddl("SocialGraph", &[&node], &[&rel]);
     let expected = "\
 CREATE GRAPH TYPE SocialGraph AS {
-    NODE User (age INTEGER, bio STRING, email STRING, user_id STRING),
-    EDGE FOLLOWS (role STRING, since INTEGER)
+    NODE User (age INTEGER, bio STRING, email STRING, user_id STRING NOT NULL) KEY (user_id),
+    EDGE FOLLOWS CONNECTING (User TO User) (role STRING, since INTEGER NOT NULL)
 }";
     assert_eq!(ddl, expected);
 }
@@ -162,13 +189,13 @@ fn test_pgq_property_graph_ddl() {
     let expected = "\
 CREATE PROPERTY GRAPH social_graph
   VERTEX TABLES (
-    user KEY (user_id) LABEL User
+    user KEY (user_id) LABEL User PROPERTIES (age, bio, email, user_id)
   )
   EDGE TABLES (
     follows
-      SOURCE KEY (user_id) REFERENCES user
-      DESTINATION KEY (user_id) REFERENCES user
-      LABEL FOLLOWS
+      SOURCE KEY (user_id) REFERENCES user (user_id)
+      DESTINATION KEY (user_id) REFERENCES user (user_id)
+      LABEL FOLLOWS PROPERTIES (role, since)
   );";
     assert_eq!(ddl, expected);
 
@@ -186,15 +213,22 @@ fn test_schema_registry_ddl_methods() {
     registry.register_relationship(rel).unwrap();
 
     let cypher_ddl = registry.generate_cypher_ddl(false);
-    assert_eq!(cypher_ddl.len(), 6);
+    assert_eq!(cypher_ddl.len(), 7);
 
     let node_cypher = registry.generate_node_cypher_ddl("User", false);
     assert!(node_cypher.is_some());
-    assert_eq!(node_cypher.unwrap().len(), 4);
+    assert_eq!(node_cypher.unwrap().len(), 5);
 
     let rel_cypher = registry.generate_rel_cypher_ddl("Follows", false);
     assert!(rel_cypher.is_some());
     assert_eq!(rel_cypher.unwrap().len(), 2);
+
+    let cypher25_ddl = registry.generate_cypher25_graph_type_ddl();
+    assert!(cypher25_ddl.starts_with("ALTER CURRENT GRAPH TYPE SET {"));
+    assert_eq!(
+        registry.generate_cypher25_drop_graph_type_ddl(),
+        "ALTER CURRENT GRAPH TYPE SET {}"
+    );
 
     let gql_ddl = registry.generate_gql_graph_type_ddl("NetworkGraph");
     assert!(gql_ddl.starts_with("CREATE GRAPH TYPE NetworkGraph AS {"));

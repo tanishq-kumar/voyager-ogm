@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 
 from voyager_ogm._voyager_rs import (
     NativeSchemaRegistry,
+    emit_cypher25_drop_graph_type_ddl,
+    emit_cypher25_graph_type_ddl,
     emit_cypher_drop_node_ddl,
     emit_cypher_drop_rel_ddl,
     emit_cypher_node_ddl,
@@ -107,7 +109,28 @@ class SchemaManager:
 
         Returns:
             List of executed DDL queries.
+
+        Raises:
+            NotImplementedError: If the session dialect does not support openCypher constraint DDL.
         """
+        dialect = getattr(session, "dialect", "cypher").lower()
+        if dialect in ("sql_pgq", "pgq", "duckpgq", "duckdb", "postgres", "postgresql"):
+            raise NotImplementedError(
+                f"SchemaManager.create_all() generates openCypher constraint DDL. "
+                f"For {dialect.upper()} (SQL:2023 PGQ), use SchemaManager.create_property_graph(session, graph_name, *models) "
+                f"or SchemaManager.generate_pgq_ddl(graph_name, *models)."
+            )
+        if dialect in ("falkordb", "falkor"):
+            raise NotImplementedError(
+                "FalkorDB does not support openCypher 'CREATE CONSTRAINT' queries in GRAPH.QUERY. "
+                "Constraints in FalkorDB must be created via native Redis commands ('GRAPH.CONSTRAINT CREATE')."
+            )
+        if dialect in ("age", "apache_age"):
+            raise NotImplementedError(
+                "Apache AGE does not support Cypher 'CREATE CONSTRAINT' queries. "
+                "Constraints in Apache AGE must be defined on the underlying PostgreSQL relational tables."
+            )
+
         applied: list[str] = []
         for model in models:
             for stmt in cls.generate_cypher_ddl(
@@ -133,7 +156,28 @@ class SchemaManager:
 
         Returns:
             List of executed DROP queries.
+
+        Raises:
+            NotImplementedError: If the session dialect does not support openCypher DROP constraint DDL.
         """
+        dialect = getattr(session, "dialect", "cypher").lower()
+        if dialect in ("sql_pgq", "pgq", "duckpgq", "duckdb", "postgres", "postgresql"):
+            raise NotImplementedError(
+                f"SchemaManager.drop_all() generates openCypher DROP statements. "
+                f"For {dialect.upper()} (SQL:2023 PGQ), use SchemaManager.drop_property_graph(session, graph_name) "
+                f"or SchemaManager.generate_pgq_drop_ddl(graph_name)."
+            )
+        if dialect in ("falkordb", "falkor"):
+            raise NotImplementedError(
+                "FalkorDB does not support openCypher 'DROP CONSTRAINT' queries. "
+                "Drop constraints via native Redis commands ('GRAPH.CONSTRAINT DROP')."
+            )
+        if dialect in ("age", "apache_age"):
+            raise NotImplementedError(
+                "Apache AGE does not support Cypher 'DROP CONSTRAINT' queries. "
+                "Constraints in Apache AGE must be dropped on the underlying PostgreSQL relational tables."
+            )
+
         dropped: list[str] = []
         for model in models:
             for stmt in cls.generate_drop_ddl(
@@ -142,6 +186,46 @@ class SchemaManager:
                 session.execute(stmt)
                 dropped.append(stmt)
         return dropped
+
+    @classmethod
+    def create_property_graph(
+        cls,
+        session: Session,
+        graph_name: str,
+        *models: type[Node] | type[Relationship],
+    ) -> str:
+        """Applies SQL:2023 PGQ `CREATE PROPERTY GRAPH` DDL to the active session.
+
+        Args:
+            session: Active database session (PostgreSQL 19 / DuckPGQ).
+            graph_name: Identifier name for the property graph.
+            *models: Model classes to register.
+
+        Returns:
+            The executed DDL statement.
+        """
+        ddl = cls.generate_pgq_ddl(graph_name, *models)
+        session.execute(ddl)
+        return ddl
+
+    @classmethod
+    def drop_property_graph(
+        cls,
+        session: Session,
+        graph_name: str,
+    ) -> str:
+        """Drops a SQL:2023 PGQ property graph from the active session.
+
+        Args:
+            session: Active database session.
+            graph_name: Identifier name of property graph to drop.
+
+        Returns:
+            The executed DROP statement.
+        """
+        ddl = cls.generate_pgq_drop_ddl(graph_name)
+        session.execute(ddl)
+        return ddl
 
     @staticmethod
     def generate_alter_graph_type_ddl(
@@ -174,6 +258,40 @@ class SchemaManager:
             tgt_str = getattr(target_node, "__name__", str(target_node)) if target_node else None
             return emit_gql_alter_rel_ddl(model, src_str, tgt_str)
         return emit_gql_alter_node_ddl(model)
+
+    @classmethod
+    def generate_cypher25_graph_type_ddl(
+        cls,
+        *models: type[Node] | type[Relationship],
+    ) -> str:
+        """Generates Neo4j Cypher 25 `ALTER CURRENT GRAPH TYPE SET { ... }` DDL statement.
+
+        Emits declarative open graph type schema blocks enforcing node element types,
+        relationship element types, implied labels, property types, keys (IS KEY),
+        uniqueness (IS UNIQUE), and existence (NOT NULL).
+
+        Args:
+            *models: Node and Relationship model classes to include in the graph type.
+
+        Returns:
+            Executable Cypher 25 `ALTER CURRENT GRAPH TYPE SET { ... }` statement.
+        """
+        nodes: list[Any] = []
+        rels: list[Any] = []
+        for m in models:
+            if hasattr(m, "__type__") or (
+                hasattr(m, "__mro__")
+                and any(b.__name__ == "Relationship" for b in getattr(m, "__mro__", []))
+            ):
+                rels.append(m)
+            else:
+                nodes.append(m)
+        return emit_cypher25_graph_type_ddl(nodes, rels)
+
+    @staticmethod
+    def generate_cypher25_drop_graph_type_ddl() -> str:
+        """Emits Neo4j Cypher 25 `ALTER CURRENT GRAPH TYPE SET {}` statement to reset the graph type."""
+        return emit_cypher25_drop_graph_type_ddl()
 
     @classmethod
     def generate_gql_graph_type_ddl(

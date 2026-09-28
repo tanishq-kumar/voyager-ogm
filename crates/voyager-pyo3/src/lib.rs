@@ -3008,7 +3008,22 @@ fn extract_rel_schema(obj: &Bound<'_, PyAny>) -> PyResult<RelationshipSchema> {
         } else {
             name.to_ascii_uppercase()
         };
-        let mut rel = RelationshipSchema::new(name, type_name);
+        let source_labels: Vec<String> = if obj.hasattr("__source_labels__")? {
+            obj.getattr("__source_labels__")?
+                .extract::<Vec<String>>()
+                .unwrap_or_default()
+        } else {
+            vec![]
+        };
+        let target_labels: Vec<String> = if obj.hasattr("__target_labels__")? {
+            obj.getattr("__target_labels__")?
+                .extract::<Vec<String>>()
+                .unwrap_or_default()
+        } else {
+            vec![]
+        };
+        let mut rel =
+            RelationshipSchema::new(name, type_name).with_endpoints(source_labels, target_labels);
         if obj.hasattr("_schema_fields")? {
             let fields_any = obj.getattr("_schema_fields")?;
             if let Ok(fields_dict) = fields_any.downcast::<PyDict>() {
@@ -3479,6 +3494,27 @@ impl PyNativeSchemaRegistry {
         Ok(self.registry().generate_pgq_drop_ddl(graph_name))
     }
 
+    /// Emits a Neo4j Cypher 25 `ALTER CURRENT GRAPH TYPE SET { ... }` DDL statement.
+    #[pyo3(signature = (model_names=None))]
+    fn generate_cypher25_graph_type_ddl(
+        &self,
+        model_names: Option<Vec<String>>,
+    ) -> PyResult<String> {
+        if let Some(names) = model_names {
+            let str_names: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+            Ok(self
+                .registry()
+                .generate_cypher25_graph_type_ddl_for(&str_names))
+        } else {
+            Ok(self.registry().generate_cypher25_graph_type_ddl())
+        }
+    }
+
+    /// Emits a Neo4j Cypher 25 `ALTER CURRENT GRAPH TYPE SET {}` statement to reset the graph type.
+    fn generate_cypher25_drop_graph_type_ddl(&self) -> PyResult<String> {
+        Ok(self.registry().generate_cypher25_drop_graph_type_ddl())
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "NativeSchemaRegistry(nodes={}, relationships={})",
@@ -3625,6 +3661,36 @@ fn emit_pgq_drop_property_graph_ddl(graph_name: &str) -> PyResult<String> {
     Ok(voyager_core::emit_pgq_drop_property_graph_ddl(graph_name))
 }
 
+#[pyfunction]
+#[pyo3(signature = (nodes=None, rels=None))]
+fn emit_cypher25_graph_type_ddl(
+    nodes: Option<Vec<Bound<'_, PyAny>>>,
+    rels: Option<Vec<Bound<'_, PyAny>>>,
+) -> PyResult<String> {
+    let mut node_schemas = Vec::new();
+    if let Some(n_list) = nodes {
+        for n in &n_list {
+            node_schemas.push(extract_node_schema(n)?);
+        }
+    }
+    let mut rel_schemas = Vec::new();
+    if let Some(r_list) = rels {
+        for r in &r_list {
+            rel_schemas.push(extract_rel_schema(r)?);
+        }
+    }
+    let node_refs: Vec<&NodeSchema> = node_schemas.iter().collect();
+    let rel_refs: Vec<&RelationshipSchema> = rel_schemas.iter().collect();
+    Ok(voyager_core::emit_cypher25_graph_type_ddl(
+        &node_refs, &rel_refs,
+    ))
+}
+
+#[pyfunction]
+fn emit_cypher25_drop_graph_type_ddl() -> PyResult<String> {
+    Ok(voyager_core::emit_cypher25_drop_graph_type_ddl())
+}
+
 /// Native Python module definition for `_voyager_rs`.
 #[pymodule]
 fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -3647,6 +3713,8 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(emit_gql_drop_graph_type_ddl, m)?)?;
     m.add_function(wrap_pyfunction!(emit_pgq_property_graph_ddl, m)?)?;
     m.add_function(wrap_pyfunction!(emit_pgq_drop_property_graph_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_cypher25_graph_type_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_cypher25_drop_graph_type_ddl, m)?)?;
     m.add_class::<PyQueryBuilder>()?;
     m.add_class::<PyAstExpr>()?;
     m.add_class::<PyArrowStream>()?;

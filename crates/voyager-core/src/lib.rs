@@ -36,7 +36,8 @@ pub use builder::QueryBuilder;
 pub use cache::{CacheMetrics, CompiledQueryCache, global_query_cache};
 pub use emitters::{
     AgeEmitter, CypherEmitter, IsoGqlEmitter, SqlPgqEmitter, emit_cypher_drop_node_ddl,
-    emit_cypher_drop_rel_ddl, emit_cypher_node_ddl, emit_cypher_rel_ddl, emit_gql_alter_node_ddl,
+    emit_cypher_drop_rel_ddl, emit_cypher_node_ddl, emit_cypher_rel_ddl,
+    emit_cypher25_drop_graph_type_ddl, emit_cypher25_graph_type_ddl, emit_gql_alter_node_ddl,
     emit_gql_alter_rel_ddl, emit_gql_drop_graph_type_ddl, emit_gql_graph_type_ddl,
     emit_pgq_drop_property_graph_ddl, emit_pgq_property_graph_ddl,
 };

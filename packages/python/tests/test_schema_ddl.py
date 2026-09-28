@@ -9,6 +9,9 @@ Verifies:
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 from voyager_ogm import (
     Field,
@@ -19,6 +22,20 @@ from voyager_ogm import (
     node,
     relationship,
 )
+from voyager_ogm.bridge import Neo4jBoltBridge
+
+
+def _load_env() -> None:
+    env_path = Path(__file__).resolve().parents[3] / ".env"
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+
+
+_load_env()
 
 
 @node(label="User")
@@ -31,7 +48,7 @@ class User(Node):
     bio: str = Field()
 
 
-@relationship(type_name="FOLLOWS")
+@relationship(type_name="FOLLOWS", source_node=User, target_node=User)
 class Follows(Relationship):
     """FOLLOWS edge with property constraint."""
 
@@ -45,6 +62,10 @@ def test_schema_ddl_generation():
     # Unique / Primary Key constraints
     assert (
         "CREATE CONSTRAINT constraint_user_user_id_unique IF NOT EXISTS FOR (n:User) REQUIRE n.user_id IS UNIQUE"
+        in statements
+    )
+    assert (
+        "CREATE CONSTRAINT constraint_user_user_id_not_null IF NOT EXISTS FOR (n:User) REQUIRE n.user_id IS NOT NULL"
         in statements
     )
     assert (
@@ -74,9 +95,24 @@ def test_schema_drop_ddl_generation():
     """Verifies generated DROP statements."""
     drop_statements = SchemaManager.generate_drop_ddl(User, include_type_constraints=True)
     assert "DROP CONSTRAINT constraint_user_user_id_unique IF EXISTS" in drop_statements
+    assert "DROP CONSTRAINT constraint_user_user_id_not_null IF EXISTS" in drop_statements
     assert "DROP CONSTRAINT constraint_user_email_unique IF EXISTS" in drop_statements
     assert "DROP CONSTRAINT constraint_user_age_type IF EXISTS" in drop_statements
     assert "DROP INDEX index_user_age IF EXISTS" in drop_statements
+
+
+def test_cypher25_graph_type_ddl():
+    """Verifies Cypher 25 ALTER CURRENT GRAPH TYPE SET block generation."""
+    cypher25_ddl = SchemaManager.generate_cypher25_graph_type_ddl(User, Follows)
+    assert cypher25_ddl.startswith("ALTER CURRENT GRAPH TYPE SET {")
+    assert "(:User =>" in cypher25_ddl
+    assert "user_id :: STRING IS KEY" in cypher25_ddl
+    assert "email :: STRING IS UNIQUE" in cypher25_ddl
+    assert "(:User)-[:FOLLOWS =>" in cypher25_ddl
+    assert "since :: INTEGER IS UNIQUE" in cypher25_ddl
+
+    drop_ddl = SchemaManager.generate_cypher25_drop_graph_type_ddl()
+    assert drop_ddl == "ALTER CURRENT GRAPH TYPE SET {}"
 
 
 @pytest.mark.live
@@ -85,14 +121,20 @@ def test_live_neo4j_schema_ddl_creation():
     try:
         from neo4j import GraphDatabase
 
-        driver = GraphDatabase.driver(
-            "bolt://127.0.0.1:7687", auth=("neo4j", "voyagerpass123"), connection_timeout=0.2
+        uri = os.getenv("NEO4J_ENTERPRISE_URI", os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687"))
+        user = os.getenv("NEO4J_ENTERPRISE_USER", os.getenv("NEO4J_USER", "neo4j"))
+        password = os.getenv(
+            "NEO4J_ENTERPRISE_PASSWORD", os.getenv("NEO4J_PASSWORD", "voyagerpass123")
         )
+        database = os.getenv("NEO4J_ENTERPRISE_DATABASE", "neo4j")
+
+        driver = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=0.5)
         driver.verify_connectivity()
     except Exception:
-        pytest.skip("Neo4j database not reachable on bolt://127.0.0.1:7687")
+        pytest.skip(f"Neo4j database not reachable on {uri}")
 
-    session = Session(bridge=driver, dialect="cypher")
+    bridge = Neo4jBoltBridge(driver, database=database)
+    session = Session(bridge=bridge, dialect="cypher")
 
     # Clean any leftover constraints first
     SchemaManager.drop_all(session, User)
@@ -113,6 +155,91 @@ def test_live_neo4j_schema_ddl_creation():
 
     session.close()
     driver.close()
+
+
+@pytest.mark.live
+def test_live_neo4j_enterprise_cypher25_graph_type():
+    """Verifies applying declarative Cypher 25 Graph Types to Neo4j Enterprise live."""
+    uri = os.getenv("NEO4J_ENTERPRISE_URI")
+    if not uri:
+        pytest.skip("NEO4J_ENTERPRISE_URI not set in environment")
+
+    try:
+        from neo4j import GraphDatabase
+
+        user = os.getenv("NEO4J_ENTERPRISE_USER", "neo4j")
+        password = os.getenv("NEO4J_ENTERPRISE_PASSWORD", "voyex1234")
+        database = os.getenv("NEO4J_ENTERPRISE_DATABASE", "neo4j")
+
+        driver = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=0.5)
+        driver.verify_connectivity()
+    except Exception:
+        pytest.skip(f"Neo4j Enterprise not reachable on {uri}")
+
+    bridge = Neo4jBoltBridge(driver, database=database)
+    session = Session(bridge=bridge, dialect="cypher")
+
+    try:
+        # 1. Clean existing graph type
+        session.execute(SchemaManager.generate_cypher25_drop_graph_type_ddl())
+
+        # 2. Emit and apply declarative Cypher 25 Graph Type
+        cypher25_ddl = SchemaManager.generate_cypher25_graph_type_ddl(User, Follows)
+        session.execute(cypher25_ddl)
+
+        # 3. Verify graph type constraints exist
+        constraints = session.execute("SHOW CONSTRAINTS")
+        c_names = [c.get("name", "") for c in constraints]
+        assert len(c_names) > 0
+
+        # 4. Reset graph type cleanly
+        session.execute(SchemaManager.generate_cypher25_drop_graph_type_ddl())
+    finally:
+        session.close()
+        driver.close()
+
+
+@pytest.mark.live
+def test_live_postgres19_pgq_ddl_execution():
+    """Verifies applying generated SQL:2023 PGQ DDL directly to PostgreSQL 19."""
+    uri = os.getenv("PG19_URI", "postgresql://postgres:voyagerpass123@127.0.0.1:5456/postgres")
+    try:
+        import psycopg
+
+        conn = psycopg.connect(uri, connect_timeout=1)
+    except Exception:
+        pytest.skip(f"PostgreSQL 19 not reachable on {uri}")
+
+    @node(label="Member")
+    class Member(Node):
+        member_id: str = Field(primary_key=True)
+        name: str = Field()
+        age: int = Field()
+
+    @relationship(type_name="FRIENDS_WITH", source_node=Member, target_node=Member)
+    class FriendsWith(Relationship):
+        since: int = Field()
+
+    cur = conn.cursor()
+    try:
+        cur.execute("DROP PROPERTY GRAPH IF EXISTS live_pgq_test CASCADE;")
+        cur.execute("DROP TABLE IF EXISTS friendswith CASCADE;")
+        cur.execute("DROP TABLE IF EXISTS member CASCADE;")
+
+        cur.execute("CREATE TABLE member (member_id TEXT PRIMARY KEY, name TEXT, age INT);")
+        cur.execute(
+            "CREATE TABLE friendswith (member_id TEXT REFERENCES member(member_id), since INT, PRIMARY KEY (member_id, since));"
+        )
+
+        pgq_ddl = SchemaManager.generate_pgq_ddl("live_pgq_test", Member, FriendsWith)
+        cur.execute(pgq_ddl)
+        conn.commit()
+
+        # Drop property graph cleanly
+        cur.execute(SchemaManager.generate_pgq_drop_ddl("live_pgq_test"))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def test_alter_current_graph_type_ddl():
@@ -136,8 +263,11 @@ def test_gql_create_graph_type_ddl():
     """Verifies standard ISO GQL CREATE GRAPH TYPE statement definition."""
     gql_ddl = SchemaManager.generate_gql_graph_type_ddl("SocialGraphType", User, Follows)
     assert "CREATE GRAPH TYPE SocialGraphType AS {" in gql_ddl
-    assert "    NODE User (age INTEGER, bio STRING, email STRING, user_id STRING)" in gql_ddl
-    assert "    EDGE FOLLOWS (since INTEGER)" in gql_ddl
+    assert (
+        "NODE User (age INTEGER, bio STRING, email STRING, user_id STRING NOT NULL) KEY (user_id)"
+        in gql_ddl
+    )
+    assert "EDGE FOLLOWS CONNECTING (User TO User) (since INTEGER)" in gql_ddl
 
     drop_ddl = SchemaManager.generate_gql_drop_graph_type_ddl("SocialGraphType")
     assert drop_ddl == "DROP GRAPH TYPE SocialGraphType IF EXISTS"
@@ -148,9 +278,11 @@ def test_pgq_property_graph_ddl():
     pgq_ddl = SchemaManager.generate_pgq_ddl("social_pgq", User, Follows)
     assert "CREATE PROPERTY GRAPH social_pgq" in pgq_ddl
     assert "VERTEX TABLES (" in pgq_ddl
-    assert "user KEY (user_id) LABEL User" in pgq_ddl
+    assert "user KEY (user_id) LABEL User PROPERTIES (age, bio, email, user_id)" in pgq_ddl
     assert "EDGE TABLES (" in pgq_ddl
-    assert "LABEL FOLLOWS" in pgq_ddl
+    assert "SOURCE KEY (user_id) REFERENCES user (user_id)" in pgq_ddl
+    assert "DESTINATION KEY (user_id) REFERENCES user (user_id)" in pgq_ddl
+    assert "LABEL FOLLOWS PROPERTIES (since)" in pgq_ddl
 
     drop_pgq = SchemaManager.generate_pgq_drop_ddl("social_pgq")
     assert drop_pgq == "DROP PROPERTY GRAPH IF EXISTS social_pgq;"
@@ -181,16 +313,67 @@ def test_native_schema_registry_ddl():
     # 1. openCypher DDL
     cypher_stmts = reg.generate_cypher_ddl(include_type_constraints=False)
     assert any("CREATE CONSTRAINT constraint_article_id_unique" in s for s in cypher_stmts)
+    assert any("CREATE CONSTRAINT constraint_article_id_not_null" in s for s in cypher_stmts)
     assert any("CREATE INDEX index_article_title" in s for s in cypher_stmts)
 
-    # 2. ISO GQL DDL
+    # 2. Cypher 25 Graph Type DDL
+    cypher25 = reg.generate_cypher25_graph_type_ddl()
+    assert "ALTER CURRENT GRAPH TYPE SET {" in cypher25
+    assert "id :: STRING IS KEY" in cypher25
+    assert "(:Article)-[:CITED_BY =>" in cypher25
+    assert reg.generate_cypher25_drop_graph_type_ddl() == "ALTER CURRENT GRAPH TYPE SET {}"
+
+    # 3. ISO GQL DDL
     gql = reg.generate_gql_graph_type_ddl("ArticleGraph")
     assert "CREATE GRAPH TYPE ArticleGraph AS {" in gql
-    assert "NODE Article (id STRING, title STRING)" in gql
-    assert "EDGE CITED_BY (year INTEGER)" in gql
+    assert "NODE Article (id STRING NOT NULL, title STRING) KEY (id)" in gql
+    assert "EDGE CITED_BY CONNECTING (Article TO Article) (year INTEGER)" in gql
 
-    # 3. SQL:2023 PGQ DDL
+    # 4. SQL:2023 PGQ DDL
     pgq = reg.generate_pgq_ddl("article_pgq")
     assert "CREATE PROPERTY GRAPH article_pgq" in pgq
-    assert "article KEY (id) LABEL Article" in pgq
-    assert "LABEL CITED_BY" in pgq
+    assert "article KEY (id) LABEL Article PROPERTIES (id, title)" in pgq
+    assert "SOURCE KEY (article_id) REFERENCES article (id)" in pgq
+    assert "DESTINATION KEY (article_id) REFERENCES article (id)" in pgq
+    assert "LABEL CITED_BY PROPERTIES (year)" in pgq
+
+
+def test_dialect_ddl_error_handling():
+    """Verifies SchemaManager raises actionable NotImplementedError for unsupported dialects instead of failing silently."""
+    from voyager_ogm.bridge import MockBridge
+
+    # 1. SQL:2023 PGQ dialect session
+    pgq_session = Session(bridge=MockBridge(), dialect="sql_pgq")
+    with pytest.raises(NotImplementedError, match="SQL:2023 PGQ"):
+        SchemaManager.create_all(pgq_session, User)
+
+    with pytest.raises(NotImplementedError, match="SQL:2023 PGQ"):
+        SchemaManager.drop_all(pgq_session, User)
+
+    # 2. FalkorDB session
+    falkor_session = Session(bridge=MockBridge(), dialect="falkordb")
+    with pytest.raises(NotImplementedError, match="FalkorDB does not support"):
+        SchemaManager.create_all(falkor_session, User)
+
+    with pytest.raises(NotImplementedError, match="FalkorDB does not support"):
+        SchemaManager.drop_all(falkor_session, User)
+
+    # 3. Apache AGE session
+    age_session = Session(bridge=MockBridge(), dialect="age")
+    with pytest.raises(NotImplementedError, match="Apache AGE does not support"):
+        SchemaManager.create_all(age_session, User)
+
+    with pytest.raises(NotImplementedError, match="Apache AGE does not support"):
+        SchemaManager.drop_all(age_session, User)
+
+    # 4. Property Graph helpers for PGQ sessions
+    mock_pgq = MockBridge()
+    pgq_sess = Session(bridge=mock_pgq, dialect="sql_pgq")
+    created_ddl = SchemaManager.create_property_graph(pgq_sess, "my_graph", User, Follows)
+    assert created_ddl.startswith("CREATE PROPERTY GRAPH my_graph")
+    assert len(mock_pgq.executed_queries) == 1
+    assert mock_pgq.executed_queries[0][0] == created_ddl
+
+    dropped_ddl = SchemaManager.drop_property_graph(pgq_sess, "my_graph")
+    assert dropped_ddl == "DROP PROPERTY GRAPH IF EXISTS my_graph;"
+    assert len(mock_pgq.executed_queries) == 2

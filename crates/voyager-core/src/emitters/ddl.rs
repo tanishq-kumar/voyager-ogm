@@ -139,6 +139,14 @@ pub fn emit_cypher_node_ddl(node: &NodeSchema, include_type_constraints: bool) -
     for field in node.fields.values() {
         let db_name = &field.name;
 
+        // Property existence (NOT NULL) constraint
+        if !field.nullable {
+            let c_name = cypher_constraint_name(primary_label, db_name, "not_null");
+            statements.push(format!(
+                "CREATE CONSTRAINT {c_name} IF NOT EXISTS FOR (n:{primary_label}) REQUIRE n.{db_name} IS NOT NULL"
+            ));
+        }
+
         // Unique / Primary Key constraint
         if field.unique || field.primary_key {
             let c_name = cypher_constraint_name(primary_label, db_name, "unique");
@@ -225,6 +233,10 @@ pub fn emit_cypher_drop_node_ddl(node: &NodeSchema, include_type_constraints: bo
 
     for field in node.fields.values() {
         let db_name = &field.name;
+        if !field.nullable {
+            let c_name = cypher_constraint_name(primary_label, db_name, "not_null");
+            statements.push(format!("DROP CONSTRAINT {c_name} IF EXISTS"));
+        }
         if field.unique || field.primary_key {
             let c_name = cypher_constraint_name(primary_label, db_name, "unique");
             statements.push(format!("DROP CONSTRAINT {c_name} IF EXISTS"));
@@ -270,6 +282,103 @@ pub fn emit_cypher_drop_rel_ddl(
 }
 
 // ---------------------------------------------------------------------------
+// Neo4j Cypher 25 Graph Types Emitter (ALTER CURRENT GRAPH TYPE SET)
+// ---------------------------------------------------------------------------
+
+/// Emits Neo4j Cypher 25 `ALTER CURRENT GRAPH TYPE SET { ... }` declarative schema statement.
+pub fn emit_cypher25_graph_type_ddl(
+    nodes: &[&NodeSchema],
+    relationships: &[&RelationshipSchema],
+) -> String {
+    let mut elements = Vec::new();
+
+    for node in nodes {
+        let primary_label = node.primary_label();
+        let implied: Vec<&str> = node.labels.iter().skip(1).map(|s| s.as_str()).collect();
+        let implied_str = if implied.is_empty() {
+            String::new()
+        } else {
+            format!(":{}", implied.join("&"))
+        };
+
+        let mut prop_defs = Vec::new();
+        for field in node.fields.values() {
+            let neo4j_type = field_type_to_neo4j(&field.field_type);
+            let constraint_suffix = if field.primary_key {
+                " IS KEY"
+            } else if field.unique {
+                " IS UNIQUE"
+            } else if !field.nullable {
+                " NOT NULL"
+            } else {
+                ""
+            };
+            prop_defs.push(format!("{} :: {neo4j_type}{constraint_suffix}", field.name));
+        }
+        let props_str = if prop_defs.is_empty() {
+            String::new()
+        } else {
+            format!(" {{{}}}", prop_defs.join(", "))
+        };
+
+        if implied_str.is_empty() {
+            elements.push(format!("    (:{primary_label} =>{props_str})"));
+        } else {
+            elements.push(format!(
+                "    (:{primary_label} => {implied_str}{props_str})"
+            ));
+        }
+    }
+
+    for rel in relationships {
+        let type_name = &rel.type_name;
+        let mut prop_defs = Vec::new();
+        for field in rel.fields.values() {
+            let neo4j_type = field_type_to_neo4j(&field.field_type);
+            let constraint_suffix = if field.primary_key {
+                " IS KEY"
+            } else if field.unique {
+                " IS UNIQUE"
+            } else if !field.nullable {
+                " NOT NULL"
+            } else {
+                ""
+            };
+            prop_defs.push(format!("{} :: {neo4j_type}{constraint_suffix}", field.name));
+        }
+        let props_str = if prop_defs.is_empty() {
+            String::new()
+        } else {
+            format!(" {{{}}}", prop_defs.join(", "))
+        };
+
+        let src_label = rel.source_labels.first().map(|s| s.as_str());
+        let tgt_label = rel.target_labels.first().map(|s| s.as_str());
+
+        let src_pattern = match src_label {
+            Some(s) if !s.is_empty() => format!("(:{s})"),
+            _ => "()".to_string(),
+        };
+        let tgt_pattern = match tgt_label {
+            Some(s) if !s.is_empty() => format!("(:{s})"),
+            _ => "()".to_string(),
+        };
+
+        elements.push(format!(
+            "    {src_pattern}-[:{type_name} =>{props_str}]->{tgt_pattern}"
+        ));
+    }
+
+    let body = elements.join(",\n");
+    format!("ALTER CURRENT GRAPH TYPE SET {{\n{body}\n}}")
+}
+
+/// Emits Neo4j Cypher 25 `ALTER CURRENT GRAPH TYPE SET {}` to reset the graph type.
+pub fn emit_cypher25_drop_graph_type_ddl() -> String {
+    "ALTER CURRENT GRAPH TYPE SET {}".to_string()
+}
+
+// ---------------------------------------------------------------------------
 // ISO GQL DDL Emitter
 // ---------------------------------------------------------------------------
 
@@ -286,14 +395,24 @@ pub fn emit_gql_graph_type_ddl(
         let mut prop_defs = Vec::new();
         for field in node.fields.values() {
             let gql_type = field_type_to_gql(&field.field_type);
-            prop_defs.push(format!("{} {}", field.name, gql_type));
+            let not_null = if !field.nullable || field.primary_key {
+                " NOT NULL"
+            } else {
+                ""
+            };
+            prop_defs.push(format!("{} {}{not_null}", field.name, gql_type));
         }
         let props_str = if prop_defs.is_empty() {
             String::new()
         } else {
             format!(" ({})", prop_defs.join(", "))
         };
-        elements.push(format!("    NODE {primary_label}{props_str}"));
+        let key_str = if let Some(ref pk) = node.primary_key {
+            format!(" KEY ({pk})")
+        } else {
+            String::new()
+        };
+        elements.push(format!("    NODE {primary_label}{props_str}{key_str}"));
     }
 
     for rel in relationships {
@@ -301,14 +420,29 @@ pub fn emit_gql_graph_type_ddl(
         let mut prop_defs = Vec::new();
         for field in rel.fields.values() {
             let gql_type = field_type_to_gql(&field.field_type);
-            prop_defs.push(format!("{} {}", field.name, gql_type));
+            let not_null = if !field.nullable || field.primary_key {
+                " NOT NULL"
+            } else {
+                ""
+            };
+            prop_defs.push(format!("{} {}{not_null}", field.name, gql_type));
         }
         let props_str = if prop_defs.is_empty() {
             String::new()
         } else {
             format!(" ({})", prop_defs.join(", "))
         };
-        elements.push(format!("    EDGE {type_name}{props_str}"));
+
+        let src_label = rel.source_labels.first().map(|s| s.as_str());
+        let tgt_label = rel.target_labels.first().map(|s| s.as_str());
+        let connecting_str = match (src_label, tgt_label) {
+            (Some(s), Some(t)) if !s.is_empty() && !t.is_empty() => {
+                format!(" CONNECTING ({s} TO {t})")
+            }
+            _ => String::new(),
+        };
+
+        elements.push(format!("    EDGE {type_name}{connecting_str}{props_str}"));
     }
 
     let body = elements.join(",\n");
@@ -395,10 +529,21 @@ pub fn emit_pgq_property_graph_ddl(
     for node in nodes {
         let primary_label = node.primary_label();
         let table_name = node.name.to_ascii_lowercase();
-        if let Some(ref pk) = node.primary_key {
-            v_clauses.push(format!("    {table_name} KEY ({pk}) LABEL {primary_label}"));
+        let props_clause = if node.fields.is_empty() {
+            String::new()
         } else {
-            v_clauses.push(format!("    {table_name} LABEL {primary_label}"));
+            let field_names: Vec<&str> = node.fields.keys().map(|k| k.as_str()).collect();
+            format!(" PROPERTIES ({})", field_names.join(", "))
+        };
+
+        if let Some(ref pk) = node.primary_key {
+            v_clauses.push(format!(
+                "    {table_name} KEY ({pk}) LABEL {primary_label}{props_clause}"
+            ));
+        } else {
+            v_clauses.push(format!(
+                "    {table_name} LABEL {primary_label}{props_clause}"
+            ));
         }
     }
 
@@ -424,8 +569,27 @@ pub fn emit_pgq_property_graph_ddl(
         let src_key = format!("{src_table}_id");
         let tgt_key = format!("{tgt_table}_id");
 
+        let src_node_pk = nodes
+            .iter()
+            .find(|n| n.labels.contains(&src_label.to_string()) || n.name == src_label)
+            .and_then(|n| n.primary_key.as_deref());
+        let tgt_node_pk = nodes
+            .iter()
+            .find(|n| n.labels.contains(&tgt_label.to_string()) || n.name == tgt_label)
+            .and_then(|n| n.primary_key.as_deref());
+
+        let src_ref_col = src_node_pk.unwrap_or(&src_key);
+        let tgt_ref_col = tgt_node_pk.unwrap_or(&tgt_key);
+
+        let props_clause = if rel.fields.is_empty() {
+            String::new()
+        } else {
+            let field_names: Vec<&str> = rel.fields.keys().map(|k| k.as_str()).collect();
+            format!(" PROPERTIES ({})", field_names.join(", "))
+        };
+
         e_clauses.push(format!(
-            "    {table_name}\n      SOURCE KEY ({src_key}) REFERENCES {src_table}\n      DESTINATION KEY ({tgt_key}) REFERENCES {tgt_table}\n      LABEL {label}"
+            "    {table_name}\n      SOURCE KEY ({src_key}) REFERENCES {src_table} ({src_ref_col})\n      DESTINATION KEY ({tgt_key}) REFERENCES {tgt_table} ({tgt_ref_col})\n      LABEL {label}{props_clause}"
         ));
     }
 

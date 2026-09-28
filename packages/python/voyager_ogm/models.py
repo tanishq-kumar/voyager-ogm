@@ -678,6 +678,16 @@ class Relationship:
         resolved_type = type_name or type_ or kwargs.get("type") or cls.__name__.upper()
         cls.__type__ = resolved_type
         cls.__direction__ = direction
+        source_labels = kwargs.get("source_labels") or kwargs.get("from_labels")
+        if not source_labels and "source_node" in kwargs:
+            src = kwargs["source_node"]
+            source_labels = getattr(src, "__labels__", [getattr(src, "__name__", str(src))])
+        target_labels = kwargs.get("target_labels") or kwargs.get("to_labels")
+        if not target_labels and "target_node" in kwargs:
+            tgt = kwargs["target_node"]
+            target_labels = getattr(tgt, "__labels__", [getattr(tgt, "__name__", str(tgt))])
+        cls.__source_labels__ = list(source_labels) if source_labels else []
+        cls.__target_labels__ = list(target_labels) if target_labels else []
         cls._cached_type = cls.__type__
         cls._cached_types = [cls.__type__]
         _process_type_annotations(cls)
@@ -820,11 +830,23 @@ def relationship(target: type | str | None = None, **kwargs: Any) -> Any:
         rel_type = type_name or cls.__name__.upper()
 
         fields_map = _process_type_annotations(cls)
+        source_labels = kwargs.get("source_labels") or kwargs.get("from_labels")
+        if not source_labels and "source_node" in kwargs:
+            src = kwargs["source_node"]
+            source_labels = getattr(src, "__labels__", [getattr(src, "__name__", str(src))])
+        target_labels = kwargs.get("target_labels") or kwargs.get("to_labels")
+        if not target_labels and "target_node" in kwargs:
+            tgt = kwargs["target_node"]
+            target_labels = getattr(tgt, "__labels__", [getattr(tgt, "__name__", str(tgt))])
+        src_list = list(source_labels) if source_labels else []
+        tgt_list = list(target_labels) if target_labels else []
 
         if not issubclass(cls, Relationship):
             ns = dict(cls.__dict__)
             ns["__type__"] = rel_type
             ns["__direction__"] = direction
+            ns["__source_labels__"] = src_list
+            ns["__target_labels__"] = tgt_list
             ns["_cached_type"] = rel_type
             ns["_cached_types"] = [rel_type]
             ns["_schema_fields"] = fields_map
@@ -833,6 +855,8 @@ def relationship(target: type | str | None = None, **kwargs: Any) -> Any:
         else:
             cls.__type__ = rel_type  # type: ignore[attr-defined]
             cls.__direction__ = direction  # type: ignore[attr-defined]
+            cls.__source_labels__ = src_list  # type: ignore[attr-defined]
+            cls.__target_labels__ = tgt_list  # type: ignore[attr-defined]
             cls._cached_type = rel_type  # type: ignore[attr-defined]
             cls._cached_types = [rel_type]  # type: ignore[attr-defined]
             cls._schema_fields = fields_map  # type: ignore[attr-defined]
