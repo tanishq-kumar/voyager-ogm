@@ -799,6 +799,206 @@ impl SchemaRegistry {
     pub fn generate_pgq_drop_ddl(&self, graph_name: &str) -> String {
         crate::emitters::ddl::emit_pgq_drop_property_graph_ddl(graph_name)
     }
+
+    /// Generates multi-dialect CREATE INDEX DDL statements for registered entities or specified models.
+    pub fn generate_index_ddl(
+        &self,
+        dialect: &str,
+        model_names: Option<&[&str]>,
+    ) -> Result<Vec<String>> {
+        let mut stmts = Vec::new();
+        let all_nodes = self.node_schemas();
+        let all_rels = self.relationship_schemas();
+
+        let nodes: Vec<&NodeSchema> = if let Some(names) = model_names {
+            all_nodes
+                .iter()
+                .filter(|n| {
+                    names.contains(&n.name.as_str())
+                        || names
+                            .iter()
+                            .any(|m| n.labels.iter().any(|l| l.eq_ignore_ascii_case(m)))
+                })
+                .collect()
+        } else {
+            all_nodes.iter().collect()
+        };
+
+        let rels: Vec<&RelationshipSchema> = if let Some(names) = model_names {
+            all_rels
+                .iter()
+                .filter(|r| {
+                    names.contains(&r.name.as_str())
+                        || names.iter().any(|m| r.type_name.eq_ignore_ascii_case(m))
+                })
+                .collect()
+        } else {
+            all_rels.iter().collect()
+        };
+
+        for node in nodes {
+            stmts.extend(crate::emitters::ddl::emit_node_index_ddl(node, dialect)?);
+        }
+        for rel in rels {
+            stmts.extend(crate::emitters::ddl::emit_rel_index_ddl(rel, dialect)?);
+        }
+        Ok(stmts)
+    }
+
+    /// Generates multi-dialect CREATE CONSTRAINT DDL statements for registered entities or specified models.
+    pub fn generate_constraint_ddl(
+        &self,
+        dialect: &str,
+        model_names: Option<&[&str]>,
+        include_type_constraints: bool,
+    ) -> Result<Vec<String>> {
+        let mut stmts = Vec::new();
+        let all_nodes = self.node_schemas();
+        let all_rels = self.relationship_schemas();
+
+        let nodes: Vec<&NodeSchema> = if let Some(names) = model_names {
+            all_nodes
+                .iter()
+                .filter(|n| {
+                    names.contains(&n.name.as_str())
+                        || names
+                            .iter()
+                            .any(|m| n.labels.iter().any(|l| l.eq_ignore_ascii_case(m)))
+                })
+                .collect()
+        } else {
+            all_nodes.iter().collect()
+        };
+
+        let rels: Vec<&RelationshipSchema> = if let Some(names) = model_names {
+            all_rels
+                .iter()
+                .filter(|r| {
+                    names.contains(&r.name.as_str())
+                        || names.iter().any(|m| r.type_name.eq_ignore_ascii_case(m))
+                })
+                .collect()
+        } else {
+            all_rels.iter().collect()
+        };
+
+        for node in nodes {
+            stmts.extend(crate::emitters::ddl::emit_node_constraint_ddl(
+                node,
+                dialect,
+                include_type_constraints,
+            )?);
+        }
+        for rel in rels {
+            stmts.extend(crate::emitters::ddl::emit_rel_constraint_ddl(
+                rel,
+                dialect,
+                include_type_constraints,
+            )?);
+        }
+        Ok(stmts)
+    }
+
+    /// Generates multi-dialect DROP INDEX DDL statements for registered entities or specified models.
+    pub fn generate_drop_index_ddl(
+        &self,
+        dialect: &str,
+        model_names: Option<&[&str]>,
+    ) -> Result<Vec<String>> {
+        let mut stmts = Vec::new();
+        let all_nodes = self.node_schemas();
+        let all_rels = self.relationship_schemas();
+
+        let nodes: Vec<&NodeSchema> = if let Some(names) = model_names {
+            all_nodes
+                .iter()
+                .filter(|n| {
+                    names.contains(&n.name.as_str())
+                        || names
+                            .iter()
+                            .any(|m| n.labels.iter().any(|l| l.eq_ignore_ascii_case(m)))
+                })
+                .collect()
+        } else {
+            all_nodes.iter().collect()
+        };
+
+        let rels: Vec<&RelationshipSchema> = if let Some(names) = model_names {
+            all_rels
+                .iter()
+                .filter(|r| {
+                    names.contains(&r.name.as_str())
+                        || names.iter().any(|m| r.type_name.eq_ignore_ascii_case(m))
+                })
+                .collect()
+        } else {
+            all_rels.iter().collect()
+        };
+
+        for node in nodes {
+            stmts.extend(crate::emitters::ddl::emit_node_drop_index_ddl(
+                node, dialect,
+            )?);
+        }
+        for rel in rels {
+            stmts.extend(crate::emitters::ddl::emit_rel_drop_index_ddl(rel, dialect)?);
+        }
+        Ok(stmts)
+    }
+
+    /// Generates multi-dialect DROP CONSTRAINT DDL statements for registered entities or specified models.
+    pub fn generate_drop_constraint_ddl(
+        &self,
+        dialect: &str,
+        model_names: Option<&[&str]>,
+        include_type_constraints: bool,
+    ) -> Result<Vec<String>> {
+        let mut stmts = Vec::new();
+        let all_nodes = self.node_schemas();
+        let all_rels = self.relationship_schemas();
+
+        let nodes: Vec<&NodeSchema> = if let Some(names) = model_names {
+            all_nodes
+                .iter()
+                .filter(|n| {
+                    names.contains(&n.name.as_str())
+                        || names
+                            .iter()
+                            .any(|m| n.labels.iter().any(|l| l.eq_ignore_ascii_case(m)))
+                })
+                .collect()
+        } else {
+            all_nodes.iter().collect()
+        };
+
+        let rels: Vec<&RelationshipSchema> = if let Some(names) = model_names {
+            all_rels
+                .iter()
+                .filter(|r| {
+                    names.contains(&r.name.as_str())
+                        || names.iter().any(|m| r.type_name.eq_ignore_ascii_case(m))
+                })
+                .collect()
+        } else {
+            all_rels.iter().collect()
+        };
+
+        for node in nodes {
+            stmts.extend(crate::emitters::ddl::emit_node_drop_constraint_ddl(
+                node,
+                dialect,
+                include_type_constraints,
+            )?);
+        }
+        for rel in rels {
+            stmts.extend(crate::emitters::ddl::emit_rel_drop_constraint_ddl(
+                rel,
+                dialect,
+                include_type_constraints,
+            )?);
+        }
+        Ok(stmts)
+    }
 }
 
 /// Point-in-time snapshot of all registered node and relationship schemas.

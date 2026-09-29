@@ -1186,17 +1186,11 @@ class Session(_SessionBase):
         """
         from voyager_ogm.schema import SchemaManager
 
-        applied = SchemaManager.generate_index_ddl(*models, dialect=self._dialect)
-        for stmt in applied:
-            try:
-                self.execute(stmt)
-            except Exception as e:
-                if (
-                    self._dialect.lower() in ("falkordb", "falkor")
-                    and "already indexed" in str(e).lower()
-                ):
-                    continue
-                raise
+        statements = SchemaManager.generate_index_ddl(*models, dialect=self._dialect)
+        applied: list[str] = []
+        for stmt in statements:
+            self.execute(stmt)
+            applied.append(stmt)
         return applied
 
     def create_constraints(
@@ -1215,11 +1209,13 @@ class Session(_SessionBase):
         """
         from voyager_ogm.schema import SchemaManager
 
-        applied = SchemaManager.generate_constraint_ddl(
+        statements = SchemaManager.generate_constraint_ddl(
             *models, dialect=self._dialect, include_type_constraints=include_type_constraints
         )
-        for stmt in applied:
+        applied: list[str] = []
+        for stmt in statements:
             self.execute(stmt)
+            applied.append(stmt)
         return applied
 
     def drop_indexes(
@@ -1236,17 +1232,11 @@ class Session(_SessionBase):
         """
         from voyager_ogm.schema import SchemaManager
 
-        dropped = SchemaManager.generate_drop_index_ddl(*models, dialect=self._dialect)
-        for stmt in dropped:
-            try:
-                self.execute(stmt)
-            except Exception as e:
-                if (
-                    self._dialect.lower() in ("falkordb", "falkor")
-                    and "no such index" in str(e).lower()
-                ):
-                    continue
-                raise
+        statements = SchemaManager.generate_drop_index_ddl(*models, dialect=self._dialect)
+        dropped: list[str] = []
+        for stmt in statements:
+            self.execute(stmt)
+            dropped.append(stmt)
         return dropped
 
     def drop_constraints(
@@ -1265,11 +1255,13 @@ class Session(_SessionBase):
         """
         from voyager_ogm.schema import SchemaManager
 
-        dropped = SchemaManager.generate_drop_constraint_ddl(
+        statements = SchemaManager.generate_drop_constraint_ddl(
             *models, dialect=self._dialect, include_type_constraints=include_type_constraints
         )
-        for stmt in dropped:
+        dropped: list[str] = []
+        for stmt in statements:
             self.execute(stmt)
+            dropped.append(stmt)
         return dropped
 
     def transaction(self) -> Transaction:
@@ -1547,17 +1539,11 @@ class AsyncSession(_SessionBase):
         """
         from voyager_ogm.schema import SchemaManager
 
-        applied = SchemaManager.generate_index_ddl(*models, dialect=self._dialect)
-        for stmt in applied:
-            try:
-                await self.execute(stmt)
-            except Exception as e:
-                if (
-                    self._dialect.lower() in ("falkordb", "falkor")
-                    and "already indexed" in str(e).lower()
-                ):
-                    continue
-                raise
+        statements = SchemaManager.generate_index_ddl(*models, dialect=self._dialect)
+        applied: list[str] = []
+        for stmt in statements:
+            await self.execute(stmt)
+            applied.append(stmt)
         return applied
 
     async def create_constraints(
@@ -1576,11 +1562,13 @@ class AsyncSession(_SessionBase):
         """
         from voyager_ogm.schema import SchemaManager
 
-        applied = SchemaManager.generate_constraint_ddl(
+        statements = SchemaManager.generate_constraint_ddl(
             *models, dialect=self._dialect, include_type_constraints=include_type_constraints
         )
-        for stmt in applied:
+        applied: list[str] = []
+        for stmt in statements:
             await self.execute(stmt)
+            applied.append(stmt)
         return applied
 
     async def drop_indexes(
@@ -1597,17 +1585,11 @@ class AsyncSession(_SessionBase):
         """
         from voyager_ogm.schema import SchemaManager
 
-        dropped = SchemaManager.generate_drop_index_ddl(*models, dialect=self._dialect)
-        for stmt in dropped:
-            try:
-                await self.execute(stmt)
-            except Exception as e:
-                if (
-                    self._dialect.lower() in ("falkordb", "falkor")
-                    and "no such index" in str(e).lower()
-                ):
-                    continue
-                raise
+        statements = SchemaManager.generate_drop_index_ddl(*models, dialect=self._dialect)
+        dropped: list[str] = []
+        for stmt in statements:
+            await self.execute(stmt)
+            dropped.append(stmt)
         return dropped
 
     async def drop_constraints(
@@ -1626,11 +1608,13 @@ class AsyncSession(_SessionBase):
         """
         from voyager_ogm.schema import SchemaManager
 
-        dropped = SchemaManager.generate_drop_constraint_ddl(
+        statements = SchemaManager.generate_drop_constraint_ddl(
             *models, dialect=self._dialect, include_type_constraints=include_type_constraints
         )
-        for stmt in dropped:
+        dropped: list[str] = []
+        for stmt in statements:
             await self.execute(stmt)
+            dropped.append(stmt)
         return dropped
 
     async def close(self) -> None:

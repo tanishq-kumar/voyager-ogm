@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import difflib
 import inspect
+import logging
 import threading
 import weakref
 from collections import defaultdict
@@ -19,6 +20,8 @@ try:
     from voyager_ogm._voyager_rs import NativeSchemaRegistry
 except ImportError:
     NativeSchemaRegistry = None  # type: ignore[assignment, misc]
+
+logger = logging.getLogger("voyager_ogm")
 
 _T = TypeVar("_T")
 
@@ -476,8 +479,9 @@ class Node:
                     primary_key = getattr(f_obj, "name", None) or f_name
                     break
             reg.register_node(name, labels, fields, primary_key)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to register schema for node model %s: %s", cls.__name__, e)
+            raise
 
     def __init__(self, alias: str | None = None, **values: Any) -> None:
         """Instantiates a Node entity with a unique query alias.
@@ -492,10 +496,6 @@ class Node:
             cached_label = self.__labels__[0] if self.__labels__ else self.__class__.__name__
         self._alias = alias or _get_next_alias(cached_label)
         self._cached_alias = self._alias
-        class_labels = getattr(self.__class__, "_cached_labels", None)
-        if not class_labels:
-            class_labels = list(self.__labels__) if self.__labels__ else [cached_label]
-        object.__setattr__(self, "_cached_labels", class_labels)
         self._bound_fields: dict[str, BoundField] = {}
         session = values.pop("session", None)
         self._session_ref: weakref.ref[Any] | None = (
@@ -764,8 +764,13 @@ class Relationship:
                 fields,
                 directed,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(
+                "Failed to register schema for relationship model %s: %s",
+                cls.__name__,
+                e,
+            )
+            raise
 
     def __init__(self, alias: str | None = None, **values: Any) -> None:
         """Instantiates a Relationship entity with a unique query alias.
@@ -784,10 +789,6 @@ class Relationship:
         )
         self._alias = alias or _get_next_alias(rel_type)
         self._cached_alias = self._alias
-        class_types = getattr(self.__class__, "_cached_types", None)
-        if not class_types:
-            class_types = [rel_type]
-        object.__setattr__(self, "_cached_types", class_types)
         self._bound_fields: dict[str, BoundField] = {}
         self._values = values
 

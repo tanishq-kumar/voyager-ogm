@@ -644,3 +644,496 @@ pub fn emit_pgq_property_graph_ddl(
 pub fn emit_pgq_drop_property_graph_ddl(graph_name: &str) -> String {
     format!("DROP PROPERTY GRAPH IF EXISTS {graph_name};")
 }
+
+// ---------------------------------------------------------------------------
+// Multi-Dialect Pure Index & Constraint DDL Emitters (RFC-0004 §4.4)
+// ---------------------------------------------------------------------------
+
+fn escape_sql_ident(ident: &str) -> String {
+    format!("\"{}\"", ident.replace('"', "\"\""))
+}
+
+/// Emits CREATE INDEX DDL statements for a single node across dialects.
+pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<String>> {
+    let dialect_norm = dialect.to_ascii_lowercase();
+    let mut statements = Vec::new();
+    let primary_label = node.primary_label();
+
+    if dialect_norm == "age" || dialect_norm == "apache_age" {
+        return Err(Error::SchemaError(
+            "Apache AGE does not support Cypher 'CREATE INDEX' queries. \
+             Indexes in Apache AGE must be defined directly on the underlying PostgreSQL relational tables \
+             (e.g. CREATE INDEX ON {graph}.\"Label\" USING gin (properties))."
+                .to_string(),
+        ));
+    }
+
+    if dialect_norm == "falkordb" || dialect_norm == "falkor" {
+        for field in node.fields.values() {
+            if field.indexed && !field.unique && !field.primary_key {
+                statements.push(format!(
+                    "CREATE INDEX FOR (n:{primary_label}) ON (n.{})",
+                    field.name
+                ));
+            }
+        }
+        return Ok(statements);
+    }
+
+    if matches!(
+        dialect_norm.as_str(),
+        "postgres" | "postgresql" | "duckdb" | "sql_pgq" | "pgq"
+    ) {
+        let table = primary_label.to_ascii_lowercase();
+        let q_table = escape_sql_ident(&table);
+        for field in node.fields.values() {
+            if field.indexed && !field.unique && !field.primary_key {
+                let q_col = escape_sql_ident(&field.name);
+                statements.push(format!(
+                    "CREATE INDEX IF NOT EXISTS idx_{table}_{} ON {q_table} ({q_col});",
+                    field.name
+                ));
+            }
+        }
+        return Ok(statements);
+    }
+
+    // Default: openCypher (Neo4j / Memgraph)
+    for field in node.fields.values() {
+        if field.indexed && !field.unique && !field.primary_key {
+            let i_name = cypher_index_name(primary_label, &field.name);
+            match field.index_type {
+                Some(IndexType::Text) => {
+                    statements.push(format!(
+                        "CREATE TEXT INDEX {i_name} IF NOT EXISTS FOR (n:{primary_label}) ON (n.{})",
+                        field.name
+                    ));
+                }
+                Some(IndexType::Point) => {
+                    statements.push(format!(
+                        "CREATE POINT INDEX {i_name} IF NOT EXISTS FOR (n:{primary_label}) ON (n.{})",
+                        field.name
+                    ));
+                }
+                _ => {
+                    statements.push(format!(
+                        "CREATE INDEX {i_name} IF NOT EXISTS FOR (n:{primary_label}) ON (n.{})",
+                        field.name
+                    ));
+                }
+            }
+        }
+    }
+    Ok(statements)
+}
+
+/// Emits CREATE INDEX DDL statements for a single relationship across dialects.
+pub fn emit_rel_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Result<Vec<String>> {
+    let dialect_norm = dialect.to_ascii_lowercase();
+    let mut statements = Vec::new();
+    let type_name = &rel.type_name;
+
+    if dialect_norm == "age" || dialect_norm == "apache_age" {
+        return Err(Error::SchemaError(
+            "Apache AGE does not support Cypher 'CREATE INDEX' queries. \
+             Indexes in Apache AGE must be defined directly on the underlying PostgreSQL relational tables."
+                .to_string(),
+        ));
+    }
+
+    if dialect_norm == "falkordb" || dialect_norm == "falkor" {
+        for field in rel.fields.values() {
+            if field.indexed && !field.unique && !field.primary_key {
+                statements.push(format!(
+                    "CREATE INDEX FOR ()-[r:{type_name}]-() ON (r.{})",
+                    field.name
+                ));
+            }
+        }
+        return Ok(statements);
+    }
+
+    if matches!(
+        dialect_norm.as_str(),
+        "postgres" | "postgresql" | "duckdb" | "sql_pgq" | "pgq"
+    ) {
+        let table = type_name.to_ascii_lowercase();
+        let q_table = escape_sql_ident(&table);
+        for field in rel.fields.values() {
+            if field.indexed && !field.unique && !field.primary_key {
+                let q_col = escape_sql_ident(&field.name);
+                statements.push(format!(
+                    "CREATE INDEX IF NOT EXISTS idx_{table}_{} ON {q_table} ({q_col});",
+                    field.name
+                ));
+            }
+        }
+        return Ok(statements);
+    }
+
+    // Default: openCypher
+    for field in rel.fields.values() {
+        if field.indexed && !field.unique && !field.primary_key {
+            let i_name = cypher_rel_index_name(type_name, &field.name);
+            statements.push(format!(
+                "CREATE INDEX {i_name} IF NOT EXISTS FOR ()-[r:{type_name}]-() ON (r.{})",
+                field.name
+            ));
+        }
+    }
+    Ok(statements)
+}
+
+/// Emits CREATE CONSTRAINT DDL statements for a single node across dialects.
+pub fn emit_node_constraint_ddl(
+    node: &NodeSchema,
+    dialect: &str,
+    include_type_constraints: bool,
+) -> Result<Vec<String>> {
+    let dialect_norm = dialect.to_ascii_lowercase();
+    let mut statements = Vec::new();
+    let primary_label = node.primary_label();
+
+    if dialect_norm == "age" || dialect_norm == "apache_age" {
+        return Err(Error::SchemaError(
+            "Apache AGE does not support Cypher 'CREATE CONSTRAINT' queries. \
+             Constraints in Apache AGE must be defined directly on the underlying PostgreSQL relational tables."
+                .to_string(),
+        ));
+    }
+
+    if dialect_norm == "falkordb" || dialect_norm == "falkor" {
+        return Err(Error::SchemaError(
+            "FalkorDB does not support openCypher 'CREATE CONSTRAINT' queries in GRAPH.QUERY. \
+             Constraints in FalkorDB must be created via native Redis commands \
+             ('GRAPH.CONSTRAINT CREATE <graph_name> UNIQUE NODE <label> PROPERTIES 1 <prop>')."
+                .to_string(),
+        ));
+    }
+
+    if matches!(
+        dialect_norm.as_str(),
+        "postgres" | "postgresql" | "duckdb" | "sql_pgq" | "pgq"
+    ) {
+        let table = primary_label.to_ascii_lowercase();
+        let q_table = escape_sql_ident(&table);
+        for field in node.fields.values() {
+            if field.unique && !field.primary_key {
+                let q_col = escape_sql_ident(&field.name);
+                statements.push(format!(
+                    "ALTER TABLE {q_table} ADD CONSTRAINT uq_{table}_{} UNIQUE ({q_col});",
+                    field.name
+                ));
+            }
+        }
+        return Ok(statements);
+    }
+
+    // Default: openCypher
+    for field in node.fields.values() {
+        let db_name = &field.name;
+        if !field.nullable {
+            let c_name = cypher_constraint_name(primary_label, db_name, "not_null");
+            statements.push(format!(
+                "CREATE CONSTRAINT {c_name} IF NOT EXISTS FOR (n:{primary_label}) REQUIRE n.{db_name} IS NOT NULL"
+            ));
+        }
+        if field.unique || field.primary_key {
+            let c_name = cypher_constraint_name(primary_label, db_name, "unique");
+            statements.push(format!(
+                "CREATE CONSTRAINT {c_name} IF NOT EXISTS FOR (n:{primary_label}) REQUIRE n.{db_name} IS UNIQUE"
+            ));
+        }
+        if include_type_constraints {
+            let neo4j_type = field_type_to_neo4j(&field.field_type);
+            let t_name = cypher_constraint_name(primary_label, db_name, "type");
+            statements.push(format!(
+                "CREATE CONSTRAINT {t_name} IF NOT EXISTS FOR (n:{primary_label}) REQUIRE n.{db_name} :: {neo4j_type}"
+            ));
+        }
+    }
+    Ok(statements)
+}
+
+/// Emits CREATE CONSTRAINT DDL statements for a single relationship across dialects.
+pub fn emit_rel_constraint_ddl(
+    rel: &RelationshipSchema,
+    dialect: &str,
+    include_type_constraints: bool,
+) -> Result<Vec<String>> {
+    let dialect_norm = dialect.to_ascii_lowercase();
+    let mut statements = Vec::new();
+    let type_name = &rel.type_name;
+
+    if dialect_norm == "age" || dialect_norm == "apache_age" {
+        return Err(Error::SchemaError(
+            "Apache AGE does not support Cypher 'CREATE CONSTRAINT' queries. \
+             Constraints in Apache AGE must be defined directly on the underlying PostgreSQL relational tables."
+                .to_string(),
+        ));
+    }
+
+    if dialect_norm == "falkordb" || dialect_norm == "falkor" {
+        return Err(Error::SchemaError(
+            "FalkorDB does not support openCypher 'CREATE CONSTRAINT' queries in GRAPH.QUERY. \
+             Constraints in FalkorDB must be created via native Redis commands."
+                .to_string(),
+        ));
+    }
+
+    if matches!(
+        dialect_norm.as_str(),
+        "postgres" | "postgresql" | "duckdb" | "sql_pgq" | "pgq"
+    ) {
+        let table = type_name.to_ascii_lowercase();
+        let q_table = escape_sql_ident(&table);
+        for field in rel.fields.values() {
+            if field.unique && !field.primary_key {
+                let q_col = escape_sql_ident(&field.name);
+                statements.push(format!(
+                    "ALTER TABLE {q_table} ADD CONSTRAINT uq_{table}_{} UNIQUE ({q_col});",
+                    field.name
+                ));
+            }
+        }
+        return Ok(statements);
+    }
+
+    // Default: openCypher
+    for field in rel.fields.values() {
+        let db_name = &field.name;
+        if field.primary_key || field.unique || !field.nullable {
+            let c_name = cypher_rel_constraint_name(type_name, db_name, "not_null");
+            statements.push(format!(
+                "CREATE CONSTRAINT {c_name} IF NOT EXISTS FOR ()-[r:{type_name}]-() REQUIRE r.{db_name} IS NOT NULL"
+            ));
+        }
+        if include_type_constraints {
+            let neo4j_type = field_type_to_neo4j(&field.field_type);
+            let t_name = cypher_rel_constraint_name(type_name, db_name, "type");
+            statements.push(format!(
+                "CREATE CONSTRAINT {t_name} IF NOT EXISTS FOR ()-[r:{type_name}]-() REQUIRE r.{db_name} :: {neo4j_type}"
+            ));
+        }
+    }
+    Ok(statements)
+}
+
+/// Emits DROP INDEX DDL statements for a single node across dialects.
+pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<String>> {
+    let dialect_norm = dialect.to_ascii_lowercase();
+    let mut statements = Vec::new();
+    let primary_label = node.primary_label();
+
+    if dialect_norm == "age" || dialect_norm == "apache_age" {
+        return Err(Error::SchemaError(
+            "Apache AGE does not support Cypher 'DROP INDEX' queries. \
+             Indexes in Apache AGE must be dropped directly on the underlying PostgreSQL relational tables."
+                .to_string(),
+        ));
+    }
+
+    if dialect_norm == "falkordb" || dialect_norm == "falkor" {
+        for field in node.fields.values() {
+            if field.indexed && !field.unique && !field.primary_key {
+                statements.push(format!(
+                    "DROP INDEX FOR (n:{primary_label}) ON (n.{})",
+                    field.name
+                ));
+            }
+        }
+        return Ok(statements);
+    }
+
+    if matches!(
+        dialect_norm.as_str(),
+        "postgres" | "postgresql" | "duckdb" | "sql_pgq" | "pgq"
+    ) {
+        let table = primary_label.to_ascii_lowercase();
+        for field in node.fields.values() {
+            if field.indexed && !field.unique && !field.primary_key {
+                statements.push(format!("DROP INDEX IF EXISTS idx_{table}_{};", field.name));
+            }
+        }
+        return Ok(statements);
+    }
+
+    // Default: openCypher
+    for field in node.fields.values() {
+        if field.indexed {
+            let i_name = cypher_index_name(primary_label, &field.name);
+            statements.push(format!("DROP INDEX {i_name} IF EXISTS"));
+        }
+    }
+    Ok(statements)
+}
+
+/// Emits DROP INDEX DDL statements for a single relationship across dialects.
+pub fn emit_rel_drop_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Result<Vec<String>> {
+    let dialect_norm = dialect.to_ascii_lowercase();
+    let mut statements = Vec::new();
+    let type_name = &rel.type_name;
+
+    if dialect_norm == "age" || dialect_norm == "apache_age" {
+        return Err(Error::SchemaError(
+            "Apache AGE does not support Cypher 'DROP INDEX' queries. \
+             Indexes in Apache AGE must be dropped directly on the underlying PostgreSQL relational tables."
+                .to_string(),
+        ));
+    }
+
+    if dialect_norm == "falkordb" || dialect_norm == "falkor" {
+        for field in rel.fields.values() {
+            if field.indexed && !field.unique && !field.primary_key {
+                statements.push(format!(
+                    "DROP INDEX FOR ()-[r:{type_name}]-() ON (r.{})",
+                    field.name
+                ));
+            }
+        }
+        return Ok(statements);
+    }
+
+    if matches!(
+        dialect_norm.as_str(),
+        "postgres" | "postgresql" | "duckdb" | "sql_pgq" | "pgq"
+    ) {
+        let table = type_name.to_ascii_lowercase();
+        for field in rel.fields.values() {
+            if field.indexed && !field.unique && !field.primary_key {
+                statements.push(format!("DROP INDEX IF EXISTS idx_{table}_{};", field.name));
+            }
+        }
+        return Ok(statements);
+    }
+
+    // Default: openCypher
+    for field in rel.fields.values() {
+        if field.indexed && !field.primary_key && !field.unique {
+            let i_name = cypher_rel_index_name(type_name, &field.name);
+            statements.push(format!("DROP INDEX {i_name} IF EXISTS"));
+        }
+    }
+    Ok(statements)
+}
+
+/// Emits DROP CONSTRAINT DDL statements for a single node across dialects.
+pub fn emit_node_drop_constraint_ddl(
+    node: &NodeSchema,
+    dialect: &str,
+    include_type_constraints: bool,
+) -> Result<Vec<String>> {
+    let dialect_norm = dialect.to_ascii_lowercase();
+    let mut statements = Vec::new();
+    let primary_label = node.primary_label();
+
+    if dialect_norm == "age" || dialect_norm == "apache_age" {
+        return Err(Error::SchemaError(
+            "Apache AGE does not support Cypher 'DROP CONSTRAINT' queries. \
+             Constraints in Apache AGE must be dropped directly on the underlying PostgreSQL relational tables."
+                .to_string(),
+        ));
+    }
+
+    if dialect_norm == "falkordb" || dialect_norm == "falkor" {
+        return Err(Error::SchemaError(
+            "FalkorDB does not support openCypher 'DROP CONSTRAINT' queries in GRAPH.QUERY. \
+             Constraints in FalkorDB must be dropped via native Redis commands \
+             ('GRAPH.CONSTRAINT DROP <graph_name> UNIQUE NODE <label> PROPERTIES 1 <prop>')."
+                .to_string(),
+        ));
+    }
+
+    if matches!(
+        dialect_norm.as_str(),
+        "postgres" | "postgresql" | "duckdb" | "sql_pgq" | "pgq"
+    ) {
+        let table = primary_label.to_ascii_lowercase();
+        let q_table = escape_sql_ident(&table);
+        for field in node.fields.values() {
+            if field.unique && !field.primary_key {
+                statements.push(format!(
+                    "ALTER TABLE {q_table} DROP CONSTRAINT IF EXISTS uq_{table}_{};",
+                    field.name
+                ));
+            }
+        }
+        return Ok(statements);
+    }
+
+    // Default: openCypher
+    for field in node.fields.values() {
+        let db_name = &field.name;
+        if !field.nullable {
+            let c_name = cypher_constraint_name(primary_label, db_name, "not_null");
+            statements.push(format!("DROP CONSTRAINT {c_name} IF EXISTS"));
+        }
+        if field.unique || field.primary_key {
+            let c_name = cypher_constraint_name(primary_label, db_name, "unique");
+            statements.push(format!("DROP CONSTRAINT {c_name} IF EXISTS"));
+        }
+        if include_type_constraints {
+            let t_name = cypher_constraint_name(primary_label, db_name, "type");
+            statements.push(format!("DROP CONSTRAINT {t_name} IF EXISTS"));
+        }
+    }
+    Ok(statements)
+}
+
+/// Emits DROP CONSTRAINT DDL statements for a single relationship across dialects.
+pub fn emit_rel_drop_constraint_ddl(
+    rel: &RelationshipSchema,
+    dialect: &str,
+    include_type_constraints: bool,
+) -> Result<Vec<String>> {
+    let dialect_norm = dialect.to_ascii_lowercase();
+    let mut statements = Vec::new();
+    let type_name = &rel.type_name;
+
+    if dialect_norm == "age" || dialect_norm == "apache_age" {
+        return Err(Error::SchemaError(
+            "Apache AGE does not support Cypher 'DROP CONSTRAINT' queries. \
+             Constraints in Apache AGE must be dropped directly on the underlying PostgreSQL relational tables."
+                .to_string(),
+        ));
+    }
+
+    if dialect_norm == "falkordb" || dialect_norm == "falkor" {
+        return Err(Error::SchemaError(
+            "FalkorDB does not support openCypher 'DROP CONSTRAINT' queries in GRAPH.QUERY. \
+             Constraints in FalkorDB must be dropped via native Redis commands."
+                .to_string(),
+        ));
+    }
+
+    if matches!(
+        dialect_norm.as_str(),
+        "postgres" | "postgresql" | "duckdb" | "sql_pgq" | "pgq"
+    ) {
+        let table = type_name.to_ascii_lowercase();
+        let q_table = escape_sql_ident(&table);
+        for field in rel.fields.values() {
+            if field.unique && !field.primary_key {
+                statements.push(format!(
+                    "ALTER TABLE {q_table} DROP CONSTRAINT IF EXISTS uq_{table}_{};",
+                    field.name
+                ));
+            }
+        }
+        return Ok(statements);
+    }
+
+    // Default: openCypher
+    for field in rel.fields.values() {
+        let db_name = &field.name;
+        if field.primary_key || field.unique || !field.nullable {
+            let c_name = cypher_rel_constraint_name(type_name, db_name, "not_null");
+            statements.push(format!("DROP CONSTRAINT {c_name} IF EXISTS"));
+        }
+        if include_type_constraints {
+            let t_name = cypher_rel_constraint_name(type_name, db_name, "type");
+            statements.push(format!("DROP CONSTRAINT {t_name} IF EXISTS"));
+        }
+    }
+    Ok(statements)
+}

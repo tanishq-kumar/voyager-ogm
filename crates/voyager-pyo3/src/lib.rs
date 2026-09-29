@@ -4,9 +4,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyUserWarning, PyValueError};
+use pyo3::exceptions::{
+    PyNotImplementedError, PyRuntimeError, PyTypeError, PyUserWarning, PyValueError,
+};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
+
+fn to_py_schema_err(err: voyager_core::Error) -> PyErr {
+    let msg = err.to_string();
+    if msg.contains("does not support") {
+        PyNotImplementedError::new_err(msg)
+    } else {
+        PyValueError::new_err(msg)
+    }
+}
 use voyager_core::ast::{
     AggregationFunc, BinaryOp, Direction, LiteralValue, NodeHandle, QueryAstArena, UnaryOp,
 };
@@ -3519,6 +3530,68 @@ impl PyNativeSchemaRegistry {
         Ok(self.registry().generate_cypher25_drop_graph_type_ddl())
     }
 
+    /// Generates multi-dialect CREATE INDEX DDL statements for registered models.
+    #[pyo3(signature = (dialect="cypher", model_names=None))]
+    fn generate_index_ddl(
+        &self,
+        dialect: &str,
+        model_names: Option<Vec<String>>,
+    ) -> PyResult<Vec<String>> {
+        let str_names: Option<Vec<&str>> = model_names
+            .as_ref()
+            .map(|v| v.iter().map(|s| s.as_str()).collect());
+        self.registry()
+            .generate_index_ddl(dialect, str_names.as_deref())
+            .map_err(to_py_schema_err)
+    }
+
+    /// Generates multi-dialect CREATE CONSTRAINT DDL statements for registered models.
+    #[pyo3(signature = (dialect="cypher", model_names=None, include_type_constraints=false))]
+    fn generate_constraint_ddl(
+        &self,
+        dialect: &str,
+        model_names: Option<Vec<String>>,
+        include_type_constraints: bool,
+    ) -> PyResult<Vec<String>> {
+        let str_names: Option<Vec<&str>> = model_names
+            .as_ref()
+            .map(|v| v.iter().map(|s| s.as_str()).collect());
+        self.registry()
+            .generate_constraint_ddl(dialect, str_names.as_deref(), include_type_constraints)
+            .map_err(to_py_schema_err)
+    }
+
+    /// Generates multi-dialect DROP INDEX DDL statements for registered models.
+    #[pyo3(signature = (dialect="cypher", model_names=None))]
+    fn generate_drop_index_ddl(
+        &self,
+        dialect: &str,
+        model_names: Option<Vec<String>>,
+    ) -> PyResult<Vec<String>> {
+        let str_names: Option<Vec<&str>> = model_names
+            .as_ref()
+            .map(|v| v.iter().map(|s| s.as_str()).collect());
+        self.registry()
+            .generate_drop_index_ddl(dialect, str_names.as_deref())
+            .map_err(to_py_schema_err)
+    }
+
+    /// Generates multi-dialect DROP CONSTRAINT DDL statements for registered models.
+    #[pyo3(signature = (dialect="cypher", model_names=None, include_type_constraints=false))]
+    fn generate_drop_constraint_ddl(
+        &self,
+        dialect: &str,
+        model_names: Option<Vec<String>>,
+        include_type_constraints: bool,
+    ) -> PyResult<Vec<String>> {
+        let str_names: Option<Vec<&str>> = model_names
+            .as_ref()
+            .map(|v| v.iter().map(|s| s.as_str()).collect());
+        self.registry()
+            .generate_drop_constraint_ddl(dialect, str_names.as_deref(), include_type_constraints)
+            .map_err(to_py_schema_err)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "NativeSchemaRegistry(nodes={}, relationships={})",
@@ -3694,6 +3767,82 @@ fn emit_cypher25_drop_graph_type_ddl() -> PyResult<String> {
     Ok(voyager_core::emit_cypher25_drop_graph_type_ddl())
 }
 
+#[pyfunction]
+#[pyo3(signature = (node, dialect="cypher"))]
+fn emit_node_index_ddl(node: &Bound<'_, PyAny>, dialect: &str) -> PyResult<Vec<String>> {
+    let schema = extract_node_schema(node)?;
+    voyager_core::emit_node_index_ddl(&schema, dialect).map_err(to_py_schema_err)
+}
+
+#[pyfunction]
+#[pyo3(signature = (rel, dialect="cypher"))]
+fn emit_rel_index_ddl(rel: &Bound<'_, PyAny>, dialect: &str) -> PyResult<Vec<String>> {
+    let schema = extract_rel_schema(rel)?;
+    voyager_core::emit_rel_index_ddl(&schema, dialect).map_err(to_py_schema_err)
+}
+
+#[pyfunction]
+#[pyo3(signature = (node, dialect="cypher", include_type_constraints=false))]
+fn emit_node_constraint_ddl(
+    node: &Bound<'_, PyAny>,
+    dialect: &str,
+    include_type_constraints: bool,
+) -> PyResult<Vec<String>> {
+    let schema = extract_node_schema(node)?;
+    voyager_core::emit_node_constraint_ddl(&schema, dialect, include_type_constraints)
+        .map_err(to_py_schema_err)
+}
+
+#[pyfunction]
+#[pyo3(signature = (rel, dialect="cypher", include_type_constraints=false))]
+fn emit_rel_constraint_ddl(
+    rel: &Bound<'_, PyAny>,
+    dialect: &str,
+    include_type_constraints: bool,
+) -> PyResult<Vec<String>> {
+    let schema = extract_rel_schema(rel)?;
+    voyager_core::emit_rel_constraint_ddl(&schema, dialect, include_type_constraints)
+        .map_err(to_py_schema_err)
+}
+
+#[pyfunction]
+#[pyo3(signature = (node, dialect="cypher"))]
+fn emit_node_drop_index_ddl(node: &Bound<'_, PyAny>, dialect: &str) -> PyResult<Vec<String>> {
+    let schema = extract_node_schema(node)?;
+    voyager_core::emit_node_drop_index_ddl(&schema, dialect).map_err(to_py_schema_err)
+}
+
+#[pyfunction]
+#[pyo3(signature = (rel, dialect="cypher"))]
+fn emit_rel_drop_index_ddl(rel: &Bound<'_, PyAny>, dialect: &str) -> PyResult<Vec<String>> {
+    let schema = extract_rel_schema(rel)?;
+    voyager_core::emit_rel_drop_index_ddl(&schema, dialect).map_err(to_py_schema_err)
+}
+
+#[pyfunction]
+#[pyo3(signature = (node, dialect="cypher", include_type_constraints=false))]
+fn emit_node_drop_constraint_ddl(
+    node: &Bound<'_, PyAny>,
+    dialect: &str,
+    include_type_constraints: bool,
+) -> PyResult<Vec<String>> {
+    let schema = extract_node_schema(node)?;
+    voyager_core::emit_node_drop_constraint_ddl(&schema, dialect, include_type_constraints)
+        .map_err(to_py_schema_err)
+}
+
+#[pyfunction]
+#[pyo3(signature = (rel, dialect="cypher", include_type_constraints=false))]
+fn emit_rel_drop_constraint_ddl(
+    rel: &Bound<'_, PyAny>,
+    dialect: &str,
+    include_type_constraints: bool,
+) -> PyResult<Vec<String>> {
+    let schema = extract_rel_schema(rel)?;
+    voyager_core::emit_rel_drop_constraint_ddl(&schema, dialect, include_type_constraints)
+        .map_err(to_py_schema_err)
+}
+
 /// Native Python module definition for `_voyager_rs`.
 #[pymodule]
 fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -3718,6 +3867,14 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(emit_pgq_drop_property_graph_ddl, m)?)?;
     m.add_function(wrap_pyfunction!(emit_cypher25_graph_type_ddl, m)?)?;
     m.add_function(wrap_pyfunction!(emit_cypher25_drop_graph_type_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_node_index_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_rel_index_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_node_constraint_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_rel_constraint_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_node_drop_index_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_rel_drop_index_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_node_drop_constraint_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(emit_rel_drop_constraint_ddl, m)?)?;
     m.add_class::<PyQueryBuilder>()?;
     m.add_class::<PyAstExpr>()?;
     m.add_class::<PyArrowStream>()?;

@@ -728,28 +728,23 @@ def test_live_schema_ddl_multi_engine_integration():
     # 3. FalkorDB Live Engine (Port 6379)
     try:
         from falkordb import FalkorDB
+        from voyager_ogm.bridge import FalkorDBBridge
 
         f_db = FalkorDB(host="127.0.0.1", port=6379)
         f_graph = f_db.select_graph("voyager_ddl_live_test")
         f_graph.query("RETURN 1")
 
-        class DirectFalkorBridge:
-            def __init__(self, g: Any) -> None:
-                self.g = g
-
-            def execute(self, statement: str, parameters: Any = None) -> Any:
-                return self.g.query(statement, parameters or {})
-
-        fk_session = Session(bridge=DirectFalkorBridge(f_graph), dialect="falkordb")
+        fk_bridge = FalkorDBBridge(f_graph)
+        fk_session = Session(bridge=fk_bridge, dialect="falkordb")
         # Idempotent index creation
         fk_idx = fk_session.create_indexes(User)
         assert len(fk_idx) > 0
-        # Re-creation should not crash (handles 'already indexed')
+        # Re-creation should not crash (handles 'already indexed' in bridge)
         fk_session.create_indexes(User)
 
         # Teardown
         fk_session.drop_indexes(User)
-        # Re-drop should not crash (handles 'no such index')
+        # Re-drop should not crash (handles 'no such index' in bridge)
         fk_session.drop_indexes(User)
 
         # Constraints raise actionable error
@@ -757,3 +752,81 @@ def test_live_schema_ddl_multi_engine_integration():
             fk_session.create_constraints(User)
     except Exception:
         pass  # Skip gracefully if FalkorDB is unreachable
+
+
+def test_schema_registration_loud_failure(caplog: pytest.LogCaptureFixture):
+    """Verifies that schema registration failures log a loud warning and raise an exception."""
+    import logging
+
+    @node(label="LoudFailNode")
+    class LoudFailNode(Node):
+        id: str = Field(primary_key=True)
+
+    @relationship(type_name="LOUD_FAIL_REL", source_node=LoudFailNode, target_node=LoudFailNode)
+    class LoudFailRel(Relationship):
+        weight: float = Field()
+
+    class FailingRegistry:
+        def register_node(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("Rust registry allocation failed")
+
+        def register_relationship(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("Rust registry allocation failed")
+
+    fail_reg = FailingRegistry()
+
+    with caplog.at_level(logging.WARNING, logger="voyager_ogm"):
+        with pytest.raises(RuntimeError, match="Rust registry allocation failed"):
+            LoudFailNode.register_schema(registry=fail_reg)
+        assert "Failed to register schema for node model LoudFailNode" in caplog.text
+
+    with caplog.at_level(logging.WARNING, logger="voyager_ogm"):
+        with pytest.raises(RuntimeError, match="Rust registry allocation failed"):
+            LoudFailRel.register_schema(registry=fail_reg)
+        assert "Failed to register schema for relationship model LoudFailRel" in caplog.text
+
+
+def test_falkordb_bridge_idempotency_unit():
+    """Unit test verifying that FalkorDBBridge absorbs index idempotency errors and raises others."""
+    from voyager_ogm.bridge import AsyncFalkorDBBridge, FalkorDBBridge
+
+    class FakeGraph:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def query(self, stmt: str, params: Any = None) -> Any:
+            self.calls.append(stmt)
+            stmt_clean = stmt.strip().lower()
+            if "already_fail" in stmt_clean:
+                raise RuntimeError("Attribute 'age' is already indexed")
+            if "no_such_fail" in stmt_clean:
+                raise RuntimeError("Unable to drop index on :User(age): no such index.")
+            if "syntax_error" in stmt_clean:
+                raise RuntimeError("Invalid Cypher syntax")
+            return None
+
+    fake_g = FakeGraph()
+    bridge = FalkorDBBridge(fake_g)
+
+    # Creating already indexed attribute should be absorbed
+    res = bridge.execute("CREATE INDEX FOR (n:User) ON (n.already_fail)")
+    assert res == []
+
+    # Dropping non-existent index should be absorbed
+    res = bridge.execute("DROP INDEX FOR (n:User) ON (n.no_such_fail)")
+    assert res == []
+
+    # Other queries with syntax errors must NOT be swallowed
+    with pytest.raises(RuntimeError, match="Invalid Cypher syntax"):
+        bridge.execute("CREATE INDEX FOR (n:User) ON (n.syntax_error)")
+
+    # Non-index queries that somehow contain 'already indexed' must NOT be swallowed
+    with pytest.raises(RuntimeError, match="already indexed"):
+        bridge.execute("MATCH (n:User) RETURN n.already_fail")
+
+    # Async bridge delegates faithfully
+    import asyncio
+
+    async_bridge = AsyncFalkorDBBridge(fake_g)
+    res_async = asyncio.run(async_bridge.execute("CREATE INDEX FOR (n:User) ON (n.already_fail)"))
+    assert res_async == []

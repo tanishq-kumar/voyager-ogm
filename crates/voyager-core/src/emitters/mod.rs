@@ -12,7 +12,10 @@ pub use ddl::{
     emit_cypher_drop_node_ddl, emit_cypher_drop_rel_ddl, emit_cypher_node_ddl, emit_cypher_rel_ddl,
     emit_cypher25_drop_graph_type_ddl, emit_cypher25_graph_type_ddl, emit_gql_alter_node_ddl,
     emit_gql_alter_rel_ddl, emit_gql_drop_graph_type_ddl, emit_gql_graph_type_ddl,
-    emit_pgq_drop_property_graph_ddl, emit_pgq_property_graph_ddl,
+    emit_node_constraint_ddl, emit_node_drop_constraint_ddl, emit_node_drop_index_ddl,
+    emit_node_index_ddl, emit_pgq_drop_property_graph_ddl, emit_pgq_property_graph_ddl,
+    emit_rel_constraint_ddl, emit_rel_drop_constraint_ddl, emit_rel_drop_index_ddl,
+    emit_rel_index_ddl,
 };
 pub use iso_gql::IsoGqlEmitter;
 pub use sql_pgq::SqlPgqEmitter;

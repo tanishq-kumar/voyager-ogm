@@ -974,6 +974,193 @@ class AsyncPostgresBridge:
         await asyncio.to_thread(self.sync_bridge.close)
 
 
+class FalkorDBBridge:
+    """FalkorDB driver bridge for graph execution."""
+
+    def __init__(self, connection: Any, graph_name: str = "voyager") -> None:
+        """Initializes FalkorDBBridge.
+
+        Args:
+            connection: FalkorDB client or Graph instance.
+            graph_name: Target graph key name if a FalkorDB instance is provided.
+        """
+        if hasattr(connection, "select_graph"):
+            self.client = connection
+            self.graph = connection.select_graph(graph_name)
+        elif hasattr(connection, "query"):
+            self.graph = connection
+            self.client = getattr(connection, "falkordb", None)
+        else:
+            self.graph = connection
+            self.client = None
+
+    def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Executes a Cypher statement on FalkorDB.
+
+        Args:
+            statement: Cypher statement.
+            parameters: Query parameters.
+
+        Returns:
+            List of record dictionaries.
+        """
+        params = parameters or {}
+        try:
+            res = self.graph.query(statement, params)
+        except Exception as e:
+            stmt_lower = statement.strip().lower()
+            is_index_ddl = stmt_lower.startswith("create index") or stmt_lower.startswith(
+                "drop index"
+            )
+            err_msg = str(e).lower()
+            if is_index_ddl and ("already indexed" in err_msg or "no such index" in err_msg):
+                return []
+            raise
+
+        if (
+            not hasattr(res, "header")
+            or not res.header
+            or not hasattr(res, "result_set")
+            or not res.result_set
+        ):
+            return []
+
+        col_names = [
+            h[1] if isinstance(h, (list, tuple)) and len(h) > 1 else str(h) for h in res.header
+        ]
+        records: list[dict[str, Any]] = []
+        for row in res.result_set:
+            rec: dict[str, Any] = {}
+            for col, val in zip(col_names, row, strict=False):
+                if hasattr(val, "properties"):
+                    rec[col] = val.properties
+                else:
+                    rec[col] = val
+            records.append(rec)
+        return records
+
+    def execute_to_polars(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> pl.DataFrame:
+        """Executes Cypher statement and returns Polars DataFrame.
+
+        Args:
+            statement: Cypher statement.
+            parameters: Query parameters.
+
+        Returns:
+            Polars DataFrame.
+        """
+        records = self.execute(statement, parameters)
+        return pl.DataFrame(records) if records else pl.DataFrame()
+
+    def execute_bulk(
+        self,
+        plan_or_statement: BulkIngestionPlan | str,
+        batches: Sequence[dict[str, Any]] | None = None,
+    ) -> BulkExecutionResult:
+        """Executes bulk batch ingestion on FalkorDB.
+
+        Args:
+            plan_or_statement: BulkIngestionPlan or query statement.
+            batches: Batch parameter sequence.
+
+        Returns:
+            BulkExecutionResult summary.
+        """
+        start_time = time.perf_counter()
+        statement = ""
+        total_records = 0
+        total_batches = 0
+
+        if isinstance(plan_or_statement, str):
+            statement = plan_or_statement
+            batch_list = batches or []
+            total_batches = len(batch_list)
+            for b in batch_list:
+                batch_data = b.get("batch", [])
+                total_records += len(batch_data)
+                self.graph.query(statement, b)
+        else:
+            statement = plan_or_statement.statement
+            for batch_item in plan_or_statement:
+                total_batches += 1
+                batch_data = batch_item.parameters.get("batch", [])
+                total_records += len(batch_data)
+                self.graph.query(statement, batch_item.parameters)
+
+        return BulkExecutionResult(
+            total_batches=total_batches,
+            total_records=total_records,
+            duration_seconds=time.perf_counter() - start_time,
+            statement=statement,
+        )
+
+    def ping(self) -> bool:
+        """Pings FalkorDB to verify connection liveness."""
+        try:
+            self.graph.query("RETURN 1")
+            return True
+        except Exception:
+            return False
+
+    def close(self) -> None:
+        """Closes FalkorDB connection."""
+        if self.client and hasattr(self.client, "close"):
+            try:
+                self.client.close()
+            except Exception:
+                pass
+        elif hasattr(self.graph, "close"):
+            try:
+                self.graph.close()
+            except Exception:
+                pass
+
+
+class AsyncFalkorDBBridge:
+    """Asynchronous FalkorDB driver bridge using asyncio worker threads."""
+
+    def __init__(self, connection: Any, graph_name: str = "voyager") -> None:
+        """Initializes AsyncFalkorDBBridge.
+
+        Args:
+            connection: FalkorDB client or Graph instance.
+            graph_name: Target graph key name if a FalkorDB instance is provided.
+        """
+        self.sync_bridge = FalkorDBBridge(connection, graph_name=graph_name)
+
+    async def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Asynchronously executes query."""
+        return await asyncio.to_thread(self.sync_bridge.execute, statement, parameters)
+
+    async def execute_to_polars(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> pl.DataFrame:
+        """Asynchronously streams query results to Polars DataFrame."""
+        return await asyncio.to_thread(self.sync_bridge.execute_to_polars, statement, parameters)
+
+    async def execute_bulk(
+        self,
+        plan_or_statement: BulkIngestionPlan | str,
+        batches: Sequence[dict[str, Any]] | None = None,
+    ) -> BulkExecutionResult:
+        """Asynchronously executes bulk ingestion plan."""
+        return await asyncio.to_thread(self.sync_bridge.execute_bulk, plan_or_statement, batches)
+
+    async def ping(self) -> bool:
+        """Pings FalkorDB asynchronously to verify connection liveness."""
+        return await asyncio.to_thread(self.sync_bridge.ping)
+
+    async def close(self) -> None:
+        """Closes FalkorDB connection asynchronously."""
+        await asyncio.to_thread(self.sync_bridge.close)
+
+
 _BRIDGE_REGISTRY: list[tuple[Callable[[Any], bool], type, bool]] = []
 
 
@@ -1025,12 +1212,19 @@ def _is_postgres_conn(obj: Any) -> bool:
     return "psycopg" in type_name and hasattr(obj, "cursor")
 
 
+def _is_falkordb_conn(obj: Any) -> bool:
+    type_name = f"{type(obj).__module__}.{type(obj).__qualname__}"
+    return "falkordb" in type_name and (hasattr(obj, "query") or hasattr(obj, "select_graph"))
+
+
 register_bridge(_is_neo4j_sync_driver, Neo4jBoltBridge, is_async=False)
 register_bridge(_is_neo4j_async_driver, AsyncNeo4jBoltBridge, is_async=True)
 register_bridge(_is_duckdb_conn, DuckDbBridge, is_async=False)
 register_bridge(_is_duckdb_conn, AsyncDuckDbBridge, is_async=True)
 register_bridge(_is_postgres_conn, PostgresBridge, is_async=False)
 register_bridge(_is_postgres_conn, AsyncPostgresBridge, is_async=True)
+register_bridge(_is_falkordb_conn, FalkorDBBridge, is_async=False)
+register_bridge(_is_falkordb_conn, AsyncFalkorDBBridge, is_async=True)
 
 
 @overload
@@ -1092,6 +1286,8 @@ def create_bridge(
                 sync_inst = bridge_cls(driver_or_connection)
                 if isinstance(sync_inst, DuckDbBridge):
                     return AsyncDuckDbBridge(driver_or_connection)
+                elif isinstance(sync_inst, FalkorDBBridge):
+                    return AsyncFalkorDBBridge(driver_or_connection)
 
     # If a database connection URI string was provided, attempt to auto-instantiate the official driver
     if isinstance(driver_or_connection, str) and not driver_or_connection.startswith("mock://"):
@@ -1127,6 +1323,15 @@ def create_bridge(
                 pg_conn = psycopg.connect(driver_or_connection, autocommit=True)
                 pg_bridge = PostgresBridge(pg_conn)
                 return AsyncPostgresBridge(pg_conn) if is_async else pg_bridge
+            except Exception:
+                pass
+        elif scheme in ("falkordb", "falkor"):
+            try:
+                from falkordb import FalkorDB
+
+                parsed = FalkorDB.from_url(driver_or_connection)
+                f_bridge = FalkorDBBridge(parsed)
+                return AsyncFalkorDBBridge(parsed) if is_async else f_bridge
             except Exception:
                 pass
 
