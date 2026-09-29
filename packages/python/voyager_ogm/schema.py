@@ -52,7 +52,18 @@ def _is_relationship_model(model: Any) -> bool:
         )
         or (
             isinstance(model, dict)
-            and ("type_name" in model or "type" in model or "type_" in model)
+            and any(
+                k in model
+                for k in (
+                    "type_name",
+                    "type_",
+                    "type",
+                    "source_labels",
+                    "target_labels",
+                    "from_labels",
+                    "to_labels",
+                )
+            )
         )
     )
 
@@ -95,6 +106,23 @@ def _resolve_model_specs(
                 resolved.append(("rel", rel_schema))
                 continue
             raise ValueError(f"Model '{m}' is not registered in SchemaRegistry")
+        if isinstance(m, dict):
+            if any(
+                k in m
+                for k in (
+                    "type_name",
+                    "type_",
+                    "type",
+                    "source_labels",
+                    "target_labels",
+                    "from_labels",
+                    "to_labels",
+                )
+            ):
+                resolved.append(("rel", m))
+            else:
+                resolved.append(("node", m))
+            continue
         if _is_relationship_model(m):
             resolved.append(("rel", m))
         else:

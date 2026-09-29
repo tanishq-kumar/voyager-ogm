@@ -830,3 +830,52 @@ def test_falkordb_bridge_idempotency_unit():
     async_bridge = AsyncFalkorDBBridge(fake_g)
     res_async = asyncio.run(async_bridge.execute("CREATE INDEX FOR (n:User) ON (n.already_fail)"))
     assert res_async == []
+
+
+def test_dict_spec_routing_in_schema_manager():
+    """Verify SchemaManager correctly routes schema dicts for nodes and relationships."""
+    node_spec = {
+        "name": "DictPerson",
+        "labels": ["DictPerson"],
+        "primary_key": "pid",
+        "fields": {
+            "pid": {"field_type": "STRING", "primary_key": True, "indexed": True},
+            "age": {"field_type": "INTEGER", "indexed": True},
+        },
+    }
+    rel_spec = {
+        "name": "DictKnows",
+        "type_name": "DICT_KNOWS",
+        "source_labels": ["DictPerson"],
+        "target_labels": ["DictPerson"],
+        "fields": {
+            "since": {"field_type": "INTEGER", "indexed": True},
+        },
+    }
+
+    # Index DDL
+    node_idx_stmts = SchemaManager.generate_index_ddl(node_spec, dialect="cypher")
+    assert any("FOR (n:DictPerson) ON (n.age)" in s for s in node_idx_stmts)
+
+    rel_idx_stmts = SchemaManager.generate_index_ddl(rel_spec, dialect="cypher")
+    assert any("FOR ()-[r:DICT_KNOWS]-() ON (r.since)" in s for s in rel_idx_stmts)
+
+    # Postgres dialect
+    node_pg_stmts = SchemaManager.generate_index_ddl(node_spec, dialect="postgres")
+    assert any(
+        'CREATE INDEX IF NOT EXISTS idx_dictperson_age ON "dictperson" ("age");' in s
+        for s in node_pg_stmts
+    )
+
+    rel_pg_stmts = SchemaManager.generate_index_ddl(rel_spec, dialect="postgres")
+    assert any(
+        'CREATE INDEX IF NOT EXISTS idx_dict_knows_since ON "dict_knows" ("since");' in s
+        for s in rel_pg_stmts
+    )
+
+    # Drop index DDL
+    node_drop_idx = SchemaManager.generate_drop_index_ddl(node_spec, dialect="cypher")
+    assert any("DROP INDEX index_dictperson_age" in s for s in node_drop_idx)
+
+    rel_drop_idx = SchemaManager.generate_drop_index_ddl(rel_spec, dialect="cypher")
+    assert any("DROP INDEX index_rel_dict_knows_since" in s for s in rel_drop_idx)

@@ -571,41 +571,58 @@ class _SessionBase:
             self._optimize = cfg.optimize
             self._optimization_level = optimization_level or cfg.optimization_level
 
-        self._bridge: Any = create_bridge(bridge, is_async=is_async)
-        self._identity_map: weakref.WeakValueDictionary[tuple[type[Any], Any], Any] = (
-            weakref.WeakValueDictionary()
-        )
-
         self._requested_backend = backend.lower() if isinstance(backend, str) else "auto"
         self._native_client: Any = None
         self._active_backend = "bridge"
         self._circuit_cooldown_seconds = circuit_cooldown_seconds
         self._fallback_timestamp: float | None = None
         self._consecutive_native_failures = 0
+        self._bridge: Any = None
 
-        if self._requested_backend in ("native", "auto"):
-            has_execute = (
+        # Check if bridge was passed directly as a NativeClient instance or test double
+        is_native_candidate = (
+            self._requested_backend in ("native", "auto")
+            and (
                 hasattr(bridge, "execute") and hasattr(bridge, "execute_sync")
                 if is_async
                 else hasattr(bridge, "execute_sync")
             )
-            if has_execute:
-                self._native_client = bridge
-                self._active_backend = "native"
-            elif isinstance(bridge, str) and not bridge.startswith("mock://"):
-                try:
-                    from voyager_ogm._voyager_rs import NativeClient
+            and not isinstance(bridge, (DatabaseBridge, AsyncDatabaseBridge))
+        )
 
-                    self._native_client = NativeClient(bridge, min_idle=1, max_size=pool_size)
-                    self._active_backend = "native"
-                except Exception as e:
-                    if self._requested_backend == "native":
-                        raise RuntimeError(f"Failed to initialize native backend: {e}") from e
-                    self._active_backend = "bridge"
-            elif self._requested_backend == "native":
-                raise ValueError(
-                    f"Native backend requires a valid URI string, got: {type(bridge).__name__}"
-                )
+        if is_native_candidate:
+            self._native_client = bridge
+            self._active_backend = "native"
+            self._bridge = AsyncMockBridge() if is_async else MockBridge()
+        elif (
+            self._requested_backend in ("native", "auto")
+            and isinstance(bridge, str)
+            and not bridge.startswith("mock://")
+        ):
+            try:
+                from voyager_ogm._voyager_rs import NativeClient
+
+                self._native_client = NativeClient(bridge, min_idle=1, max_size=pool_size)
+                self._active_backend = "native"
+                try:
+                    self._bridge = create_bridge(bridge, is_async=is_async)
+                except Exception:
+                    self._bridge = AsyncMockBridge() if is_async else MockBridge()
+            except Exception as e:
+                if self._requested_backend == "native":
+                    raise RuntimeError(f"Failed to initialize native backend: {e}") from e
+                self._active_backend = "bridge"
+                self._bridge = create_bridge(bridge, is_async=is_async)
+        elif self._requested_backend == "native":
+            raise ValueError(
+                f"Native backend requires a valid URI string, got: {type(bridge).__name__}"
+            )
+        else:
+            self._bridge = create_bridge(bridge, is_async=is_async)
+
+        self._identity_map: weakref.WeakValueDictionary[tuple[type[Any], Any], Any] = (
+            weakref.WeakValueDictionary()
+        )
 
         self._is_explicit_mock = (
             bridge is None

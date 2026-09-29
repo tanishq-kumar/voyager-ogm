@@ -1290,51 +1290,123 @@ def create_bridge(
                     return AsyncFalkorDBBridge(driver_or_connection)
 
     # If a database connection URI string was provided, attempt to auto-instantiate the official driver
-    if isinstance(driver_or_connection, str) and not driver_or_connection.startswith("mock://"):
-        scheme = (
-            driver_or_connection.split("://", 1)[0].lower() if "://" in driver_or_connection else ""
-        )
-        if scheme in ("bolt", "neo4j", "bolt+s", "neo4j+s", "bolt+ssc", "neo4j+ssc"):
+    if isinstance(driver_or_connection, str):
+        if driver_or_connection.startswith("mock://"):
+            return AsyncMockBridge() if is_async else MockBridge()
+
+        if "://" not in driver_or_connection:
+            raise ValueError(
+                f"Invalid connection URI: '{driver_or_connection}'. Expected a valid URI scheme (e.g. 'bolt://', 'duckdb://', 'postgresql://', 'falkordb://', or 'mock://')."
+            )
+
+        scheme = driver_or_connection.split("://", 1)[0].lower()
+        if scheme in (
+            "bolt",
+            "neo4j",
+            "memgraph",
+            "bolt+s",
+            "neo4j+s",
+            "memgraph+s",
+            "bolt+ssc",
+            "neo4j+ssc",
+            "memgraph+ssc",
+        ):
             try:
                 import neo4j
-
-                if is_async and hasattr(neo4j, "AsyncGraphDatabase"):
-                    async_drv = neo4j.AsyncGraphDatabase.driver(driver_or_connection)
-                    return AsyncNeo4jBoltBridge(async_drv)
-                elif hasattr(neo4j, "GraphDatabase"):
-                    sync_drv = neo4j.GraphDatabase.driver(driver_or_connection)
-                    return Neo4jBoltBridge(sync_drv)
-            except Exception:
-                pass
+            except ImportError as e:
+                raise ImportError(
+                    f"The 'neo4j' Python package is required to connect to URI '{driver_or_connection}'. "
+                    f"Install it with 'pip install neo4j'."
+                ) from e
+            if is_async and hasattr(neo4j, "AsyncGraphDatabase"):
+                async_drv = neo4j.AsyncGraphDatabase.driver(driver_or_connection)
+                return AsyncNeo4jBoltBridge(async_drv)
+            elif hasattr(neo4j, "GraphDatabase"):
+                sync_drv = neo4j.GraphDatabase.driver(driver_or_connection)
+                return Neo4jBoltBridge(sync_drv)
+            else:
+                raise RuntimeError(
+                    f"Unable to instantiate neo4j driver from '{driver_or_connection}'."
+                )
         elif scheme == "duckdb":
             try:
                 import duckdb
-
-                path = driver_or_connection.replace("duckdb://", "") or ":memory:"
-                duck_conn = duckdb.connect(path)
-                duck_bridge = DuckDbBridge(duck_conn)
-                return AsyncDuckDbBridge(duck_conn) if is_async else duck_bridge
-            except Exception:
-                pass
-        elif scheme in ("postgresql", "postgres"):
+            except ImportError as e:
+                raise ImportError(
+                    f"The 'duckdb' Python package is required to connect to URI '{driver_or_connection}'. "
+                    f"Install it with 'pip install duckdb'."
+                ) from e
+            path = driver_or_connection.replace("duckdb://", "") or ":memory:"
+            duck_conn = duckdb.connect(path)
+            duck_bridge = DuckDbBridge(duck_conn)
+            return AsyncDuckDbBridge(duck_conn) if is_async else duck_bridge
+        elif scheme in ("postgresql", "postgres", "age", "postgresql+s", "postgres+s", "age+s"):
             try:
                 import psycopg
-
-                pg_conn = psycopg.connect(driver_or_connection, autocommit=True)
-                pg_bridge = PostgresBridge(pg_conn)
-                return AsyncPostgresBridge(pg_conn) if is_async else pg_bridge
-            except Exception:
-                pass
-        elif scheme in ("falkordb", "falkor"):
+            except ImportError as e:
+                raise ImportError(
+                    f"The 'psycopg' Python package is required to connect to URI '{driver_or_connection}'. "
+                    f"Install it with 'pip install psycopg[binary]'."
+                ) from e
+            pg_conn = psycopg.connect(driver_or_connection, autocommit=True)
+            pg_bridge = PostgresBridge(pg_conn)
+            return AsyncPostgresBridge(pg_conn) if is_async else pg_bridge
+        elif scheme in (
+            "falkordb",
+            "falkordbs",
+            "falkor",
+            "redis",
+            "rediss",
+            "valkey",
+            "valkeys",
+        ):
             try:
                 from falkordb import FalkorDB
+            except ImportError as e:
+                raise ImportError(
+                    f"The 'falkordb' Python package is required to connect to URI '{driver_or_connection}'. "
+                    f"Install it with 'pip install falkordb'."
+                ) from e
+            from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-                parsed = FalkorDB.from_url(driver_or_connection)
-                f_bridge = FalkorDBBridge(parsed)
-                return AsyncFalkorDBBridge(parsed) if is_async else f_bridge
-            except Exception:
-                pass
+            parsed_url = urlparse(driver_or_connection)
+            redis_scheme = "rediss" if scheme in ("rediss", "falkordbs", "valkeys") else "redis"
+            qs = parse_qs(parsed_url.query)
+            redis_qs = {}
+            for k, vals in qs.items():
+                if k == "connect_timeout":
+                    redis_qs["socket_connect_timeout"] = vals[0]
+                elif k in (
+                    "socket_timeout",
+                    "socket_connect_timeout",
+                    "password",
+                    "db",
+                    "username",
+                    "decode_responses",
+                    "ssl",
+                    "ssl_cert_reqs",
+                ):
+                    redis_qs[k] = vals[0]
+            clean_url = urlunparse(
+                (
+                    redis_scheme,
+                    parsed_url.netloc,
+                    parsed_url.path,
+                    parsed_url.params,
+                    urlencode(redis_qs),
+                    parsed_url.fragment,
+                )
+            )
+            parsed = FalkorDB.from_url(clean_url)
+            f_bridge = FalkorDBBridge(parsed)
+            return AsyncFalkorDBBridge(parsed) if is_async else f_bridge
+        else:
+            raise ValueError(
+                f"Unsupported database URI scheme '{scheme}' in '{driver_or_connection}'. "
+                f"Supported schemes: 'bolt', 'neo4j', 'memgraph', 'duckdb', 'postgresql', 'postgres', 'age', 'falkordb', 'redis', or 'mock://'."
+            )
 
-    if is_async:
-        return AsyncMockBridge()
-    return MockBridge()
+    raise TypeError(
+        f"Unsupported database driver or connection object of type {type(driver_or_connection).__name__}. "
+        f"Expected a recognized driver connection instance, DatabaseBridge, or URI string."
+    )

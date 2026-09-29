@@ -11,11 +11,12 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 
 fn to_py_schema_err(err: voyager_core::Error) -> PyErr {
-    let msg = err.to_string();
-    if msg.contains("does not support") {
-        PyNotImplementedError::new_err(msg)
-    } else {
-        PyValueError::new_err(msg)
+    match err {
+        voyager_core::Error::UnsupportedDialect { .. }
+        | voyager_core::Error::UnsupportedFeature { .. } => {
+            PyNotImplementedError::new_err(err.to_string())
+        }
+        _ => PyValueError::new_err(err.to_string()),
     }
 }
 use voyager_core::ast::{

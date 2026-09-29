@@ -655,6 +655,41 @@ impl SchemaRegistry {
         crate::emitters::ddl::emit_gql_graph_type_ddl(graph_type_name, &node_refs, &rel_refs)
     }
 
+    /// Filters registered node and relationship schemas by model name or label/type.
+    pub fn filter_models<'a>(
+        all_nodes: &'a [NodeSchema],
+        all_rels: &'a [RelationshipSchema],
+        model_names: Option<&[&str]>,
+    ) -> (Vec<&'a NodeSchema>, Vec<&'a RelationshipSchema>) {
+        let nodes: Vec<&NodeSchema> = if let Some(names) = model_names {
+            all_nodes
+                .iter()
+                .filter(|n| {
+                    names.contains(&n.name.as_str())
+                        || names
+                            .iter()
+                            .any(|m| n.labels.iter().any(|l| l.eq_ignore_ascii_case(m)))
+                })
+                .collect()
+        } else {
+            all_nodes.iter().collect()
+        };
+
+        let rels: Vec<&RelationshipSchema> = if let Some(names) = model_names {
+            all_rels
+                .iter()
+                .filter(|r| {
+                    names.contains(&r.name.as_str())
+                        || names.iter().any(|m| r.type_name.eq_ignore_ascii_case(m))
+                })
+                .collect()
+        } else {
+            all_rels.iter().collect()
+        };
+
+        (nodes, rels)
+    }
+
     /// Emits an ISO GQL `CREATE GRAPH TYPE <name> AS { ... }` definition for specified model names or labels.
     pub fn generate_gql_graph_type_ddl_for(
         &self,
@@ -663,24 +698,8 @@ impl SchemaRegistry {
     ) -> String {
         let all_nodes = self.node_schemas();
         let all_rels = self.relationship_schemas();
-        let filtered_nodes: Vec<&NodeSchema> = all_nodes
-            .iter()
-            .filter(|n| {
-                model_names.contains(&n.name.as_str())
-                    || model_names
-                        .iter()
-                        .any(|m| n.labels.iter().any(|l| l.eq_ignore_ascii_case(m)))
-            })
-            .collect();
-        let filtered_rels: Vec<&RelationshipSchema> = all_rels
-            .iter()
-            .filter(|r| {
-                model_names.contains(&r.name.as_str())
-                    || model_names
-                        .iter()
-                        .any(|m| r.type_name.eq_ignore_ascii_case(m))
-            })
-            .collect();
+        let (filtered_nodes, filtered_rels) =
+            Self::filter_models(&all_nodes, &all_rels, Some(model_names));
         crate::emitters::ddl::emit_gql_graph_type_ddl(
             graph_type_name,
             &filtered_nodes,
@@ -731,24 +750,8 @@ impl SchemaRegistry {
     pub fn generate_cypher25_graph_type_ddl_for(&self, model_names: &[&str]) -> String {
         let all_nodes = self.node_schemas();
         let all_rels = self.relationship_schemas();
-        let filtered_nodes: Vec<&NodeSchema> = all_nodes
-            .iter()
-            .filter(|n| {
-                model_names.contains(&n.name.as_str())
-                    || model_names
-                        .iter()
-                        .any(|m| n.labels.iter().any(|l| l.eq_ignore_ascii_case(m)))
-            })
-            .collect();
-        let filtered_rels: Vec<&RelationshipSchema> = all_rels
-            .iter()
-            .filter(|r| {
-                model_names.contains(&r.name.as_str())
-                    || model_names
-                        .iter()
-                        .any(|m| r.type_name.eq_ignore_ascii_case(m))
-            })
-            .collect();
+        let (filtered_nodes, filtered_rels) =
+            Self::filter_models(&all_nodes, &all_rels, Some(model_names));
         crate::emitters::ddl::emit_cypher25_graph_type_ddl(&filtered_nodes, &filtered_rels)
     }
 
@@ -770,24 +773,8 @@ impl SchemaRegistry {
     pub fn generate_pgq_ddl_for(&self, graph_name: &str, model_names: &[&str]) -> Result<String> {
         let all_nodes = self.node_schemas();
         let all_rels = self.relationship_schemas();
-        let filtered_nodes: Vec<&NodeSchema> = all_nodes
-            .iter()
-            .filter(|n| {
-                model_names.contains(&n.name.as_str())
-                    || model_names
-                        .iter()
-                        .any(|m| n.labels.iter().any(|l| l.eq_ignore_ascii_case(m)))
-            })
-            .collect();
-        let filtered_rels: Vec<&RelationshipSchema> = all_rels
-            .iter()
-            .filter(|r| {
-                model_names.contains(&r.name.as_str())
-                    || model_names
-                        .iter()
-                        .any(|m| r.type_name.eq_ignore_ascii_case(m))
-            })
-            .collect();
+        let (filtered_nodes, filtered_rels) =
+            Self::filter_models(&all_nodes, &all_rels, Some(model_names));
         crate::emitters::ddl::emit_pgq_property_graph_ddl(
             graph_name,
             &filtered_nodes,
@@ -806,36 +793,11 @@ impl SchemaRegistry {
         dialect: &str,
         model_names: Option<&[&str]>,
     ) -> Result<Vec<String>> {
-        let mut stmts = Vec::new();
         let all_nodes = self.node_schemas();
         let all_rels = self.relationship_schemas();
+        let (nodes, rels) = Self::filter_models(&all_nodes, &all_rels, model_names);
 
-        let nodes: Vec<&NodeSchema> = if let Some(names) = model_names {
-            all_nodes
-                .iter()
-                .filter(|n| {
-                    names.contains(&n.name.as_str())
-                        || names
-                            .iter()
-                            .any(|m| n.labels.iter().any(|l| l.eq_ignore_ascii_case(m)))
-                })
-                .collect()
-        } else {
-            all_nodes.iter().collect()
-        };
-
-        let rels: Vec<&RelationshipSchema> = if let Some(names) = model_names {
-            all_rels
-                .iter()
-                .filter(|r| {
-                    names.contains(&r.name.as_str())
-                        || names.iter().any(|m| r.type_name.eq_ignore_ascii_case(m))
-                })
-                .collect()
-        } else {
-            all_rels.iter().collect()
-        };
-
+        let mut stmts = Vec::new();
         for node in nodes {
             stmts.extend(crate::emitters::ddl::emit_node_index_ddl(node, dialect)?);
         }
@@ -852,36 +814,11 @@ impl SchemaRegistry {
         model_names: Option<&[&str]>,
         include_type_constraints: bool,
     ) -> Result<Vec<String>> {
-        let mut stmts = Vec::new();
         let all_nodes = self.node_schemas();
         let all_rels = self.relationship_schemas();
+        let (nodes, rels) = Self::filter_models(&all_nodes, &all_rels, model_names);
 
-        let nodes: Vec<&NodeSchema> = if let Some(names) = model_names {
-            all_nodes
-                .iter()
-                .filter(|n| {
-                    names.contains(&n.name.as_str())
-                        || names
-                            .iter()
-                            .any(|m| n.labels.iter().any(|l| l.eq_ignore_ascii_case(m)))
-                })
-                .collect()
-        } else {
-            all_nodes.iter().collect()
-        };
-
-        let rels: Vec<&RelationshipSchema> = if let Some(names) = model_names {
-            all_rels
-                .iter()
-                .filter(|r| {
-                    names.contains(&r.name.as_str())
-                        || names.iter().any(|m| r.type_name.eq_ignore_ascii_case(m))
-                })
-                .collect()
-        } else {
-            all_rels.iter().collect()
-        };
-
+        let mut stmts = Vec::new();
         for node in nodes {
             stmts.extend(crate::emitters::ddl::emit_node_constraint_ddl(
                 node,
@@ -905,36 +842,11 @@ impl SchemaRegistry {
         dialect: &str,
         model_names: Option<&[&str]>,
     ) -> Result<Vec<String>> {
-        let mut stmts = Vec::new();
         let all_nodes = self.node_schemas();
         let all_rels = self.relationship_schemas();
+        let (nodes, rels) = Self::filter_models(&all_nodes, &all_rels, model_names);
 
-        let nodes: Vec<&NodeSchema> = if let Some(names) = model_names {
-            all_nodes
-                .iter()
-                .filter(|n| {
-                    names.contains(&n.name.as_str())
-                        || names
-                            .iter()
-                            .any(|m| n.labels.iter().any(|l| l.eq_ignore_ascii_case(m)))
-                })
-                .collect()
-        } else {
-            all_nodes.iter().collect()
-        };
-
-        let rels: Vec<&RelationshipSchema> = if let Some(names) = model_names {
-            all_rels
-                .iter()
-                .filter(|r| {
-                    names.contains(&r.name.as_str())
-                        || names.iter().any(|m| r.type_name.eq_ignore_ascii_case(m))
-                })
-                .collect()
-        } else {
-            all_rels.iter().collect()
-        };
-
+        let mut stmts = Vec::new();
         for node in nodes {
             stmts.extend(crate::emitters::ddl::emit_node_drop_index_ddl(
                 node, dialect,
@@ -953,36 +865,11 @@ impl SchemaRegistry {
         model_names: Option<&[&str]>,
         include_type_constraints: bool,
     ) -> Result<Vec<String>> {
-        let mut stmts = Vec::new();
         let all_nodes = self.node_schemas();
         let all_rels = self.relationship_schemas();
+        let (nodes, rels) = Self::filter_models(&all_nodes, &all_rels, model_names);
 
-        let nodes: Vec<&NodeSchema> = if let Some(names) = model_names {
-            all_nodes
-                .iter()
-                .filter(|n| {
-                    names.contains(&n.name.as_str())
-                        || names
-                            .iter()
-                            .any(|m| n.labels.iter().any(|l| l.eq_ignore_ascii_case(m)))
-                })
-                .collect()
-        } else {
-            all_nodes.iter().collect()
-        };
-
-        let rels: Vec<&RelationshipSchema> = if let Some(names) = model_names {
-            all_rels
-                .iter()
-                .filter(|r| {
-                    names.contains(&r.name.as_str())
-                        || names.iter().any(|m| r.type_name.eq_ignore_ascii_case(m))
-                })
-                .collect()
-        } else {
-            all_rels.iter().collect()
-        };
-
+        let mut stmts = Vec::new();
         for node in nodes {
             stmts.extend(crate::emitters::ddl::emit_node_drop_constraint_ddl(
                 node,
