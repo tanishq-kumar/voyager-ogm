@@ -566,6 +566,9 @@ class DuckDbBridge:
         if "GRAPH_TABLE" in statement and parameters:
             import re
 
+            def _make_repl(r: str) -> Callable[[re.Match[str]], str]:
+                return lambda _m: r
+
             stmt = statement
             for k in sorted(parameters.keys(), key=len, reverse=True):
                 v = parameters[k]
@@ -579,7 +582,7 @@ class DuckDbBridge:
                 else:
                     replacement = str(v)
                 pattern = r"\$" + re.escape(k) + r"\b"
-                stmt = re.sub(pattern, lambda _m, r=replacement: r, stmt)
+                stmt = re.sub(pattern, _make_repl(replacement), stmt)
             return stmt, {}
         return statement, parameters
 
@@ -797,6 +800,9 @@ class PostgresBridge:
 
         import re
 
+        def _make_repl(r: str) -> Callable[[re.Match[str]], str]:
+            return lambda _m: r
+
         if "GRAPH_TABLE" in statement:
             # PG19 GRAPH_TABLE does not support prepared parameters inside table function AST
             stmt = statement
@@ -812,11 +818,11 @@ class PostgresBridge:
                 else:
                     replacement = str(v)
                 pattern = r"\$" + re.escape(k) + r"\b"
-                stmt = re.sub(pattern, lambda _m, r=replacement: r, stmt)
+                stmt = re.sub(pattern, _make_repl(replacement), stmt)
             return stmt, ()
         else:
             ordered_params: list[Any] = []
-            pattern = re.compile(r"\$([a-zA-Z0-9_]+)\b")
+            regex = re.compile(r"\$([a-zA-Z0-9_]+)\b")
 
             def repl(m: re.Match[str]) -> str:
                 key = m.group(1)
@@ -825,7 +831,7 @@ class PostgresBridge:
                     return "%s"
                 return m.group(0)
 
-            stmt = pattern.sub(repl, statement)
+            stmt = regex.sub(repl, statement)
             return stmt, ordered_params
 
     def execute(
@@ -985,12 +991,14 @@ def register_bridge(
         bridge_class: Adapter class to instantiate.
         is_async: Flag indicating whether this adapter implements AsyncDatabaseBridge.
     """
+    matcher: Callable[[Any], bool]
     if isinstance(predicate_or_type, type):
         target_cls = predicate_or_type
 
-        def matcher(obj: Any) -> bool:
+        def _matcher(obj: Any) -> bool:
             return isinstance(obj, target_cls)
 
+        matcher = _matcher
     else:
         matcher = predicate_or_type
 
@@ -1095,11 +1103,11 @@ def create_bridge(
                 import neo4j
 
                 if is_async and hasattr(neo4j, "AsyncGraphDatabase"):
-                    drv = neo4j.AsyncGraphDatabase.driver(driver_or_connection)
-                    return AsyncNeo4jBoltBridge(drv)
+                    async_drv = neo4j.AsyncGraphDatabase.driver(driver_or_connection)
+                    return AsyncNeo4jBoltBridge(async_drv)
                 elif hasattr(neo4j, "GraphDatabase"):
-                    drv = neo4j.GraphDatabase.driver(driver_or_connection)
-                    return Neo4jBoltBridge(drv)
+                    sync_drv = neo4j.GraphDatabase.driver(driver_or_connection)
+                    return Neo4jBoltBridge(sync_drv)
             except Exception:
                 pass
         elif scheme == "duckdb":
@@ -1107,18 +1115,18 @@ def create_bridge(
                 import duckdb
 
                 path = driver_or_connection.replace("duckdb://", "") or ":memory:"
-                conn = duckdb.connect(path)
-                bridge_inst = DuckDbBridge(conn)
-                return AsyncDuckDbBridge(conn) if is_async else bridge_inst
+                duck_conn = duckdb.connect(path)
+                duck_bridge = DuckDbBridge(duck_conn)
+                return AsyncDuckDbBridge(duck_conn) if is_async else duck_bridge
             except Exception:
                 pass
         elif scheme in ("postgresql", "postgres"):
             try:
                 import psycopg
 
-                conn = psycopg.connect(driver_or_connection, autocommit=True)
-                bridge_inst = PostgresBridge(conn)
-                return AsyncPostgresBridge(conn) if is_async else bridge_inst
+                pg_conn = psycopg.connect(driver_or_connection, autocommit=True)
+                pg_bridge = PostgresBridge(pg_conn)
+                return AsyncPostgresBridge(pg_conn) if is_async else pg_bridge
             except Exception:
                 pass
 

@@ -82,9 +82,10 @@ lint:
     uv run cargo clippy --workspace --all-targets -- -D warnings
     uv run ruff check .
 
-# Static type checking across Python using Astral ty
+# Static type checking across Python using Astral ty and Mypy (PEP 561 / PEP 681)
 typecheck:
     uvx ty check packages/python
+    uv run mypy packages/python/voyager_ogm
 
 # Full Continuous Integration (CI) verification suite
 ci: fmt-check lint test

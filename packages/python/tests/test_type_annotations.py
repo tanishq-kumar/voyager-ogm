@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import voyager_ogm
 from voyager_ogm import (
     Field,
     Node,
     Query,
+    Relationship,
     node,
     relationship,
     reset_alias_counters,
@@ -93,3 +97,33 @@ def test_query_with_pure_type_annotated_models():
     )
     assert compiled.statement == expected
     assert compiled.parameters == {"p0": 21, "p1": 100}
+
+
+def test_pep_561_py_typed_marker():
+    """Verify that PEP 561 py.typed marker file exists in the package root."""
+    package_dir = Path(voyager_ogm.__file__).parent
+    py_typed_file = package_dir / "py.typed"
+    assert py_typed_file.exists(), f"py.typed marker not found in {package_dir}"
+    assert py_typed_file.is_file()
+
+
+def test_pep_681_dataclass_transform_metadata():
+    """Verify that PEP 681 dataclass_transform decorator metadata is attached."""
+    for target in (Node, Relationship, node, relationship):
+        dct = getattr(target, "__dataclass_transform__", None)
+        assert dct is not None, f"__dataclass_transform__ missing on {target}"
+        assert Field in dct.get("field_specifiers", ())
+        assert dct.get("eq_default") is True
+
+
+def test_pep_681_model_instantiation():
+    """Verify that models decorated with PEP 681 dataclass transform can be instantiated."""
+    dev = Developer(name="Alice", age=30, skills=["Rust", "Python"], level="Lead")
+    assert dev.get("name") == "Alice"
+    assert dev.get("age") == 30
+    assert dev.get("skills") == ["Rust", "Python"]
+    assert dev.get("level") == "Lead"
+
+    rel = ContributedTo(commits=42, role="Maintainer")
+    assert rel.get("commits") == 42
+    assert rel.get("role") == "Maintainer"

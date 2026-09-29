@@ -52,13 +52,12 @@ class SavepointContext:
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
-    ) -> bool:
+    ) -> None:
         """Releases the savepoint on success or rolls back on exception."""
         if exc_type is not None:
             self.tx.rollback_to_savepoint(self.name)
-            return False
+            return
         self.tx.release_savepoint(self.name)
-        return False
 
 
 class Transaction:
@@ -175,12 +174,11 @@ class Transaction:
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
-    ) -> bool:
+    ) -> None:
         """Commits on clean exit, or rolls back if an exception occurred."""
         if exc_type is not None:
             if self.is_active:
                 self.rollback()
-            return False
+            return
         if self.is_active:
             self.commit()
-        return False

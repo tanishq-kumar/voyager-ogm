@@ -11,7 +11,7 @@ import inspect
 import threading
 import weakref
 from collections import defaultdict
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Generic, TypeVar, cast, dataclass_transform
 
 from voyager_ogm.expressions import BinaryExpr, Expression, PropExpr, to_expression
 
@@ -392,7 +392,7 @@ def _process_type_annotations(cls: Any) -> dict[str, Field]:
                 existing_val.name = attr_name
             fields_map[attr_name] = existing_val
         elif not inspect.isroutine(existing_val):
-            field_desc = Field(
+            field_desc: Field[Any] = Field(
                 default=existing_val if existing_val is not None else ...,
                 name=attr_name,
                 type_annotation=type_hint,
@@ -414,6 +414,7 @@ def _process_type_annotations(cls: Any) -> dict[str, Field]:
     return fields_map
 
 
+@dataclass_transform(field_specifiers=(Field,))
 class Node:
     """Base class for Voyager OGM Graph Node Entities.
 
@@ -431,6 +432,8 @@ class Node:
 
     __labels__: ClassVar[list[str]] = []
     _schema_fields: ClassVar[dict[str, Field]] = {}
+    _cached_labels: ClassVar[list[str]] = ["Node"]
+    _cached_label: ClassVar[str] = "Node"
 
     def __init_subclass__(cls, label: str | list[str] | None = None, **kwargs: Any) -> None:
         """Initializes Node subclass metadata and labels.
@@ -485,11 +488,14 @@ class Node:
             **values: Property key-value pairs, or optional `session` reference.
         """
         cached_label = getattr(self.__class__, "_cached_label", None)
-        if cached_label is None:
+        if not cached_label:
             cached_label = self.__labels__[0] if self.__labels__ else self.__class__.__name__
         self._alias = alias or _get_next_alias(cached_label)
         self._cached_alias = self._alias
-        self._cached_labels = getattr(self.__class__, "_cached_labels", [cached_label])
+        class_labels = getattr(self.__class__, "_cached_labels", None)
+        if not class_labels:
+            class_labels = list(self.__labels__) if self.__labels__ else [cached_label]
+        object.__setattr__(self, "_cached_labels", class_labels)
         self._bound_fields: dict[str, BoundField] = {}
         session = values.pop("session", None)
         self._session_ref: weakref.ref[Any] | None = (
@@ -672,6 +678,7 @@ class Node:
         return self._bound_fields[name]
 
 
+@dataclass_transform(field_specifiers=(Field,))
 class Relationship:
     """Base class for Voyager OGM Graph Relationship Entities.
 
@@ -690,6 +697,10 @@ class Relationship:
 
     __type__: ClassVar[str] = ""
     __direction__: ClassVar[str] = "outgoing"
+    __source_labels__: ClassVar[list[str]] = []
+    __target_labels__: ClassVar[list[str]] = []
+    _cached_type: ClassVar[str] = ""
+    _cached_types: ClassVar[list[str]] = []
     _schema_fields: ClassVar[dict[str, Field]] = {}
 
     def __init_subclass__(
@@ -773,7 +784,10 @@ class Relationship:
         )
         self._alias = alias or _get_next_alias(rel_type)
         self._cached_alias = self._alias
-        self._cached_types = getattr(self.__class__, "_cached_types", [rel_type])
+        class_types = getattr(self.__class__, "_cached_types", None)
+        if not class_types:
+            class_types = [rel_type]
+        object.__setattr__(self, "_cached_types", class_types)
         self._bound_fields: dict[str, BoundField] = {}
         self._values = values
 
@@ -788,6 +802,10 @@ class Relationship:
         return (
             getattr(self, "__edge_type__", None) or self.__type__ or self.__class__.__name__.upper()
         )
+
+    def get(self, name: str, default: Any = None) -> Any:
+        """Retrieves an in-memory property value."""
+        return self._values.get(name, default)
 
     def __getattr__(self, name: str) -> BoundField:
         """Dynamically resolves unknown edge property names into BoundField descriptors.
@@ -817,6 +835,7 @@ class Relationship:
         return self._bound_fields[name]
 
 
+@dataclass_transform(field_specifiers=(Field,))
 def node(target: type | str | list[str] | None = None, **kwargs: Any) -> Any:
     """Decorator to mark a Python class as a Voyager Graph Node.
 
@@ -851,14 +870,14 @@ def node(target: type | str | list[str] | None = None, **kwargs: Any) -> Any:
             ns["_cached_label"] = cls_labels[0] if cls_labels else cls.__name__
             ns["_schema_fields"] = fields_map
             derived = type(cls.__name__, (cls, Node), ns)
-            derived.register_schema()
+            cast(Any, derived).register_schema()
             return derived
         else:
             cls.__labels__ = cls_labels  # type: ignore[attr-defined]
             cls._cached_labels = cls_labels  # type: ignore[attr-defined]
             cls._cached_label = cls_labels[0] if cls_labels else cls.__name__  # type: ignore[attr-defined]
             cls._schema_fields = fields_map  # type: ignore[attr-defined]
-            cls.register_schema()
+            cast(Any, cls).register_schema()
             return cls
 
     if isinstance(target, type):
@@ -866,6 +885,7 @@ def node(target: type | str | list[str] | None = None, **kwargs: Any) -> Any:
     return decorator
 
 
+@dataclass_transform(field_specifiers=(Field,))
 def relationship(target: type | str | None = None, **kwargs: Any) -> Any:
     """Decorator to mark a Python class as a Voyager Graph Relationship.
 
@@ -917,7 +937,7 @@ def relationship(target: type | str | None = None, **kwargs: Any) -> Any:
             ns["_cached_types"] = [rel_type]
             ns["_schema_fields"] = fields_map
             derived = type(cls.__name__, (cls, Relationship), ns)
-            derived.register_schema()
+            cast(Any, derived).register_schema()
             return derived
         else:
             cls.__type__ = rel_type  # type: ignore[attr-defined]
@@ -927,7 +947,7 @@ def relationship(target: type | str | None = None, **kwargs: Any) -> Any:
             cls._cached_type = rel_type  # type: ignore[attr-defined]
             cls._cached_types = [rel_type]  # type: ignore[attr-defined]
             cls._schema_fields = fields_map  # type: ignore[attr-defined]
-            cls.register_schema()
+            cast(Any, cls).register_schema()
             return cls
 
     if isinstance(target, type):

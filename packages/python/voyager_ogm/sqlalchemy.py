@@ -317,7 +317,9 @@ if HAS_SQLALCHEMY:
                     norm_cols.append((str(col), str(col)))
 
             self.column_specs = norm_cols
-            col_clauses = [ColumnClause(c_alias, _selectable=self) for c_alias, _ in norm_cols]
+            col_clauses: list[Any] = [
+                ColumnClause(c_alias, _selectable=self) for c_alias, _ in norm_cols
+            ]
             self._columns = ColumnCollection((c.key, c) for c in col_clauses)
 
         @property
