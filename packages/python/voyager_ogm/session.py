@@ -1172,6 +1172,106 @@ class Session(_SessionBase):
             return GraphViewer.from_polars(target, **kwargs)
         return GraphViewer(nodes=[], edges=[], records=[], **kwargs)
 
+    def create_indexes(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+    ) -> list[str]:
+        """Applies only INDEX creation statements to the database session.
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+
+        Returns:
+            List of executed index queries.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        applied = SchemaManager.generate_index_ddl(*models, dialect=self._dialect)
+        for stmt in applied:
+            try:
+                self.execute(stmt)
+            except Exception as e:
+                if (
+                    self._dialect.lower() in ("falkordb", "falkor")
+                    and "already indexed" in str(e).lower()
+                ):
+                    continue
+                raise
+        return applied
+
+    def create_constraints(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        include_type_constraints: bool = False,
+    ) -> list[str]:
+        """Applies only CONSTRAINT creation statements to the database session.
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+            include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
+
+        Returns:
+            List of executed constraint queries.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        applied = SchemaManager.generate_constraint_ddl(
+            *models, dialect=self._dialect, include_type_constraints=include_type_constraints
+        )
+        for stmt in applied:
+            self.execute(stmt)
+        return applied
+
+    def drop_indexes(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+    ) -> list[str]:
+        """Drops only INDEX statements from the database session.
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+
+        Returns:
+            List of executed drop index queries.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        dropped = SchemaManager.generate_drop_index_ddl(*models, dialect=self._dialect)
+        for stmt in dropped:
+            try:
+                self.execute(stmt)
+            except Exception as e:
+                if (
+                    self._dialect.lower() in ("falkordb", "falkor")
+                    and "no such index" in str(e).lower()
+                ):
+                    continue
+                raise
+        return dropped
+
+    def drop_constraints(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        include_type_constraints: bool = False,
+    ) -> list[str]:
+        """Drops only CONSTRAINT statements from the database session.
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+            include_type_constraints: Whether to drop Property Type constraints.
+
+        Returns:
+            List of executed drop constraint queries.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        dropped = SchemaManager.generate_drop_constraint_ddl(
+            *models, dialect=self._dialect, include_type_constraints=include_type_constraints
+        )
+        for stmt in dropped:
+            self.execute(stmt)
+        return dropped
+
     def transaction(self) -> Transaction:
         """Creates a fresh two-layer rollback transaction context manager.
 
@@ -1432,6 +1532,106 @@ class AsyncSession(_SessionBase):
                 if hasattr(n, "clear_dirty"):
                     n.clear_dirty()
         return results
+
+    async def create_indexes(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+    ) -> list[str]:
+        """Asynchronously applies only INDEX creation statements to the database session.
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+
+        Returns:
+            List of executed index queries.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        applied = SchemaManager.generate_index_ddl(*models, dialect=self._dialect)
+        for stmt in applied:
+            try:
+                await self.execute(stmt)
+            except Exception as e:
+                if (
+                    self._dialect.lower() in ("falkordb", "falkor")
+                    and "already indexed" in str(e).lower()
+                ):
+                    continue
+                raise
+        return applied
+
+    async def create_constraints(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        include_type_constraints: bool = False,
+    ) -> list[str]:
+        """Asynchronously applies only CONSTRAINT creation statements to the database session.
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+            include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
+
+        Returns:
+            List of executed constraint queries.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        applied = SchemaManager.generate_constraint_ddl(
+            *models, dialect=self._dialect, include_type_constraints=include_type_constraints
+        )
+        for stmt in applied:
+            await self.execute(stmt)
+        return applied
+
+    async def drop_indexes(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+    ) -> list[str]:
+        """Asynchronously drops only INDEX statements from the database session.
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+
+        Returns:
+            List of executed drop index queries.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        dropped = SchemaManager.generate_drop_index_ddl(*models, dialect=self._dialect)
+        for stmt in dropped:
+            try:
+                await self.execute(stmt)
+            except Exception as e:
+                if (
+                    self._dialect.lower() in ("falkordb", "falkor")
+                    and "no such index" in str(e).lower()
+                ):
+                    continue
+                raise
+        return dropped
+
+    async def drop_constraints(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        include_type_constraints: bool = False,
+    ) -> list[str]:
+        """Asynchronously drops only CONSTRAINT statements from the database session.
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+            include_type_constraints: Whether to drop Property Type constraints.
+
+        Returns:
+            List of executed drop constraint queries.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        dropped = SchemaManager.generate_drop_constraint_ddl(
+            *models, dialect=self._dialect, include_type_constraints=include_type_constraints
+        )
+        for stmt in dropped:
+            await self.execute(stmt)
+        return dropped
 
     async def close(self) -> None:
         """Asynchronously closes the underlying database bridge and native connection pool, clearing the identity map."""

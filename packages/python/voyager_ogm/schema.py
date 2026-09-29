@@ -198,6 +198,424 @@ class SchemaManager:
         return cls.generate_cypher_ddl(model, include_type_constraints=include_type_constraints)
 
     @classmethod
+    def generate_index_ddl(
+        cls,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        dialect: str = "cypher",
+    ) -> list[str]:
+        """Generates CREATE INDEX DDL statements without executing them.
+
+        Supports multi-dialect generation:
+        - 'cypher': openCypher / Neo4j / Memgraph / FalkorDB index syntax
+        - 'postgres' / 'duckdb' / 'pgq': standard SQL relational index syntax
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+            dialect: Target dialect ('cypher', 'postgres', 'duckdb', 'pgq'). Defaults to 'cypher'.
+
+        Returns:
+            List of executable CREATE INDEX statement strings.
+        """
+        dialect_norm = dialect.lower()
+        stmts: list[str] = []
+
+        if dialect_norm in ("age", "apache_age"):
+            raise NotImplementedError(
+                "Apache AGE does not support Cypher 'CREATE INDEX' queries. "
+                "Indexes in Apache AGE must be defined directly on the underlying PostgreSQL relational tables "
+                '(e.g. CREATE INDEX ON {graph}."Label" USING gin (properties)).'
+            )
+
+        if dialect_norm in ("falkordb", "falkor"):
+            for model in models:
+                if isinstance(model, str):
+                    reg = SchemaRegistry.global_registry()
+                    node_schema = reg.get_node(model)
+                    if node_schema:
+                        label = node_schema.get("name", model)
+                        for f_name, f_spec in node_schema.get("fields", {}).items():
+                            if (
+                                f_spec.get("indexed")
+                                and not f_spec.get("primary_key")
+                                and not f_spec.get("unique")
+                            ):
+                                stmts.append(f"CREATE INDEX FOR (n:{label}) ON (n.{f_name})")
+                        continue
+                    rel_schema = reg.get_relationship(model)
+                    if rel_schema:
+                        rel_type = rel_schema.get("type_name", model)
+                        for f_name, f_spec in rel_schema.get("fields", {}).items():
+                            if (
+                                f_spec.get("indexed")
+                                and not f_spec.get("primary_key")
+                                and not f_spec.get("unique")
+                            ):
+                                stmts.append(
+                                    f"CREATE INDEX FOR ()-[r:{rel_type}]-() ON (r.{f_name})"
+                                )
+                        continue
+                fields = getattr(model, "_schema_fields", {})
+                is_rel = _is_relationship_model(model)
+                if is_rel:
+                    rel_type = getattr(model, "__type__", None) or getattr(model, "__name__", "REL")
+                    for f_name, f_obj in fields.items():
+                        if (
+                            getattr(f_obj, "index", False)
+                            and not getattr(f_obj, "unique", False)
+                            and not getattr(f_obj, "primary_key", False)
+                        ):
+                            col = getattr(f_obj, "name", None) or f_name
+                            stmts.append(f"CREATE INDEX FOR ()-[r:{rel_type}]-() ON (r.{col})")
+                else:
+                    label = getattr(model, "__label__", None) or getattr(model, "__name__", "Node")
+                    for f_name, f_obj in fields.items():
+                        if (
+                            getattr(f_obj, "index", False)
+                            and not getattr(f_obj, "unique", False)
+                            and not getattr(f_obj, "primary_key", False)
+                        ):
+                            col = getattr(f_obj, "name", None) or f_name
+                            stmts.append(f"CREATE INDEX FOR (n:{label}) ON (n.{col})")
+            return stmts
+
+        if dialect_norm in ("postgres", "postgresql", "duckdb", "sql_pgq", "pgq"):
+            for model in models:
+                if isinstance(model, str):
+                    reg = SchemaRegistry.global_registry()
+                    node_schema = reg.get_node(model)
+                    if node_schema:
+                        table = node_schema.get("name", model).lower()
+                        for f_name, f_spec in node_schema.get("fields", {}).items():
+                            if (
+                                f_spec.get("indexed")
+                                and not f_spec.get("unique")
+                                and not f_spec.get("primary_key")
+                            ):
+                                stmts.append(
+                                    f'CREATE INDEX IF NOT EXISTS idx_{table}_{f_name} ON "{table}" ("{f_name}");'
+                                )
+                        continue
+                    rel_schema = reg.get_relationship(model)
+                    if rel_schema:
+                        table = rel_schema.get("type_name", model).lower()
+                        for f_name, f_spec in rel_schema.get("fields", {}).items():
+                            if (
+                                f_spec.get("indexed")
+                                and not f_spec.get("primary_key")
+                                and not f_spec.get("unique")
+                            ):
+                                stmts.append(
+                                    f'CREATE INDEX IF NOT EXISTS idx_{table}_{f_name} ON "{table}" ("{f_name}");'
+                                )
+                        continue
+                fields = getattr(model, "_schema_fields", {})
+                is_rel = _is_relationship_model(model)
+                raw_name = (
+                    getattr(model, "__type__", None) or getattr(model, "__name__", "rel")
+                    if is_rel
+                    else (
+                        getattr(model, "_cached_label", None)
+                        or getattr(model, "__label__", None)
+                        or getattr(model, "__name__", "node")
+                    )
+                )
+                table = str(raw_name or "entity").lower()
+                for f_name, f_obj in fields.items():
+                    if (
+                        getattr(f_obj, "index", False)
+                        and not getattr(f_obj, "unique", False)
+                        and not getattr(f_obj, "primary_key", False)
+                    ):
+                        col = getattr(f_obj, "name", None) or f_name
+                        stmts.append(
+                            f'CREATE INDEX IF NOT EXISTS idx_{table}_{col} ON "{table}" ("{col}");'
+                        )
+            return stmts
+
+        for model in models:
+            for s in cls.generate_cypher_ddl(model, include_type_constraints=False):
+                if "CREATE INDEX" in s:
+                    stmts.append(s)
+        return stmts
+
+    @classmethod
+    def generate_constraint_ddl(
+        cls,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        dialect: str = "cypher",
+        include_type_constraints: bool = False,
+    ) -> list[str]:
+        """Generates CREATE CONSTRAINT DDL statements without executing them.
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+            dialect: Target dialect ('cypher', 'postgres', etc.). Defaults to 'cypher'.
+            include_type_constraints: Whether to include Property Type constraints (:: STRING).
+
+        Returns:
+            List of executable CREATE CONSTRAINT statement strings.
+        """
+        dialect_norm = dialect.lower()
+        stmts: list[str] = []
+
+        if dialect_norm in ("age", "apache_age"):
+            raise NotImplementedError(
+                "Apache AGE does not support Cypher 'CREATE CONSTRAINT' queries. "
+                "Constraints in Apache AGE must be defined directly on the underlying PostgreSQL relational tables."
+            )
+
+        if dialect_norm in ("falkordb", "falkor"):
+            raise NotImplementedError(
+                "FalkorDB does not support openCypher 'CREATE CONSTRAINT' queries in GRAPH.QUERY. "
+                "Constraints in FalkorDB must be created via native Redis commands "
+                "('GRAPH.CONSTRAINT CREATE <graph_name> UNIQUE NODE <label> PROPERTIES 1 <prop>')."
+            )
+
+        if dialect_norm in ("postgres", "postgresql", "duckdb", "sql_pgq", "pgq"):
+            for model in models:
+                if isinstance(model, str):
+                    reg = SchemaRegistry.global_registry()
+                    node_schema = reg.get_node(model)
+                    if node_schema:
+                        table = node_schema.get("name", model).lower()
+                        for f_name, f_spec in node_schema.get("fields", {}).items():
+                            if f_spec.get("unique") and not f_spec.get("primary_key"):
+                                stmts.append(
+                                    f'ALTER TABLE "{table}" ADD CONSTRAINT uq_{table}_{f_name} UNIQUE ("{f_name}");'
+                                )
+                        continue
+                    rel_schema = reg.get_relationship(model)
+                    if rel_schema:
+                        table = rel_schema.get("type_name", model).lower()
+                        for f_name, f_spec in rel_schema.get("fields", {}).items():
+                            if f_spec.get("unique") and not f_spec.get("primary_key"):
+                                stmts.append(
+                                    f'ALTER TABLE "{table}" ADD CONSTRAINT uq_{table}_{f_name} UNIQUE ("{f_name}");'
+                                )
+                        continue
+                fields = getattr(model, "_schema_fields", {})
+                is_rel = _is_relationship_model(model)
+                raw_name = (
+                    getattr(model, "__type__", None) or getattr(model, "__name__", "rel")
+                    if is_rel
+                    else (
+                        getattr(model, "_cached_label", None)
+                        or getattr(model, "__label__", None)
+                        or getattr(model, "__name__", "node")
+                    )
+                )
+                table = str(raw_name or "entity").lower()
+                for f_name, f_obj in fields.items():
+                    col = getattr(f_obj, "name", None) or f_name
+                    if getattr(f_obj, "unique", False) and not getattr(f_obj, "primary_key", False):
+                        stmts.append(
+                            f'ALTER TABLE "{table}" ADD CONSTRAINT uq_{table}_{col} UNIQUE ("{col}");'
+                        )
+            return stmts
+
+        for model in models:
+            for s in cls.generate_cypher_ddl(
+                model, include_type_constraints=include_type_constraints
+            ):
+                if "CREATE CONSTRAINT" in s:
+                    stmts.append(s)
+        return stmts
+
+    @classmethod
+    def generate_drop_index_ddl(
+        cls,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        dialect: str = "cypher",
+    ) -> list[str]:
+        """Generates DROP INDEX DDL statements without executing them."""
+        dialect_norm = dialect.lower()
+        stmts: list[str] = []
+
+        if dialect_norm in ("age", "apache_age"):
+            raise NotImplementedError(
+                "Apache AGE does not support Cypher 'DROP INDEX' queries. "
+                "Indexes in Apache AGE must be dropped directly on the underlying PostgreSQL relational tables."
+            )
+
+        if dialect_norm in ("falkordb", "falkor"):
+            for model in models:
+                if isinstance(model, str):
+                    reg = SchemaRegistry.global_registry()
+                    node_schema = reg.get_node(model)
+                    if node_schema:
+                        label = node_schema.get("name", model)
+                        for f_name, f_spec in node_schema.get("fields", {}).items():
+                            if (
+                                f_spec.get("indexed")
+                                and not f_spec.get("primary_key")
+                                and not f_spec.get("unique")
+                            ):
+                                stmts.append(f"DROP INDEX FOR (n:{label}) ON (n.{f_name})")
+                        continue
+                    rel_schema = reg.get_relationship(model)
+                    if rel_schema:
+                        rel_type = rel_schema.get("type_name", model)
+                        for f_name, f_spec in rel_schema.get("fields", {}).items():
+                            if (
+                                f_spec.get("indexed")
+                                and not f_spec.get("primary_key")
+                                and not f_spec.get("unique")
+                            ):
+                                stmts.append(f"DROP INDEX FOR ()-[r:{rel_type}]-() ON (r.{f_name})")
+                        continue
+                fields = getattr(model, "_schema_fields", {})
+                is_rel = _is_relationship_model(model)
+                if is_rel:
+                    rel_type = getattr(model, "__type__", None) or getattr(model, "__name__", "REL")
+                    for f_name, f_obj in fields.items():
+                        if (
+                            getattr(f_obj, "index", False)
+                            and not getattr(f_obj, "unique", False)
+                            and not getattr(f_obj, "primary_key", False)
+                        ):
+                            col = getattr(f_obj, "name", None) or f_name
+                            stmts.append(f"DROP INDEX FOR ()-[r:{rel_type}]-() ON (r.{col})")
+                else:
+                    label = getattr(model, "__label__", None) or getattr(model, "__name__", "Node")
+                    for f_name, f_obj in fields.items():
+                        if (
+                            getattr(f_obj, "index", False)
+                            and not getattr(f_obj, "unique", False)
+                            and not getattr(f_obj, "primary_key", False)
+                        ):
+                            col = getattr(f_obj, "name", None) or f_name
+                            stmts.append(f"DROP INDEX FOR (n:{label}) ON (n.{col})")
+            return stmts
+
+        if dialect_norm in ("postgres", "postgresql", "duckdb", "sql_pgq", "pgq"):
+            for model in models:
+                if isinstance(model, str):
+                    reg = SchemaRegistry.global_registry()
+                    node_schema = reg.get_node(model)
+                    if node_schema:
+                        table = node_schema.get("name", model).lower()
+                        for f_name, f_spec in node_schema.get("fields", {}).items():
+                            if (
+                                f_spec.get("indexed")
+                                and not f_spec.get("unique")
+                                and not f_spec.get("primary_key")
+                            ):
+                                stmts.append(f"DROP INDEX IF EXISTS idx_{table}_{f_name};")
+                        continue
+                    rel_schema = reg.get_relationship(model)
+                    if rel_schema:
+                        table = rel_schema.get("type_name", model).lower()
+                        for f_name, f_spec in rel_schema.get("fields", {}).items():
+                            if (
+                                f_spec.get("indexed")
+                                and not f_spec.get("primary_key")
+                                and not f_spec.get("unique")
+                            ):
+                                stmts.append(f"DROP INDEX IF EXISTS idx_{table}_{f_name};")
+                        continue
+                fields = getattr(model, "_schema_fields", {})
+                is_rel = _is_relationship_model(model)
+                raw_name = (
+                    getattr(model, "__type__", None) or getattr(model, "__name__", "rel")
+                    if is_rel
+                    else (
+                        getattr(model, "_cached_label", None)
+                        or getattr(model, "__label__", None)
+                        or getattr(model, "__name__", "node")
+                    )
+                )
+                table = str(raw_name or "entity").lower()
+                for f_name, f_obj in fields.items():
+                    if (
+                        getattr(f_obj, "index", False)
+                        and not getattr(f_obj, "unique", False)
+                        and not getattr(f_obj, "primary_key", False)
+                    ):
+                        col = getattr(f_obj, "name", None) or f_name
+                        stmts.append(f"DROP INDEX IF EXISTS idx_{table}_{col};")
+            return stmts
+
+        for model in models:
+            for s in cls.generate_drop_ddl(model, include_type_constraints=False):
+                if "DROP INDEX" in s:
+                    stmts.append(s)
+        return stmts
+
+    @classmethod
+    def generate_drop_constraint_ddl(
+        cls,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        dialect: str = "cypher",
+        include_type_constraints: bool = False,
+    ) -> list[str]:
+        """Generates DROP CONSTRAINT DDL statements without executing them."""
+        dialect_norm = dialect.lower()
+        stmts: list[str] = []
+
+        if dialect_norm in ("age", "apache_age"):
+            raise NotImplementedError(
+                "Apache AGE does not support Cypher 'DROP CONSTRAINT' queries. "
+                "Constraints in Apache AGE must be dropped directly on the underlying PostgreSQL relational tables."
+            )
+
+        if dialect_norm in ("falkordb", "falkor"):
+            raise NotImplementedError(
+                "FalkorDB does not support openCypher 'DROP CONSTRAINT' queries in GRAPH.QUERY. "
+                "Constraints in FalkorDB must be dropped via native Redis commands "
+                "('GRAPH.CONSTRAINT DROP <graph_name> UNIQUE NODE <label> PROPERTIES 1 <prop>')."
+            )
+
+        if dialect_norm in ("postgres", "postgresql", "duckdb", "sql_pgq", "pgq"):
+            for model in models:
+                if isinstance(model, str):
+                    reg = SchemaRegistry.global_registry()
+                    node_schema = reg.get_node(model)
+                    if node_schema:
+                        table = node_schema.get("name", model).lower()
+                        for f_name, f_spec in node_schema.get("fields", {}).items():
+                            if f_spec.get("unique") and not f_spec.get("primary_key"):
+                                stmts.append(
+                                    f'ALTER TABLE "{table}" DROP CONSTRAINT IF EXISTS uq_{table}_{f_name};'
+                                )
+                        continue
+                    rel_schema = reg.get_relationship(model)
+                    if rel_schema:
+                        table = rel_schema.get("type_name", model).lower()
+                        for f_name, f_spec in rel_schema.get("fields", {}).items():
+                            if f_spec.get("unique") and not f_spec.get("primary_key"):
+                                stmts.append(
+                                    f'ALTER TABLE "{table}" DROP CONSTRAINT IF EXISTS uq_{table}_{f_name};'
+                                )
+                        continue
+                fields = getattr(model, "_schema_fields", {})
+                is_rel = _is_relationship_model(model)
+                raw_name = (
+                    getattr(model, "__type__", None) or getattr(model, "__name__", "rel")
+                    if is_rel
+                    else (
+                        getattr(model, "_cached_label", None)
+                        or getattr(model, "__label__", None)
+                        or getattr(model, "__name__", "node")
+                    )
+                )
+                table = str(raw_name or "entity").lower()
+                for f_name, f_obj in fields.items():
+                    col = getattr(f_obj, "name", None) or f_name
+                    if getattr(f_obj, "unique", False) and not getattr(f_obj, "primary_key", False):
+                        stmts.append(
+                            f'ALTER TABLE "{table}" DROP CONSTRAINT IF EXISTS uq_{table}_{col};'
+                        )
+            return stmts
+
+        for model in models:
+            for s in cls.generate_drop_ddl(
+                model, include_type_constraints=include_type_constraints
+            ):
+                if "DROP CONSTRAINT" in s:
+                    stmts.append(s)
+        return stmts
+
+    @classmethod
     def create_constraints(
         cls,
         session: Session,
@@ -214,15 +632,16 @@ class SchemaManager:
         Returns:
             List of executed constraint queries.
         """
-        cls._validate_cypher_dialect(session, "create_constraints")
-        applied: list[str] = []
-        for model in models:
-            for stmt in cls.generate_cypher_ddl(
-                model, include_type_constraints=include_type_constraints
-            ):
-                if "CREATE CONSTRAINT" in stmt:
-                    session.execute(stmt)
-                    applied.append(stmt)
+        if hasattr(session, "create_constraints"):
+            return session.create_constraints(
+                *models, include_type_constraints=include_type_constraints
+            )
+        dialect = getattr(session, "dialect", "cypher")
+        applied = cls.generate_constraint_ddl(
+            *models, dialect=dialect, include_type_constraints=include_type_constraints
+        )
+        for stmt in applied:
+            session.execute(stmt)
         return applied
 
     @classmethod
@@ -240,13 +659,12 @@ class SchemaManager:
         Returns:
             List of executed index queries.
         """
-        cls._validate_cypher_dialect(session, "create_indexes")
-        applied: list[str] = []
-        for model in models:
-            for stmt in cls.generate_cypher_ddl(model, include_type_constraints=False):
-                if "CREATE INDEX" in stmt:
-                    session.execute(stmt)
-                    applied.append(stmt)
+        if hasattr(session, "create_indexes"):
+            return session.create_indexes(*models)
+        dialect = getattr(session, "dialect", "cypher")
+        applied = cls.generate_index_ddl(*models, dialect=dialect)
+        for stmt in applied:
+            session.execute(stmt)
         return applied
 
     @classmethod
@@ -266,15 +684,16 @@ class SchemaManager:
         Returns:
             List of executed drop constraint queries.
         """
-        cls._validate_cypher_dialect(session, "drop_constraints")
-        dropped: list[str] = []
-        for model in models:
-            for stmt in cls.generate_drop_ddl(
-                model, include_type_constraints=include_type_constraints
-            ):
-                if "DROP CONSTRAINT" in stmt:
-                    session.execute(stmt)
-                    dropped.append(stmt)
+        if hasattr(session, "drop_constraints"):
+            return session.drop_constraints(
+                *models, include_type_constraints=include_type_constraints
+            )
+        dialect = getattr(session, "dialect", "cypher")
+        dropped = cls.generate_drop_constraint_ddl(
+            *models, dialect=dialect, include_type_constraints=include_type_constraints
+        )
+        for stmt in dropped:
+            session.execute(stmt)
         return dropped
 
     @classmethod
@@ -292,13 +711,12 @@ class SchemaManager:
         Returns:
             List of executed drop index queries.
         """
-        cls._validate_cypher_dialect(session, "drop_indexes")
-        dropped: list[str] = []
-        for model in models:
-            for stmt in cls.generate_drop_ddl(model, include_type_constraints=False):
-                if "DROP INDEX" in stmt:
-                    session.execute(stmt)
-                    dropped.append(stmt)
+        if hasattr(session, "drop_indexes"):
+            return session.drop_indexes(*models)
+        dialect = getattr(session, "dialect", "cypher")
+        dropped = cls.generate_drop_index_ddl(*models, dialect=dialect)
+        for stmt in dropped:
+            session.execute(stmt)
         return dropped
 
     @classmethod
