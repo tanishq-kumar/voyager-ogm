@@ -15,6 +15,11 @@ from typing import Any, ClassVar, Generic, TypeVar
 
 from voyager_ogm.expressions import BinaryExpr, Expression, PropExpr, to_expression
 
+try:
+    from voyager_ogm._voyager_rs import NativeSchemaRegistry
+except ImportError:
+    NativeSchemaRegistry = None  # type: ignore[assignment, misc]
+
 _T = TypeVar("_T")
 
 # Thread-local alias counter for deterministic auto-aliasing
@@ -445,6 +450,31 @@ class Node:
         cls._cached_labels = list(cls.__labels__)
         cls._cached_label = cls.__labels__[0] if cls.__labels__ else cls.__name__
         _process_type_annotations(cls)
+        cls.register_schema()
+
+    @classmethod
+    def register_schema(cls, registry: Any = None) -> None:
+        """Registers this Node model's schema into the NativeSchemaRegistry.
+
+        Args:
+            registry: Optional NativeSchemaRegistry instance. If None, registers
+                in the shared global registry (NativeSchemaRegistry.global_registry()).
+        """
+        if NativeSchemaRegistry is None:
+            return
+        try:
+            reg = registry if registry is not None else NativeSchemaRegistry.global_registry()
+            name = cls.__name__
+            labels = list(getattr(cls, "__labels__", [name]))
+            fields = getattr(cls, "_schema_fields", {})
+            primary_key = None
+            for f_name, f_obj in fields.items():
+                if getattr(f_obj, "primary_key", False):
+                    primary_key = getattr(f_obj, "name", None) or f_name
+                    break
+            reg.register_node(name, labels, fields, primary_key)
+        except Exception:
+            pass
 
     def __init__(self, alias: str | None = None, **values: Any) -> None:
         """Instantiates a Node entity with a unique query alias.
@@ -694,6 +724,37 @@ class Relationship:
         cls._cached_type = cls.__type__
         cls._cached_types = [cls.__type__]
         _process_type_annotations(cls)
+        cls.register_schema()
+
+    @classmethod
+    def register_schema(cls, registry: Any = None) -> None:
+        """Registers this Relationship model's schema into the NativeSchemaRegistry.
+
+        Args:
+            registry: Optional NativeSchemaRegistry instance. If None, registers
+                in the shared global registry (NativeSchemaRegistry.global_registry()).
+        """
+        if NativeSchemaRegistry is None:
+            return
+        try:
+            reg = registry if registry is not None else NativeSchemaRegistry.global_registry()
+            name = cls.__name__
+            type_name = getattr(cls, "__type__", None) or name.upper()
+            source_labels = list(getattr(cls, "__source_labels__", []))
+            target_labels = list(getattr(cls, "__target_labels__", []))
+            fields = getattr(cls, "_schema_fields", {})
+            direction = getattr(cls, "__direction__", "outgoing")
+            directed = direction != "undirected"
+            reg.register_relationship(
+                name,
+                type_name,
+                source_labels if source_labels else None,
+                target_labels if target_labels else None,
+                fields,
+                directed,
+            )
+        except Exception:
+            pass
 
     def __init__(self, alias: str | None = None, **values: Any) -> None:
         """Instantiates a Relationship entity with a unique query alias.
@@ -790,12 +851,14 @@ def node(target: type | str | list[str] | None = None, **kwargs: Any) -> Any:
             ns["_cached_label"] = cls_labels[0] if cls_labels else cls.__name__
             ns["_schema_fields"] = fields_map
             derived = type(cls.__name__, (cls, Node), ns)
+            derived.register_schema()
             return derived
         else:
             cls.__labels__ = cls_labels  # type: ignore[attr-defined]
             cls._cached_labels = cls_labels  # type: ignore[attr-defined]
             cls._cached_label = cls_labels[0] if cls_labels else cls.__name__  # type: ignore[attr-defined]
             cls._schema_fields = fields_map  # type: ignore[attr-defined]
+            cls.register_schema()
             return cls
 
     if isinstance(target, type):
@@ -854,6 +917,7 @@ def relationship(target: type | str | None = None, **kwargs: Any) -> Any:
             ns["_cached_types"] = [rel_type]
             ns["_schema_fields"] = fields_map
             derived = type(cls.__name__, (cls, Relationship), ns)
+            derived.register_schema()
             return derived
         else:
             cls.__type__ = rel_type  # type: ignore[attr-defined]
@@ -863,6 +927,7 @@ def relationship(target: type | str | None = None, **kwargs: Any) -> Any:
             cls._cached_type = rel_type  # type: ignore[attr-defined]
             cls._cached_types = [rel_type]  # type: ignore[attr-defined]
             cls._schema_fields = fields_map  # type: ignore[attr-defined]
+            cls.register_schema()
             return cls
 
     if isinstance(target, type):

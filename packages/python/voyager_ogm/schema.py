@@ -68,7 +68,7 @@ class SchemaManager:
 
     @staticmethod
     def generate_cypher_ddl(
-        model: type[Node] | type[Relationship] | dict[str, Any],
+        model: type[Node] | type[Relationship] | dict[str, Any] | str,
         include_type_constraints: bool = False,
     ) -> list[str]:
         """Generates openCypher / Neo4j constraint and index creation DDL statements.
@@ -80,34 +80,226 @@ class SchemaManager:
         - Secondary Indexes (FOR (n:Label) ON (n.prop))
 
         Args:
-            model: Target Node or Relationship model class, or schema dict.
+            model: Target Node or Relationship model class, schema dict, or registered model name.
             include_type_constraints: Whether to emit Neo4j 5.x Enterprise Property Type
                 constraints (:: STRING, :: INTEGER). Defaults to False.
 
         Returns:
             List of executable DDL Cypher statement strings.
         """
+        if isinstance(model, str):
+            registry = SchemaRegistry.global_registry()
+            return registry.generate_cypher_ddl(
+                include_type_constraints=include_type_constraints, model_name=model
+            )
         if _is_relationship_model(model):
             return emit_cypher_rel_ddl(model, include_type_constraints)
         return emit_cypher_node_ddl(model, include_type_constraints)
 
     @staticmethod
     def generate_drop_ddl(
-        model: type[Node] | type[Relationship] | dict[str, Any],
+        model: type[Node] | type[Relationship] | dict[str, Any] | str,
         include_type_constraints: bool = False,
     ) -> list[str]:
         """Generates drop statements for constraints and indexes.
 
         Args:
-            model: Target Node or Relationship model class, or schema dict.
+            model: Target Node or Relationship model class, schema dict, or registered model name.
             include_type_constraints: Whether to emit drop statements for Property Type constraints.
 
         Returns:
             List of executable DROP statement strings.
         """
+        if isinstance(model, str):
+            registry = SchemaRegistry.global_registry()
+            return registry.generate_cypher_drop_ddl(
+                include_type_constraints=include_type_constraints, model_name=model
+            )
         if _is_relationship_model(model):
             return emit_cypher_drop_rel_ddl(model, include_type_constraints)
         return emit_cypher_drop_node_ddl(model, include_type_constraints)
+
+    @classmethod
+    def _validate_cypher_dialect(cls, session: Session, op_name: str) -> None:
+        """Validates that the session dialect supports openCypher constraint/drop DDL."""
+        dialect = getattr(session, "dialect", "cypher").lower()
+        is_drop = "drop" in op_name.lower()
+        verb = "DROP CONSTRAINT" if is_drop else "CREATE CONSTRAINT"
+        if dialect in ("sql_pgq", "pgq", "duckpgq", "duckdb", "postgres", "postgresql"):
+            action = (
+                "drop_property_graph(session, graph_name)"
+                if is_drop
+                else "create_property_graph(session, graph_name, *models)"
+            )
+            gen_action = (
+                "generate_pgq_drop_ddl(graph_name)"
+                if is_drop
+                else "generate_pgq_ddl(graph_name, *models)"
+            )
+            raise NotImplementedError(
+                f"SchemaManager.{op_name}() generates openCypher {'DROP' if is_drop else 'constraint'} statements. "
+                f"For {dialect.upper()} (SQL:2023 PGQ), use SchemaManager.{action} "
+                f"or SchemaManager.{gen_action}."
+            )
+        if dialect in ("falkordb", "falkor"):
+            cmd = "GRAPH.CONSTRAINT DROP" if is_drop else "GRAPH.CONSTRAINT CREATE"
+            raise NotImplementedError(
+                f"FalkorDB does not support openCypher '{verb}' queries"
+                f"{'' if is_drop else ' in GRAPH.QUERY'}. "
+                f"{'Drop constraints' if is_drop else 'Constraints in FalkorDB must be created'} "
+                f"via native Redis commands ('{cmd}')."
+            )
+        if dialect in ("age", "apache_age"):
+            raise NotImplementedError(
+                f"Apache AGE does not support Cypher '{verb}' queries. "
+                f"Constraints in Apache AGE must be {'dropped' if is_drop else 'defined'} "
+                f"on the underlying PostgreSQL relational tables."
+            )
+
+    @classmethod
+    def generate_ddl(
+        cls,
+        model: type[Node] | type[Relationship] | dict[str, Any] | str,
+        dialect: str = "cypher",
+        include_type_constraints: bool = False,
+    ) -> list[str]:
+        """Generates DDL statements for the specified model and dialect.
+
+        Delegates directly to native voyager-core Rust emitters.
+
+        Args:
+            model: Target Node or Relationship model class, schema dict, or model name.
+            dialect: Target dialect ('cypher', 'gql', 'pgq'). Defaults to 'cypher'.
+            include_type_constraints: Whether to include Property Type constraints.
+
+        Returns:
+            List of executable DDL statement strings.
+        """
+        dialect_norm = dialect.lower()
+        if dialect_norm in ("cypher", "opencypher", "neo4j", "memgraph"):
+            return cls.generate_cypher_ddl(model, include_type_constraints=include_type_constraints)
+        if dialect_norm in ("gql", "iso_gql"):
+            if isinstance(model, str):
+                reg = SchemaRegistry.global_registry()
+                if reg.has_node(model):
+                    stmt = reg.generate_gql_alter_node_ddl(model)
+                    return [stmt] if stmt else []
+                if reg.has_relationship(model):
+                    stmt = reg.generate_gql_alter_rel_ddl(model)
+                    return [stmt] if stmt else []
+                return []
+            return [cls.generate_alter_graph_type_ddl(model)]
+        if dialect_norm in ("pgq", "sql_pgq", "duckpgq", "postgres", "postgresql"):
+            if isinstance(model, str):
+                reg = SchemaRegistry.global_registry()
+                return [reg.generate_pgq_ddl(model, [model])]
+            graph_name = getattr(model, "__name__", "voyager_graph")
+            return [cls.generate_pgq_ddl(graph_name, model)]
+        return cls.generate_cypher_ddl(model, include_type_constraints=include_type_constraints)
+
+    @classmethod
+    def create_constraints(
+        cls,
+        session: Session,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        include_type_constraints: bool = False,
+    ) -> list[str]:
+        """Applies only CONSTRAINT statements to the database session.
+
+        Args:
+            session: Active Voyager database session.
+            *models: Model classes, schema dicts, or model names.
+            include_type_constraints: Whether to include Property Type constraints.
+
+        Returns:
+            List of executed constraint queries.
+        """
+        cls._validate_cypher_dialect(session, "create_constraints")
+        applied: list[str] = []
+        for model in models:
+            for stmt in cls.generate_cypher_ddl(
+                model, include_type_constraints=include_type_constraints
+            ):
+                if "CREATE CONSTRAINT" in stmt:
+                    session.execute(stmt)
+                    applied.append(stmt)
+        return applied
+
+    @classmethod
+    def create_indexes(
+        cls,
+        session: Session,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+    ) -> list[str]:
+        """Applies only INDEX creation statements to the database session.
+
+        Args:
+            session: Active Voyager database session.
+            *models: Model classes, schema dicts, or model names.
+
+        Returns:
+            List of executed index queries.
+        """
+        cls._validate_cypher_dialect(session, "create_indexes")
+        applied: list[str] = []
+        for model in models:
+            for stmt in cls.generate_cypher_ddl(model, include_type_constraints=False):
+                if "CREATE INDEX" in stmt:
+                    session.execute(stmt)
+                    applied.append(stmt)
+        return applied
+
+    @classmethod
+    def drop_constraints(
+        cls,
+        session: Session,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        include_type_constraints: bool = False,
+    ) -> list[str]:
+        """Drops only CONSTRAINT statements from the database session.
+
+        Args:
+            session: Active Voyager database session.
+            *models: Model classes, schema dicts, or model names.
+            include_type_constraints: Whether to drop Property Type constraints.
+
+        Returns:
+            List of executed drop constraint queries.
+        """
+        cls._validate_cypher_dialect(session, "drop_constraints")
+        dropped: list[str] = []
+        for model in models:
+            for stmt in cls.generate_drop_ddl(
+                model, include_type_constraints=include_type_constraints
+            ):
+                if "DROP CONSTRAINT" in stmt:
+                    session.execute(stmt)
+                    dropped.append(stmt)
+        return dropped
+
+    @classmethod
+    def drop_indexes(
+        cls,
+        session: Session,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+    ) -> list[str]:
+        """Drops only INDEX statements from the database session.
+
+        Args:
+            session: Active Voyager database session.
+            *models: Model classes, schema dicts, or model names.
+
+        Returns:
+            List of executed drop index queries.
+        """
+        cls._validate_cypher_dialect(session, "drop_indexes")
+        dropped: list[str] = []
+        for model in models:
+            for stmt in cls.generate_drop_ddl(model, include_type_constraints=False):
+                if "DROP INDEX" in stmt:
+                    session.execute(stmt)
+                    dropped.append(stmt)
+        return dropped
 
     @classmethod
     def create_all(
@@ -129,24 +321,7 @@ class SchemaManager:
         Raises:
             NotImplementedError: If the session dialect does not support openCypher constraint DDL.
         """
-        dialect = getattr(session, "dialect", "cypher").lower()
-        if dialect in ("sql_pgq", "pgq", "duckpgq", "duckdb", "postgres", "postgresql"):
-            raise NotImplementedError(
-                f"SchemaManager.create_all() generates openCypher constraint DDL. "
-                f"For {dialect.upper()} (SQL:2023 PGQ), use SchemaManager.create_property_graph(session, graph_name, *models) "
-                f"or SchemaManager.generate_pgq_ddl(graph_name, *models)."
-            )
-        if dialect in ("falkordb", "falkor"):
-            raise NotImplementedError(
-                "FalkorDB does not support openCypher 'CREATE CONSTRAINT' queries in GRAPH.QUERY. "
-                "Constraints in FalkorDB must be created via native Redis commands ('GRAPH.CONSTRAINT CREATE')."
-            )
-        if dialect in ("age", "apache_age"):
-            raise NotImplementedError(
-                "Apache AGE does not support Cypher 'CREATE CONSTRAINT' queries. "
-                "Constraints in Apache AGE must be defined on the underlying PostgreSQL relational tables."
-            )
-
+        cls._validate_cypher_dialect(session, "create_all")
         applied: list[str] = []
         for model in models:
             for stmt in cls.generate_cypher_ddl(
@@ -176,24 +351,7 @@ class SchemaManager:
         Raises:
             NotImplementedError: If the session dialect does not support openCypher DROP constraint DDL.
         """
-        dialect = getattr(session, "dialect", "cypher").lower()
-        if dialect in ("sql_pgq", "pgq", "duckpgq", "duckdb", "postgres", "postgresql"):
-            raise NotImplementedError(
-                f"SchemaManager.drop_all() generates openCypher DROP statements. "
-                f"For {dialect.upper()} (SQL:2023 PGQ), use SchemaManager.drop_property_graph(session, graph_name) "
-                f"or SchemaManager.generate_pgq_drop_ddl(graph_name)."
-            )
-        if dialect in ("falkordb", "falkor"):
-            raise NotImplementedError(
-                "FalkorDB does not support openCypher 'DROP CONSTRAINT' queries. "
-                "Drop constraints via native Redis commands ('GRAPH.CONSTRAINT DROP')."
-            )
-        if dialect in ("age", "apache_age"):
-            raise NotImplementedError(
-                "Apache AGE does not support Cypher 'DROP CONSTRAINT' queries. "
-                "Constraints in Apache AGE must be dropped on the underlying PostgreSQL relational tables."
-            )
-
+        cls._validate_cypher_dialect(session, "drop_all")
         dropped: list[str] = []
         for model in models:
             for stmt in cls.generate_drop_ddl(
@@ -245,7 +403,7 @@ class SchemaManager:
 
     @staticmethod
     def generate_alter_graph_type_ddl(
-        model: type[Node] | type[Relationship],
+        model: type[Node] | type[Relationship] | dict[str, Any],
         source_node: type[Node] | str | None = None,
         target_node: type[Node] | str | None = None,
     ) -> str:
@@ -275,7 +433,7 @@ class SchemaManager:
     @classmethod
     def generate_cypher25_graph_type_ddl(
         cls,
-        *models: type[Node] | type[Relationship],
+        *models: type[Node] | type[Relationship] | dict[str, Any],
     ) -> str:
         """Generates Neo4j Cypher 25 `ALTER CURRENT GRAPH TYPE SET { ... }` DDL statement.
 
@@ -301,7 +459,7 @@ class SchemaManager:
     def generate_gql_graph_type_ddl(
         cls,
         graph_type_name: str,
-        *models: type[Node] | type[Relationship],
+        *models: type[Node] | type[Relationship] | dict[str, Any],
     ) -> str:
         """Generates standard ISO GQL `CREATE GRAPH TYPE <name> AS { ... }` definition.
 
@@ -331,7 +489,7 @@ class SchemaManager:
     def generate_pgq_ddl(
         cls,
         graph_name: str,
-        *models: type[Node] | type[Relationship],
+        *models: type[Node] | type[Relationship] | dict[str, Any],
     ) -> str:
         """Generates standard SQL:2023 PGQ / DuckPGQ `CREATE PROPERTY GRAPH` statement.
 

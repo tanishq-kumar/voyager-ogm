@@ -416,3 +416,79 @@ def test_dialect_ddl_error_handling():
 
     with pytest.raises(ValueError, match="missing source_labels"):
         SchemaManager.generate_pgq_ddl("orphan_pgq", User, OrphanRel)
+
+
+def test_schema_manager_native_registration_and_delegation():
+    """Verifies automated model registration in NativeSchemaRegistry and granular constraint/index delegation."""
+    from voyager_ogm._voyager_rs import NativeSchemaRegistry
+    from voyager_ogm.bridge import MockBridge
+
+    # 1. Global registry contains User and Follows models automatically
+    User.register_schema()
+    Follows.register_schema()
+    reg = NativeSchemaRegistry.global_registry()
+    assert reg.has_node("User")
+    assert reg.has_relationship("Follows")
+
+    user_meta = reg.get_node("User")
+    assert user_meta is not None
+    assert user_meta["primary_key"] == "user_id"
+    assert "email" in user_meta["fields"]
+    assert user_meta["fields"]["email"]["unique"] is True
+
+    follows_meta = reg.get_relationship("Follows")
+    assert follows_meta is not None
+    assert follows_meta["type_name"] == "FOLLOWS"
+    assert follows_meta["source_labels"] == ["User"]
+    assert follows_meta["target_labels"] == ["User"]
+
+    # Test dynamic declaration auto-registers into global schema registry
+    @node(label="DecoratedAuthor")
+    class DecoratedAuthor(Node):
+        author_id: str = Field(primary_key=True)
+        pen_name: str = Field(unique=True)
+
+    assert reg.has_node("DecoratedAuthor")
+    author_meta = reg.get_node("DecoratedAuthor")
+    assert author_meta is not None
+    assert author_meta["primary_key"] == "author_id"
+    assert author_meta["fields"]["pen_name"]["unique"] is True
+
+    # 2. generate_cypher_ddl using string model name directly from registry
+    user_ddl = SchemaManager.generate_cypher_ddl("User", include_type_constraints=True)
+    assert any("constraint_user_user_id_unique" in s for s in user_ddl)
+    assert any("index_user_age" in s for s in user_ddl)
+
+    user_drop = SchemaManager.generate_drop_ddl("User")
+    assert any("DROP CONSTRAINT constraint_user_user_id_unique" in s for s in user_drop)
+
+    # 3. generate_ddl multi-dialect delegation
+    cypher_ddl = SchemaManager.generate_ddl(User, dialect="cypher")
+    assert any("constraint_user_user_id_unique" in s for s in cypher_ddl)
+
+    gql_ddl = SchemaManager.generate_ddl(User, dialect="gql")
+    assert any("ALTER CURRENT GRAPH TYPE ADD NODE TYPE (:User" in s for s in gql_ddl)
+
+    pgq_ddl = SchemaManager.generate_ddl(User, dialect="pgq")
+    assert any("CREATE PROPERTY GRAPH" in s for s in pgq_ddl)
+
+    # 4. Granular create_constraints and create_indexes
+    mock_bridge = MockBridge()
+    session = Session(bridge=mock_bridge, dialect="cypher")
+
+    applied_constraints = SchemaManager.create_constraints(session, User)
+    assert all("CREATE CONSTRAINT" in s for s in applied_constraints)
+    assert not any("CREATE INDEX" in s for s in applied_constraints)
+
+    applied_indexes = SchemaManager.create_indexes(session, User)
+    assert all("CREATE INDEX" in s for s in applied_indexes)
+    assert not any("CREATE CONSTRAINT" in s for s in applied_indexes)
+
+    # Granular drop_constraints and drop_indexes
+    dropped_constraints = SchemaManager.drop_constraints(session, User)
+    assert all("DROP CONSTRAINT" in s for s in dropped_constraints)
+    assert not any("DROP INDEX" in s for s in dropped_constraints)
+
+    dropped_indexes = SchemaManager.drop_indexes(session, User)
+    assert all("DROP INDEX" in s for s in dropped_indexes)
+    assert not any("DROP CONSTRAINT" in s for s in dropped_indexes)
