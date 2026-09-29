@@ -25,6 +25,15 @@ pub enum Error {
         feature: String,
     },
 
+    /// Unsupported dialect or capability.
+    #[error("{dialect} does not support {feature}")]
+    UnsupportedDialect {
+        /// Target dialect name (e.g. "Apache AGE", "FalkorDB")
+        dialect: String,
+        /// Description of the unsupported feature or operation
+        feature: String,
+    },
+
     /// AST structural invariant violation or malformed graph pattern.
     #[error("AST invariant violation: {0}")]
     AstInvariantViolation(String),

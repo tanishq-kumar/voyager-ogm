@@ -571,41 +571,58 @@ class _SessionBase:
             self._optimize = cfg.optimize
             self._optimization_level = optimization_level or cfg.optimization_level
 
-        self._bridge: Any = create_bridge(bridge, is_async=is_async)
-        self._identity_map: weakref.WeakValueDictionary[tuple[type[Any], Any], Any] = (
-            weakref.WeakValueDictionary()
-        )
-
         self._requested_backend = backend.lower() if isinstance(backend, str) else "auto"
         self._native_client: Any = None
         self._active_backend = "bridge"
         self._circuit_cooldown_seconds = circuit_cooldown_seconds
         self._fallback_timestamp: float | None = None
         self._consecutive_native_failures = 0
+        self._bridge: Any = None
 
-        if self._requested_backend in ("native", "auto"):
-            has_execute = (
+        # Check if bridge was passed directly as a NativeClient instance or test double
+        is_native_candidate = (
+            self._requested_backend in ("native", "auto")
+            and (
                 hasattr(bridge, "execute") and hasattr(bridge, "execute_sync")
                 if is_async
                 else hasattr(bridge, "execute_sync")
             )
-            if has_execute:
-                self._native_client = bridge
-                self._active_backend = "native"
-            elif isinstance(bridge, str) and not bridge.startswith("mock://"):
-                try:
-                    from voyager_ogm._voyager_rs import NativeClient
+            and not isinstance(bridge, (DatabaseBridge, AsyncDatabaseBridge))
+        )
 
-                    self._native_client = NativeClient(bridge, min_idle=1, max_size=pool_size)
-                    self._active_backend = "native"
-                except Exception as e:
-                    if self._requested_backend == "native":
-                        raise RuntimeError(f"Failed to initialize native backend: {e}") from e
-                    self._active_backend = "bridge"
-            elif self._requested_backend == "native":
-                raise ValueError(
-                    f"Native backend requires a valid URI string, got: {type(bridge).__name__}"
-                )
+        if is_native_candidate:
+            self._native_client = bridge
+            self._active_backend = "native"
+            self._bridge = AsyncMockBridge() if is_async else MockBridge()
+        elif (
+            self._requested_backend in ("native", "auto")
+            and isinstance(bridge, str)
+            and not bridge.startswith("mock://")
+        ):
+            try:
+                from voyager_ogm._voyager_rs import NativeClient
+
+                self._native_client = NativeClient(bridge, min_idle=1, max_size=pool_size)
+                self._active_backend = "native"
+                try:
+                    self._bridge = create_bridge(bridge, is_async=is_async)
+                except Exception:
+                    self._bridge = AsyncMockBridge() if is_async else MockBridge()
+            except Exception as e:
+                if self._requested_backend == "native":
+                    raise RuntimeError(f"Failed to initialize native backend: {e}") from e
+                self._active_backend = "bridge"
+                self._bridge = create_bridge(bridge, is_async=is_async)
+        elif self._requested_backend == "native":
+            raise ValueError(
+                f"Native backend requires a valid URI string, got: {type(bridge).__name__}"
+            )
+        else:
+            self._bridge = create_bridge(bridge, is_async=is_async)
+
+        self._identity_map: weakref.WeakValueDictionary[tuple[type[Any], Any], Any] = (
+            weakref.WeakValueDictionary()
+        )
 
         self._is_explicit_mock = (
             bridge is None
@@ -1172,6 +1189,98 @@ class Session(_SessionBase):
             return GraphViewer.from_polars(target, **kwargs)
         return GraphViewer(nodes=[], edges=[], records=[], **kwargs)
 
+    def create_indexes(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+    ) -> list[str]:
+        """Applies only INDEX creation statements to the database session.
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+
+        Returns:
+            List of executed index queries.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        statements = SchemaManager.generate_index_ddl(*models, dialect=self._dialect)
+        applied: list[str] = []
+        for stmt in statements:
+            self.execute(stmt)
+            applied.append(stmt)
+        return applied
+
+    def create_constraints(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        include_type_constraints: bool = False,
+    ) -> list[str]:
+        """Applies only CONSTRAINT creation statements to the database session.
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+            include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
+
+        Returns:
+            List of executed constraint queries.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        statements = SchemaManager.generate_constraint_ddl(
+            *models, dialect=self._dialect, include_type_constraints=include_type_constraints
+        )
+        applied: list[str] = []
+        for stmt in statements:
+            self.execute(stmt)
+            applied.append(stmt)
+        return applied
+
+    def drop_indexes(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+    ) -> list[str]:
+        """Drops only INDEX statements from the database session.
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+
+        Returns:
+            List of executed drop index queries.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        statements = SchemaManager.generate_drop_index_ddl(*models, dialect=self._dialect)
+        dropped: list[str] = []
+        for stmt in statements:
+            self.execute(stmt)
+            dropped.append(stmt)
+        return dropped
+
+    def drop_constraints(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        include_type_constraints: bool = False,
+    ) -> list[str]:
+        """Drops only CONSTRAINT statements from the database session.
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+            include_type_constraints: Whether to drop Property Type constraints.
+
+        Returns:
+            List of executed drop constraint queries.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        statements = SchemaManager.generate_drop_constraint_ddl(
+            *models, dialect=self._dialect, include_type_constraints=include_type_constraints
+        )
+        dropped: list[str] = []
+        for stmt in statements:
+            self.execute(stmt)
+            dropped.append(stmt)
+        return dropped
+
     def transaction(self) -> Transaction:
         """Creates a fresh two-layer rollback transaction context manager.
 
@@ -1432,6 +1541,98 @@ class AsyncSession(_SessionBase):
                 if hasattr(n, "clear_dirty"):
                     n.clear_dirty()
         return results
+
+    async def create_indexes(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+    ) -> list[str]:
+        """Asynchronously applies only INDEX creation statements to the database session.
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+
+        Returns:
+            List of executed index queries.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        statements = SchemaManager.generate_index_ddl(*models, dialect=self._dialect)
+        applied: list[str] = []
+        for stmt in statements:
+            await self.execute(stmt)
+            applied.append(stmt)
+        return applied
+
+    async def create_constraints(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        include_type_constraints: bool = False,
+    ) -> list[str]:
+        """Asynchronously applies only CONSTRAINT creation statements to the database session.
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+            include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
+
+        Returns:
+            List of executed constraint queries.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        statements = SchemaManager.generate_constraint_ddl(
+            *models, dialect=self._dialect, include_type_constraints=include_type_constraints
+        )
+        applied: list[str] = []
+        for stmt in statements:
+            await self.execute(stmt)
+            applied.append(stmt)
+        return applied
+
+    async def drop_indexes(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+    ) -> list[str]:
+        """Asynchronously drops only INDEX statements from the database session.
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+
+        Returns:
+            List of executed drop index queries.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        statements = SchemaManager.generate_drop_index_ddl(*models, dialect=self._dialect)
+        dropped: list[str] = []
+        for stmt in statements:
+            await self.execute(stmt)
+            dropped.append(stmt)
+        return dropped
+
+    async def drop_constraints(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        include_type_constraints: bool = False,
+    ) -> list[str]:
+        """Asynchronously drops only CONSTRAINT statements from the database session.
+
+        Args:
+            *models: Node and Relationship model classes, schema dicts, or registered model names.
+            include_type_constraints: Whether to drop Property Type constraints.
+
+        Returns:
+            List of executed drop constraint queries.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        statements = SchemaManager.generate_drop_constraint_ddl(
+            *models, dialect=self._dialect, include_type_constraints=include_type_constraints
+        )
+        dropped: list[str] = []
+        for stmt in statements:
+            await self.execute(stmt)
+            dropped.append(stmt)
+        return dropped
 
     async def close(self) -> None:
         """Asynchronously closes the underlying database bridge and native connection pool, clearing the identity map."""

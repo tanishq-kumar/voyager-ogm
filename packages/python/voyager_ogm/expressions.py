@@ -99,10 +99,10 @@ class Expression:
         return UnaryExpr("NOT", self)
 
     # Comparison Operator Overloads
-    def __eq__(self, other: Any) -> BinaryExpr:  # ty: ignore[invalid-method-override] # type: ignore[override]
+    def __eq__(self, other: Any) -> BinaryExpr:  # type: ignore[override]  # ty: ignore[invalid-method-override]
         return BinaryExpr(self, "=", to_expression(other))
 
-    def __ne__(self, other: Any) -> BinaryExpr:  # ty: ignore[invalid-method-override] # type: ignore[override]
+    def __ne__(self, other: Any) -> BinaryExpr:  # type: ignore[override]  # ty: ignore[invalid-method-override]
         return BinaryExpr(self, "!=", to_expression(other))
 
     def __lt__(self, other: Any) -> BinaryExpr:

@@ -228,7 +228,7 @@ class GraphViewer(_BaseWidget):
 
         has_edges = bool(src_candidate and tgt_candidate)
 
-        if has_edges:
+        if src_candidate and tgt_candidate:
             for r in rows:
                 src_raw = r.get(src_candidate)
                 tgt_raw = r.get(tgt_candidate)

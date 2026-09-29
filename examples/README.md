@@ -49,5 +49,6 @@ uv run python examples/python/<example_name>.py
 | 10 | [`10_live_neo4j_execution_demo.py`](python/10_live_neo4j_execution_demo.py) | **Live Neo4j Database Execution** | Real Bolt protocol execution, fraud detection graph seed, and path visualization. |
 | 11 | [`11_query_optimizer_constant_folding.py`](python/11_query_optimizer_constant_folding.py) | **AST Constant Folding & Optimizer** | Compile-time arithmetic reduction, associative reassociation, and index seek hoisting. |
 | 12 | [`12_query_profiling_and_plan_explanation.py`](python/12_query_profiling_and_plan_explanation.py) | **Query Profiling & Plan Explanation** | Fluent `.explain()`/`.profile()`, functional `explain()`/`profile()`, and multi-dialect emission. |
+| 13 | [`13_schema_ddl_and_indexes.py`](python/13_schema_ddl_and_indexes.py) | **Declarative Schema & Index DDL** | Automated constraints, secondary indexes, and multi-dialect schema migration. |
 
 

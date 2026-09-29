@@ -432,6 +432,16 @@ def test_bridge_registry_and_uri_auto_resolution():
     neo_inst = FakeNeo4jDriver()
     assert isinstance(create_bridge(neo_inst), Neo4jBoltBridge)
 
+    # 5. Loud rejection of unsupported schemes and types (no silent MockBridge fallback)
+    with pytest.raises(ValueError, match="Unsupported database URI scheme 'couchbase'"):
+        create_bridge("couchbase://localhost:8091")
+
+    with pytest.raises(ValueError, match="Invalid connection URI"):
+        create_bridge("not_a_uri")
+
+    with pytest.raises(TypeError, match="Unsupported database driver or connection object"):
+        create_bridge(12345)
+
 
 def test_postgres_bridge_execute_bulk_with_bulk_ingestion_plan():
     """Test PostgresBridge.execute_bulk correctly processes batches from BulkIngestionPlan (Issue #72)."""

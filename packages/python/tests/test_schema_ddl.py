@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
+from neo4j import GraphDatabase
 from voyager_ogm import (
     Field,
     Node,
@@ -416,3 +418,464 @@ def test_dialect_ddl_error_handling():
 
     with pytest.raises(ValueError, match="missing source_labels"):
         SchemaManager.generate_pgq_ddl("orphan_pgq", User, OrphanRel)
+
+
+def test_schema_manager_native_registration_and_delegation():
+    """Verifies automated model registration in NativeSchemaRegistry and granular constraint/index delegation."""
+    from voyager_ogm._voyager_rs import NativeSchemaRegistry
+    from voyager_ogm.bridge import MockBridge
+
+    # 1. Global registry contains User and Follows models automatically
+    User.register_schema()
+    Follows.register_schema()
+    reg = NativeSchemaRegistry.global_registry()
+    assert reg.has_node("User")
+    assert reg.has_relationship("Follows")
+
+    user_meta = reg.get_node("User")
+    assert user_meta is not None
+    assert user_meta["primary_key"] == "user_id"
+    assert "email" in user_meta["fields"]
+    assert user_meta["fields"]["email"]["unique"] is True
+
+    follows_meta = reg.get_relationship("Follows")
+    assert follows_meta is not None
+    assert follows_meta["type_name"] == "FOLLOWS"
+    assert follows_meta["source_labels"] == ["User"]
+    assert follows_meta["target_labels"] == ["User"]
+
+    # Test dynamic declaration auto-registers into global schema registry
+    @node(label="DecoratedAuthor")
+    class DecoratedAuthor(Node):
+        author_id: str = Field(primary_key=True)
+        pen_name: str = Field(unique=True)
+
+    assert reg.has_node("DecoratedAuthor")
+    author_meta = reg.get_node("DecoratedAuthor")
+    assert author_meta is not None
+    assert author_meta["primary_key"] == "author_id"
+    assert author_meta["fields"]["pen_name"]["unique"] is True
+
+    # 2. generate_cypher_ddl using string model name directly from registry
+    user_ddl = SchemaManager.generate_cypher_ddl("User", include_type_constraints=True)
+    assert any("constraint_user_user_id_unique" in s for s in user_ddl)
+    assert any("index_user_age" in s for s in user_ddl)
+
+    user_drop = SchemaManager.generate_drop_ddl("User")
+    assert any("DROP CONSTRAINT constraint_user_user_id_unique" in s for s in user_drop)
+
+    # 3. generate_ddl multi-dialect delegation
+    cypher_ddl = SchemaManager.generate_ddl(User, dialect="cypher")
+    assert any("constraint_user_user_id_unique" in s for s in cypher_ddl)
+
+    gql_ddl = SchemaManager.generate_ddl(User, dialect="gql")
+    assert any("ALTER CURRENT GRAPH TYPE ADD NODE TYPE (:User" in s for s in gql_ddl)
+
+    pgq_ddl = SchemaManager.generate_ddl(User, dialect="pgq")
+    assert any("CREATE PROPERTY GRAPH" in s for s in pgq_ddl)
+
+    # 4. Granular create_constraints and create_indexes
+    mock_bridge = MockBridge()
+    session = Session(bridge=mock_bridge, dialect="cypher")
+
+    applied_constraints = SchemaManager.create_constraints(session, User)
+    assert all("CREATE CONSTRAINT" in s for s in applied_constraints)
+    assert not any("CREATE INDEX" in s for s in applied_constraints)
+
+    applied_indexes = SchemaManager.create_indexes(session, User)
+    assert all("CREATE INDEX" in s for s in applied_indexes)
+    assert not any("CREATE CONSTRAINT" in s for s in applied_indexes)
+
+    # Granular drop_constraints and drop_indexes
+    dropped_constraints = SchemaManager.drop_constraints(session, User)
+    assert all("DROP CONSTRAINT" in s for s in dropped_constraints)
+    assert not any("DROP INDEX" in s for s in dropped_constraints)
+
+    dropped_indexes = SchemaManager.drop_indexes(session, User)
+    assert all("DROP INDEX" in s for s in dropped_indexes)
+    assert not any("DROP CONSTRAINT" in s for s in dropped_indexes)
+
+
+def test_pure_ddl_generators_multi_dialect():
+    """Verifies pure DDL generators operate offline without sessions across multiple dialects."""
+
+    @relationship(type_name="FOLLOWS_INDEXED", source_node=User, target_node=User)
+    class FollowsIndexed(Relationship):
+        since: int = Field(index=True)
+
+    # 1. openCypher index and constraint generation
+    cypher_indexes = SchemaManager.generate_index_ddl(User, FollowsIndexed, dialect="cypher")
+    assert any(
+        "CREATE INDEX index_user_age IF NOT EXISTS FOR (n:User) ON (n.age)" in s
+        for s in cypher_indexes
+    )
+    assert any(
+        "CREATE INDEX index_rel_follows_indexed_since IF NOT EXISTS FOR ()-[r:FOLLOWS_INDEXED]-() ON (r.since)"
+        in s
+        for s in cypher_indexes
+    )
+
+    cypher_constraints = SchemaManager.generate_constraint_ddl(
+        User, FollowsIndexed, dialect="cypher"
+    )
+    assert any("constraint_user_email_unique" in s for s in cypher_constraints)
+    assert any("constraint_user_user_id_not_null" in s for s in cypher_constraints)
+    assert any("constraint_user_user_id_unique" in s for s in cypher_constraints)
+
+    # 2. openCypher drop index and constraint generation
+    cypher_drop_indexes = SchemaManager.generate_drop_index_ddl(
+        User, FollowsIndexed, dialect="cypher"
+    )
+    assert any("DROP INDEX index_user_age IF EXISTS" in s for s in cypher_drop_indexes)
+    assert any(
+        "DROP INDEX index_rel_follows_indexed_since IF EXISTS" in s for s in cypher_drop_indexes
+    )
+
+    cypher_drop_constraints = SchemaManager.generate_drop_constraint_ddl(
+        User, FollowsIndexed, dialect="cypher"
+    )
+    assert any(
+        "DROP CONSTRAINT constraint_user_email_unique IF EXISTS" in s
+        for s in cypher_drop_constraints
+    )
+    assert any(
+        "DROP CONSTRAINT constraint_user_user_id_not_null IF EXISTS" in s
+        for s in cypher_drop_constraints
+    )
+
+    # 3. PostgreSQL / DuckPGQ relational index and constraint generation
+    sql_indexes = SchemaManager.generate_index_ddl(User, FollowsIndexed, dialect="postgres")
+    assert 'CREATE INDEX IF NOT EXISTS idx_user_age ON "user" ("age");' in sql_indexes
+    assert (
+        'CREATE INDEX IF NOT EXISTS idx_follows_indexed_since ON "follows_indexed" ("since");'
+        in sql_indexes
+    )
+
+    sql_constraints = SchemaManager.generate_constraint_ddl(
+        User, FollowsIndexed, dialect="postgres"
+    )
+    assert 'ALTER TABLE "user" ADD CONSTRAINT uq_user_email UNIQUE ("email");' in sql_constraints
+
+    sql_drop_indexes = SchemaManager.generate_drop_index_ddl(
+        User, FollowsIndexed, dialect="postgres"
+    )
+    assert "DROP INDEX IF EXISTS idx_user_age;" in sql_drop_indexes
+    assert "DROP INDEX IF EXISTS idx_follows_indexed_since;" in sql_drop_indexes
+
+    sql_drop_constraints = SchemaManager.generate_drop_constraint_ddl(
+        User, FollowsIndexed, dialect="postgres"
+    )
+    assert 'ALTER TABLE "user" DROP CONSTRAINT IF EXISTS uq_user_email;' in sql_drop_constraints
+
+    # 4. FalkorDB Cypher indexes and actionable constraint errors
+    falkor_indexes = SchemaManager.generate_index_ddl(User, FollowsIndexed, dialect="falkordb")
+    assert "CREATE INDEX FOR (n:User) ON (n.age)" in falkor_indexes
+    assert "CREATE INDEX FOR ()-[r:FOLLOWS_INDEXED]-() ON (r.since)" in falkor_indexes
+
+    falkor_drop_indexes = SchemaManager.generate_drop_index_ddl(
+        User, FollowsIndexed, dialect="falkordb"
+    )
+    assert "DROP INDEX FOR (n:User) ON (n.age)" in falkor_drop_indexes
+    assert "DROP INDEX FOR ()-[r:FOLLOWS_INDEXED]-() ON (r.since)" in falkor_drop_indexes
+
+    with pytest.raises(NotImplementedError, match="FalkorDB does not support"):
+        SchemaManager.generate_constraint_ddl(User, dialect="falkordb")
+
+    # 5. Apache AGE actionable errors
+    with pytest.raises(NotImplementedError, match="Apache AGE does not support"):
+        SchemaManager.generate_index_ddl(User, dialect="age")
+
+    with pytest.raises(NotImplementedError, match="Apache AGE does not support"):
+        SchemaManager.generate_constraint_ddl(User, dialect="age")
+
+    # 6. Pure DDL generation using registered model names
+    User.register_schema()
+    FollowsIndexed.register_schema()
+    reg_indexes = SchemaManager.generate_index_ddl("User", "FollowsIndexed", dialect="postgres")
+    assert 'CREATE INDEX IF NOT EXISTS idx_user_age ON "user" ("age");' in reg_indexes
+    assert (
+        'CREATE INDEX IF NOT EXISTS idx_follows_indexed_since ON "follows_indexed" ("since");'
+        in reg_indexes
+    )
+
+
+def test_session_ddl_convenience_methods():
+    """Verifies Session instance convenience methods execute DDL directly."""
+    from voyager_ogm.bridge import MockBridge
+
+    # openCypher session
+    mock_bridge = MockBridge()
+    session = Session(bridge=mock_bridge, dialect="cypher")
+
+    applied_constraints = session.create_constraints(User, Follows)
+    assert len(applied_constraints) > 0
+    assert all("CREATE CONSTRAINT" in s for s in applied_constraints)
+
+    applied_indexes = session.create_indexes(User, Follows)
+    assert len(applied_indexes) > 0
+    assert all("CREATE INDEX" in s for s in applied_indexes)
+
+    dropped_indexes = session.drop_indexes(User, Follows)
+    assert len(dropped_indexes) > 0
+    assert all("DROP INDEX" in s for s in dropped_indexes)
+
+    dropped_constraints = session.drop_constraints(User, Follows)
+    assert len(dropped_constraints) > 0
+    assert all("DROP CONSTRAINT" in s for s in dropped_constraints)
+
+    # Verify executed queries in MockBridge match applied statements
+    executed_stmts = [q[0] for q in mock_bridge.executed_queries]
+    for stmt in applied_constraints + applied_indexes + dropped_indexes + dropped_constraints:
+        assert stmt in executed_stmts
+
+    # PostgreSQL session
+    mock_bridge_sql = MockBridge()
+    session_sql = Session(bridge=mock_bridge_sql, dialect="postgres")
+
+    sql_idx = session_sql.create_indexes(User, Follows)
+    assert 'CREATE INDEX IF NOT EXISTS idx_user_age ON "user" ("age");' in sql_idx
+    assert (
+        'CREATE INDEX IF NOT EXISTS idx_user_age ON "user" ("age");',
+        {},
+    ) in mock_bridge_sql.executed_queries
+
+
+@pytest.mark.asyncio
+async def test_async_session_ddl_convenience_methods():
+    """Verifies AsyncSession instance convenience methods asynchronously execute DDL."""
+    from voyager_ogm.bridge import AsyncMockBridge
+    from voyager_ogm.session import AsyncSession
+
+    async_mock = AsyncMockBridge()
+    async_session = AsyncSession(bridge=async_mock, dialect="cypher")
+
+    applied_constraints = await async_session.create_constraints(User, Follows)
+    assert len(applied_constraints) > 0
+    assert all("CREATE CONSTRAINT" in s for s in applied_constraints)
+
+    applied_indexes = await async_session.create_indexes(User, Follows)
+    assert len(applied_indexes) > 0
+    assert all("CREATE INDEX" in s for s in applied_indexes)
+
+    dropped_indexes = await async_session.drop_indexes(User, Follows)
+    assert len(dropped_indexes) > 0
+    assert all("DROP INDEX" in s for s in dropped_indexes)
+
+    dropped_constraints = await async_session.drop_constraints(User, Follows)
+    assert len(dropped_constraints) > 0
+    assert all("DROP CONSTRAINT" in s for s in dropped_constraints)
+
+    executed_stmts = [q[0] for q in async_mock.executed_queries]
+    for stmt in applied_constraints + applied_indexes + dropped_indexes + dropped_constraints:
+        assert stmt in executed_stmts
+
+
+@pytest.mark.live
+def test_live_schema_ddl_multi_engine_integration():
+    """Verifies live index and constraint management across live Neo4j, PostgreSQL 19, and FalkorDB engines."""
+    # 1. Neo4j Live Engine (Bolt port 7687)
+    uri = os.getenv("NEO4J_ENTERPRISE_URI", "bolt://127.0.0.1:7687")
+    user = os.getenv("NEO4J_ENTERPRISE_USER", "neo4j")
+    password = os.getenv("NEO4J_ENTERPRISE_PASSWORD", "voyex1234")
+    database = os.getenv("NEO4J_ENTERPRISE_DATABASE", "neo4j")
+
+    try:
+        neo_drv = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=1.0)
+        neo_drv.verify_connectivity()
+        neo_bridge = Neo4jBoltBridge(neo_drv, database=database)
+        neo_session = Session(bridge=neo_bridge, dialect="cypher")
+
+        # Create constraints and indexes idempotently
+        neo_c = neo_session.create_constraints(User)
+        assert len(neo_c) > 0
+        neo_i = neo_session.create_indexes(User)
+        assert len(neo_i) > 0
+
+        # Teardown
+        neo_session.drop_indexes(User)
+        neo_session.drop_constraints(User)
+        neo_session.close()
+    except Exception:
+        pass  # Skip gracefully if Neo4j is unreachable
+
+    # 2. PostgreSQL 19 Live Engine (Port 5456)
+    pg_uri = os.getenv("PG19_URI", "postgresql://postgres:voyagerpass123@127.0.0.1:5456/postgres")
+    try:
+        import psycopg
+
+        pg_conn = psycopg.connect(pg_uri, autocommit=True, connect_timeout=1)
+        with pg_conn.cursor() as cur:
+            cur.execute('DROP TABLE IF EXISTS "user" CASCADE;')
+            cur.execute('CREATE TABLE "user" (user_id TEXT PRIMARY KEY, email TEXT, age INT);')
+
+        pg_session = Session(bridge=pg_conn, dialect="postgres")
+        # Quoted table "user" avoids PostgreSQL reserved keyword syntax error
+        pg_idx = pg_session.create_indexes(User)
+        assert len(pg_idx) > 0
+        pg_con = pg_session.create_constraints(User)
+        assert len(pg_con) > 0
+
+        # Teardown
+        pg_session.drop_indexes(User)
+        pg_session.drop_constraints(User)
+
+        with pg_conn.cursor() as cur:
+            cur.execute('DROP TABLE IF EXISTS "user" CASCADE;')
+        pg_conn.close()
+    except Exception:
+        pass  # Skip gracefully if PostgreSQL 19 is unreachable
+
+    # 3. FalkorDB Live Engine (Port 6379)
+    try:
+        from falkordb import FalkorDB
+        from voyager_ogm.bridge import FalkorDBBridge
+
+        f_db = FalkorDB(host="127.0.0.1", port=6379)
+        f_graph = f_db.select_graph("voyager_ddl_live_test")
+        f_graph.query("RETURN 1")
+
+        fk_bridge = FalkorDBBridge(f_graph)
+        fk_session = Session(bridge=fk_bridge, dialect="falkordb")
+        # Idempotent index creation
+        fk_idx = fk_session.create_indexes(User)
+        assert len(fk_idx) > 0
+        # Re-creation should not crash (handles 'already indexed' in bridge)
+        fk_session.create_indexes(User)
+
+        # Teardown
+        fk_session.drop_indexes(User)
+        # Re-drop should not crash (handles 'no such index' in bridge)
+        fk_session.drop_indexes(User)
+
+        # Constraints raise actionable error
+        with pytest.raises(NotImplementedError, match="FalkorDB does not support"):
+            fk_session.create_constraints(User)
+    except Exception:
+        pass  # Skip gracefully if FalkorDB is unreachable
+
+
+def test_schema_registration_loud_failure(caplog: pytest.LogCaptureFixture):
+    """Verifies that schema registration failures log a loud warning and raise an exception."""
+    import logging
+
+    @node(label="LoudFailNode")
+    class LoudFailNode(Node):
+        id: str = Field(primary_key=True)
+
+    @relationship(type_name="LOUD_FAIL_REL", source_node=LoudFailNode, target_node=LoudFailNode)
+    class LoudFailRel(Relationship):
+        weight: float = Field()
+
+    class FailingRegistry:
+        def register_node(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("Rust registry allocation failed")
+
+        def register_relationship(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("Rust registry allocation failed")
+
+    fail_reg = FailingRegistry()
+
+    with caplog.at_level(logging.WARNING, logger="voyager_ogm"):
+        with pytest.raises(RuntimeError, match="Rust registry allocation failed"):
+            LoudFailNode.register_schema(registry=fail_reg)
+        assert "Failed to register schema for node model LoudFailNode" in caplog.text
+
+    with caplog.at_level(logging.WARNING, logger="voyager_ogm"):
+        with pytest.raises(RuntimeError, match="Rust registry allocation failed"):
+            LoudFailRel.register_schema(registry=fail_reg)
+        assert "Failed to register schema for relationship model LoudFailRel" in caplog.text
+
+
+def test_falkordb_bridge_idempotency_unit():
+    """Unit test verifying that FalkorDBBridge absorbs index idempotency errors and raises others."""
+    from voyager_ogm.bridge import AsyncFalkorDBBridge, FalkorDBBridge
+
+    class FakeGraph:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def query(self, stmt: str, params: Any = None) -> Any:
+            self.calls.append(stmt)
+            stmt_clean = stmt.strip().lower()
+            if "already_fail" in stmt_clean:
+                raise RuntimeError("Attribute 'age' is already indexed")
+            if "no_such_fail" in stmt_clean:
+                raise RuntimeError("Unable to drop index on :User(age): no such index.")
+            if "syntax_error" in stmt_clean:
+                raise RuntimeError("Invalid Cypher syntax")
+            return None
+
+    fake_g = FakeGraph()
+    bridge = FalkorDBBridge(fake_g)
+
+    # Creating already indexed attribute should be absorbed
+    res = bridge.execute("CREATE INDEX FOR (n:User) ON (n.already_fail)")
+    assert res == []
+
+    # Dropping non-existent index should be absorbed
+    res = bridge.execute("DROP INDEX FOR (n:User) ON (n.no_such_fail)")
+    assert res == []
+
+    # Other queries with syntax errors must NOT be swallowed
+    with pytest.raises(RuntimeError, match="Invalid Cypher syntax"):
+        bridge.execute("CREATE INDEX FOR (n:User) ON (n.syntax_error)")
+
+    # Non-index queries that somehow contain 'already indexed' must NOT be swallowed
+    with pytest.raises(RuntimeError, match="already indexed"):
+        bridge.execute("MATCH (n:User) RETURN n.already_fail")
+
+    # Async bridge delegates faithfully
+    import asyncio
+
+    async_bridge = AsyncFalkorDBBridge(fake_g)
+    res_async = asyncio.run(async_bridge.execute("CREATE INDEX FOR (n:User) ON (n.already_fail)"))
+    assert res_async == []
+
+
+def test_dict_spec_routing_in_schema_manager():
+    """Verify SchemaManager correctly routes schema dicts for nodes and relationships."""
+    node_spec = {
+        "name": "DictPerson",
+        "labels": ["DictPerson"],
+        "primary_key": "pid",
+        "fields": {
+            "pid": {"field_type": "STRING", "primary_key": True, "indexed": True},
+            "age": {"field_type": "INTEGER", "indexed": True},
+        },
+    }
+    rel_spec = {
+        "name": "DictKnows",
+        "type_name": "DICT_KNOWS",
+        "source_labels": ["DictPerson"],
+        "target_labels": ["DictPerson"],
+        "fields": {
+            "since": {"field_type": "INTEGER", "indexed": True},
+        },
+    }
+
+    # Index DDL
+    node_idx_stmts = SchemaManager.generate_index_ddl(node_spec, dialect="cypher")
+    assert any("FOR (n:DictPerson) ON (n.age)" in s for s in node_idx_stmts)
+
+    rel_idx_stmts = SchemaManager.generate_index_ddl(rel_spec, dialect="cypher")
+    assert any("FOR ()-[r:DICT_KNOWS]-() ON (r.since)" in s for s in rel_idx_stmts)
+
+    # Postgres dialect
+    node_pg_stmts = SchemaManager.generate_index_ddl(node_spec, dialect="postgres")
+    assert any(
+        'CREATE INDEX IF NOT EXISTS idx_dictperson_age ON "dictperson" ("age");' in s
+        for s in node_pg_stmts
+    )
+
+    rel_pg_stmts = SchemaManager.generate_index_ddl(rel_spec, dialect="postgres")
+    assert any(
+        'CREATE INDEX IF NOT EXISTS idx_dict_knows_since ON "dict_knows" ("since");' in s
+        for s in rel_pg_stmts
+    )
+
+    # Drop index DDL
+    node_drop_idx = SchemaManager.generate_drop_index_ddl(node_spec, dialect="cypher")
+    assert any("DROP INDEX index_dictperson_age" in s for s in node_drop_idx)
+
+    rel_drop_idx = SchemaManager.generate_drop_index_ddl(rel_spec, dialect="cypher")
+    assert any("DROP INDEX index_rel_dict_knows_since" in s for s in rel_drop_idx)

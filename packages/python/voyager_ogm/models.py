@@ -8,12 +8,20 @@ from __future__ import annotations
 
 import difflib
 import inspect
+import logging
 import threading
 import weakref
 from collections import defaultdict
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Generic, TypeVar, cast, dataclass_transform
 
 from voyager_ogm.expressions import BinaryExpr, Expression, PropExpr, to_expression
+
+try:
+    from voyager_ogm._voyager_rs import NativeSchemaRegistry
+except ImportError:
+    NativeSchemaRegistry = None  # type: ignore[assignment, misc]
+
+logger = logging.getLogger("voyager_ogm")
 
 _T = TypeVar("_T")
 
@@ -387,7 +395,7 @@ def _process_type_annotations(cls: Any) -> dict[str, Field]:
                 existing_val.name = attr_name
             fields_map[attr_name] = existing_val
         elif not inspect.isroutine(existing_val):
-            field_desc = Field(
+            field_desc: Field[Any] = Field(
                 default=existing_val if existing_val is not None else ...,
                 name=attr_name,
                 type_annotation=type_hint,
@@ -409,6 +417,7 @@ def _process_type_annotations(cls: Any) -> dict[str, Field]:
     return fields_map
 
 
+@dataclass_transform(field_specifiers=(Field,))
 class Node:
     """Base class for Voyager OGM Graph Node Entities.
 
@@ -426,6 +435,8 @@ class Node:
 
     __labels__: ClassVar[list[str]] = []
     _schema_fields: ClassVar[dict[str, Field]] = {}
+    _cached_labels: ClassVar[list[str]] = ["Node"]
+    _cached_label: ClassVar[str] = "Node"
 
     def __init_subclass__(cls, label: str | list[str] | None = None, **kwargs: Any) -> None:
         """Initializes Node subclass metadata and labels.
@@ -445,6 +456,32 @@ class Node:
         cls._cached_labels = list(cls.__labels__)
         cls._cached_label = cls.__labels__[0] if cls.__labels__ else cls.__name__
         _process_type_annotations(cls)
+        cls.register_schema()
+
+    @classmethod
+    def register_schema(cls, registry: Any = None) -> None:
+        """Registers this Node model's schema into the NativeSchemaRegistry.
+
+        Args:
+            registry: Optional NativeSchemaRegistry instance. If None, registers
+                in the shared global registry (NativeSchemaRegistry.global_registry()).
+        """
+        if NativeSchemaRegistry is None:
+            return
+        try:
+            reg = registry if registry is not None else NativeSchemaRegistry.global_registry()
+            name = cls.__name__
+            labels = list(getattr(cls, "__labels__", [name]))
+            fields = getattr(cls, "_schema_fields", {})
+            primary_key = None
+            for f_name, f_obj in fields.items():
+                if getattr(f_obj, "primary_key", False):
+                    primary_key = getattr(f_obj, "name", None) or f_name
+                    break
+            reg.register_node(name, labels, fields, primary_key)
+        except Exception as e:
+            logger.warning("Failed to register schema for node model %s: %s", cls.__name__, e)
+            raise
 
     def __init__(self, alias: str | None = None, **values: Any) -> None:
         """Instantiates a Node entity with a unique query alias.
@@ -455,11 +492,10 @@ class Node:
             **values: Property key-value pairs, or optional `session` reference.
         """
         cached_label = getattr(self.__class__, "_cached_label", None)
-        if cached_label is None:
+        if not cached_label:
             cached_label = self.__labels__[0] if self.__labels__ else self.__class__.__name__
         self._alias = alias or _get_next_alias(cached_label)
         self._cached_alias = self._alias
-        self._cached_labels = getattr(self.__class__, "_cached_labels", [cached_label])
         self._bound_fields: dict[str, BoundField] = {}
         session = values.pop("session", None)
         self._session_ref: weakref.ref[Any] | None = (
@@ -642,6 +678,7 @@ class Node:
         return self._bound_fields[name]
 
 
+@dataclass_transform(field_specifiers=(Field,))
 class Relationship:
     """Base class for Voyager OGM Graph Relationship Entities.
 
@@ -660,6 +697,10 @@ class Relationship:
 
     __type__: ClassVar[str] = ""
     __direction__: ClassVar[str] = "outgoing"
+    __source_labels__: ClassVar[list[str]] = []
+    __target_labels__: ClassVar[list[str]] = []
+    _cached_type: ClassVar[str] = ""
+    _cached_types: ClassVar[list[str]] = []
     _schema_fields: ClassVar[dict[str, Field]] = {}
 
     def __init_subclass__(
@@ -694,6 +735,42 @@ class Relationship:
         cls._cached_type = cls.__type__
         cls._cached_types = [cls.__type__]
         _process_type_annotations(cls)
+        cls.register_schema()
+
+    @classmethod
+    def register_schema(cls, registry: Any = None) -> None:
+        """Registers this Relationship model's schema into the NativeSchemaRegistry.
+
+        Args:
+            registry: Optional NativeSchemaRegistry instance. If None, registers
+                in the shared global registry (NativeSchemaRegistry.global_registry()).
+        """
+        if NativeSchemaRegistry is None:
+            return
+        try:
+            reg = registry if registry is not None else NativeSchemaRegistry.global_registry()
+            name = cls.__name__
+            type_name = getattr(cls, "__type__", None) or name.upper()
+            source_labels = list(getattr(cls, "__source_labels__", []))
+            target_labels = list(getattr(cls, "__target_labels__", []))
+            fields = getattr(cls, "_schema_fields", {})
+            direction = getattr(cls, "__direction__", "outgoing")
+            directed = direction != "undirected"
+            reg.register_relationship(
+                name,
+                type_name,
+                source_labels if source_labels else None,
+                target_labels if target_labels else None,
+                fields,
+                directed,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to register schema for relationship model %s: %s",
+                cls.__name__,
+                e,
+            )
+            raise
 
     def __init__(self, alias: str | None = None, **values: Any) -> None:
         """Instantiates a Relationship entity with a unique query alias.
@@ -712,7 +789,6 @@ class Relationship:
         )
         self._alias = alias or _get_next_alias(rel_type)
         self._cached_alias = self._alias
-        self._cached_types = getattr(self.__class__, "_cached_types", [rel_type])
         self._bound_fields: dict[str, BoundField] = {}
         self._values = values
 
@@ -727,6 +803,10 @@ class Relationship:
         return (
             getattr(self, "__edge_type__", None) or self.__type__ or self.__class__.__name__.upper()
         )
+
+    def get(self, name: str, default: Any = None) -> Any:
+        """Retrieves an in-memory property value."""
+        return self._values.get(name, default)
 
     def __getattr__(self, name: str) -> BoundField:
         """Dynamically resolves unknown edge property names into BoundField descriptors.
@@ -756,6 +836,7 @@ class Relationship:
         return self._bound_fields[name]
 
 
+@dataclass_transform(field_specifiers=(Field,))
 def node(target: type | str | list[str] | None = None, **kwargs: Any) -> Any:
     """Decorator to mark a Python class as a Voyager Graph Node.
 
@@ -790,12 +871,14 @@ def node(target: type | str | list[str] | None = None, **kwargs: Any) -> Any:
             ns["_cached_label"] = cls_labels[0] if cls_labels else cls.__name__
             ns["_schema_fields"] = fields_map
             derived = type(cls.__name__, (cls, Node), ns)
+            cast(Any, derived).register_schema()
             return derived
         else:
             cls.__labels__ = cls_labels  # type: ignore[attr-defined]
             cls._cached_labels = cls_labels  # type: ignore[attr-defined]
             cls._cached_label = cls_labels[0] if cls_labels else cls.__name__  # type: ignore[attr-defined]
             cls._schema_fields = fields_map  # type: ignore[attr-defined]
+            cast(Any, cls).register_schema()
             return cls
 
     if isinstance(target, type):
@@ -803,6 +886,7 @@ def node(target: type | str | list[str] | None = None, **kwargs: Any) -> Any:
     return decorator
 
 
+@dataclass_transform(field_specifiers=(Field,))
 def relationship(target: type | str | None = None, **kwargs: Any) -> Any:
     """Decorator to mark a Python class as a Voyager Graph Relationship.
 
@@ -854,6 +938,7 @@ def relationship(target: type | str | None = None, **kwargs: Any) -> Any:
             ns["_cached_types"] = [rel_type]
             ns["_schema_fields"] = fields_map
             derived = type(cls.__name__, (cls, Relationship), ns)
+            cast(Any, derived).register_schema()
             return derived
         else:
             cls.__type__ = rel_type  # type: ignore[attr-defined]
@@ -863,6 +948,7 @@ def relationship(target: type | str | None = None, **kwargs: Any) -> Any:
             cls._cached_type = rel_type  # type: ignore[attr-defined]
             cls._cached_types = [rel_type]  # type: ignore[attr-defined]
             cls._schema_fields = fields_map  # type: ignore[attr-defined]
+            cast(Any, cls).register_schema()
             return cls
 
     if isinstance(target, type):

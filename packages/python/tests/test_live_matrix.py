@@ -55,20 +55,11 @@ Architectural Analysis of Engine Planner Behavior:
 from __future__ import annotations
 
 import json
+import os
 import socket
-
-try:
-    import duckdb
-except ImportError:
-    duckdb = None
+from pathlib import Path
 
 import polars as pl
-
-try:
-    import psycopg
-except ImportError:
-    psycopg = None
-
 import pytest
 from neo4j import GraphDatabase
 from voyager_ogm import (
@@ -83,6 +74,33 @@ from voyager_ogm import (
     node,
     relationship,
 )
+
+try:
+    import duckdb
+except ImportError:
+    duckdb = None
+
+try:
+    import psycopg
+except ImportError:
+    psycopg = None
+
+
+def _load_env_file() -> None:
+    env_file = Path(__file__).resolve().parents[3] / ".env"
+    if env_file.exists():
+        try:
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    if k.strip() not in os.environ:
+                        os.environ[k.strip()] = v.strip()
+        except Exception:
+            pass
+
+
+_load_env_file()
 
 pytestmark = pytest.mark.live
 
@@ -161,22 +179,34 @@ class TestNeo4jLiveMatrix:
     def neo4j_driver(self):
         if not _is_port_open("127.0.0.1", 7687):
             pytest.skip("Neo4j container not available on port 7687")
-        uri = "bolt://127.0.0.1:7687"
-        auth = ("neo4j", "voyagerpass123")
-        try:
-            from voyager_ogm import NativeClient
+        uri = os.getenv("NEO4J_ENTERPRISE_URI", "bolt://127.0.0.1:7687")
+        user = os.getenv("NEO4J_ENTERPRISE_USER", "neo4j")
+        configured_password = os.getenv("NEO4J_ENTERPRISE_PASSWORD") or os.getenv("NEO4J_PASSWORD")
+        passwords = (
+            [configured_password] if configured_password else ["voyex1234", "voyagerpass123"]
+        )
+        driver = None
+        last_err = None
+        for pwd in passwords:
+            auth = (user, pwd)
+            try:
+                from voyager_ogm import NativeClient
 
-            c = NativeClient(
-                f"bolt://{auth[0]}:{auth[1]}@127.0.0.1:7687?connect_timeout=2",
-                min_idle=1,
-                max_size=2,
-            )
-            c.ping_sync()
-            c.close()
-            driver = GraphDatabase.driver(uri, auth=auth, connection_timeout=2.0)
-            driver.verify_connectivity()
-        except Exception as e:
-            pytest.skip(f"Neo4j container not available on port 7687: {e}")
+                c = NativeClient(
+                    f"bolt://{auth[0]}:{auth[1]}@127.0.0.1:7687?connect_timeout=2",
+                    min_idle=1,
+                    max_size=2,
+                )
+                c.ping_sync()
+                c.close()
+                d = GraphDatabase.driver(uri, auth=auth, connection_timeout=2.0)
+                d.verify_connectivity()
+                driver = d
+                break
+            except Exception as e:
+                last_err = e
+        if driver is None:
+            pytest.skip(f"Neo4j container not available on port 7687: {last_err}")
         yield driver
         driver.close()
 

@@ -123,4 +123,31 @@ python-version = "3.11"
 [tool.ty.src]
 include = ["packages/python/voyager_ogm"]
 
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = false
+
+[[tool.mypy.overrides]]
+module = [
+    "pyarrow",
+    "pyarrow.*",
+    "duckdb",
+    "duckdb.*",
+    "psycopg",
+    "psycopg.*",
+    "traitlets",
+    "traitlets.*",
+    "anywidget",
+    "anywidget.*",
+    "marimo",
+    "marimo.*",
+    "falkordb",
+    "falkordb.*",
+    "neo4j",
+    "neo4j.*",
+    "neomodel",
+    "neomodel.*",
+]
+ignore_missing_imports = true
+
 
