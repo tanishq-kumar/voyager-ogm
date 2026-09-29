@@ -2,11 +2,18 @@
 
 pub mod age;
 pub mod cypher;
+pub mod ddl;
 pub mod iso_gql;
 pub mod sql_pgq;
 
 pub use age::AgeEmitter;
 pub use cypher::CypherEmitter;
+pub use ddl::{
+    emit_cypher_drop_node_ddl, emit_cypher_drop_rel_ddl, emit_cypher_node_ddl, emit_cypher_rel_ddl,
+    emit_cypher25_drop_graph_type_ddl, emit_cypher25_graph_type_ddl, emit_gql_alter_node_ddl,
+    emit_gql_alter_rel_ddl, emit_gql_drop_graph_type_ddl, emit_gql_graph_type_ddl,
+    emit_pgq_drop_property_graph_ddl, emit_pgq_property_graph_ddl,
+};
 pub use iso_gql::IsoGqlEmitter;
 pub use sql_pgq::SqlPgqEmitter;
 

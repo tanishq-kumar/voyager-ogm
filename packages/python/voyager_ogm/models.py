@@ -79,6 +79,7 @@ class Field(Generic[_T]):
         unique: bool = False,
         index: bool = False,
         primary_key: bool = False,
+        nullable: bool = True,
         type_annotation: Any = None,
     ) -> None:
         """Initializes a graph property Field descriptor.
@@ -90,6 +91,7 @@ class Field(Generic[_T]):
             unique: Whether to enforce a unique constraint.
             index: Whether to create a search index on this property.
             primary_key: Convenience flag setting both unique=True and index=True.
+            nullable: Whether the field can store null values. Defaults to True (False for primary_key).
             type_annotation: Python type annotation class.
         """
         self.default = (
@@ -102,6 +104,7 @@ class Field(Generic[_T]):
         self.primary_key = primary_key
         self.unique = unique or primary_key
         self.index = index or primary_key
+        self.nullable = False if primary_key else nullable
         if isinstance(type_annotation, str) and type_annotation in _BUILTIN_TYPES:
             self.type_annotation = _BUILTIN_TYPES[type_annotation]
         else:
@@ -662,6 +665,7 @@ class Relationship:
     def __init_subclass__(
         cls,
         type_name: str | None = None,
+        type_: str | None = None,
         direction: str = "outgoing",
         **kwargs: Any,
     ) -> None:
@@ -669,12 +673,24 @@ class Relationship:
 
         Args:
             type_name: Database edge type string. Defaults to uppercase class name.
+            type_: Alias for type_name.
             direction: Traversal direction ('outgoing', 'incoming', 'undirected').
             **kwargs: Extra keyword arguments passed to super.
         """
         super().__init_subclass__(**kwargs)
-        cls.__type__ = type_name or cls.__name__.upper()
+        resolved_type = type_name or type_ or kwargs.get("type") or cls.__name__.upper()
+        cls.__type__ = resolved_type
         cls.__direction__ = direction
+        source_labels = kwargs.get("source_labels") or kwargs.get("from_labels")
+        if not source_labels and "source_node" in kwargs:
+            src = kwargs["source_node"]
+            source_labels = getattr(src, "__labels__", [getattr(src, "__name__", str(src))])
+        target_labels = kwargs.get("target_labels") or kwargs.get("to_labels")
+        if not target_labels and "target_node" in kwargs:
+            tgt = kwargs["target_node"]
+            target_labels = getattr(tgt, "__labels__", [getattr(tgt, "__name__", str(tgt))])
+        cls.__source_labels__ = list(source_labels) if source_labels else []
+        cls.__target_labels__ = list(target_labels) if target_labels else []
         cls._cached_type = cls.__type__
         cls._cached_types = [cls.__type__]
         _process_type_annotations(cls)
@@ -808,15 +824,32 @@ def relationship(target: type | str | None = None, **kwargs: Any) -> Any:
     direction = kwargs.get("direction", "outgoing")
 
     def decorator(cls: type) -> type:
-        type_name = kwargs.get("type_name", target if isinstance(target, str) else None)
+        type_name = (
+            kwargs.get("type_name")
+            or kwargs.get("type_")
+            or kwargs.get("type")
+            or (target if isinstance(target, str) else None)
+        )
         rel_type = type_name or cls.__name__.upper()
 
         fields_map = _process_type_annotations(cls)
+        source_labels = kwargs.get("source_labels") or kwargs.get("from_labels")
+        if not source_labels and "source_node" in kwargs:
+            src = kwargs["source_node"]
+            source_labels = getattr(src, "__labels__", [getattr(src, "__name__", str(src))])
+        target_labels = kwargs.get("target_labels") or kwargs.get("to_labels")
+        if not target_labels and "target_node" in kwargs:
+            tgt = kwargs["target_node"]
+            target_labels = getattr(tgt, "__labels__", [getattr(tgt, "__name__", str(tgt))])
+        src_list = list(source_labels) if source_labels else []
+        tgt_list = list(target_labels) if target_labels else []
 
         if not issubclass(cls, Relationship):
             ns = dict(cls.__dict__)
             ns["__type__"] = rel_type
             ns["__direction__"] = direction
+            ns["__source_labels__"] = src_list
+            ns["__target_labels__"] = tgt_list
             ns["_cached_type"] = rel_type
             ns["_cached_types"] = [rel_type]
             ns["_schema_fields"] = fields_map
@@ -825,6 +858,8 @@ def relationship(target: type | str | None = None, **kwargs: Any) -> Any:
         else:
             cls.__type__ = rel_type  # type: ignore[attr-defined]
             cls.__direction__ = direction  # type: ignore[attr-defined]
+            cls.__source_labels__ = src_list  # type: ignore[attr-defined]
+            cls.__target_labels__ = tgt_list  # type: ignore[attr-defined]
             cls._cached_type = rel_type  # type: ignore[attr-defined]
             cls._cached_types = [rel_type]  # type: ignore[attr-defined]
             cls._schema_fields = fields_map  # type: ignore[attr-defined]

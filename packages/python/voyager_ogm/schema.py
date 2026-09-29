@@ -2,13 +2,29 @@
 
 Provides automated constraint generation, schema reflection, index management,
 and Graph Types validation for openCypher (Neo4j / Memgraph), ISO GQL, and SQL:2023 PGQ.
+All DDL statements are deterministically emitted via native voyager-core Rust emitters.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from voyager_ogm._voyager_rs import NativeSchemaRegistry
+from voyager_ogm._voyager_rs import (
+    NativeSchemaRegistry,
+    emit_cypher25_drop_graph_type_ddl,
+    emit_cypher25_graph_type_ddl,
+    emit_cypher_drop_node_ddl,
+    emit_cypher_drop_rel_ddl,
+    emit_cypher_node_ddl,
+    emit_cypher_rel_ddl,
+    emit_gql_alter_node_ddl,
+    emit_gql_alter_rel_ddl,
+    emit_gql_drop_graph_type_ddl,
+    emit_gql_graph_type_ddl,
+    emit_pgq_drop_property_graph_ddl,
+    emit_pgq_property_graph_ddl,
+)
 
 if TYPE_CHECKING:
     from voyager_ogm.models import Node, Relationship
@@ -17,22 +33,34 @@ if TYPE_CHECKING:
 # Ergonomic alias for the centralized thread-safe native schema registry
 SchemaRegistry = NativeSchemaRegistry
 
-_PYTHON_TO_NEO4J_TYPES: dict[Any, str] = {
-    str: "STRING",
-    int: "INTEGER",
-    float: "FLOAT",
-    bool: "BOOLEAN",
-    list: "LIST",
-    dict: "MAP",
-}
 
-_PYTHON_TO_GQL_TYPES: dict[Any, str] = {
-    str: "STRING",
-    int: "INTEGER",
-    float: "FLOAT",
-    bool: "BOOLEAN",
-    list: "LIST",
-}
+def _is_relationship_model(model: Any) -> bool:
+    """Returns True if the model class or schema dict describes a Relationship entity."""
+    return (
+        hasattr(model, "__type__")
+        or (
+            hasattr(model, "__mro__")
+            and any(b.__name__ == "Relationship" for b in getattr(model, "__mro__", []))
+        )
+        or (
+            isinstance(model, dict)
+            and ("type_name" in model or "type" in model or "type_" in model)
+        )
+    )
+
+
+def _split_models(
+    models: Sequence[type[Node] | type[Relationship] | dict[str, Any]],
+) -> tuple[list[Any], list[Any]]:
+    """Partitions a collection of models into (nodes, relationships)."""
+    nodes: list[Any] = []
+    rels: list[Any] = []
+    for m in models:
+        if _is_relationship_model(m):
+            rels.append(m)
+        else:
+            nodes.append(m)
+    return nodes, rels
 
 
 class SchemaManager:
@@ -40,7 +68,7 @@ class SchemaManager:
 
     @staticmethod
     def generate_cypher_ddl(
-        model: type[Node] | type[Relationship],
+        model: type[Node] | type[Relationship] | dict[str, Any],
         include_type_constraints: bool = False,
     ) -> list[str]:
         """Generates openCypher / Neo4j constraint and index creation DDL statements.
@@ -49,114 +77,37 @@ class SchemaManager:
         - Unique constraints (REQUIRE n.prop IS UNIQUE)
         - Not Null / Existence constraints (REQUIRE n.prop IS NOT NULL)
         - Property Type Constraints (Neo4j 5.x Graph Types: REQUIRE n.prop :: STRING)
-        - B-Tree Indexes (FOR (n:Label) ON (n.prop))
+        - Secondary Indexes (FOR (n:Label) ON (n.prop))
 
         Args:
-            model: Target Node or Relationship model class.
+            model: Target Node or Relationship model class, or schema dict.
             include_type_constraints: Whether to emit Neo4j 5.x Enterprise Property Type
                 constraints (:: STRING, :: INTEGER). Defaults to False.
 
         Returns:
             List of executable DDL Cypher statement strings.
         """
-        statements: list[str] = []
-        labels = getattr(model, "__labels__", None)
-        edge_type = getattr(model, "__type__", None)
-        fields = dict(getattr(model, "_schema_fields", {}))
-        if not fields:
-            for k, v in model.__dict__.items():
-                if hasattr(v, "unique") or hasattr(v, "index"):
-                    fields[k] = v
-
-        if labels is not None or (
-            hasattr(model, "__mro__") and any(b.__name__ == "Node" for b in model.__mro__)
-        ):
-            actual_labels = labels if labels else [model.__name__]
-            primary_label = actual_labels[0]
-            for prop_name, field_def in fields.items():
-                db_name = getattr(field_def, "name", None) or prop_name
-
-                if getattr(field_def, "unique", False) or getattr(field_def, "primary_key", False):
-                    c_name = f"constraint_{primary_label.lower()}_{db_name}_unique"
-                    statements.append(
-                        f"CREATE CONSTRAINT {c_name} IF NOT EXISTS FOR (n:{primary_label}) REQUIRE n.{db_name} IS UNIQUE"
-                    )
-
-                if getattr(field_def, "index", False) and not (
-                    getattr(field_def, "unique", False) or getattr(field_def, "primary_key", False)
-                ):
-                    i_name = f"index_{primary_label.lower()}_{db_name}"
-                    statements.append(
-                        f"CREATE INDEX {i_name} IF NOT EXISTS FOR (n:{primary_label}) ON (n.{db_name})"
-                    )
-
-                if include_type_constraints:
-                    type_ann = getattr(field_def, "type_annotation", None)
-                    if type_ann and type_ann in _PYTHON_TO_NEO4J_TYPES:
-                        neo4j_type = _PYTHON_TO_NEO4J_TYPES[type_ann]
-                        t_name = f"constraint_{primary_label.lower()}_{db_name}_type"
-                        statements.append(
-                            f"CREATE CONSTRAINT {t_name} IF NOT EXISTS FOR (n:{primary_label}) REQUIRE n.{db_name} :: {neo4j_type}"
-                        )
-
-        elif edge_type or (
-            hasattr(model, "__mro__") and any(b.__name__ == "Relationship" for b in model.__mro__)
-        ):
-            actual_type = edge_type or model.__name__.upper()
-            for prop_name, field_def in fields.items():
-                db_name = getattr(field_def, "name", None) or prop_name
-                if getattr(field_def, "primary_key", False) or getattr(field_def, "unique", False):
-                    c_name = f"constraint_rel_{actual_type.lower()}_{db_name}_not_null"
-                    statements.append(
-                        f"CREATE CONSTRAINT {c_name} IF NOT EXISTS FOR ()-[r:{actual_type}]-() REQUIRE r.{db_name} IS NOT NULL"
-                    )
-
-        return statements
+        if _is_relationship_model(model):
+            return emit_cypher_rel_ddl(model, include_type_constraints)
+        return emit_cypher_node_ddl(model, include_type_constraints)
 
     @staticmethod
     def generate_drop_ddl(
-        model: type[Node] | type[Relationship],
+        model: type[Node] | type[Relationship] | dict[str, Any],
         include_type_constraints: bool = False,
     ) -> list[str]:
         """Generates drop statements for constraints and indexes.
 
         Args:
-            model: Target Node or Relationship model class.
+            model: Target Node or Relationship model class, or schema dict.
             include_type_constraints: Whether to emit drop statements for Property Type constraints.
 
         Returns:
             List of executable DROP statement strings.
         """
-        statements: list[str] = []
-        labels = getattr(model, "__labels__", None)
-        fields = dict(getattr(model, "_schema_fields", {}))
-        if not fields:
-            for k, v in model.__dict__.items():
-                if hasattr(v, "unique") or hasattr(v, "index"):
-                    fields[k] = v
-
-        if labels is not None or (
-            hasattr(model, "__mro__") and any(b.__name__ == "Node" for b in model.__mro__)
-        ):
-            actual_labels = labels if labels else [model.__name__]
-            primary_label = actual_labels[0]
-            for prop_name, field_def in fields.items():
-                db_name = getattr(field_def, "name", None) or prop_name
-                if getattr(field_def, "unique", False) or getattr(field_def, "primary_key", False):
-                    c_name = f"constraint_{primary_label.lower()}_{db_name}_unique"
-                    statements.append(f"DROP CONSTRAINT {c_name} IF EXISTS")
-                if getattr(field_def, "index", False):
-                    i_name = f"index_{primary_label.lower()}_{db_name}"
-                    statements.append(f"DROP INDEX {i_name} IF EXISTS")
-                if (
-                    include_type_constraints
-                    and getattr(field_def, "type_annotation", None)
-                    and field_def.type_annotation in _PYTHON_TO_NEO4J_TYPES
-                ):
-                    t_name = f"constraint_{primary_label.lower()}_{db_name}_type"
-                    statements.append(f"DROP CONSTRAINT {t_name} IF EXISTS")
-
-        return statements
+        if _is_relationship_model(model):
+            return emit_cypher_drop_rel_ddl(model, include_type_constraints)
+        return emit_cypher_drop_node_ddl(model, include_type_constraints)
 
     @classmethod
     def create_all(
@@ -174,7 +125,28 @@ class SchemaManager:
 
         Returns:
             List of executed DDL queries.
+
+        Raises:
+            NotImplementedError: If the session dialect does not support openCypher constraint DDL.
         """
+        dialect = getattr(session, "dialect", "cypher").lower()
+        if dialect in ("sql_pgq", "pgq", "duckpgq", "duckdb", "postgres", "postgresql"):
+            raise NotImplementedError(
+                f"SchemaManager.create_all() generates openCypher constraint DDL. "
+                f"For {dialect.upper()} (SQL:2023 PGQ), use SchemaManager.create_property_graph(session, graph_name, *models) "
+                f"or SchemaManager.generate_pgq_ddl(graph_name, *models)."
+            )
+        if dialect in ("falkordb", "falkor"):
+            raise NotImplementedError(
+                "FalkorDB does not support openCypher 'CREATE CONSTRAINT' queries in GRAPH.QUERY. "
+                "Constraints in FalkorDB must be created via native Redis commands ('GRAPH.CONSTRAINT CREATE')."
+            )
+        if dialect in ("age", "apache_age"):
+            raise NotImplementedError(
+                "Apache AGE does not support Cypher 'CREATE CONSTRAINT' queries. "
+                "Constraints in Apache AGE must be defined on the underlying PostgreSQL relational tables."
+            )
+
         applied: list[str] = []
         for model in models:
             for stmt in cls.generate_cypher_ddl(
@@ -200,7 +172,28 @@ class SchemaManager:
 
         Returns:
             List of executed DROP queries.
+
+        Raises:
+            NotImplementedError: If the session dialect does not support openCypher DROP constraint DDL.
         """
+        dialect = getattr(session, "dialect", "cypher").lower()
+        if dialect in ("sql_pgq", "pgq", "duckpgq", "duckdb", "postgres", "postgresql"):
+            raise NotImplementedError(
+                f"SchemaManager.drop_all() generates openCypher DROP statements. "
+                f"For {dialect.upper()} (SQL:2023 PGQ), use SchemaManager.drop_property_graph(session, graph_name) "
+                f"or SchemaManager.generate_pgq_drop_ddl(graph_name)."
+            )
+        if dialect in ("falkordb", "falkor"):
+            raise NotImplementedError(
+                "FalkorDB does not support openCypher 'DROP CONSTRAINT' queries. "
+                "Drop constraints via native Redis commands ('GRAPH.CONSTRAINT DROP')."
+            )
+        if dialect in ("age", "apache_age"):
+            raise NotImplementedError(
+                "Apache AGE does not support Cypher 'DROP CONSTRAINT' queries. "
+                "Constraints in Apache AGE must be dropped on the underlying PostgreSQL relational tables."
+            )
+
         dropped: list[str] = []
         for model in models:
             for stmt in cls.generate_drop_ddl(
@@ -209,6 +202,46 @@ class SchemaManager:
                 session.execute(stmt)
                 dropped.append(stmt)
         return dropped
+
+    @classmethod
+    def create_property_graph(
+        cls,
+        session: Session,
+        graph_name: str,
+        *models: type[Node] | type[Relationship],
+    ) -> str:
+        """Applies SQL:2023 PGQ `CREATE PROPERTY GRAPH` DDL to the active session.
+
+        Args:
+            session: Active database session (PostgreSQL 19 / DuckPGQ).
+            graph_name: Identifier name for the property graph.
+            *models: Model classes to register.
+
+        Returns:
+            The executed DDL statement.
+        """
+        ddl = cls.generate_pgq_ddl(graph_name, *models)
+        session.execute(ddl)
+        return ddl
+
+    @classmethod
+    def drop_property_graph(
+        cls,
+        session: Session,
+        graph_name: str,
+    ) -> str:
+        """Drops a SQL:2023 PGQ property graph from the active session.
+
+        Args:
+            session: Active database session.
+            graph_name: Identifier name of property graph to drop.
+
+        Returns:
+            The executed DROP statement.
+        """
+        ddl = cls.generate_pgq_drop_ddl(graph_name)
+        session.execute(ddl)
+        return ddl
 
     @staticmethod
     def generate_alter_graph_type_ddl(
@@ -233,54 +266,36 @@ class SchemaManager:
         Returns:
             Executable `ALTER CURRENT GRAPH TYPE` DDL string.
         """
-        labels = getattr(model, "__labels__", None)
-        edge_type = getattr(model, "__type__", None)
-        fields = dict(getattr(model, "_schema_fields", {}))
-        if not fields:
-            for k, v in model.__dict__.items():
-                if hasattr(v, "unique") or hasattr(v, "index"):
-                    fields[k] = v
+        if _is_relationship_model(model):
+            src_str = getattr(source_node, "__name__", str(source_node)) if source_node else None
+            tgt_str = getattr(target_node, "__name__", str(target_node)) if target_node else None
+            return emit_gql_alter_rel_ddl(model, src_str, tgt_str)
+        return emit_gql_alter_node_ddl(model)
 
-        if labels is not None or (
-            hasattr(model, "__mro__") and any(b.__name__ == "Node" for b in model.__mro__)
-        ):
-            actual_labels = labels if labels else [model.__name__]
-            primary_label = actual_labels[0]
-            prop_defs: list[str] = []
-            for prop_name, field_def in fields.items():
-                db_name = getattr(field_def, "name", None) or prop_name
-                type_ann = getattr(field_def, "type_annotation", None)
-                gql_type = _PYTHON_TO_GQL_TYPES.get(type_ann, "ANY")
-                optional_marker = (
-                    ""
-                    if getattr(field_def, "primary_key", False)
-                    or getattr(field_def, "unique", False)
-                    else "?"
-                )
-                prop_defs.append(f"{db_name} :: {gql_type}{optional_marker}")
+    @classmethod
+    def generate_cypher25_graph_type_ddl(
+        cls,
+        *models: type[Node] | type[Relationship],
+    ) -> str:
+        """Generates Neo4j Cypher 25 `ALTER CURRENT GRAPH TYPE SET { ... }` DDL statement.
 
-            props_str = f" {{{', '.join(prop_defs)}}}" if prop_defs else ""
-            return f"ALTER CURRENT GRAPH TYPE ADD NODE TYPE (:{primary_label}{props_str})"
+        Emits declarative open graph type schema blocks enforcing node element types,
+        relationship element types, implied labels, property types, keys (IS KEY),
+        uniqueness (IS UNIQUE), and existence (NOT NULL).
 
-        elif edge_type or (
-            hasattr(model, "__mro__") and any(b.__name__ == "Relationship" for b in model.__mro__)
-        ):
-            actual_type = edge_type or model.__name__.upper()
-            prop_defs = []
-            for prop_name, field_def in fields.items():
-                db_name = getattr(field_def, "name", None) or prop_name
-                type_ann = getattr(field_def, "type_annotation", None)
-                gql_type = _PYTHON_TO_GQL_TYPES.get(type_ann, "ANY")
-                prop_defs.append(f"{db_name} :: {gql_type}")
+        Args:
+            *models: Node and Relationship model classes to include in the graph type.
 
-            props_str = f" {{{', '.join(prop_defs)}}}" if prop_defs else ""
-            src_str = getattr(source_node, "__name__", str(source_node)) if source_node else ""
-            tgt_str = getattr(target_node, "__name__", str(target_node)) if target_node else ""
-            src_pattern = f"(:{src_str})" if src_str else "()"
-            tgt_pattern = f"(:{tgt_str})" if tgt_str else "()"
-            return f"ALTER CURRENT GRAPH TYPE ADD RELATIONSHIP TYPE {src_pattern}-[:{actual_type}{props_str}]->{tgt_pattern}"
+        Returns:
+            Executable Cypher 25 `ALTER CURRENT GRAPH TYPE SET { ... }` statement.
+        """
+        nodes, rels = _split_models(models)
+        return emit_cypher25_graph_type_ddl(nodes, rels)
 
-        return ""
+    @staticmethod
+    def generate_cypher25_drop_graph_type_ddl() -> str:
+        """Emits Neo4j Cypher 25 `ALTER CURRENT GRAPH TYPE SET {}` statement to reset the graph type."""
+        return emit_cypher25_drop_graph_type_ddl()
 
     @classmethod
     def generate_gql_graph_type_ddl(
@@ -297,43 +312,47 @@ class SchemaManager:
         Returns:
             Executable ISO GQL `CREATE GRAPH TYPE` statement.
         """
-        elements: list[str] = []
-        for model in models:
-            labels = getattr(model, "__labels__", None)
-            edge_type = getattr(model, "__type__", None)
-            fields = dict(getattr(model, "_schema_fields", {}))
-            if not fields:
-                for k, v in model.__dict__.items():
-                    if hasattr(v, "unique") or hasattr(v, "index"):
-                        fields[k] = v
+        nodes, rels = _split_models(models)
+        return emit_gql_graph_type_ddl(graph_type_name, nodes, rels)
 
-            if labels is not None or (
-                hasattr(model, "__mro__") and any(b.__name__ == "Node" for b in model.__mro__)
-            ):
-                actual_labels = labels if labels else [model.__name__]
-                primary_label = actual_labels[0]
-                prop_defs = []
-                for prop_name, field_def in fields.items():
-                    db_name = getattr(field_def, "name", None) or prop_name
-                    type_ann = getattr(field_def, "type_annotation", None)
-                    gql_type = _PYTHON_TO_GQL_TYPES.get(type_ann, "ANY")
-                    prop_defs.append(f"{db_name} {gql_type}")
-                props_str = f" ({', '.join(prop_defs)})" if prop_defs else ""
-                elements.append(f"    NODE {primary_label}{props_str}")
+    @staticmethod
+    def generate_gql_drop_graph_type_ddl(graph_type_name: str) -> str:
+        """Emits an ISO GQL `DROP GRAPH TYPE` DDL statement.
 
-            elif edge_type or (
-                hasattr(model, "__mro__")
-                and any(b.__name__ == "Relationship" for b in model.__mro__)
-            ):
-                actual_type = edge_type or model.__name__.upper()
-                prop_defs = []
-                for prop_name, field_def in fields.items():
-                    db_name = getattr(field_def, "name", None) or prop_name
-                    type_ann = getattr(field_def, "type_annotation", None)
-                    gql_type = _PYTHON_TO_GQL_TYPES.get(type_ann, "ANY")
-                    prop_defs.append(f"{db_name} {gql_type}")
-                props_str = f" ({', '.join(prop_defs)})" if prop_defs else ""
-                elements.append(f"    EDGE {actual_type}{props_str}")
+        Args:
+            graph_type_name: Identifier name for the Graph Type to drop.
 
-        body = ",\n".join(elements)
-        return f"CREATE GRAPH TYPE {graph_type_name} AS {{\n{body}\n}}"
+        Returns:
+            Executable ISO GQL `DROP GRAPH TYPE` statement.
+        """
+        return emit_gql_drop_graph_type_ddl(graph_type_name)
+
+    @classmethod
+    def generate_pgq_ddl(
+        cls,
+        graph_name: str,
+        *models: type[Node] | type[Relationship],
+    ) -> str:
+        """Generates standard SQL:2023 PGQ / DuckPGQ `CREATE PROPERTY GRAPH` statement.
+
+        Args:
+            graph_name: Identifier name for the Property Graph.
+            *models: Node and Relationship model classes to include.
+
+        Returns:
+            Executable `CREATE PROPERTY GRAPH` statement.
+        """
+        nodes, rels = _split_models(models)
+        return emit_pgq_property_graph_ddl(graph_name, nodes, rels)
+
+    @staticmethod
+    def generate_pgq_drop_ddl(graph_name: str) -> str:
+        """Emits a SQL:2023 PGQ / DuckPGQ `DROP PROPERTY GRAPH` DDL statement.
+
+        Args:
+            graph_name: Identifier name for the Property Graph to drop.
+
+        Returns:
+            Executable `DROP PROPERTY GRAPH` statement.
+        """
+        return emit_pgq_drop_property_graph_ddl(graph_name)
