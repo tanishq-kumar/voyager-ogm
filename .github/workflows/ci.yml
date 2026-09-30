@@ -3,26 +3,17 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - ".githooks/**"
-      - "LICENSE*"
-      - "benchmarks/**"
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - ".githooks/**"
-      - "LICENSE*"
-      - "benchmarks/**"
   workflow_dispatch:
-
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -30,7 +21,47 @@ env:
 
 jobs:
   # =========================================================================
-  # 1. Fast Lint & Code Style Gate
+  # 1. Path Change Detection
+  # =========================================================================
+  changes:
+    name: Detect Changed Paths
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      python: ${{ steps.filter.outputs.python }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Detect File Changes
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          token: ${{ github.token }}
+          filters: |
+            rust:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain*'
+              - 'test_data/**'
+              - 'tests/**'
+              - '.github/workflows/ci.yml'
+            python:
+              - 'crates/**'
+              - 'packages/python/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - 'test_data/**'
+              - 'tests/**'
+              - '.github/workflows/ci.yml'
+
+  # =========================================================================
+  # 2. Fast Lint & Code Style Gate (Runs on All Commits/PRs)
   # =========================================================================
   lint:
     name: Code Quality & Linting
@@ -83,11 +114,15 @@ jobs:
         run: uv run --all-extras mypy packages/python/voyager_ogm
 
   # =========================================================================
-  # 2. Rust Core Engine Test Matrix
+  # 3. Rust Core Engine Test Matrix
   # =========================================================================
   test-rust:
     name: Rust Core (${{ matrix.os }})
-    needs: [lint]
+    needs: [changes, lint]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -117,11 +152,15 @@ jobs:
         run: cargo nextest run --workspace --all-targets
 
   # =========================================================================
-  # 3. Python SDK Multi-Python & Multi-OS Test Matrix
+  # 4. Python SDK Multi-Python & Multi-OS Test Matrix
   # =========================================================================
   test-python:
     name: Python SDK (${{ matrix.os }}, Py ${{ matrix.python-version }})
-    needs: [lint]
+    needs: [changes, lint]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      needs.changes.outputs.python == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -162,18 +201,22 @@ jobs:
         run: uv run --all-extras --python ${{ matrix.python-version }} pytest -m "not live"
 
   # =========================================================================
-  # 4. Consolidated CI Gate (Required Status Check for Branch Protection)
+  # 5. Consolidated CI Gate (Required Status Check for Branch Protection)
   # =========================================================================
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [lint, test-rust, test-python]
+    needs: [lint, changes, test-rust, test-python]
     runs-on: ubuntu-latest
     steps:
       - name: Verify All Matrix Jobs Passed
         run: |
           if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
             echo "::error::One or more CI matrix jobs failed or were cancelled."
+            exit 1
+          fi
+          if [[ "${{ needs.lint.result }}" != "success" ]]; then
+            echo "::error::Lint and code quality checks must pass."
             exit 1
           fi
           echo "All CI jobs completed successfully."
