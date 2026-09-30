@@ -1,0 +1,3 @@
+# GitHub Linguist overrides: exclude benchmark artifacts, fixtures, and generated snapshots from language statistics
+benchmarks/** linguist-vendored
+benchmarks/** linguist-generated

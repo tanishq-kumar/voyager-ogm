@@ -121,7 +121,7 @@ bench-all name="":
     uv run python scripts/save_benchmarks.py {{name}}
     uv run python scripts/generate_benchmark_charts.py
 
-# Run Python & Rust hydration/compilation benchmarks and dynamically save JSON results
+# Run Python & Rust hydration/compilation benchmarks and dynamically save CSV summary
 bench-save name="":
     uv run python scripts/save_benchmarks.py {{name}}
 
