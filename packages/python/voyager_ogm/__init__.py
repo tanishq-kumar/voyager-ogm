@@ -75,13 +75,18 @@ from voyager_ogm.models import (
     reset_alias_counters,
 )
 from voyager_ogm.query import (
+    ColumnMeta,
     CompiledQuery,
+    ConformanceDiagnostic,
+    ConformanceReport,
     Path,
     Query,
+    SchemaValidationError,
     explain,
     load_csv,
     profile,
     unwind,
+    validate_query,
 )
 from voyager_ogm.schema import SchemaManager, SchemaRegistry
 from voyager_ogm.session import (
@@ -131,7 +136,10 @@ __all__ = [
     "BulkIngestionPlan",
     "CaseBuilder",
     "CaseExpr",
+    "ColumnMeta",
     "CompiledQuery",
+    "ConformanceDiagnostic",
+    "ConformanceReport",
     "DatabaseBridge",
     "DuckDbBridge",
     "ExecutionResult",
@@ -172,6 +180,7 @@ __all__ = [
     "ScalarsResult",
     "SchemaManager",
     "SchemaRegistry",
+    "SchemaValidationError",
     "Session",
     "SubqueryExpr",
     "Transaction",
@@ -215,6 +224,7 @@ __all__ = [
     "to_expression",
     "to_polars",
     "unwind",
+    "validate_query",
     "version",
     "view_graph",
     "visualize_query",

@@ -12,10 +12,17 @@ Systematically verifies 50+ granular ISO GQL scenario variations:
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
-from voyager_ogm import (
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from voyager_ogm import (  # noqa: E402
     Field,
     Node,
     Query,
@@ -647,3 +654,197 @@ def test_gql_string_concatenation_and_helpers():
         comp_pfn_cypher = q_path_fn.compile(dialect="cypher")
     assert "elements(p) AS elems" in comp_pfn_cypher.statement
     assert "length(p) AS plen" in comp_pfn_cypher.statement
+
+
+# ---------------------------------------------------------------------------
+# 8. ISO GQL / openGQL TCK Topology Extraction & Graph Invariants
+# ---------------------------------------------------------------------------
+
+
+def test_gql_tck_feature_topology_invariants():
+    """Verifies AST topology extraction on the official ISO GQL standard conformance feature."""
+    from test_data.tck.opencypher_adapter import (
+        execute_scenario_topology,
+        parse_feature_file,
+    )
+
+    feature_path = REPO_ROOT / "test_data" / "tck" / "iso_gql" / "gql_standard_conformance.feature"
+    assert feature_path.exists()
+    scenarios = parse_feature_file(str(feature_path))
+    assert len(scenarios) >= 3
+
+    for sc in scenarios:
+        res = execute_scenario_topology(sc)
+        assert res.success, f"Failed topology on GQL scenario {sc.name}: {res.error}"
+        assert res.nodes_found >= 1
+
+
+def test_gql_18_canonical_matrix_topology_invariants():
+    """Verifies that all 18 canonical ISO GQL statements from tck_opengql.md satisfy graph invariants."""
+    from voyager_ogm._voyager_rs import extract_topology_from_query
+
+    from test_data.tck.opencypher_adapter import validate_topology_invariants
+
+    canonical_gql_queries = [
+        "MATCH (p:Person) WHERE (p.city = $p0) AND (p.age > $p1) RETURN p.name, p.age ORDER BY p.age ASC",
+        "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE r.since >= $p0 RETURN a.name AS source, b.name AS target, r.since AS year ORDER BY r.since ASC",
+        "UPSERT (p:Person) SET p.name = $p0, p.age = $p1 RETURN p.name, p.age",
+        "UNWIND $batch AS row INSERT (p:Person)",
+        "INSERT (a:Person)-[f:KNOWS]->(b:Person)",
+        "DELETE (p:Person)",
+        "REMOVE (p:Person.city)",
+        "MATCH (a:Person) OPTIONAL MATCH (a)-[r:WORKS_AT]->(c:Company) RETURN a.name AS person, c.name AS company ORDER BY a.name",
+        "MATCH (c:Company)<-[r:WORKS_AT]-(a:Person) RETURN a.name, c.name",
+        "MATCH (a:Person)-[r:KNOWS]-(b:Person) WHERE a.name = $p0 RETURN b.name ORDER BY b.name",
+        "MATCH (a:Person)-[:KNOWS]{1,2}->(b:Person) WHERE a.name = $p0 RETURN b.name ORDER BY b.name",
+        "MATCH (p:Person) WHERE p.city CONTAINS $p0 RETURN p.name ORDER BY p.name",
+        "MATCH (p:Person) RETURN DISTINCT p.city ORDER BY p.city ASC",
+        "MATCH (p:Person) RETURN p.name ORDER BY p.age ASC OFFSET 1 LIMIT 2",
+        "MATCH (p:Person) RETURN p.city AS city, count(p) AS count ORDER BY city ASC",
+        "MATCH (p:Person) WHERE p.name = $p0 SET p.age = $p1, p.city = $p2 RETURN p.name, p.age, p.city",
+        "CALL dbms.components() YIELD name, versions",
+    ]
+
+    for q in canonical_gql_queries:
+        topo = extract_topology_from_query(q)
+        violations = validate_topology_invariants(q, topo)
+        assert not violations, f"Invariant violations for query '{q}': {violations}"
+
+    # Specifically verify quantified path bounds on query 10
+    quant_q = "MATCH (a:Person)-[:KNOWS]{1,2}->(b:Person) WHERE a.name = $p0 RETURN b.name"
+    quant_topo = extract_topology_from_query(quant_q)
+    assert len(quant_topo["edges"]) == 1
+    edge = quant_topo["edges"][0]
+    assert edge["min_hops"] == 1
+    assert edge["max_hops"] == 2
+    assert edge["types"] == ["KNOWS"]
+    assert edge["direction"] == "outgoing"
+
+
+def test_opengql_official_tck_repository():
+    """Verifies all 88 official GQL scenarios from the opengql/tck GitHub repository."""
+    from test_data.tck.opencypher_adapter import run_tck_adapter
+
+    opengql_dir = REPO_ROOT / "test_data" / "tck" / "opengql" / "features"
+    if not opengql_dir.exists():
+        pytest.skip("opengql/tck repository not present on disk")
+
+    report = run_tck_adapter(str(opengql_dir))
+    assert report["total"] >= 80
+    assert report["passed"] == report["total"], f"Failed opengql/tck scenarios: {report['failed']}"
+    assert report["pass_rate"] == 100.0
+
+
+def _check_port(host: str, port: int) -> bool:
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
+def test_opengql_tier3_live_neo4j_execution():
+    """Tier 3: Executes official openGQL scenarios on live Neo4j Enterprise (port 7687)."""
+    if not _check_port("127.0.0.1", 7687):
+        pytest.skip("Neo4j Enterprise not available on port 7687")
+
+    from neo4j import GraphDatabase
+
+    from test_data.tck.opencypher_adapter import execute_scenario_topology, parse_feature_file
+
+    driver = GraphDatabase.driver("bolt://127.0.0.1:7687", auth=("neo4j", "voyex1234"))
+    try:
+        driver.verify_connectivity()
+    except Exception as e:
+        pytest.skip(f"Neo4j connectivity failed: {e}")
+
+    agg1 = (
+        REPO_ROOT
+        / "test_data"
+        / "tck"
+        / "opengql"
+        / "features"
+        / "expressions"
+        / "aggregation"
+        / "Aggregation1.feature"
+    )
+    if not agg1.exists():
+        pytest.skip("openGQL Aggregation1.feature not present")
+
+    scenarios = parse_feature_file(str(agg1))
+
+    with driver.session() as session:
+        for sc in scenarios:
+            if sc.expected_error:
+                continue
+
+            session.run("MATCH (n) DETACH DELETE n")
+            for q in sc.setup_queries:
+                session.run(q)
+
+            res = session.run(sc.test_query)
+            keys = list(res.keys())
+            if sc.expected_columns:
+                assert keys == sc.expected_columns
+
+            records = list(res)
+            if sc.expected_rows:
+                assert len(records) == len(sc.expected_rows)
+
+            # Invariant check on extracted topology
+            topo_res = execute_scenario_topology(sc)
+            assert topo_res.success
+
+        session.run("MATCH (n) DETACH DELETE n")
+    driver.close()
+
+
+def test_opengql_tier3_live_falkordb_execution():
+    """Tier 3: Executes official openGQL scenarios on live FalkorDB (port 6379)."""
+    if not _check_port("127.0.0.1", 6379):
+        pytest.skip("FalkorDB container not available on port 6379")
+
+    try:
+        from falkordb import FalkorDB
+
+        db = FalkorDB(host="127.0.0.1", port=6379)
+        g = db.select_graph("voyager_opengql_live_test")
+        g.query("RETURN 1")
+    except Exception as e:
+        pytest.skip(f"FalkorDB connectivity failed: {e}")
+
+    from test_data.tck.opencypher_adapter import execute_scenario_topology, parse_feature_file
+
+    agg1 = (
+        REPO_ROOT
+        / "test_data"
+        / "tck"
+        / "opengql"
+        / "features"
+        / "expressions"
+        / "aggregation"
+        / "Aggregation1.feature"
+    )
+    if not agg1.exists():
+        pytest.skip("openGQL Aggregation1.feature not present")
+
+    scenarios = parse_feature_file(str(agg1))
+
+    for sc in scenarios:
+        if sc.expected_error:
+            continue
+
+        g.query("MATCH (n) DETACH DELETE n")
+        for q in sc.setup_queries:
+            g.query(q)
+
+        res = g.query(sc.test_query)
+        if sc.expected_rows:
+            assert len(res.result_set) == len(sc.expected_rows)
+
+        topo_res = execute_scenario_topology(sc)
+        assert topo_res.success
+
+    g.query("MATCH (n) DETACH DELETE n")

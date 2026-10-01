@@ -243,3 +243,77 @@ fn test_schema_snapshot_and_json_serialization() {
     assert!(!fresh_registry.has_relationship("Follows"));
     assert!(fresh_registry.is_empty());
 }
+
+#[test]
+fn test_validate_topology_conformance() {
+    use voyager_core::topology::GraphTopology;
+
+    let registry = SchemaRegistry::new();
+    let person = NodeSchema::new("Person", vec!["Person".to_string()])
+        .with_field(FieldDescriptor::new("name", FieldType::String))
+        .with_field(FieldDescriptor::new("age", FieldType::Int64));
+    let movie = NodeSchema::new("Movie", vec!["Movie".to_string()])
+        .with_field(FieldDescriptor::new("title", FieldType::String))
+        .with_field(FieldDescriptor::new("released", FieldType::Int64));
+    let acted_in = RelationshipSchema::new("ActedIn", "ACTED_IN")
+        .with_endpoints(vec!["Person".to_string()], vec!["Movie".to_string()])
+        .with_field(FieldDescriptor::new("role", FieldType::String))
+        .directed(true);
+
+    registry.register_node(person).unwrap();
+    registry.register_node(movie).unwrap();
+    registry.register_relationship(acted_in).unwrap();
+
+    // 1. Valid conforming query
+    let valid_topo = GraphTopology::from_query_str(
+        "MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN {role: 'Neo'}]->(m:Movie) WHERE m.released = 1999 RETURN p, m",
+    );
+    let report = registry.validate_topology(&valid_topo);
+    assert!(report.is_valid);
+    assert!(report.error_messages().is_empty());
+
+    // 2. Unknown node label with typo suggestion
+    let typo_node_topo = GraphTopology::from_query_str("MATCH (p:Persn) RETURN p");
+    let report = registry.validate_topology(&typo_node_topo);
+    assert!(!report.is_valid);
+    assert_eq!(report.error_messages().len(), 1);
+    assert!(report.error_messages()[0].contains("Node label 'Persn' is not registered"));
+    assert!(report.error_messages()[0].contains("Did you mean label 'Person'?"));
+
+    // 3. Unknown relationship type with typo suggestion
+    let typo_rel_topo =
+        GraphTopology::from_query_str("MATCH (p:Person)-[:ACTED_INTO]->(m:Movie) RETURN p");
+    let report = registry.validate_topology(&typo_rel_topo);
+    assert!(!report.is_valid);
+    assert!(
+        report.error_messages()[0].contains("Relationship type 'ACTED_INTO' is not registered")
+    );
+    assert!(report.error_messages()[0].contains("Did you mean relationship 'ACTED_IN'?"));
+
+    // 4. Incompatible endpoints
+    let company = NodeSchema::new("Company", vec!["Company".to_string()]);
+    registry.register_node(company).unwrap();
+    let bad_endpoints_topo =
+        GraphTopology::from_query_str("MATCH (c:Company)-[:ACTED_IN]->(m:Movie) RETURN c, m");
+    let report = registry.validate_topology(&bad_endpoints_topo);
+    assert!(!report.is_valid);
+    assert!(report.error_messages()[0].contains("cannot connect source label(s) [\"Company\"]"));
+
+    // 5. Property type mismatch
+    let type_mismatch_topo =
+        GraphTopology::from_query_str("MATCH (p:Person) WHERE p.age = 'twenty' RETURN p");
+    let report = registry.validate_topology(&type_mismatch_topo);
+    assert!(!report.is_valid);
+    assert!(report.error_messages()[0].contains("Property 'Person.age' expects type INTEGER"));
+
+    // 6. Undirected traversal warning
+    let undirected_topo =
+        GraphTopology::from_query_str("MATCH (p:Person)-[:ACTED_IN]-(m:Movie) RETURN p, m");
+    let report = registry.validate_topology(&undirected_topo);
+    assert!(report.is_valid); // Warnings don't invalidate query
+    assert_eq!(report.warning_messages().len(), 1);
+    assert!(
+        report.warning_messages()[0]
+            .contains("defined as directed in schema, but traversed undirected")
+    );
+}

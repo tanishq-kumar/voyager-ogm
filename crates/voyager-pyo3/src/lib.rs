@@ -26,9 +26,10 @@ use voyager_core::builder::QueryBuilder;
 use voyager_core::emitters::{AgeEmitter, CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
 use voyager_core::optimizer::{AstOptimizer, OptimizationLevel};
 use voyager_core::schema::{
-    FieldDescriptor, FieldType, IndexType, NodeSchema, RelationshipSchema, SchemaRegistry,
-    global_schema_registry,
+    ConformanceReport, FieldDescriptor, FieldType, IndexType, NodeSchema, RelationshipSchema,
+    SchemaRegistry, global_schema_registry,
 };
+use voyager_core::topology::GraphTopology;
 use voyager_core::visitor::AstVisitor;
 
 fn py_to_literal(val: &Bound<'_, PyAny>) -> PyResult<LiteralValue> {
@@ -1251,6 +1252,140 @@ fn check_warn_cypher_path_mode(
     Ok(())
 }
 
+fn topology_to_py_dict<'py>(
+    topology: &GraphTopology,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let result = PyDict::new(py);
+    let nodes_list = PyList::empty(py);
+    let edges_list = PyList::empty(py);
+
+    for node in &topology.nodes {
+        let node_dict = PyDict::new(py);
+        node_dict.set_item("id", &node.id)?;
+        node_dict.set_item("label", &node.label)?;
+        let labels_list = PyList::empty(py);
+        for l in &node.labels {
+            labels_list.append(l)?;
+        }
+        node_dict.set_item("labels", labels_list)?;
+        node_dict.set_item("group", &node.group)?;
+        node_dict.set_item("size", node.size)?;
+
+        let props_dict = PyDict::new(py);
+        for (k, v) in &node.properties {
+            props_dict.set_item(k, literal_to_py(v, py)?)?;
+        }
+        node_dict.set_item("properties", props_dict)?;
+
+        let data_dict = PyDict::new(py);
+        for (k, v) in &node.data {
+            data_dict.set_item(k, literal_to_py(v, py)?)?;
+        }
+        node_dict.set_item("data", data_dict)?;
+
+        nodes_list.append(node_dict)?;
+    }
+
+    for edge in &topology.edges {
+        let edge_dict = PyDict::new(py);
+        edge_dict.set_item("id", &edge.id)?;
+        edge_dict.set_item("source", &edge.source)?;
+        edge_dict.set_item("target", &edge.target)?;
+        edge_dict.set_item("label", &edge.label)?;
+        let types_list = PyList::empty(py);
+        for t in &edge.types {
+            types_list.append(t)?;
+        }
+        edge_dict.set_item("types", types_list)?;
+        let dir_str = match edge.direction {
+            Direction::Outgoing => "outgoing",
+            Direction::Incoming => "incoming",
+            Direction::Undirected => "undirected",
+        };
+        edge_dict.set_item("direction", dir_str)?;
+        edge_dict.set_item("color", &edge.color)?;
+        edge_dict.set_item("min_hops", edge.min_hops)?;
+        edge_dict.set_item("max_hops", edge.max_hops)?;
+
+        let props_dict = PyDict::new(py);
+        for (k, v) in &edge.properties {
+            props_dict.set_item(k, literal_to_py(v, py)?)?;
+        }
+        edge_dict.set_item("properties", props_dict)?;
+
+        let data_dict = PyDict::new(py);
+        for (k, v) in &edge.data {
+            data_dict.set_item(k, literal_to_py(v, py)?)?;
+        }
+        edge_dict.set_item("data", data_dict)?;
+
+        edges_list.append(edge_dict)?;
+    }
+
+    result.set_item("nodes", nodes_list)?;
+    result.set_item("edges", edges_list)?;
+    Ok(result)
+}
+
+/// Extracts graph node and edge topology from a raw query string without external parsers.
+#[pyfunction]
+fn extract_topology_from_query<'py>(query: &str, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+    let topology = GraphTopology::from_query_str(query);
+    topology_to_py_dict(&topology, py)
+}
+
+fn conformance_report_to_py_dict<'py>(
+    report: &ConformanceReport,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let result = PyDict::new(py);
+    result.set_item("is_valid", report.is_valid)?;
+
+    let diags_list = PyList::empty(py);
+    for diag in &report.diagnostics {
+        let d = PyDict::new(py);
+        d.set_item("severity", diag.severity.as_str())?;
+        d.set_item("code", &diag.code)?;
+        d.set_item("message", &diag.message)?;
+        d.set_item("entity_id", &diag.entity_id)?;
+        d.set_item("suggestion", &diag.suggestion)?;
+        diags_list.append(d)?;
+    }
+    result.set_item("diagnostics", diags_list)?;
+
+    let errors_list = PyList::empty(py);
+    for err in report.error_messages() {
+        errors_list.append(err)?;
+    }
+    result.set_item("errors", errors_list)?;
+
+    let warnings_list = PyList::empty(py);
+    for warn in report.warning_messages() {
+        warnings_list.append(warn)?;
+    }
+    result.set_item("warnings", warnings_list)?;
+
+    Ok(result)
+}
+
+/// Validates a raw query string against the schema registry.
+#[pyfunction]
+#[pyo3(signature = (query, registry=None))]
+fn validate_query_against_schema<'py>(
+    query: &str,
+    registry: Option<&PyNativeSchemaRegistry>,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let topology = GraphTopology::from_query_str(query);
+    let reg = match registry {
+        Some(r) => r.registry(),
+        None => global_schema_registry(),
+    };
+    let report = reg.validate_topology(&topology);
+    conformance_report_to_py_dict(&report, py)
+}
+
 /// Native Rust Query Builder exposed to Python.
 #[pyclass(name = "NativeQueryBuilder")]
 #[derive(Default, Clone)]
@@ -1751,7 +1886,40 @@ impl PyQueryBuilder {
         dict.set_item("parameters", params_dict)?;
         dict.set_item("execution_mode", compiled.execution_mode.as_str())?;
 
+        let cols_list = PyList::empty(py);
+        for col in &compiled.columns {
+            let col_dict = PyDict::new(py);
+            col_dict.set_item("name", &col.name)?;
+            col_dict.set_item("alias", &col.alias)?;
+            cols_list.append(col_dict)?;
+        }
+        dict.set_item("columns", cols_list)?;
+
         Ok(dict)
+    }
+
+    /// Extracts native graph topology (nodes and edges) directly from the AST arena.
+    fn extract_topology<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let (arena, root) = self.inner.clone().build();
+        let topology = GraphTopology::from_arena(&arena, Some(root));
+        topology_to_py_dict(&topology, py)
+    }
+
+    /// Validates the query AST against the schema registry.
+    #[pyo3(signature = (registry=None))]
+    fn validate<'py>(
+        &self,
+        registry: Option<&PyNativeSchemaRegistry>,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let (arena, root) = self.inner.clone().build();
+        let topology = GraphTopology::from_arena(&arena, Some(root));
+        let reg = match registry {
+            Some(r) => r.registry(),
+            None => global_schema_registry(),
+        };
+        let report = reg.validate_topology(&topology);
+        conformance_report_to_py_dict(&report, py)
     }
 }
 
@@ -1937,6 +2105,16 @@ fn compile_query_from_spec<'py>(
         }
         dict.set_item("parameters", params_dict)?;
         dict.set_item("execution_mode", cached.execution_mode.as_str())?;
+
+        let cols_list = PyList::empty(py);
+        for col in &cached.columns {
+            let col_dict = PyDict::new(py);
+            col_dict.set_item("name", &col.name)?;
+            col_dict.set_item("alias", &col.alias)?;
+            cols_list.append(col_dict)?;
+        }
+        dict.set_item("columns", cols_list)?;
+
         return Ok(dict);
     }
 
@@ -2000,6 +2178,15 @@ fn compile_query_from_spec<'py>(
     }
     dict.set_item("parameters", params_dict)?;
     dict.set_item("execution_mode", compiled.execution_mode.as_str())?;
+
+    let cols_list = PyList::empty(py);
+    for col in &compiled.columns {
+        let col_dict = PyDict::new(py);
+        col_dict.set_item("name", &col.name)?;
+        col_dict.set_item("alias", &col.alias)?;
+        cols_list.append(col_dict)?;
+    }
+    dict.set_item("columns", cols_list)?;
 
     Ok(dict)
 }
@@ -3593,6 +3780,14 @@ impl PyNativeSchemaRegistry {
             .map_err(to_py_schema_err)
     }
 
+    /// Validates a query string against this schema registry instance.
+    #[pyo3(signature = (query))]
+    fn validate_query<'py>(&self, query: &str, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let topology = GraphTopology::from_query_str(query);
+        let report = self.registry().validate_topology(&topology);
+        conformance_report_to_py_dict(&report, py)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "NativeSchemaRegistry(nodes={}, relationships={})",
@@ -3850,6 +4045,8 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(generate_synthetic_stream, m)?)?;
     m.add_function(wrap_pyfunction!(compile_query_from_spec, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_topology_from_query, m)?)?;
+    m.add_function(wrap_pyfunction!(validate_query_against_schema, m)?)?;
     m.add_function(wrap_pyfunction!(compile_bulk_create, m)?)?;
     m.add_function(wrap_pyfunction!(compile_bulk_merge, m)?)?;
     m.add_function(wrap_pyfunction!(compile_bulk_create_rel, m)?)?;

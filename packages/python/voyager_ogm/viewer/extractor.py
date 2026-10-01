@@ -10,127 +10,17 @@ from typing import Any
 def extract_graph_pattern_from_cypher(
     stmt: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Extracts node and edge topology directly from Cypher query path patterns."""
-    nodes_dict: dict[str, dict[str, Any]] = {}
-    edges_list: list[dict[str, Any]] = []
-
+    """Extracts node and edge topology directly from query path patterns using native Rust AST engine."""
     if not stmt or not isinstance(stmt, str):
         return [], []
 
-    pattern_clauses = re.findall(
-        r"(?:MATCH|CREATE|MERGE|OPTIONAL MATCH)\s+(.*?)(?=\s+(?:WHERE|RETURN|WITH|CREATE|MERGE|SET|DELETE|REMOVE|ORDER BY|SKIP|LIMIT)|$)",
-        stmt,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if not pattern_clauses:
-        pattern_clauses = [stmt]
+    try:
+        from voyager_ogm._voyager_rs import extract_topology_from_query
 
-    full_pattern = " , ".join(pattern_clauses)
-    subpaths = full_pattern.split(",")
-
-    node_counter = 0
-
-    node_regex = re.compile(
-        r"\(\s*([a-zA-Z0-9_]*)(?:\s*:\s*([a-zA-Z0-9_]+))?(?:\s*\{([^}]*)\})?\s*\)"
-    )
-    rel_regex = re.compile(
-        r"(<)?-\s*(?:\[\s*([a-zA-Z0-9_]*)(?:\s*:\s*([a-zA-Z0-9_]+))?(?:\s*\{([^}]*)\})?\s*\])?-(>)?\s*"
-    )
-
-    for path_str in subpaths:
-        path_str = path_str.strip()
-        if not path_str:
-            continue
-
-        pos = 0
-        last_node_id = None
-
-        while pos < len(path_str):
-            if last_node_id is None:
-                n_match = node_regex.match(path_str, pos)
-                if n_match:
-                    var_name, label_name, props_str = n_match.groups()
-                    node_counter += 1
-                    node_id = (
-                        var_name
-                        if var_name
-                        else (
-                            label_name.lower() + f"_{node_counter}"
-                            if label_name
-                            else f"n{node_counter}"
-                        )
-                    )
-                    lbl = label_name if label_name else (var_name if var_name else node_id)
-                    grp = label_name if label_name else "Entity"
-
-                    if node_id not in nodes_dict:
-                        nodes_dict[node_id] = {
-                            "id": node_id,
-                            "label": lbl,
-                            "group": grp,
-                            "size": 11,
-                            "data": {"variable": var_name} if var_name else {},
-                        }
-
-                    last_node_id = node_id
-                    pos = n_match.end()
-                    continue
-                else:
-                    pos += 1
-                    continue
-
-            r_match = rel_regex.match(path_str, pos)
-            if r_match:
-                left_arrow, rel_var, rel_type, rel_props, right_arrow = r_match.groups()
-                pos = r_match.end()
-
-                next_n_match = node_regex.match(path_str, pos)
-                if next_n_match:
-                    next_var, next_label, next_props = next_n_match.groups()
-                    node_counter += 1
-                    next_node_id = (
-                        next_var
-                        if next_var
-                        else (
-                            next_label.lower() + f"_{node_counter}"
-                            if next_label
-                            else f"n{node_counter}"
-                        )
-                    )
-                    next_lbl = (
-                        next_label if next_label else (next_var if next_var else next_node_id)
-                    )
-                    next_grp = next_label if next_label else "Entity"
-
-                    if next_node_id not in nodes_dict:
-                        nodes_dict[next_node_id] = {
-                            "id": next_node_id,
-                            "label": next_lbl,
-                            "group": next_grp,
-                            "size": 11,
-                            "data": {"variable": next_var} if next_var else {},
-                        }
-
-                    src = next_node_id if left_arrow else last_node_id
-                    tgt = last_node_id if left_arrow else next_node_id
-                    edges_list.append(
-                        {
-                            "source": src,
-                            "target": tgt,
-                            "label": rel_type if rel_type else "CONNECTED_TO",
-                            "color": "#64748b",
-                            "data": {"variable": rel_var} if rel_var else {},
-                        }
-                    )
-
-                    last_node_id = next_node_id
-                    pos = next_n_match.end()
-                    continue
-
-            last_node_id = None
-            pos += 1
-
-    return list(nodes_dict.values()), edges_list
+        topo = extract_topology_from_query(stmt)
+        return topo.get("nodes", []), topo.get("edges", [])
+    except Exception:
+        return [], []
 
 
 _extract_graph_pattern_from_cypher = extract_graph_pattern_from_cypher
@@ -139,13 +29,22 @@ _extract_graph_pattern_from_cypher = extract_graph_pattern_from_cypher
 def extract_path_topology_from_query(
     query: Any,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Extracts graph path patterns directly from a Voyager Query or Cypher statement."""
+    """Extracts graph path patterns directly from a Voyager Query, AST arena, or raw query statement."""
+    if hasattr(query, "extract_topology"):
+        try:
+            topo = query.extract_topology()
+            return topo.get("nodes", []), topo.get("edges", [])
+        except Exception:
+            pass
+
     cypher_stmt = ""
     if hasattr(query, "compile"):
         try:
             cypher_stmt = query.compile("cypher").statement
         except Exception:
             cypher_stmt = str(query)
+    elif hasattr(query, "statement"):
+        cypher_stmt = str(query.statement)
     else:
         cypher_stmt = str(query)
 
@@ -234,77 +133,55 @@ def extract_graph_entities_from_records(
         else:
             cypher_stmt = str(query)
 
-    if cypher_stmt:
-        node_regex = re.compile(
-            r"\(\s*([a-zA-Z0-9_]*)(?:\s*:\s*([a-zA-Z0-9_]+))?(?:\s*\{([^}]*)\})?\s*\)"
-        )
-        rel_regex = re.compile(
-            r"(<)?-\s*(?:\[\s*([a-zA-Z0-9_]*)(?:\s*:\s*([a-zA-Z0-9_]+))?(?:\s*\{([^}]*)\})?\s*\])?-(>)?\s*"
-        )
+    topo_nodes: list[dict[str, Any]] = []
+    topo_edges: list[dict[str, Any]] = []
 
-        pattern_clauses = re.findall(
-            r"(?:MATCH|CREATE|MERGE|OPTIONAL MATCH)\s+(.*?)(?=\s+(?:WHERE|RETURN|WITH|CREATE|MERGE|SET|DELETE|REMOVE|ORDER BY|SKIP|LIMIT)|$)",
-            cypher_stmt,
-            re.IGNORECASE | re.DOTALL,
-        )
-        if not pattern_clauses:
-            pattern_clauses = [cypher_stmt]
+    if hasattr(query, "extract_topology"):
+        try:
+            t = query.extract_topology()
+            topo_nodes = t.get("nodes", [])
+            topo_edges = t.get("edges", [])
+        except Exception:
+            pass
 
-        full_pattern = " , ".join(pattern_clauses)
-        subpaths = full_pattern.split(",")
+    if not topo_nodes and not topo_edges and cypher_stmt:
+        try:
+            from voyager_ogm._voyager_rs import extract_topology_from_query
 
-        path_links = []
-        for path_str in subpaths:
-            path_str = path_str.strip()
-            if not path_str:
-                continue
+            t = extract_topology_from_query(cypher_stmt)
+            topo_nodes = t.get("nodes", [])
+            topo_edges = t.get("edges", [])
+        except Exception:
+            pass
 
-            pos = 0
-            last_node = None
-
-            while pos < len(path_str):
-                if last_node is None:
-                    n_match = node_regex.match(path_str, pos)
-                    if n_match:
-                        var_name, label_name, _ = n_match.groups()
-                        last_node = {
-                            "var": var_name or "",
-                            "label": label_name or (var_name or "Entity"),
-                        }
-                        pos = n_match.end()
-                        continue
-                    else:
-                        pos += 1
-                        continue
-
-                r_match = rel_regex.match(path_str, pos)
-                if r_match:
-                    left_arrow, rel_var, rel_type, _, right_arrow = r_match.groups()
-                    pos = r_match.end()
-                    next_n_match = node_regex.match(path_str, pos)
-                    if next_n_match:
-                        next_var, next_label, _ = next_n_match.groups()
-                        next_node = {
-                            "var": next_var or "",
-                            "label": next_label or (next_var or "Entity"),
-                        }
-                        pos = next_n_match.end()
-
-                        src_node = next_node if left_arrow else last_node
-                        tgt_node = last_node if left_arrow else next_node
-                        path_links.append(
-                            {
-                                "src": src_node,
-                                "tgt": tgt_node,
-                                "rel_var": rel_var or "",
-                                "rel_type": rel_type or "CONNECTED_TO",
-                            }
-                        )
-                        last_node = next_node
-                        continue
-
-                last_node = None
-                pos += 1
+    path_links = []
+    if topo_edges:
+        node_by_id = {str(n.get("id")): n for n in topo_nodes}
+        for edge in topo_edges:
+            src_node = node_by_id.get(
+                str(edge.get("source")),
+                {"id": str(edge.get("source")), "label": str(edge.get("source")), "data": {}},
+            )
+            tgt_node = node_by_id.get(
+                str(edge.get("target")),
+                {"id": str(edge.get("target")), "label": str(edge.get("target")), "data": {}},
+            )
+            src_var = src_node.get("data", {}).get("variable") or src_node.get("id")
+            tgt_var = tgt_node.get("data", {}).get("variable") or tgt_node.get("id")
+            path_links.append(
+                {
+                    "src": {
+                        "var": str(src_var or ""),
+                        "label": str(src_node.get("label") or "Entity"),
+                    },
+                    "tgt": {
+                        "var": str(tgt_var or ""),
+                        "label": str(tgt_node.get("label") or "Entity"),
+                    },
+                    "rel_var": str(edge.get("data", {}).get("variable") or edge.get("id") or ""),
+                    "rel_type": str(edge.get("label") or "CONNECTED_TO"),
+                }
+            )
 
         if path_links:
             first_row = records[0]

@@ -427,7 +427,14 @@ class GraphViewer(_BaseWidget):
                 **kwargs,
             )
 
-        extracted_nodes, extracted_edges = extract_graph_pattern_from_cypher(cypher_stmt)
+        if isinstance(query, Query):
+            try:
+                topo = query.extract_topology()
+                extracted_nodes, extracted_edges = topo.get("nodes", []), topo.get("edges", [])
+            except Exception:
+                extracted_nodes, extracted_edges = extract_graph_pattern_from_cypher(cypher_stmt)
+        else:
+            extracted_nodes, extracted_edges = extract_graph_pattern_from_cypher(cypher_stmt)
 
         detected_default = (
             default_view if default_view != "auto" else ("graph" if extracted_nodes else "query")

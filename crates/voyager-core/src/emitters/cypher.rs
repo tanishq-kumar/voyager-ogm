@@ -5,7 +5,7 @@ use crate::ast::{
     ProjectionItem, QueryAstArena, UnaryOp,
 };
 use crate::error::{Error, Result};
-use crate::visitor::{AstVisitor, CompiledQuery};
+use crate::visitor::{AstVisitor, ColumnMeta, CompiledQuery};
 use std::collections::HashMap;
 
 /// Emits standardized, parameterized openCypher 9 and Cypher 25 query strings.
@@ -907,6 +907,7 @@ impl AstVisitor for CypherEmitter {
                     }
                 }
 
+                let mut columns = Vec::new();
                 if let Some(ret_handle) = return_clause {
                     let ret_node = arena.get(*ret_handle)?;
                     if let AstNode::ReturnClause {
@@ -918,6 +919,7 @@ impl AstVisitor for CypherEmitter {
                     } = ret_node
                     {
                         self.emit_return(arena, projections, *distinct, order_by, *skip, *limit)?;
+                        columns = ColumnMeta::from_projections(arena, projections);
                     }
                 }
 
@@ -927,10 +929,11 @@ impl AstVisitor for CypherEmitter {
                     *execution_mode
                 };
 
-                Ok(CompiledQuery::with_execution_mode(
+                Ok(CompiledQuery::with_columns(
                     std::mem::take(&mut self.buffer),
                     std::mem::take(&mut self.parameters),
                     final_mode,
+                    columns,
                 ))
             }
             AstNode::ProcedureCall {
@@ -983,10 +986,16 @@ impl AstVisitor for CypherEmitter {
                     *execution_mode
                 };
 
-                Ok(CompiledQuery::with_execution_mode(
+                let columns: Vec<ColumnMeta> = yield_items
+                    .iter()
+                    .map(|item| ColumnMeta::new(item.clone()))
+                    .collect();
+
+                Ok(CompiledQuery::with_columns(
                     std::mem::take(&mut self.buffer),
                     std::mem::take(&mut self.parameters),
                     final_mode,
+                    columns,
                 ))
             }
             other => Err(Error::AstInvariantViolation(format!(

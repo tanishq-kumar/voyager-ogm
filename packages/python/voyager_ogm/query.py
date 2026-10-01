@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass
+from dataclasses import field as dc_field
 from typing import Any
 
 from voyager_ogm._voyager_rs import NativeQueryBuilder
@@ -42,6 +43,19 @@ class hybridmethod:  # noqa: N801
 
 
 @dataclass(frozen=True)
+class ColumnMeta:
+    """Metadata describing an output projection column in a compiled query.
+
+    Attributes:
+        name: Canonical output column name (or alias).
+        alias: Explicit column alias if declared with `AS <alias>`.
+    """
+
+    name: str
+    alias: str | None = None
+
+
+@dataclass(frozen=True)
 class CompiledQuery:
     """Compiled parameterized graph query statement and parameters.
 
@@ -49,11 +63,48 @@ class CompiledQuery:
         statement: The parameterized query string formatted for the target dialect.
         parameters: Deterministic dictionary mapping parameter names (e.g. 'p0') to values.
         execution_mode: Query execution mode ('normal', 'explain', 'profile', 'explain_and_profile').
+        columns: List of projected column metadata items.
     """
 
     statement: str
     parameters: dict[str, Any]
     execution_mode: str = "normal"
+    columns: list[ColumnMeta] = dc_field(default_factory=list)
+
+
+class SchemaValidationError(Exception):
+    """Raised when a graph query topology fails schema conformance validation."""
+
+
+@dataclass(frozen=True)
+class ConformanceDiagnostic:
+    """A diagnostic finding from validating query topology against a schema registry."""
+
+    severity: str
+    code: str
+    message: str
+    entity_id: str | None = None
+    suggestion: str | None = None
+
+
+@dataclass(frozen=True)
+class ConformanceReport:
+    """Aggregated schema conformance report for a graph query."""
+
+    is_valid: bool
+    diagnostics: list[ConformanceDiagnostic] = dc_field(default_factory=list)
+    errors: list[str] = dc_field(default_factory=list)
+    warnings: list[str] = dc_field(default_factory=list)
+
+    def raise_if_invalid(self) -> None:
+        """Raises SchemaValidationError if the report contains error diagnostics."""
+        if not self.is_valid:
+            lines = [
+                f"- [{d.code}] {d.message}" + (f" ({d.suggestion})" if d.suggestion else "")
+                for d in self.diagnostics
+                if d.severity == "ERROR"
+            ]
+            raise SchemaValidationError("Query topology violates schema:\n" + "\n".join(lines))
 
 
 class Query:
@@ -1291,10 +1342,58 @@ class Query:
             optimize=opt,
             optimization_level=opt_level,
         )
+        raw_cols = res.get("columns", [])
+        cols = [ColumnMeta(name=c["name"], alias=c.get("alias")) for c in raw_cols]
         return CompiledQuery(
             statement=res["statement"],
             parameters=res["parameters"],
             execution_mode=res.get("execution_mode", "normal"),
+            columns=cols,
+        )
+
+    def extract_topology(self) -> dict[str, list[dict[str, Any]]]:
+        """Extracts native graph topology (nodes and edges) directly from the query AST.
+
+        Returns:
+            Dictionary containing 'nodes' and 'edges' lists.
+
+        Example:
+            >>> topo = query.extract_topology()
+            >>> print(len(topo["nodes"]), len(topo["edges"]))
+        """
+        return self._native.extract_topology()
+
+    def validate(self, registry: Any = None) -> ConformanceReport:
+        """Validates this query's AST topology against the registered schema.
+
+        Args:
+            registry: Optional SchemaRegistry or NativeSchemaRegistry. Defaults to global registry.
+
+        Returns:
+            ConformanceReport indicating whether the query conforms to the schema.
+
+        Example:
+            >>> q = Query.match(Person("p")).to(ActedIn("a")).node(Movie("m"))
+            >>> report = q.validate()
+            >>> assert report.is_valid
+        """
+        native_reg = getattr(registry, "_native", registry)
+        raw = self._native.validate(native_reg)
+        diags = [
+            ConformanceDiagnostic(
+                severity=d["severity"],
+                code=d["code"],
+                message=d["message"],
+                entity_id=d.get("entity_id"),
+                suggestion=d.get("suggestion"),
+            )
+            for d in raw.get("diagnostics", [])
+        ]
+        return ConformanceReport(
+            is_valid=raw.get("is_valid", True),
+            diagnostics=diags,
+            errors=raw.get("errors", []),
+            warnings=raw.get("warnings", []),
         )
 
     def execute(self, session: Any, parameters: dict[str, Any] | None = None) -> Any:
@@ -1390,13 +1489,50 @@ def profile(target: Query) -> Query:
     return target.clone().profile()
 
 
+def validate_query(query: str, registry: Any = None) -> ConformanceReport:
+    """Validates a raw graph query string against the SchemaRegistry.
+
+    Args:
+        query: Query string in openCypher, ISO GQL, or SQL:2023 PGQ.
+        registry: Optional SchemaRegistry instance. Defaults to the global registry.
+
+    Returns:
+        ConformanceReport containing is_valid, diagnostics, errors, and warnings.
+    """
+    from voyager_ogm._voyager_rs import validate_query_against_schema
+
+    native_reg = getattr(registry, "_native", registry)
+    raw = validate_query_against_schema(query, native_reg)
+    diags = [
+        ConformanceDiagnostic(
+            severity=d["severity"],
+            code=d["code"],
+            message=d["message"],
+            entity_id=d.get("entity_id"),
+            suggestion=d.get("suggestion"),
+        )
+        for d in raw.get("diagnostics", [])
+    ]
+    return ConformanceReport(
+        is_valid=raw.get("is_valid", True),
+        diagnostics=diags,
+        errors=raw.get("errors", []),
+        warnings=raw.get("warnings", []),
+    )
+
+
 __all__ = [
+    "ColumnMeta",
     "CompiledQuery",
+    "ConformanceDiagnostic",
+    "ConformanceReport",
     "Path",
     "Query",
+    "SchemaValidationError",
     "explain",
     "hybridmethod",
     "load_csv",
     "profile",
     "unwind",
+    "validate_query",
 ]

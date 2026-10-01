@@ -24,6 +24,7 @@ pub mod emitters;
 pub mod error;
 pub mod optimizer;
 pub mod schema;
+pub mod topology;
 pub mod transaction;
 pub mod visitor;
 
@@ -47,13 +48,15 @@ pub use emitters::{
 pub use error::{Error, Result};
 pub use optimizer::{AstOptimizer, OptimizationLevel};
 pub use schema::{
-    ConstraintType, FieldDescriptor, FieldType, IndexType, NodeSchema, RelationshipSchema,
-    SchemaRegistry, SchemaSnapshot, global_schema_registry,
+    ConformanceDiagnostic, ConformanceReport, ConstraintType, DiagnosticSeverity, FieldDescriptor,
+    FieldType, IndexType, NodeSchema, RelationshipSchema, SchemaRegistry, SchemaSnapshot,
+    global_schema_registry,
 };
+pub use topology::{GraphTopology, TopologyEdge, TopologyNode};
 pub use transaction::{
     CheckpointState, EntityMutation, Savepoint, Transaction, TransactionState, UnitOfWork,
 };
-pub use visitor::{AstVisitor, CompiledQuery};
+pub use visitor::{AstVisitor, ColumnMeta, CompiledQuery};
 
 /// Voyager OGM engine version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
