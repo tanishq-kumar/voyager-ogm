@@ -1,0 +1,121 @@
+name: Update PR Description
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+concurrency:
+  group: pr-desc-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  update-description:
+    name: Auto-populate Commit Messages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Format Commit Log and Update PR
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pull_number = context.payload.pull_request.number;
+
+            // 1. Fetch commits in this pull request
+            const commits = await github.paginate(github.rest.pulls.listCommits, {
+              owner,
+              repo,
+              pull_number,
+              per_page: 100,
+            });
+
+            if (!commits || commits.length === 0) {
+              console.log('No commits found in pull request.');
+              return;
+            }
+
+            // 2. Filter out noisy merge commits if desired
+            const filteredCommits = commits.filter(c => {
+              const subject = c.commit.message.split('\n')[0].trim();
+              return (
+                !subject.startsWith("Merge branch '") &&
+                !subject.startsWith("Merge remote-tracking branch '") &&
+                !subject.startsWith("Merge pull request #")
+              );
+            });
+            const activeCommits = filteredCommits.length > 0 ? filteredCommits : commits;
+
+            // 3. Format commit items cleanly
+            const formattedCommits = activeCommits.map(c => {
+              const sha = c.sha.substring(0, 7);
+              const rawLines = c.commit.message.split('\n').map(l => l.trim()).filter(Boolean);
+              const subject = rawLines[0] || '';
+              const bodyBullets = rawLines.slice(1)
+                .filter(l => l.startsWith('- ') || l.startsWith('* '))
+                .map(l => `  ${l}`);
+
+              if (bodyBullets.length > 0) {
+                return `- [\`${sha}\`](${c.html_url}) **${subject}**\n${bodyBullets.join('\n')}`;
+              }
+              return `- [\`${sha}\`](${c.html_url}) ${subject}`;
+            }).join('\n');
+
+            const startMarker = '<!-- START_COMMIT_LOG -->';
+            const endMarker = '<!-- END_COMMIT_LOG -->';
+            const commitBlock = `${startMarker}\n${formattedCommits}\n${endMarker}`;
+
+            // 4. Retrieve current PR body
+            const { data: pr } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number,
+            });
+
+            let body = pr.body || '';
+
+            // If empty, load template from repository
+            if (body.trim().length === 0) {
+              try {
+                if (fs.existsSync('.github/pull_request_template.md')) {
+                  body = fs.readFileSync('.github/pull_request_template.md', 'utf8');
+                }
+              } catch (e) {
+                console.warn('Could not read PR template file:', e.message);
+              }
+            }
+
+            const markerRegex = new RegExp(`${startMarker}[\\s\\S]*?${endMarker}`);
+
+            if (markerRegex.test(body)) {
+              body = body.replace(markerRegex, commitBlock);
+            } else if (body.trim().length === 0) {
+              body = `## Summary of Changes\n\n## 📝 Commits Included\n${commitBlock}\n`;
+            } else {
+              // Append commit log section to existing body
+              body = `${body.trim()}\n\n## 📝 Commits Included\n${commitBlock}\n`;
+            }
+
+            // 5. Update PR description if changed
+            if (body !== pr.body) {
+              try {
+                await github.rest.pulls.update({
+                  owner,
+                  repo,
+                  pull_number,
+                  body,
+                });
+                console.log(`Successfully updated PR #${pull_number} description with ${activeCommits.length} commit(s).`);
+              } catch (err) {
+                console.warn(`Could not update PR description (check repository permissions): ${err.message}`);
+              }
+            } else {
+              console.log('PR description already up to date.');
+            }

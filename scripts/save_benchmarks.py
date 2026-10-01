@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Automated Benchmark Runner and Dynamic Artifact Saver for Voyager OGM.
+"""Automated Benchmark Runner and Compact CSV Summary Generator for Voyager OGM.
 
-Dynamically derives the active Git branch and commit SHA to name and persist
-benchmark artifacts in the `benchmarks/` directory without hardcoding names.
+Executes pytest-benchmark suite and extracts statistical metrics (min, max,
+mean, median, stddev, IQR, ops/sec) into a lightweight, human-readable CSV:
+`benchmarks/latest_summary.csv`.
 
 Usage:
     uv run python scripts/save_benchmarks.py [optional_custom_name]
@@ -10,72 +11,120 @@ Usage:
 
 from __future__ import annotations
 
-import re
-import shutil
+import csv
+import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
-def get_git_info() -> tuple[str, str]:
-    """Retrieves the sanitized active Git branch and short commit hash."""
-    try:
-        branch = subprocess.check_output(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True
-        ).strip()
-    except Exception:
-        branch = "main"
-
-    try:
-        commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
-    except Exception:
-        commit = "head"
-
-    # Sanitize branch name for safe filenames (replace / and special chars with _)
-    sanitized_branch = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", branch)
-    return sanitized_branch, commit
-
-
 def main() -> int:
-    """Runs the benchmark test suite and writes the JSON results to disk."""
+    """Runs the benchmark test suite and writes compact summary metrics to CSV."""
     benchmarks_dir = Path("benchmarks")
     benchmarks_dir.mkdir(parents=True, exist_ok=True)
+    summary_csv = benchmarks_dir / "latest_summary.csv"
 
-    if len(sys.argv) > 1 and sys.argv[1].strip():
-        base_name = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", sys.argv[1].strip())
-    else:
-        branch, commit = get_git_info()
-        base_name = f"benchmark_{branch}"
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp_file:
+        tmp_json_path = Path(tmp_file.name)
 
-    target_json = benchmarks_dir / f"{base_name}.json"
-    latest_json = benchmarks_dir / "latest_benchmark_results.json"
-
-    print(f"[Benchmark Runner] Capturing benchmarks into: {target_json} ...")
-
-    cmd = [
-        "uv",
-        "run",
-        "pytest",
-        "packages/python/benches/bench_compilation.py",
-        "packages/python/benches/bench_hydration.py",
-        "packages/python/benches/bench_network.py",
-        "-k",
-        "bench",
-        "--benchmark-only",
-        f"--benchmark-json={target_json}",
-    ]
-
-    res = subprocess.run(cmd)
-    if res.returncode != 0:
-        print(f"[Benchmark Runner] Error: Benchmark execution failed with code {res.returncode}")
-        return res.returncode
-
-    # Create / update canonical latest copy
     try:
-        shutil.copyfile(target_json, latest_json)
-        print(f"[Benchmark Runner] Successfully updated canonical {latest_json}")
-    except Exception as e:
-        print(f"[Benchmark Runner] Note: Could not update latest copy: {e}")
+        print("[Benchmark Runner] Running benchmark test suite...")
+        cmd = [
+            "uv",
+            "run",
+            "pytest",
+            "packages/python/benches/bench_compilation.py",
+            "packages/python/benches/bench_hydration.py",
+            "packages/python/benches/bench_network.py",
+            "-k",
+            "bench",
+            "--benchmark-only",
+            f"--benchmark-json={tmp_json_path}",
+        ]
+
+        res = subprocess.run(cmd)
+        if res.returncode != 0:
+            print(
+                f"[Benchmark Runner] Error: Benchmark execution failed with code {res.returncode}"
+            )
+            return res.returncode
+
+        if not tmp_json_path.exists() or tmp_json_path.stat().st_size == 0:
+            print("[Benchmark Runner] Error: Benchmark output JSON was not generated.")
+            return 1
+
+        with open(tmp_json_path, encoding="utf-8") as f:
+            bench_data = json.load(f)
+
+        benchmarks = bench_data.get("benchmarks", [])
+        if not benchmarks:
+            print("[Benchmark Runner] Warning: No benchmarks recorded in test run.")
+            return 0
+
+        # Sort benchmarks deterministically by test name
+        benchmarks.sort(key=lambda b: b.get("name", ""))
+
+        fieldnames = [
+            "benchmark",
+            "group",
+            "min_us",
+            "max_us",
+            "mean_us",
+            "median_us",
+            "stddev_us",
+            "iqr_us",
+            "ops_sec",
+            "rounds",
+            "iterations",
+        ]
+
+        rows = []
+        for b in benchmarks:
+            name = b.get("name", "")
+            group = b.get("group") or "default"
+            stats = b.get("stats", {})
+
+            # Convert timing from seconds to microseconds
+            min_us = round(stats.get("min", 0.0) * 1e6, 4)
+            max_us = round(stats.get("max", 0.0) * 1e6, 4)
+            mean_us = round(stats.get("mean", 0.0) * 1e6, 4)
+            median_us = round(stats.get("median", 0.0) * 1e6, 4)
+            stddev_us = round(stats.get("stddev", 0.0) * 1e6, 4)
+            iqr_us = round(stats.get("iqr", 0.0) * 1e6, 4)
+            ops_sec = round(stats.get("ops", 0.0), 2)
+            rounds = stats.get("rounds", 0)
+            iterations = stats.get("iterations", 1)
+
+            rows.append(
+                {
+                    "benchmark": name,
+                    "group": group,
+                    "min_us": min_us,
+                    "max_us": max_us,
+                    "mean_us": mean_us,
+                    "median_us": median_us,
+                    "stddev_us": stddev_us,
+                    "iqr_us": iqr_us,
+                    "ops_sec": ops_sec,
+                    "rounds": rounds,
+                    "iterations": iterations,
+                }
+            )
+
+        with open(summary_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
+        print(f"[Benchmark Runner] Successfully wrote {len(rows)} benchmarks to: {summary_csv}")
+
+    finally:
+        if tmp_json_path.exists():
+            try:
+                tmp_json_path.unlink()
+            except Exception:
+                pass
 
     return 0
 

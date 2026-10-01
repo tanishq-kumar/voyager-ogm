@@ -60,3 +60,8 @@ tests/conformance/
 test_data/conformance/
 
 .env
+
+# Benchmark raw data dumps (summary metrics live in benchmarks/latest_summary.csv)
+benchmarks/*.json
+!benchmarks/benchmark_summary.json
+
