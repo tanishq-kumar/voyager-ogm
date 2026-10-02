@@ -1,5 +1,11 @@
-"""Tests for the official openCypher TCK Conformance Adapter and Topology Validation."""
+"""Tests for the official openCypher TCK Scenario Topology Invariant Adapter.
 
+Verifies AST topology extraction and structural graph invariants over the official
+openCypher TCK scenario corpora (does NOT assert query result conformance or database
+execution semantics).
+"""
+
+import os
 import sys
 from pathlib import Path
 
@@ -116,13 +122,24 @@ def _check_port(host: str, port: int) -> bool:
 
 
 def test_tck_tier3_live_neo4j_execution():
-    """Tier 3: Executes official openCypher Match1 scenarios on live Neo4j Enterprise (port 7687)."""
-    if not _check_port("127.0.0.1", 7687):
-        pytest.skip("Neo4j Enterprise not available on port 7687")
+    """Tier 3: Executes official openCypher Match1 scenarios on live Neo4j Enterprise."""
+    neo4j_host = os.getenv("NEO4J_HOST", "127.0.0.1")
+    neo4j_port = int(os.getenv("NEO4J_PORT", "7687"))
+    if not _check_port(neo4j_host, neo4j_port):
+        pytest.skip(f"Neo4j Enterprise not available on {neo4j_host}:{neo4j_port}")
 
     from neo4j import GraphDatabase
 
-    driver = GraphDatabase.driver("bolt://127.0.0.1:7687", auth=("neo4j", "voyex1234"))
+    neo4j_user = os.getenv("NEO4J_USER", "neo4j")
+    neo4j_pass = (
+        os.getenv("NEO4J_ENTERPRISE_PASSWORD")
+        or os.getenv("NEO4J_PASSWORD")
+        or os.getenv("NEO4J_PASS", "voyex1234")
+    )
+
+    driver = GraphDatabase.driver(
+        f"bolt://{neo4j_host}:{neo4j_port}", auth=(neo4j_user, neo4j_pass)
+    )
     try:
         driver.verify_connectivity()
     except Exception as e:
@@ -158,14 +175,16 @@ def test_tck_tier3_live_neo4j_execution():
 
 
 def test_tck_tier3_live_falkordb_execution():
-    """Tier 3: Executes official openCypher Match1 scenarios on live FalkorDB (port 6379)."""
-    if not _check_port("127.0.0.1", 6379):
-        pytest.skip("FalkorDB container not available on port 6379")
+    """Tier 3: Executes official openCypher Match1 scenarios on live FalkorDB."""
+    falkor_host = os.getenv("FALKORDB_HOST", "127.0.0.1")
+    falkor_port = int(os.getenv("FALKORDB_PORT", "6379"))
+    if not _check_port(falkor_host, falkor_port):
+        pytest.skip(f"FalkorDB container not available on {falkor_host}:{falkor_port}")
 
     try:
         from falkordb import FalkorDB
 
-        db = FalkorDB(host="127.0.0.1", port=6379)
+        db = FalkorDB(host=falkor_host, port=falkor_port)
         g = db.select_graph("voyager_tck_live_test")
         g.query("RETURN 1")
     except Exception as e:

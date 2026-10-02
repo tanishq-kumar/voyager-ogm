@@ -2,6 +2,17 @@
 //!
 //! Extracts structured node and edge topologies directly from the AST arena
 //! or parses raw query statements across openCypher, ISO GQL, and SQL:2023 PGQ.
+//!
+//! # Architectural Note & Roadmap
+//!
+//! `from_query_str` is an interim heuristic parser (keyword scanning, depth tracking,
+//! pattern matching). Its purpose is to provide immediate topology extraction for
+//! visualization, tooling, and adapter harnesses without requiring full grammar parsers.
+//!
+//! **TODO**: Once the unified AST parser (openCypher/ISO GQL/PGQ) is fully operational,
+//! all raw query strings will be parsed into `QueryAstArena` and feed directly into
+//! `from_arena`. The topology extraction engine should have exactly one canonical
+//! implementation long-term (`from_arena`).
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -116,6 +127,16 @@ impl TopologyEdge {
 }
 
 /// Extracted graph topology containing deduplicated nodes and connected edges.
+///
+/// # Scoping Behavior & Invariant Semantics
+///
+/// In graph visualization and structural invariant validation, variables with identical
+/// names across distinct subquery scopes (e.g. `EXISTS { MATCH (p) }` or `WITH p`)
+/// are coalesced into the same topological entity representation.
+///
+/// While lexical scopes are isolated during database execution and runtime binding,
+/// visual graph topology reconstruction intentionally merges pattern variables by identifier
+/// to depict the unified graph data model spanned by the query.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct GraphTopology {
@@ -354,32 +375,25 @@ fn collect_paths_and_wheres_from_root(
     if let Ok(ast_node) = arena.get(root) {
         match ast_node {
             AstNode::QueryStatement {
-                matches, mutations, ..
+                matches,
+                mutations,
+                with_clauses,
+                ..
             } => {
                 for &m_h in matches {
-                    if let Ok(AstNode::MatchClause {
-                        paths: match_paths,
-                        where_clause,
-                        ..
-                    }) = arena.get(m_h)
-                    {
-                        paths.extend_from_slice(match_paths);
-                        if let Some(wh) = where_clause {
-                            wheres.push(*wh);
-                        }
-                    }
+                    collect_paths_and_wheres_from_root(arena, m_h, paths, wheres);
                 }
                 for &mut_h in mutations {
-                    if let Ok(AstNode::CreateClause {
-                        paths: create_paths,
-                    }) = arena.get(mut_h)
+                    collect_paths_and_wheres_from_root(arena, mut_h, paths, wheres);
+                }
+                for &with_h in with_clauses {
+                    if let Ok(AstNode::WithClause {
+                        where_clause: Some(wh),
+                        ..
+                    }) = arena.get(with_h)
                     {
-                        paths.extend_from_slice(create_paths);
-                    } else if let Ok(AstNode::MergeClause {
-                        path: merge_path, ..
-                    }) = arena.get(mut_h)
-                    {
-                        paths.push(*merge_path);
+                        wheres.push(*wh);
+                        descend_expression_for_subqueries(arena, *wh, paths, wheres);
                     }
                 }
             }
@@ -391,16 +405,62 @@ fn collect_paths_and_wheres_from_root(
                 paths.extend_from_slice(match_paths);
                 if let Some(wh) = where_clause {
                     wheres.push(*wh);
+                    descend_expression_for_subqueries(arena, *wh, paths, wheres);
                 }
             }
-            AstNode::CreateClause { paths: match_paths } => {
-                paths.extend_from_slice(match_paths);
+            AstNode::CreateClause {
+                paths: create_paths,
+            } => {
+                paths.extend_from_slice(create_paths);
             }
             AstNode::MergeClause { path, .. } => {
                 paths.push(*path);
             }
             AstNode::PathChain { .. } | AstNode::NodePattern { .. } => {
                 paths.push(root);
+            }
+            AstNode::WhereClause { root_predicate } => {
+                wheres.push(root);
+                descend_expression_for_subqueries(arena, *root_predicate, paths, wheres);
+            }
+            AstNode::ExistsSubquery { subquery } | AstNode::CountSubquery { subquery } => {
+                collect_paths_and_wheres_from_root(arena, *subquery, paths, wheres);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn descend_expression_for_subqueries(
+    arena: &QueryAstArena,
+    handle: NodeHandle,
+    paths: &mut Vec<NodeHandle>,
+    wheres: &mut Vec<NodeHandle>,
+) {
+    if let Ok(node) = arena.get(handle) {
+        match node {
+            AstNode::WhereClause { root_predicate } => {
+                descend_expression_for_subqueries(arena, *root_predicate, paths, wheres);
+            }
+            AstNode::BinaryExpression { left, right, .. } => {
+                descend_expression_for_subqueries(arena, *left, paths, wheres);
+                descend_expression_for_subqueries(arena, *right, paths, wheres);
+            }
+            AstNode::UnaryExpression { operand, .. } => {
+                descend_expression_for_subqueries(arena, *operand, paths, wheres);
+            }
+            AstNode::FunctionCall { arguments, .. } => {
+                for &arg in arguments {
+                    descend_expression_for_subqueries(arena, arg, paths, wheres);
+                }
+            }
+            AstNode::ListLiteral(items) => {
+                for &item in items {
+                    descend_expression_for_subqueries(arena, item, paths, wheres);
+                }
+            }
+            AstNode::ExistsSubquery { subquery } | AstNode::CountSubquery { subquery } => {
+                collect_paths_and_wheres_from_root(arena, *subquery, paths, wheres);
             }
             _ => {}
         }
@@ -561,24 +621,31 @@ fn strip_query_comments(raw: &str) -> String {
     let mut i = 0;
     let mut in_single_quote = false;
     let mut in_double_quote = false;
+    let mut in_backtick = false;
 
     while i < len {
         let ch = chars[i];
 
-        if ch == '\'' && !in_double_quote {
+        if ch == '`' && !in_single_quote && !in_double_quote {
+            in_backtick = !in_backtick;
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+        if ch == '\'' && !in_double_quote && !in_backtick {
             in_single_quote = !in_single_quote;
             out.push(ch);
             i += 1;
             continue;
         }
-        if ch == '"' && !in_single_quote {
+        if ch == '"' && !in_single_quote && !in_backtick {
             in_double_quote = !in_double_quote;
             out.push(ch);
             i += 1;
             continue;
         }
 
-        if !in_single_quote && !in_double_quote {
+        if !in_single_quote && !in_double_quote && !in_backtick {
             // Line comment // or --
             if (ch == '/' && i + 1 < len && chars[i + 1] == '/')
                 || (ch == '-' && i + 1 < len && chars[i + 1] == '-')
@@ -683,16 +750,65 @@ fn extract_and_apply_where_predicates(query: &str, nodes_map: &mut HashMap<Strin
     }
 }
 
+fn split_eq_outside_quotes(s: &str) -> Option<(&str, &str)> {
+    let mut in_single = false;
+    let mut in_double = false;
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        let b = bytes[i];
+        if b == b'\'' && !in_double {
+            in_single = !in_single;
+        } else if b == b'"' && !in_single {
+            in_double = !in_double;
+        } else if !in_single && !in_double && b == b'=' {
+            if i + 1 < len && bytes[i + 1] == b'=' {
+                return Some((s[..i].trim(), s[i + 2..].trim()));
+            } else {
+                return Some((s[..i].trim(), s[i + 1..].trim()));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn split_and_outside_quotes(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    let mut last = 0;
+    let mut i = 0;
+    while i < len {
+        let b = bytes[i];
+        if b == b'\'' && !in_double {
+            in_single = !in_single;
+        } else if b == b'"' && !in_single {
+            in_double = !in_double;
+        } else if !in_single && !in_double && i + 5 <= len {
+            let chunk = &s[i..i + 5];
+            if chunk.eq_ignore_ascii_case(" AND ") {
+                out.push(&s[last..i]);
+                last = i + 5;
+                i += 4;
+            }
+        }
+        i += 1;
+    }
+    out.push(&s[last..]);
+    out
+}
+
 fn parse_where_predicates_body(body: &str, nodes_map: &mut HashMap<String, TopologyNode>) {
     for part in body.split(['\n', '\r']) {
-        for expr in part.split(" AND ").flat_map(|s| s.split(" and ")) {
+        for expr in split_and_outside_quotes(part) {
             let expr = expr.trim();
-            let (left, right) = if let Some((l, r)) = expr.split_once("==") {
-                (l.trim(), r.trim())
-            } else if let Some((l, r)) = expr.split_once('=') {
-                (l.trim(), r.trim())
-            } else {
-                continue;
+            let (left, right) = match split_eq_outside_quotes(expr) {
+                Some(pair) => pair,
+                None => continue,
             };
 
             let (var, prop) = if let Some((v, p)) = left.split_once('.') {
@@ -1187,7 +1303,7 @@ fn parse_node_body(
             // Also handle label disjunctions or conjunctions e.g. `Label1&Label2` or `Label1|Label2`
             for sub_lbl in lbl.split(&['&', '|'][..]) {
                 let clean_lbl = sub_lbl.trim().trim_matches('`');
-                if !clean_lbl.is_empty() {
+                if !clean_lbl.is_empty() && !clean_lbl.starts_with('!') {
                     labels.push(clean_lbl.to_string());
                 }
             }
@@ -1243,7 +1359,7 @@ fn parse_node_body(
     node_id
 }
 
-/// Parses the inner string of an edge pattern: `var:TYPE1|TYPE2*1..3 {prop: val}`
+/// Parses the inner string of an edge pattern: `var:TYPE1|TYPE2*1..3 {prop: val}` or `[:T {1,3}]`
 #[allow(clippy::type_complexity)]
 fn parse_edge_body(
     body: &str,
@@ -1259,26 +1375,76 @@ fn parse_edge_body(
         return (None, Vec::new(), None, None, BTreeMap::new());
     }
 
-    let (ident_part, props_part) = if let Some(idx) = trimmed.find('{') {
-        (&trimmed[..idx], Some(&trimmed[idx..]))
-    } else {
-        (trimmed, None)
-    };
-    let inline_props = props_part.map(parse_inline_properties).unwrap_or_default();
-
-    let mut variable = None;
-    let mut types = Vec::new();
+    let mut inline_props = BTreeMap::new();
     let mut min_hops = None;
     let mut max_hops = None;
 
-    // Check for hop quantifiers: `*1..3`, `*..5`, `*2`, `*`
-    let (ident_clean, hop_part) = if let Some(star_idx) = ident_part.find('*') {
-        (&ident_part[..star_idx], Some(&ident_part[star_idx + 1..]))
+    let mut non_bracket_parts = String::new();
+    let chars: Vec<char> = trimmed.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        if chars[i] == '{' {
+            let start = i;
+            let mut depth = 1;
+            i += 1;
+            while i < len && depth > 0 {
+                if chars[i] == '{' {
+                    depth += 1;
+                } else if chars[i] == '}' {
+                    depth -= 1;
+                }
+                i += 1;
+            }
+            let block: String = chars[start..i].iter().collect();
+            let inner = if block.len() >= 2 {
+                block[1..block.len() - 1].trim()
+            } else {
+                ""
+            };
+
+            // Check if this block is a quantifier {min, max} (e.g. {1,3}, {1,}, {,3}, {2})
+            if !inner.contains(':')
+                && (inner.contains(',') || inner.chars().all(|c| c.is_ascii_digit()))
+                && !inner.is_empty()
+            {
+                if let Some((low_s, high_s)) = inner.split_once(',') {
+                    min_hops = low_s.trim().parse::<u32>().ok();
+                    max_hops = high_s.trim().parse::<u32>().ok();
+                } else if let Ok(n) = inner.parse::<u32>() {
+                    min_hops = Some(n);
+                    max_hops = Some(n);
+                }
+            } else {
+                let parsed_props = parse_inline_properties(&block);
+                for (k, v) in parsed_props {
+                    inline_props.insert(k, v);
+                }
+            }
+        } else {
+            non_bracket_parts.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    let mut variable = None;
+    let mut types = Vec::new();
+
+    // Check for Cypher hop quantifiers: `*1..3`, `*..5`, `*2`, `*`
+    let (ident_clean, hop_part) = if let Some(star_idx) = non_bracket_parts.find('*') {
+        (
+            &non_bracket_parts[..star_idx],
+            Some(&non_bracket_parts[star_idx + 1..]),
+        )
     } else {
-        (ident_part, None)
+        (non_bracket_parts.as_str(), None)
     };
 
-    if let Some(hops) = hop_part {
+    if min_hops.is_none()
+        && max_hops.is_none()
+        && let Some(hops) = hop_part
+    {
         let h_trim = hops.trim();
         if h_trim.is_empty() {
             min_hops = Some(1);
@@ -1406,5 +1572,105 @@ mod tests {
         assert_eq!(topology.edges[1].source, "other");
         assert_eq!(topology.edges[1].target, "f");
         assert_eq!(topology.edges[1].label, "FOLLOWS");
+    }
+
+    #[test]
+    fn test_topology_ast_string_parity() {
+        let mut b1 = QueryBuilder::new();
+        b1.r#match()
+            .node(Some("p"), vec!["Person"])
+            .where_eq("p", "name", "Alice")
+            .to(vec!["KNOWS"], Some("r"))
+            .node(Some("f"), vec!["Person"])
+            .where_eq("f", "city", "London");
+        let (arena1, root1) = b1.build();
+        let topo_arena1 = GraphTopology::from_arena(&arena1, Some(root1));
+
+        let query1 = "MATCH (p:Person)-[r:KNOWS]->(f:Person) WHERE p.name = 'Alice' AND f.city = 'London' RETURN p, r, f";
+        let topo_str1 = GraphTopology::from_query_str(query1);
+
+        assert_eq!(topo_arena1.nodes.len(), topo_str1.nodes.len());
+        assert_eq!(topo_arena1.edges.len(), topo_str1.edges.len());
+        assert_eq!(topo_arena1.nodes[0].id, topo_str1.nodes[0].id);
+        assert_eq!(topo_arena1.nodes[0].label, topo_str1.nodes[0].label);
+        assert_eq!(
+            topo_arena1.nodes[0].properties,
+            topo_str1.nodes[0].properties
+        );
+        assert_eq!(topo_arena1.nodes[1].id, topo_str1.nodes[1].id);
+        assert_eq!(topo_arena1.nodes[1].label, topo_str1.nodes[1].label);
+        assert_eq!(
+            topo_arena1.nodes[1].properties,
+            topo_str1.nodes[1].properties
+        );
+        assert_eq!(topo_arena1.edges[0].source, topo_str1.edges[0].source);
+        assert_eq!(topo_arena1.edges[0].target, topo_str1.edges[0].target);
+        assert_eq!(topo_arena1.edges[0].label, topo_str1.edges[0].label);
+        assert_eq!(topo_arena1.edges[0].direction, topo_str1.edges[0].direction);
+    }
+
+    #[test]
+    fn test_topology_exists_subquery_descent() {
+        let mut b = QueryBuilder::new();
+        b.r#match().node(Some("u"), vec!["User"]);
+
+        let sub_handle = b.subquery(|sub| {
+            sub.r#match().node(Some("p"), vec!["Post"]);
+        });
+        let exists_expr = b.exists_subquery(sub_handle);
+        b.where_predicate(exists_expr);
+
+        let (arena, root) = b.build();
+        let topology = GraphTopology::from_arena(&arena, Some(root));
+
+        assert_eq!(topology.nodes.len(), 2);
+        assert_eq!(topology.nodes[0].id, "u");
+        assert_eq!(topology.nodes[0].label, "User");
+        assert_eq!(topology.nodes[1].id, "p");
+        assert_eq!(topology.nodes[1].label, "Post");
+    }
+
+    #[test]
+    fn test_strip_query_comments_backtick() {
+        let query = "MATCH (n:`http://example.com/item`) // this is a line comment\nRETURN n";
+        let cleaned = strip_query_comments(query);
+        assert!(cleaned.contains("`http://example.com/item`"));
+        assert!(!cleaned.contains("this is a line comment"));
+    }
+
+    #[test]
+    fn test_extract_topology_gql_in_bracket_quantifier() {
+        let query = "MATCH (a:Account)-[r:TRANSFERRED {1, 3}]->(b:Account) RETURN a, b";
+        let topo = GraphTopology::from_query_str(query);
+
+        assert_eq!(topo.nodes.len(), 2);
+        assert_eq!(topo.edges.len(), 1);
+        assert_eq!(topo.edges[0].label, "TRANSFERRED");
+        assert_eq!(topo.edges[0].min_hops, Some(1));
+        assert_eq!(topo.edges[0].max_hops, Some(3));
+    }
+
+    #[test]
+    fn test_extract_topology_label_negation() {
+        let query = "MATCH (n:!Internal) RETURN n";
+        let topo = GraphTopology::from_query_str(query);
+
+        assert_eq!(topo.nodes.len(), 1);
+        assert_eq!(topo.nodes[0].id, "n");
+        assert!(topo.nodes[0].labels.is_empty());
+        assert_eq!(topo.nodes[0].label, "n");
+    }
+
+    #[test]
+    fn test_extract_topology_quoted_equal() {
+        let query = "MATCH (p:Person) WHERE p.name = \"foo=bar\" RETURN p";
+        let topo = GraphTopology::from_query_str(query);
+
+        assert_eq!(topo.nodes.len(), 1);
+        assert_eq!(topo.nodes[0].id, "p");
+        assert_eq!(
+            topo.nodes[0].properties.get("name"),
+            Some(&LiteralValue::String("foo=bar".to_string()))
+        );
     }
 }

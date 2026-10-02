@@ -851,8 +851,8 @@ def node(target: type | str | list[str] | None = None, **kwargs: Any) -> Any:
     and sets up schema reflection.
 
     Args:
-        target: Target class when used as `@node` or label when used as `@node(label="...")`.
-        **kwargs: Optional configuration parameters (e.g. `label="Person"`).
+        target: Target class when used as `@node`, or primary label/labels when used as `@node("Person")` or `@node(["User", "Admin"])`.
+        **kwargs: Optional configuration parameters, supporting `label="Person"` or `labels=["User", "Admin"]`.
 
     Returns:
         The decorated Node class with schema descriptors and auto-aliasing.
@@ -862,6 +862,9 @@ def node(target: type | str | list[str] | None = None, **kwargs: Any) -> Any:
         ... class User:
         ...     name: str
         ...     age: int
+        >>> @node(labels=["User", "Admin"])
+        ... class Administrator:
+        ...     role: str
     """
 
     def decorator(cls: type) -> type:

@@ -30,7 +30,33 @@ use voyager_core::schema::{
     SchemaRegistry, global_schema_registry,
 };
 use voyager_core::topology::GraphTopology;
-use voyager_core::visitor::AstVisitor;
+use voyager_core::visitor::{AstVisitor, CompiledQuery};
+
+fn compiled_query_to_py_dict<'py>(
+    py: Python<'py>,
+    compiled: &CompiledQuery,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("statement", &compiled.statement)?;
+
+    let params_dict = PyDict::new(py);
+    for (k, v) in &compiled.parameters {
+        params_dict.set_item(k, literal_to_py(v, py)?)?;
+    }
+    dict.set_item("parameters", params_dict)?;
+    dict.set_item("execution_mode", compiled.execution_mode.as_str())?;
+
+    let cols_list = PyList::empty(py);
+    for col in &compiled.columns {
+        let col_dict = PyDict::new(py);
+        col_dict.set_item("name", &col.name)?;
+        col_dict.set_item("alias", &col.alias)?;
+        cols_list.append(col_dict)?;
+    }
+    dict.set_item("columns", cols_list)?;
+
+    Ok(dict)
+}
 
 fn py_to_literal(val: &Bound<'_, PyAny>) -> PyResult<LiteralValue> {
     if val.is_none() {
@@ -1876,26 +1902,7 @@ impl PyQueryBuilder {
             }
         };
 
-        let dict = PyDict::new(py);
-        dict.set_item("statement", compiled.statement)?;
-
-        let params_dict = PyDict::new(py);
-        for (k, v) in compiled.parameters {
-            params_dict.set_item(k, literal_to_py(&v, py)?)?;
-        }
-        dict.set_item("parameters", params_dict)?;
-        dict.set_item("execution_mode", compiled.execution_mode.as_str())?;
-
-        let cols_list = PyList::empty(py);
-        for col in &compiled.columns {
-            let col_dict = PyDict::new(py);
-            col_dict.set_item("name", &col.name)?;
-            col_dict.set_item("alias", &col.alias)?;
-            cols_list.append(col_dict)?;
-        }
-        dict.set_item("columns", cols_list)?;
-
-        Ok(dict)
+        compiled_query_to_py_dict(py, &compiled)
     }
 
     /// Extracts native graph topology (nodes and edges) directly from the AST arena.
@@ -2097,25 +2104,7 @@ fn compile_query_from_spec<'py>(
     if let Some(ref k) = cache_key
         && let Some(cached) = voyager_core::global_query_cache().get(k)
     {
-        let dict = PyDict::new(py);
-        dict.set_item("statement", cached.statement)?;
-        let params_dict = PyDict::new(py);
-        for (param_name, val) in cached.parameters {
-            params_dict.set_item(param_name, literal_to_py(&val, py)?)?;
-        }
-        dict.set_item("parameters", params_dict)?;
-        dict.set_item("execution_mode", cached.execution_mode.as_str())?;
-
-        let cols_list = PyList::empty(py);
-        for col in &cached.columns {
-            let col_dict = PyDict::new(py);
-            col_dict.set_item("name", &col.name)?;
-            col_dict.set_item("alias", &col.alias)?;
-            cols_list.append(col_dict)?;
-        }
-        dict.set_item("columns", cols_list)?;
-
-        return Ok(dict);
+        return compiled_query_to_py_dict(py, &cached);
     }
 
     let mut builder = QueryBuilder::new();
@@ -2169,26 +2158,7 @@ fn compile_query_from_spec<'py>(
         voyager_core::global_query_cache().put(k, compiled.clone());
     }
 
-    let dict = PyDict::new(py);
-    dict.set_item("statement", compiled.statement)?;
-
-    let params_dict = PyDict::new(py);
-    for (k, v) in compiled.parameters {
-        params_dict.set_item(k, literal_to_py(&v, py)?)?;
-    }
-    dict.set_item("parameters", params_dict)?;
-    dict.set_item("execution_mode", compiled.execution_mode.as_str())?;
-
-    let cols_list = PyList::empty(py);
-    for col in &compiled.columns {
-        let col_dict = PyDict::new(py);
-        col_dict.set_item("name", &col.name)?;
-        col_dict.set_item("alias", &col.alias)?;
-        cols_list.append(col_dict)?;
-    }
-    dict.set_item("columns", cols_list)?;
-
-    Ok(dict)
+    compiled_query_to_py_dict(py, &compiled)
 }
 
 /// Returns telemetry metrics for the global compiled query cache.

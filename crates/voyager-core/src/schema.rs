@@ -464,21 +464,9 @@ impl SchemaRegistry {
         nodes.get(name).cloned()
     }
 
-    /// Retrieves a node schema by primary label.
+    /// Retrieves a node schema by primary or secondary label (case-insensitive).
     pub fn get_node_by_label(&self, label: &str) -> Option<NodeSchema> {
         let nodes = self.nodes.read().ok()?;
-        if let Some(node) = nodes
-            .get(label)
-            .filter(|n| n.labels.iter().any(|l| l.eq_ignore_ascii_case(label)))
-        {
-            return Some(node.clone());
-        }
-        if let Some(node) = nodes.values().find(|n| {
-            n.name.eq_ignore_ascii_case(label)
-                && n.labels.iter().any(|l| l.eq_ignore_ascii_case(label))
-        }) {
-            return Some(node.clone());
-        }
         nodes
             .values()
             .find(|n| n.labels.iter().any(|l| l.eq_ignore_ascii_case(label)))

@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Official openCypher TCK Conformance Adapter and Harness for Voyager OGM.
+"""Official openCypher TCK Scenario Topology Invariant Adapter for Voyager OGM.
 
 Systematically parses official Gherkin .feature files from the openCypher TCK
 and tests them directly against Voyager's native AST topology extractor, schema
 conformance engine, and multi-dialect query compiler.
+
+Note: This adapter evaluates AST topology extraction and structural graph invariants
+over official TCK scenario corpora; it does not claim full query execution result
+conformance or database runtime conformance.
 """
 
 from __future__ import annotations
@@ -286,12 +290,12 @@ def main() -> None:
         sys.exit(1)
 
     print("=" * 80)
-    print("Voyager OGM Official openCypher TCK Conformance & Topology Extraction Audit")
+    print("Voyager OGM Official openCypher TCK Scenario Topology Invariant Adapter Audit")
     print("=" * 80)
 
     report = run_tck_adapter(opencypher_dir)
 
-    print("\nOverall Conformance:")
+    print("\nOverall Topology Invariant Extraction:")
     print(f"  Total Scenarios Evaluated : {report['total']}")
     print(f"  Passed                    : {report['passed']} ({report['pass_rate']:.1f}%)")
     print(f"  Failed                    : {report['failed']} ({100 - report['pass_rate']:.1f}%)")
