@@ -67,7 +67,7 @@ impl BoltRequest {
         let mut bolt_agent = HashMap::new();
         bolt_agent.insert(
             "product".to_string(),
-            BoltValue::String("voyager-net/0.4.6".to_string()),
+            BoltValue::String(concat!("voyager-net/", env!("CARGO_PKG_VERSION")).to_string()),
         );
         bolt_agent.insert(
             "platform".to_string(),
@@ -101,7 +101,7 @@ impl BoltRequest {
         let mut bolt_agent = HashMap::new();
         bolt_agent.insert(
             "product".to_string(),
-            BoltValue::String("voyager-net/0.4.6".to_string()),
+            BoltValue::String(concat!("voyager-net/", env!("CARGO_PKG_VERSION")).to_string()),
         );
         bolt_agent.insert(
             "platform".to_string(),
