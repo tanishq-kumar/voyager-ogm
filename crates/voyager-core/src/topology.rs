@@ -51,10 +51,15 @@ impl TopologyNode {
         } else {
             label_str.clone()
         };
+        let labels = if label_str.is_empty() {
+            Vec::new()
+        } else {
+            vec![label_str.clone()]
+        };
         Self {
             id: id_str,
             label: label_str,
-            labels: Vec::new(),
+            labels,
             group,
             size: 11,
             properties: BTreeMap::new(),
@@ -624,7 +629,19 @@ fn extract_node_from_handle(
             },
         };
 
-        if !nodes_map.contains_key(&node_id) {
+        if let Some(node) = nodes_map.get_mut(&node_id) {
+            for l in labels {
+                if !node.labels.contains(l) {
+                    node.labels.push(l.clone());
+                }
+            }
+            let mut props = BTreeMap::new();
+            extract_predicates_to_props(arena, predicates, &mut props);
+            for (k, v) in props {
+                node.properties.insert(k.clone(), v.clone());
+                node.data.insert(k, v);
+            }
+        } else {
             let display_label = primary_label
                 .clone()
                 .or_else(|| variable.clone())
@@ -1407,6 +1424,11 @@ fn parse_node_body(
             node.properties.insert(k.clone(), v.clone());
             node.data.insert(k, v);
         }
+        for l in labels {
+            if !node.labels.contains(&l) {
+                node.labels.push(l);
+            }
+        }
     } else {
         let display_label = primary_label
             .clone()
@@ -1661,24 +1683,71 @@ mod tests {
         assert_eq!(
             topo_arena.nodes.len(),
             topo_str.nodes.len(),
-            "Node count mismatch"
+            "Node count mismatch: arena={:?} vs str={:?}",
+            topo_arena.nodes,
+            topo_str.nodes
         );
         assert_eq!(
             topo_arena.edges.len(),
             topo_str.edges.len(),
-            "Edge count mismatch"
+            "Edge count mismatch: arena={:?} vs str={:?}",
+            topo_arena.edges,
+            topo_str.edges
         );
-        for (i, (an, sn)) in topo_arena.nodes.iter().zip(&topo_str.nodes).enumerate() {
-            assert_eq!(an.id, sn.id, "Node {i} ID mismatch");
-            assert_eq!(an.label, sn.label, "Node {i} label mismatch");
-            assert_eq!(an.properties, sn.properties, "Node {i} properties mismatch");
+
+        let nodes_arena: HashMap<&str, &TopologyNode> = topo_arena
+            .nodes
+            .iter()
+            .map(|n| (n.id.as_str(), n))
+            .collect();
+        let nodes_str: HashMap<&str, &TopologyNode> =
+            topo_str.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+
+        let mut ids_arena: Vec<&str> = nodes_arena.keys().copied().collect();
+        let mut ids_str: Vec<&str> = nodes_str.keys().copied().collect();
+        ids_arena.sort();
+        ids_str.sort();
+        assert_eq!(ids_arena, ids_str, "Node ID set mismatch");
+
+        for (id, an) in &nodes_arena {
+            let sn = nodes_str.get(id).expect("Node ID missing in topo_str");
+            assert_eq!(an.label, sn.label, "Node {id} label mismatch");
+            assert_eq!(an.labels, sn.labels, "Node {id} labels mismatch");
+            assert_eq!(
+                an.properties, sn.properties,
+                "Node {id} properties mismatch"
+            );
         }
-        for (i, (ae, se)) in topo_arena.edges.iter().zip(&topo_str.edges).enumerate() {
-            assert_eq!(ae.source, se.source, "Edge {i} source mismatch");
-            assert_eq!(ae.target, se.target, "Edge {i} target mismatch");
-            assert_eq!(ae.label, se.label, "Edge {i} label mismatch");
-            assert_eq!(ae.direction, se.direction, "Edge {i} direction mismatch");
-        }
+
+        let mut edges_arena: Vec<(&str, &str, &str, &Direction)> = topo_arena
+            .edges
+            .iter()
+            .map(|e| {
+                (
+                    e.source.as_str(),
+                    e.target.as_str(),
+                    e.label.as_str(),
+                    &e.direction,
+                )
+            })
+            .collect();
+        edges_arena.sort();
+
+        let mut edges_str: Vec<(&str, &str, &str, &Direction)> = topo_str
+            .edges
+            .iter()
+            .map(|e| {
+                (
+                    e.source.as_str(),
+                    e.target.as_str(),
+                    e.label.as_str(),
+                    &e.direction,
+                )
+            })
+            .collect();
+        edges_str.sort();
+
+        assert_eq!(edges_arena, edges_str, "Edge signature mismatch");
     }
 
     #[test]
@@ -1885,5 +1954,26 @@ mod tests {
             topo.nodes[0].properties.get("name"),
             Some(&LiteralValue::String("foo=bar".to_string()))
         );
+    }
+
+    #[test]
+    fn test_extract_topology_multi_label_and_merging() {
+        // Multi-label node in raw string query
+        let query = "MATCH (p:Person:Employee) RETURN p";
+        let topo = GraphTopology::from_query_str(query);
+        assert_eq!(topo.nodes.len(), 1);
+        assert_eq!(topo.nodes[0].id, "p");
+        assert_eq!(topo.nodes[0].label, "Person");
+        assert_eq!(topo.nodes[0].labels, vec!["Person", "Employee"]);
+
+        // Multi-label node in AST arena with subsequent pattern merging
+        let mut b = QueryBuilder::new();
+        b.r#match().node(Some("p"), vec!["Person"]);
+        b.r#match().node(Some("p"), vec!["Employee"]);
+        let (arena, root) = b.build();
+        let topo_arena = GraphTopology::from_arena(&arena, Some(root));
+        assert_eq!(topo_arena.nodes.len(), 1);
+        assert_eq!(topo_arena.nodes[0].id, "p");
+        assert_eq!(topo_arena.nodes[0].labels, vec!["Person", "Employee"]);
     }
 }

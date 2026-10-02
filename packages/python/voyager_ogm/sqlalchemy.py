@@ -397,6 +397,14 @@ def _format_topology_edge(edge: dict[str, Any]) -> str:
 
 
 def _topology_to_pattern_str(topo: dict[str, Any]) -> str:
+    """Serializes extracted graph topology into a SQL:2023 / openCypher path pattern string.
+
+    Note:
+        Branching topologies that produce multiple disconnected or branching chains
+        are formatted as comma-separated path patterns. Note that comma-joined chains
+        are invalid inside a single SQL:2023 PGQ path pattern clause; branching graphs
+        should be decomposed or expressed as separate match clauses.
+    """
     nodes = topo.get("nodes", [])
     edges = topo.get("edges", [])
     if not nodes:
@@ -458,6 +466,13 @@ def graph_table(
 
     Returns:
         GraphTableClause instance usable directly in SQLAlchemy `select().join(...)`.
+
+    Note:
+        Compiled WHERE predicates from a `Query` instance are not automatically wired
+        into GRAPH_TABLE pattern syntax; use the explicit `where=` argument to supply
+        SQL:2023 GRAPH_TABLE WHERE filters.
+        Furthermore, comma-joined chains from branching topologies are invalid inside
+        a single PGQ path pattern; construct linear match chains for GRAPH_TABLE.
 
     Example:
         ```python
