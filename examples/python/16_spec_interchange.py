@@ -14,8 +14,15 @@ from __future__ import annotations
 
 import pprint
 
-from voyager_ogm import Field, Node, Query, Relationship, node, relationship
-from voyager_ogm._voyager_rs import compile_query_from_spec
+from voyager_ogm import (
+    Field,
+    Node,
+    Query,
+    Relationship,
+    compile_query_from_spec,
+    node,
+    relationship,
+)
 
 
 @node(labels=["Person"])

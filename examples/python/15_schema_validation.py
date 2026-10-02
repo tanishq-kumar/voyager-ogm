@@ -49,6 +49,8 @@ def main() -> None:
     reg = SchemaRegistry.global_registry()
     Person.register_schema(reg)
     Movie.register_schema(reg)
+    # Note: Declaring relationships with @relationship also auto-registers when configured;
+    # manual registration via reg.register_relationship is shown here to demonstrate explicit contract control.
     reg.register_relationship(
         name="ActedIn",
         type_name="ACTED_IN",
