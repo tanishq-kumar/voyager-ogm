@@ -126,6 +126,10 @@ impl TopologyEdge {
     }
 }
 
+fn default_topology_version() -> u32 {
+    1
+}
+
 /// Extracted graph topology containing deduplicated nodes and connected edges.
 ///
 /// # Scoping Behavior & Invariant Semantics
@@ -137,13 +141,26 @@ impl TopologyEdge {
 /// While lexical scopes are isolated during database execution and runtime binding,
 /// visual graph topology reconstruction intentionally merges pattern variables by identifier
 /// to depict the unified graph data model spanned by the query.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct GraphTopology {
+    /// Topology schema payload version for forward/backward compatibility.
+    #[cfg_attr(feature = "serde", serde(default = "default_topology_version"))]
+    pub version: u32,
     /// Nodes extracted from path patterns.
     pub nodes: Vec<TopologyNode>,
     /// Directed and undirected edges extracted from path patterns.
     pub edges: Vec<TopologyEdge>,
+}
+
+impl Default for GraphTopology {
+    fn default() -> Self {
+        Self {
+            version: default_topology_version(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        }
+    }
 }
 
 impl GraphTopology {
@@ -319,7 +336,11 @@ impl GraphTopology {
             .filter_map(|id| nodes_map.remove(&id))
             .collect();
 
-        Self { nodes, edges }
+        Self {
+            version: 1,
+            nodes,
+            edges,
+        }
     }
 
     /// Parses raw query string statements (openCypher, ISO GQL, SQL:2023 PGQ)
@@ -352,7 +373,11 @@ impl GraphTopology {
             .filter_map(|id| nodes_map.remove(&id))
             .collect();
 
-        Self { nodes, edges }
+        Self {
+            version: 1,
+            nodes,
+            edges,
+        }
     }
 
     /// Serializes the graph topology into a JSON string.
@@ -459,9 +484,66 @@ fn descend_expression_for_subqueries(
                     descend_expression_for_subqueries(arena, item, paths, wheres);
                 }
             }
+            AstNode::CaseExpression {
+                operand,
+                when_then_branches,
+                else_branch,
+            } => {
+                if let Some(op) = operand {
+                    descend_expression_for_subqueries(arena, *op, paths, wheres);
+                }
+                for &(when_h, then_h) in when_then_branches {
+                    descend_expression_for_subqueries(arena, when_h, paths, wheres);
+                    descend_expression_for_subqueries(arena, then_h, paths, wheres);
+                }
+                if let Some(el) = else_branch {
+                    descend_expression_for_subqueries(arena, *el, paths, wheres);
+                }
+            }
+            AstNode::ListComprehension {
+                list_expression,
+                where_filter,
+                map_expression,
+                ..
+            } => {
+                descend_expression_for_subqueries(arena, *list_expression, paths, wheres);
+                if let Some(wh) = where_filter {
+                    descend_expression_for_subqueries(arena, *wh, paths, wheres);
+                }
+                if let Some(m) = map_expression {
+                    descend_expression_for_subqueries(arena, *m, paths, wheres);
+                }
+            }
+            AstNode::PatternComprehension {
+                path,
+                where_filter,
+                projection,
+            } => {
+                collect_paths_and_wheres_from_root(arena, *path, paths, wheres);
+                if let Some(wh) = where_filter {
+                    descend_expression_for_subqueries(arena, *wh, paths, wheres);
+                }
+                descend_expression_for_subqueries(arena, *projection, paths, wheres);
+            }
+            AstNode::PropertyAccess { target, .. } => {
+                descend_expression_for_subqueries(arena, *target, paths, wheres);
+            }
+            AstNode::SetItem { value, .. } => {
+                descend_expression_for_subqueries(arena, *value, paths, wheres);
+            }
+            AstNode::UnwindClause { expression, .. } => {
+                descend_expression_for_subqueries(arena, *expression, paths, wheres);
+            }
+            AstNode::ProcedureCall { arguments, .. } => {
+                for &arg in arguments {
+                    descend_expression_for_subqueries(arena, arg, paths, wheres);
+                }
+            }
             AstNode::ExistsSubquery { subquery } | AstNode::CountSubquery { subquery } => {
                 collect_paths_and_wheres_from_root(arena, *subquery, paths, wheres);
             }
+            // Explicitly terminal AST leaves without nested expression handles:
+            // Literal, Identifier, Parameter, DeleteClause, RemoveClause, LoadCsvClause
             _ => {}
         }
     }
@@ -1574,8 +1656,34 @@ mod tests {
         assert_eq!(topology.edges[1].label, "FOLLOWS");
     }
 
+    fn assert_topology_parity(topo_arena: &GraphTopology, topo_str: &GraphTopology) {
+        assert_eq!(topo_arena.version, topo_str.version);
+        assert_eq!(
+            topo_arena.nodes.len(),
+            topo_str.nodes.len(),
+            "Node count mismatch"
+        );
+        assert_eq!(
+            topo_arena.edges.len(),
+            topo_str.edges.len(),
+            "Edge count mismatch"
+        );
+        for (i, (an, sn)) in topo_arena.nodes.iter().zip(&topo_str.nodes).enumerate() {
+            assert_eq!(an.id, sn.id, "Node {i} ID mismatch");
+            assert_eq!(an.label, sn.label, "Node {i} label mismatch");
+            assert_eq!(an.properties, sn.properties, "Node {i} properties mismatch");
+        }
+        for (i, (ae, se)) in topo_arena.edges.iter().zip(&topo_str.edges).enumerate() {
+            assert_eq!(ae.source, se.source, "Edge {i} source mismatch");
+            assert_eq!(ae.target, se.target, "Edge {i} target mismatch");
+            assert_eq!(ae.label, se.label, "Edge {i} label mismatch");
+            assert_eq!(ae.direction, se.direction, "Edge {i} direction mismatch");
+        }
+    }
+
     #[test]
     fn test_topology_ast_string_parity() {
+        // Archetype 1: Outgoing 1-hop with WHERE predicates
         let mut b1 = QueryBuilder::new();
         b1.r#match()
             .node(Some("p"), vec!["Person"])
@@ -1585,28 +1693,98 @@ mod tests {
             .where_eq("f", "city", "London");
         let (arena1, root1) = b1.build();
         let topo_arena1 = GraphTopology::from_arena(&arena1, Some(root1));
-
         let query1 = "MATCH (p:Person)-[r:KNOWS]->(f:Person) WHERE p.name = 'Alice' AND f.city = 'London' RETURN p, r, f";
         let topo_str1 = GraphTopology::from_query_str(query1);
+        assert_topology_parity(&topo_arena1, &topo_str1);
 
-        assert_eq!(topo_arena1.nodes.len(), topo_str1.nodes.len());
-        assert_eq!(topo_arena1.edges.len(), topo_str1.edges.len());
-        assert_eq!(topo_arena1.nodes[0].id, topo_str1.nodes[0].id);
-        assert_eq!(topo_arena1.nodes[0].label, topo_str1.nodes[0].label);
-        assert_eq!(
-            topo_arena1.nodes[0].properties,
-            topo_str1.nodes[0].properties
-        );
-        assert_eq!(topo_arena1.nodes[1].id, topo_str1.nodes[1].id);
-        assert_eq!(topo_arena1.nodes[1].label, topo_str1.nodes[1].label);
-        assert_eq!(
-            topo_arena1.nodes[1].properties,
-            topo_str1.nodes[1].properties
-        );
-        assert_eq!(topo_arena1.edges[0].source, topo_str1.edges[0].source);
-        assert_eq!(topo_arena1.edges[0].target, topo_str1.edges[0].target);
-        assert_eq!(topo_arena1.edges[0].label, topo_str1.edges[0].label);
-        assert_eq!(topo_arena1.edges[0].direction, topo_str1.edges[0].direction);
+        // Archetype 2: Incoming 1-hop
+        let mut b2 = QueryBuilder::new();
+        b2.r#match()
+            .node(Some("p"), vec!["Person"])
+            .from(vec!["DIRECTED"], Some("d"))
+            .node(Some("m"), vec!["Movie"]);
+        let (arena2, root2) = b2.build();
+        let topo_arena2 = GraphTopology::from_arena(&arena2, Some(root2));
+        let query2 = "MATCH (p:Person)<-[d:DIRECTED]-(m:Movie) RETURN p, d, m";
+        let topo_str2 = GraphTopology::from_query_str(query2);
+        assert_topology_parity(&topo_arena2, &topo_str2);
+
+        // Archetype 3: Undirected 1-hop
+        let mut b3 = QueryBuilder::new();
+        b3.r#match()
+            .node(Some("a"), vec!["Account"])
+            .edge(vec!["CONNECTED"], Some("c"))
+            .node(Some("b"), vec!["Account"]);
+        let (arena3, root3) = b3.build();
+        let topo_arena3 = GraphTopology::from_arena(&arena3, Some(root3));
+        let query3 = "MATCH (a:Account)-[c:CONNECTED]-(b:Account) RETURN a, c, b";
+        let topo_str3 = GraphTopology::from_query_str(query3);
+        assert_topology_parity(&topo_arena3, &topo_str3);
+
+        // Archetype 4: 2-hop traversal chain
+        let mut b4 = QueryBuilder::new();
+        b4.r#match()
+            .node(Some("a"), vec!["User"])
+            .to(vec!["FOLLOWS"], Some("f1"))
+            .node(Some("b"), vec!["User"])
+            .to(vec!["FOLLOWS"], Some("f2"))
+            .node(Some("c"), vec!["User"]);
+        let (arena4, root4) = b4.build();
+        let topo_arena4 = GraphTopology::from_arena(&arena4, Some(root4));
+        let query4 = "MATCH (a:User)-[f1:FOLLOWS]->(b:User)-[f2:FOLLOWS]->(c:User) RETURN a, b, c";
+        let topo_str4 = GraphTopology::from_query_str(query4);
+        assert_topology_parity(&topo_arena4, &topo_str4);
+
+        // Archetype 5: Reused source node / branching paths
+        let mut b5 = QueryBuilder::new();
+        b5.r#match()
+            .node(Some("p"), vec!["Person"])
+            .to(vec!["ACTED_IN"], Some("a"))
+            .node(Some("m1"), vec!["Movie"]);
+        b5.r#match()
+            .node(Some("p"), vec!["Person"])
+            .to(vec!["DIRECTED"], Some("d"))
+            .node(Some("m2"), vec!["Movie"]);
+        let (arena5, root5) = b5.build();
+        let topo_arena5 = GraphTopology::from_arena(&arena5, Some(root5));
+        let query5 = "MATCH (p:Person)-[a:ACTED_IN]->(m1:Movie) MATCH (p:Person)-[d:DIRECTED]->(m2:Movie) RETURN p";
+        let topo_str5 = GraphTopology::from_query_str(query5);
+        assert_topology_parity(&topo_arena5, &topo_str5);
+
+        // Archetype 6: Standalone node with inline property
+        let mut b6 = QueryBuilder::new();
+        b6.r#match()
+            .node(Some("u"), vec!["User"])
+            .where_eq("u", "active", true);
+        let (arena6, root6) = b6.build();
+        let topo_arena6 = GraphTopology::from_arena(&arena6, Some(root6));
+        let query6 = "MATCH (u:User {active: true}) RETURN u";
+        let topo_str6 = GraphTopology::from_query_str(query6);
+        assert_topology_parity(&topo_arena6, &topo_str6);
+
+        // Archetype 7: CREATE mutation pattern
+        let mut b7 = QueryBuilder::new();
+        b7.create()
+            .node(Some("n"), vec!["Item"])
+            .to(vec!["CONTAINS"], Some("r"))
+            .node(Some("sub"), vec!["Part"]);
+        let (arena7, root7) = b7.build();
+        let topo_arena7 = GraphTopology::from_arena(&arena7, Some(root7));
+        let query7 = "CREATE (n:Item)-[r:CONTAINS]->(sub:Part)";
+        let topo_str7 = GraphTopology::from_query_str(query7);
+        assert_topology_parity(&topo_arena7, &topo_str7);
+
+        // Archetype 8: MERGE mutation pattern
+        let mut b8 = QueryBuilder::new();
+        b8.merge()
+            .node(Some("p"), vec!["Person"])
+            .to(vec!["MEMBER_OF"], Some("m"))
+            .node(Some("g"), vec!["Group"]);
+        let (arena8, root8) = b8.build();
+        let topo_arena8 = GraphTopology::from_arena(&arena8, Some(root8));
+        let query8 = "MERGE (p:Person)-[m:MEMBER_OF]->(g:Group)";
+        let topo_str8 = GraphTopology::from_query_str(query8);
+        assert_topology_parity(&topo_arena8, &topo_str8);
     }
 
     #[test]
@@ -1628,6 +1806,41 @@ mod tests {
         assert_eq!(topology.nodes[0].label, "User");
         assert_eq!(topology.nodes[1].id, "p");
         assert_eq!(topology.nodes[1].label, "Post");
+    }
+
+    #[test]
+    fn test_topology_subquery_inside_case_and_comprehension() {
+        let mut b = QueryBuilder::new();
+        b.r#match().node(Some("u"), vec!["User"]);
+
+        let sub_handle = b.subquery(|sub| {
+            sub.r#match().node(Some("p"), vec!["Post"]);
+        });
+        let exists_expr = b.exists_subquery(sub_handle);
+        let true_lit = b.literal(true);
+        let false_lit = b.literal(false);
+
+        let case_handle = b.case_when(None, vec![(exists_expr, true_lit)], Some(false_lit));
+        b.where_predicate(case_handle);
+
+        let (arena, root) = b.build();
+        let topology = GraphTopology::from_arena(&arena, Some(root));
+
+        assert_eq!(topology.nodes.len(), 2);
+        assert_eq!(topology.nodes[0].id, "u");
+        assert_eq!(topology.nodes[1].id, "p");
+    }
+
+    #[test]
+    fn test_topology_json_versioning() {
+        let query = "MATCH (a:Account)-[r:TRANSFERRED]->(b:Account) RETURN a, r, b";
+        let topo = GraphTopology::from_query_str(query);
+        assert_eq!(topo.version, 1);
+        #[cfg(feature = "serde")]
+        {
+            let json = topo.to_json().expect("JSON serialization failed");
+            assert!(json.contains("\"version\":1"));
+        }
     }
 
     #[test]

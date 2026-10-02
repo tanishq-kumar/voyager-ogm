@@ -1283,6 +1283,7 @@ fn topology_to_py_dict<'py>(
     py: Python<'py>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let result = PyDict::new(py);
+    result.set_item("version", topology.version)?;
     let nodes_list = PyList::empty(py);
     let edges_list = PyList::empty(py);
 

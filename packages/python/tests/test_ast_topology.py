@@ -200,3 +200,108 @@ class TestColumnMetaIntegration:
 
         assert len(c_pgq.columns) == 1
         assert c_pgq.columns[0] == ColumnMeta(name="user_name", alias="user_name")
+
+
+def _assert_topology_parity(topo_ast: dict, topo_str: dict) -> None:
+    assert topo_ast.get("version") == topo_str.get("version") == 1
+    assert len(topo_ast["nodes"]) == len(topo_str["nodes"]), (
+        f"Node count mismatch: {topo_ast['nodes']} vs {topo_str['nodes']}"
+    )
+    assert len(topo_ast["edges"]) == len(topo_str["edges"]), (
+        f"Edge count mismatch: {topo_ast['edges']} vs {topo_str['edges']}"
+    )
+
+    nodes_ast = {n["id"]: n for n in topo_ast["nodes"]}
+    nodes_str = {n["id"]: n for n in topo_str["nodes"]}
+    assert set(nodes_ast.keys()) == set(nodes_str.keys())
+
+    for nid, an in nodes_ast.items():
+        sn = nodes_str[nid]
+        assert an["label"] == sn["label"], (
+            f"Node {nid} label mismatch: {an['label']} vs {sn['label']}"
+        )
+        assert an["properties"] == sn["properties"], (
+            f"Node {nid} props mismatch: {an['properties']} vs {sn['properties']}"
+        )
+
+    edges_ast_sig = sorted(
+        (e["source"], e["target"], e["label"], e.get("direction", "outgoing"))
+        for e in topo_ast["edges"]
+    )
+    edges_str_sig = sorted(
+        (e["source"], e["target"], e["label"], e.get("direction", "outgoing"))
+        for e in topo_str["edges"]
+    )
+    assert edges_ast_sig == edges_str_sig
+
+
+class TestTopologyAstStringParityCorpus:
+    """Verifies that native AST arena extraction and raw string parsing maintain strict parity across query archetypes."""
+
+    def test_version_field_presence(self):
+        """Verifies that GraphTopology dictionary representation includes 'version': 1."""
+        topo_str = extract_topology_from_query("MATCH (p:Person) RETURN p")
+        assert topo_str["version"] == 1
+
+        p = Person(alias="p")
+        topo_ast = Query.match(p).return_(p.name).extract_topology()
+        assert topo_ast["version"] == 1
+
+    def test_parity_archetype_1_outgoing_with_where(self):
+        p = Person(alias="p")
+        m = Movie(alias="m")
+        act = ActedIn(alias="a")
+        q = (
+            Query.match(p)
+            .where(p.name == "Keanu")
+            .to(act)
+            .node(m)
+            .where(m.released == 1999)
+            .return_(p.name, m.title)
+        )
+        topo_ast = q.extract_topology()
+        query_str = "MATCH (p:Person)-[a:ACTED_IN]->(m:Movie) WHERE p.name = 'Keanu' AND m.released = 1999 RETURN p.name, m.title"
+        topo_str = extract_topology_from_query(query_str)
+        _assert_topology_parity(topo_ast, topo_str)
+
+    def test_parity_archetype_2_incoming(self):
+        p = Person(alias="p")
+        m = Movie(alias="m")
+        act = ActedIn(alias="a")
+        q = Query.match(m).from_(act).node(p).return_(m.title, p.name)
+        topo_ast = q.extract_topology()
+        compiled = q.compile("cypher")
+        topo_str = extract_topology_from_query(compiled.statement)
+        _assert_topology_parity(topo_ast, topo_str)
+
+    def test_parity_archetype_3_two_hop_traversal(self):
+        p1 = Person(alias="p1")
+        m = Movie(alias="m")
+        p2 = Person(alias="p2")
+        a1 = ActedIn(alias="a1")
+        d = Directed(alias="d")
+        q = Query.match(p1).to(a1).node(m).from_(d).node(p2).return_(p1.name, p2.name)
+        topo_ast = q.extract_topology()
+        compiled = q.compile("cypher")
+        topo_str = extract_topology_from_query(compiled.statement)
+        _assert_topology_parity(topo_ast, topo_str)
+
+    def test_parity_archetype_4_branching_paths(self):
+        p = Person(alias="p")
+        m1 = Movie(alias="m1")
+        m2 = Movie(alias="m2")
+        a1 = ActedIn(alias="a1")
+        a2 = ActedIn(alias="a2")
+        q = Query.match(p).to(a1).node(m1).match(p).to(a2).node(m2).return_(p.name)
+        topo_ast = q.extract_topology()
+        compiled = q.compile("cypher")
+        topo_str = extract_topology_from_query(compiled.statement)
+        _assert_topology_parity(topo_ast, topo_str)
+
+    def test_parity_archetype_5_standalone_node_with_predicates(self):
+        p = Person(alias="p")
+        q = Query.match(p).where(p.name == "Alice").return_(p.name)
+        topo_ast = q.extract_topology()
+        query_str = "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name"
+        topo_str = extract_topology_from_query(query_str)
+        _assert_topology_parity(topo_ast, topo_str)

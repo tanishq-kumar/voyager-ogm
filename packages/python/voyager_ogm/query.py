@@ -1351,15 +1351,15 @@ class Query:
             columns=cols,
         )
 
-    def extract_topology(self) -> dict[str, list[dict[str, Any]]]:
-        """Extracts native graph topology (nodes and edges) directly from the query AST.
+    def extract_topology(self) -> dict[str, Any]:
+        """Extracts native graph topology (version, nodes, and edges) directly from the query AST.
 
         Returns:
-            Dictionary containing 'nodes' and 'edges' lists.
+            Dictionary containing 'version', 'nodes', and 'edges'.
 
         Example:
             >>> topo = query.extract_topology()
-            >>> print(len(topo["nodes"]), len(topo["edges"]))
+            >>> print(topo["version"], len(topo["nodes"]), len(topo["edges"]))
         """
         return self._native.extract_topology()
 
