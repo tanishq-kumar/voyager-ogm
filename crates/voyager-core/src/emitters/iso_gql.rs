@@ -5,7 +5,7 @@ use crate::ast::{
     PathMode, ProjectionItem, QueryAstArena, UnaryOp,
 };
 use crate::error::{Error, Result};
-use crate::visitor::{AstVisitor, CompiledQuery};
+use crate::visitor::{AstVisitor, ColumnMeta, CompiledQuery};
 use std::collections::HashMap;
 
 /// Detects whether an expression is likely to produce a string value.
@@ -1092,6 +1092,7 @@ impl AstVisitor for IsoGqlEmitter {
                 }
             }
 
+            let mut columns = Vec::new();
             if let Some(ret_handle) = return_clause {
                 let ret_node = arena.get(*ret_handle)?;
                 if let AstNode::ReturnClause {
@@ -1103,6 +1104,7 @@ impl AstVisitor for IsoGqlEmitter {
                 } = ret_node
                 {
                     self.emit_return(arena, projections, *distinct, order_by, *skip, *limit)?;
+                    columns = ColumnMeta::from_projections(arena, projections);
                 }
             }
 
@@ -1112,10 +1114,11 @@ impl AstVisitor for IsoGqlEmitter {
                 *execution_mode
             };
 
-            Ok(CompiledQuery::with_execution_mode(
+            Ok(CompiledQuery::with_columns(
                 std::mem::take(&mut self.buffer),
                 std::mem::take(&mut self.parameters),
                 final_mode,
+                columns,
             ))
         } else {
             Err(Error::AstInvariantViolation(format!(

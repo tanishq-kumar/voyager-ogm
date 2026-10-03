@@ -4,4 +4,4 @@ import voyager_ogm
 
 
 def test_package_metadata():
-    assert voyager_ogm.__version__.startswith("0.4.5")
+    assert voyager_ogm.__version__.startswith("0.4.0")

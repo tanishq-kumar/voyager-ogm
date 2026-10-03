@@ -151,7 +151,8 @@ impl BoltConnection<TcpStream> {
 
         if is_v51_or_higher {
             // 3a. Bolt 5.1+: HELLO without auth, followed by LOGON
-            let hello_req = BoltRequest::hello_v51("Voyager-OGM/0.4.6", None);
+            let hello_req =
+                BoltRequest::hello_v51(concat!("Voyager-OGM/", env!("CARGO_PKG_VERSION")), None);
             conn.send_request(&hello_req).await?;
             let resp = conn.receive_response().await?;
 
@@ -212,7 +213,11 @@ impl BoltConnection<TcpStream> {
             }
         } else {
             // 3. Legacy Bolt <= 5.0: HELLO with inline auth
-            let hello_req = BoltRequest::hello_legacy("Voyager-OGM/0.4.6", auth_pair, db);
+            let hello_req = BoltRequest::hello_legacy(
+                concat!("Voyager-OGM/", env!("CARGO_PKG_VERSION")),
+                auth_pair,
+                db,
+            );
             conn.send_request(&hello_req).await?;
             let resp = conn.receive_response().await?;
 

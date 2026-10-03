@@ -9,7 +9,6 @@ Provides first-class SQLAlchemy 2.0 integrations:
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -356,6 +355,99 @@ if HAS_SQLALCHEMY:
         )
 
 
+def _format_topology_node(node: dict[str, Any]) -> str:
+    nid = node.get("id", "")
+    labels = node.get("labels") or (
+        [node["label"]]
+        if node.get("label") and node["label"] != "Entity" and node["label"] != nid
+        else []
+    )
+    lbl_str = f":{':'.join(labels)}" if labels else ""
+    return f"({nid}{lbl_str})"
+
+
+def _format_topology_edge(edge: dict[str, Any]) -> str:
+    eid = edge.get("id", "")
+    var = eid if eid and not eid.startswith("rel_") else ""
+    types = edge.get("types") or (
+        [edge["label"]] if edge.get("label") and edge["label"] != "CONNECTED_TO" else []
+    )
+    types_str = f":{'|'.join(types)}" if types else ""
+
+    min_h = edge.get("min_hops")
+    max_h = edge.get("max_hops")
+    hops_str = ""
+    if min_h is not None and max_h is not None:
+        hops_str = f"*{min_h}" if min_h == max_h else f"*{min_h}..{max_h}"
+    elif min_h is not None:
+        hops_str = f"*{min_h}.."
+    elif max_h is not None:
+        hops_str = f"*..{max_h}"
+
+    body = f"{var}{types_str}{hops_str}"
+    bracket = f"[{body}]" if body else ""
+
+    direction = edge.get("direction", "outgoing")
+    if direction == "incoming":
+        return f"<-{bracket}-"
+    elif direction == "undirected":
+        return f"-{bracket}-"
+    else:
+        return f"-{bracket}->"
+
+
+def _topology_to_pattern_str(topo: dict[str, Any]) -> str:
+    """Serializes extracted graph topology into a SQL:2023 / openCypher path pattern string.
+
+    Note:
+        Branching topologies that produce multiple disconnected or branching chains
+        are formatted as comma-separated path patterns. Note that comma-joined chains
+        are invalid inside a single SQL:2023 PGQ path pattern clause; branching graphs
+        should be decomposed or expressed as separate match clauses.
+    """
+    nodes = topo.get("nodes", [])
+    edges = topo.get("edges", [])
+    if not nodes:
+        return ""
+    if not edges:
+        return ", ".join(_format_topology_node(n) for n in nodes)
+
+    nodes_by_id = {n["id"]: n for n in nodes}
+    chains: list[list[str]] = []
+    current_chain: list[str] = []
+    last_target: str | None = None
+
+    for edge in edges:
+        src = edge.get("source", "")
+        tgt = edge.get("target", "")
+        edge_repr = _format_topology_edge(edge)
+
+        if last_target is not None and src == last_target:
+            tgt_node = nodes_by_id.get(tgt, {"id": tgt})
+            current_chain.append(edge_repr)
+            current_chain.append(_format_topology_node(tgt_node))
+            last_target = tgt
+        else:
+            if current_chain:
+                chains.append(current_chain)
+            src_node = nodes_by_id.get(src, {"id": src})
+            tgt_node = nodes_by_id.get(tgt, {"id": tgt})
+            current_chain = [
+                _format_topology_node(src_node),
+                edge_repr,
+                _format_topology_node(tgt_node),
+            ]
+            last_target = tgt
+
+    if current_chain:
+        chains.append(current_chain)
+
+    connected_node_ids = {e.get("source") for e in edges} | {e.get("target") for e in edges}
+    isolated = [_format_topology_node(n) for n in nodes if n.get("id") not in connected_node_ids]
+    parts = ["".join(chain) for chain in chains] + isolated
+    return ", ".join(parts)
+
+
 def graph_table(
     graph: str | PropertyGraph,
     match: Query | CompiledQuery | str,
@@ -375,6 +467,13 @@ def graph_table(
     Returns:
         GraphTableClause instance usable directly in SQLAlchemy `select().join(...)`.
 
+    Note:
+        Compiled WHERE predicates from a `Query` instance are not automatically wired
+        into GRAPH_TABLE pattern syntax; use the explicit `where=` argument to supply
+        SQL:2023 GRAPH_TABLE WHERE filters.
+        Furthermore, comma-joined chains from branching topologies are invalid inside
+        a single PGQ path pattern; construct linear match chains for GRAPH_TABLE.
+
     Example:
         ```python
         gt = graph_table(
@@ -392,23 +491,29 @@ def graph_table(
 
     pattern_str = ""
     if isinstance(match, Query):
-        compiled = match.compile("sql_pgq", graph_name=graph_name)
-        m = re.search(
-            r"MATCH\s+(.+?)(?:\s+COLUMNS|\s+RETURN|\s+WHERE|$)",
-            compiled.statement,
-            re.IGNORECASE | re.DOTALL,
-        )
-        if m:
-            pattern_str = m.group(1).strip()
-        else:
-            pattern_str = str(match)
+        topo = match.extract_topology()
+        pattern_str = _topology_to_pattern_str(topo)
+    elif hasattr(match, "extract_topology"):
+        extract_fn = getattr(match, "extract_topology", None)
+        topo = extract_fn() if callable(extract_fn) else {}
+        pattern_str = _topology_to_pattern_str(topo)
     elif isinstance(match, CompiledQuery):
-        m = re.search(
-            r"MATCH\s+(.+?)(?:\s+COLUMNS|\s+RETURN|\s+WHERE|$)",
-            match.statement,
-            re.IGNORECASE | re.DOTALL,
-        )
-        pattern_str = m.group(1).strip() if m else match.statement
+        from voyager_ogm._voyager_rs import extract_topology_from_query
+
+        topo = extract_topology_from_query(match.statement)
+        pattern_str = _topology_to_pattern_str(topo)
+    elif isinstance(match, str):
+        match_clean = match.strip()
+        if match_clean.startswith("("):
+            pattern_str = match_clean
+        else:
+            from voyager_ogm._voyager_rs import extract_topology_from_query
+
+            try:
+                topo = extract_topology_from_query(match_clean)
+                pattern_str = _topology_to_pattern_str(topo) if topo.get("nodes") else match_clean
+            except Exception:
+                pattern_str = match_clean
     else:
         pattern_str = str(match)
 

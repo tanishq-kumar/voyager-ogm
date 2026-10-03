@@ -525,3 +525,20 @@ class TestSQLAlchemyHybridBridge:
             assert len(reachable_friends) == 2
             friend_names = [f.username for f in reachable_friends]
             assert friend_names == ["Bob", "Charlie"]
+
+    def test_graph_table_multi_label_node_roundtrip(self):
+        """Verifies multi-label node (e.g. :Person:Employee) round-trips into GRAPH_TABLE without label loss."""
+
+        @node(labels=["Person", "Employee"])
+        class MultiLabelUser(Node):
+            user_id: int = Field(primary_key=True)
+            name: str = Field()
+
+        u = MultiLabelUser(alias="p")
+        gt = graph_table(
+            graph="enterprise_catalog",
+            match=Query.match(u),
+            columns=[("user_id", u.user_id)],
+            alias="gt",
+        )
+        assert "(p:Person:Employee)" in gt.pattern_str

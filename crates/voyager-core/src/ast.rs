@@ -42,7 +42,7 @@ impl fmt::Display for NodeHandle {
 }
 
 /// Traversal direction for relationship edge patterns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Direction {
     /// Outgoing edge: `(a)-[r]->(b)`

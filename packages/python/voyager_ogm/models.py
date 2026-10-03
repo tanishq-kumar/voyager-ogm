@@ -438,19 +438,26 @@ class Node:
     _cached_labels: ClassVar[list[str]] = ["Node"]
     _cached_label: ClassVar[str] = "Node"
 
-    def __init_subclass__(cls, label: str | list[str] | None = None, **kwargs: Any) -> None:
+    def __init_subclass__(
+        cls,
+        label: str | list[str] | None = None,
+        labels: list[str] | None = None,
+        **kwargs: Any,
+    ) -> None:
         """Initializes Node subclass metadata and labels.
 
         Args:
             label: Optional custom label or list of labels.
+            labels: Optional custom label list (synonym for label).
             **kwargs: Extra keyword arguments passed to super.
         """
         super().__init_subclass__(**kwargs)
-        if isinstance(label, str):
-            cls.__labels__ = [label]
-        elif isinstance(label, list):
-            cls.__labels__ = label
-        elif not getattr(cls, "__labels__", None):
+        lbl = label if label is not None else labels
+        if isinstance(lbl, str):
+            cls.__labels__ = [lbl]
+        elif isinstance(lbl, list):
+            cls.__labels__ = list(lbl)
+        elif "__labels__" not in cls.__dict__ or not cls.__labels__:
             cls.__labels__ = [cls.__name__]
 
         cls._cached_labels = list(cls.__labels__)
@@ -844,8 +851,8 @@ def node(target: type | str | list[str] | None = None, **kwargs: Any) -> Any:
     and sets up schema reflection.
 
     Args:
-        target: Target class when used as `@node` or label when used as `@node(label="...")`.
-        **kwargs: Optional configuration parameters (e.g. `label="Person"`).
+        target: Target class when used as `@node`, or primary label/labels when used as `@node("Person")` or `@node(["User", "Admin"])`.
+        **kwargs: Optional configuration parameters, supporting `label="Person"` or `labels=["User", "Admin"]`.
 
     Returns:
         The decorated Node class with schema descriptors and auto-aliasing.
@@ -855,11 +862,21 @@ def node(target: type | str | list[str] | None = None, **kwargs: Any) -> Any:
         ... class User:
         ...     name: str
         ...     age: int
+        >>> @node(labels=["User", "Admin"])
+        ... class Administrator:
+        ...     role: str
     """
 
     def decorator(cls: type) -> type:
-        label = kwargs.get("label", target if isinstance(target, (str, list)) else None)
-        labels = [label] if isinstance(label, str) else (label if isinstance(label, list) else None)
+        label = kwargs.get(
+            "label",
+            kwargs.get("labels", target if isinstance(target, (str, list)) else None),
+        )
+        labels = (
+            [label]
+            if isinstance(label, str)
+            else (list(label) if isinstance(label, list) else None)
+        )
         cls_labels = labels or [cls.__name__]
 
         fields_map = _process_type_annotations(cls)

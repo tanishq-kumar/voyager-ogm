@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.4.0-alpha.6] - 2026-10-02
+
+<!-- TODO: have to add updates here -->
+Updates
+
+---
+
+## [0.4.0-alpha.5] - 2026-09-07
+
+### Added
+- **Rich Expression, Arithmetic & Function AST Engine (`voyager-core`)**:
+  - Added support for string functions (`toLower`, `toUpper`, `trim`, `split`), scalar functions (`coalesce`, `size`), arithmetic operators (`+`, `-`, `*`, `/`, `%`), and conditional `CASE WHEN` constructs.
+  - Added temporal function expressions (`datetime()`) and list/pattern comprehensions.
+- **Branching Topologies & Subqueries**:
+  - Added support for branching graph diamond patterns (`MATCH p1, p2`), existential subqueries (`WHERE EXISTS (...)`), and scalar aggregations (`COUNT(...)`).
+- **Batched FFI Serialization Layer (`voyager-pyo3`)**:
+  - Added `compile_query_from_spec` single-trip AST handoff across the PyO3 boundary, yielding a 3.0x speedup in cross-language query compilation.
+- **AST Rule-Based Query Optimizer**:
+  - Implemented predicate pushdown pass into inline pattern constraints (`(p:Person {city: $p0})`), dead variable pruning, and constant folding.
+- **Multi-Database Batch Identity Map & Active Record Data Mapper**:
+  - Added unit of work identity map with weakref lifecycle management (`Session.flush()`, `Node.save()`).
+
+---
+
 ## [0.3.0-alpha.1] - 2026-09-03
 
 ### Added

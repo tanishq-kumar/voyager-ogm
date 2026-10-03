@@ -101,10 +101,11 @@ impl AstVisitor for AgeEmitter {
             prefix, self.graph_name, cypher_compiled.statement, params_arg, as_clause
         );
 
-        Ok(CompiledQuery::with_execution_mode(
+        Ok(CompiledQuery::with_columns(
             wrapped_statement,
             cypher_compiled.parameters,
             execution_mode,
+            cypher_compiled.columns,
         ))
     }
 }

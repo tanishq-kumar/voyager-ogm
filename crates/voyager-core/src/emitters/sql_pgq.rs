@@ -5,7 +5,7 @@ use crate::ast::{
     ProjectionItem, QueryAstArena, UnaryOp,
 };
 use crate::error::{Error, Result};
-use crate::visitor::{AstVisitor, CompiledQuery};
+use crate::visitor::{AstVisitor, ColumnMeta, CompiledQuery};
 use std::collections::HashMap;
 
 /// Emits standardized ISO/IEC 9075-16:2023 SQL:PGQ `GRAPH_TABLE` queries.
@@ -765,10 +765,13 @@ impl AstVisitor for SqlPgqEmitter {
                 self.buffer.push_str(&format!(" OFFSET {skip}"));
             }
 
-            Ok(CompiledQuery::with_execution_mode(
+            let columns = ColumnMeta::from_projections(arena, &projections_list);
+
+            Ok(CompiledQuery::with_columns(
                 std::mem::take(&mut self.buffer),
                 std::mem::take(&mut self.parameters),
                 *execution_mode,
+                columns,
             ))
         } else {
             Err(Error::AstInvariantViolation(format!(

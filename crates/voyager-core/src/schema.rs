@@ -11,8 +11,9 @@ use std::sync::{OnceLock, RwLock};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::ast::LiteralValue;
+use crate::ast::{Direction, LiteralValue};
 use crate::error::{Error, Result};
+use crate::topology::GraphTopology;
 
 /// Data types supported for graph model properties across dialects.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -75,6 +76,30 @@ impl FieldType {
             "ANY" => Self::Any,
             other => Self::Custom(other.to_string()),
         }
+    }
+
+    /// Checks whether a literal value conforms to this declared field type.
+    pub fn matches_literal(&self, lit: &LiteralValue) -> bool {
+        matches!(
+            (self, lit),
+            (_, LiteralValue::Null)
+                | (_, LiteralValue::ParameterRef(_))
+                | (Self::Any, _)
+                | (Self::String, LiteralValue::String(_))
+                | (Self::Int64, LiteralValue::Int64(_))
+                | (
+                    Self::Float64,
+                    LiteralValue::Float64(_) | LiteralValue::Int64(_)
+                )
+                | (Self::Boolean, LiteralValue::Bool(_))
+                | (
+                    Self::DateTime | Self::Date | Self::Duration,
+                    LiteralValue::String(_)
+                )
+                | (Self::List(_), LiteralValue::List(_))
+                | (Self::Map, LiteralValue::Map(_))
+                | (Self::Custom(_), _)
+        )
     }
 }
 
@@ -369,6 +394,27 @@ impl RelationshipSchema {
             .filter(|f| !f.nullable || f.unique || f.primary_key)
             .collect()
     }
+
+    /// Checks if the given source and target node labels are allowed by this relationship.
+    pub fn allows_endpoints(&self, src_labels: &[String], tgt_labels: &[String]) -> bool {
+        let src_ok = self.source_labels.is_empty()
+            || src_labels.is_empty()
+            || src_labels.iter().any(|l| {
+                self.source_labels
+                    .iter()
+                    .any(|sl| sl.eq_ignore_ascii_case(l))
+            });
+
+        let tgt_ok = self.target_labels.is_empty()
+            || tgt_labels.is_empty()
+            || tgt_labels.iter().any(|l| {
+                self.target_labels
+                    .iter()
+                    .any(|tl| tl.eq_ignore_ascii_case(l))
+            });
+
+        src_ok && tgt_ok
+    }
 }
 
 /// Central, thread-safe registry holding graph entity schemas and property metadata.
@@ -418,7 +464,7 @@ impl SchemaRegistry {
         nodes.get(name).cloned()
     }
 
-    /// Retrieves a node schema by primary label.
+    /// Retrieves a node schema by primary or secondary label (case-insensitive).
     pub fn get_node_by_label(&self, label: &str) -> Option<NodeSchema> {
         let nodes = self.nodes.read().ok()?;
         nodes
@@ -436,6 +482,12 @@ impl SchemaRegistry {
     /// Retrieves a relationship schema by graph type name (case-insensitive).
     pub fn get_relationship_by_type(&self, type_name: &str) -> Option<RelationshipSchema> {
         let rels = self.relationships.read().ok()?;
+        if let Some(rel) = rels
+            .get(type_name)
+            .filter(|r| r.type_name.eq_ignore_ascii_case(type_name))
+        {
+            return Some(rel.clone());
+        }
         rels.values()
             .find(|r| r.type_name.eq_ignore_ascii_case(type_name))
             .cloned()
@@ -886,6 +938,361 @@ impl SchemaRegistry {
         }
         Ok(stmts)
     }
+
+    /// Validates a query graph topology against the registered schemas in this registry.
+    ///
+    /// Validates:
+    /// - Node labels are registered in the schema (with suggestions for typos).
+    /// - Properties filtered on nodes are defined on the node schema and match declared types.
+    /// - Relationship types are registered in the schema (with suggestions for typos).
+    /// - Relationship endpoints connect compatible source and target node labels.
+    /// - Directional consistency (warns if directed relationship is queried undirected).
+    /// - Properties filtered on relationships match declared types.
+    pub fn validate_topology(&self, topology: &GraphTopology) -> ConformanceReport {
+        let mut report = ConformanceReport::new();
+
+        let all_nodes = self.node_schemas();
+        let all_rels = self.relationship_schemas();
+
+        // If registry is completely empty, there are no schemas to validate against
+        if all_nodes.is_empty() && all_rels.is_empty() {
+            return report;
+        }
+
+        // 1. Validate Nodes
+        for node in &topology.nodes {
+            let mut recognized_schemas = Vec::new();
+
+            for label in &node.labels {
+                if let Some(ns) = all_nodes.iter().find(|n| {
+                    n.labels.iter().any(|l| l.eq_ignore_ascii_case(label))
+                        || n.name.eq_ignore_ascii_case(label)
+                }) {
+                    recognized_schemas.push(ns.clone());
+                } else if !all_nodes.is_empty() {
+                    let known_labels: Vec<&str> = all_nodes
+                        .iter()
+                        .flat_map(|n| n.labels.iter().map(|s| s.as_str()))
+                        .collect();
+                    let suggestion = find_closest_match(label, known_labels, 3)
+                        .map(|s| format!("Did you mean label '{s}'?"));
+                    report.add(ConformanceDiagnostic {
+                        severity: DiagnosticSeverity::Error,
+                        code: "UNKNOWN_NODE_LABEL".to_string(),
+                        message: format!(
+                            "Node label '{label}' is not registered in SchemaRegistry"
+                        ),
+                        entity_id: Some(node.id.clone()),
+                        suggestion,
+                    });
+                }
+            }
+
+            // Check properties on this node
+            for (prop_name, lit_val) in &node.properties {
+                if !recognized_schemas.is_empty() {
+                    let mut found_field = false;
+                    for ns in &recognized_schemas {
+                        if let Some(field_desc) = ns.fields.get(prop_name) {
+                            found_field = true;
+                            if !field_desc.field_type.matches_literal(lit_val) {
+                                report.add(ConformanceDiagnostic {
+                                    severity: DiagnosticSeverity::Error,
+                                    code: "PROPERTY_TYPE_MISMATCH".to_string(),
+                                    message: format!(
+                                        "Property '{}.{prop_name}' expects type {}, but received value {:?}",
+                                        ns.primary_label(),
+                                        field_desc.field_type,
+                                        lit_val
+                                    ),
+                                    entity_id: Some(node.id.clone()),
+                                    suggestion: None,
+                                });
+                            }
+                            break;
+                        }
+                    }
+
+                    if !found_field {
+                        let known_fields: Vec<&str> = recognized_schemas
+                            .iter()
+                            .flat_map(|ns| ns.fields.keys().map(|k| k.as_str()))
+                            .collect();
+                        let suggestion = find_closest_match(prop_name, known_fields, 2)
+                            .map(|s| format!("Did you mean property '{s}'?"));
+                        report.add(ConformanceDiagnostic {
+                            severity: DiagnosticSeverity::Warning,
+                            code: "UNDECLARED_PROPERTY".to_string(),
+                            message: format!(
+                                "Property '{prop_name}' is not declared on node entity with label(s) {:?}",
+                                node.labels
+                            ),
+                            entity_id: Some(node.id.clone()),
+                            suggestion,
+                        });
+                    }
+                }
+            }
+        }
+
+        // 2. Validate Relationships
+        for edge in &topology.edges {
+            let src_node = topology.nodes.iter().find(|n| n.id == edge.source);
+            let tgt_node = topology.nodes.iter().find(|n| n.id == edge.target);
+
+            let src_labels = src_node.map(|n| n.labels.as_slice()).unwrap_or(&[]);
+            let tgt_labels = tgt_node.map(|n| n.labels.as_slice()).unwrap_or(&[]);
+
+            for rel_type in &edge.types {
+                if rel_type.is_empty() {
+                    continue; // Anonymous relationship pattern -[ ]->
+                }
+
+                if let Some(rs) = all_rels.iter().find(|r| {
+                    r.type_name.eq_ignore_ascii_case(rel_type)
+                        || r.name.eq_ignore_ascii_case(rel_type)
+                }) {
+                    // Check endpoints
+                    let endpoints_ok = if edge.direction == Direction::Undirected {
+                        rs.allows_endpoints(src_labels, tgt_labels)
+                            || rs.allows_endpoints(tgt_labels, src_labels)
+                    } else {
+                        rs.allows_endpoints(src_labels, tgt_labels)
+                    };
+
+                    if !endpoints_ok && (!src_labels.is_empty() || !tgt_labels.is_empty()) {
+                        report.add(ConformanceDiagnostic {
+                            severity: DiagnosticSeverity::Error,
+                            code: "INCOMPATIBLE_ENDPOINTS".to_string(),
+                            message: format!(
+                                "Relationship '{rel_type}' cannot connect source label(s) {:?} to target label(s) {:?}. Allowed source(s): {:?}, target(s): {:?}",
+                                src_labels, tgt_labels, rs.source_labels, rs.target_labels
+                            ),
+                            entity_id: Some(edge.id.clone()),
+                            suggestion: None,
+                        });
+                    }
+
+                    // Check direction
+                    if rs.directed && edge.direction == Direction::Undirected {
+                        report.add(ConformanceDiagnostic {
+                            severity: DiagnosticSeverity::Warning,
+                            code: "UNDIRECTED_TRAVERSAL".to_string(),
+                            message: format!(
+                                "Relationship '{rel_type}' is defined as directed in schema, but traversed undirected"
+                            ),
+                            entity_id: Some(edge.id.clone()),
+                            suggestion: Some("Specify traversal direction (-> or <-)".to_string()),
+                        });
+                    }
+
+                    // Check relationship properties
+                    for (prop_name, lit_val) in &edge.properties {
+                        if let Some(field_desc) = rs.fields.get(prop_name) {
+                            if !field_desc.field_type.matches_literal(lit_val) {
+                                report.add(ConformanceDiagnostic {
+                                    severity: DiagnosticSeverity::Error,
+                                    code: "PROPERTY_TYPE_MISMATCH".to_string(),
+                                    message: format!(
+                                        "Relationship property '{rel_type}.{prop_name}' expects type {}, but received {:?}",
+                                        field_desc.field_type, lit_val
+                                    ),
+                                    entity_id: Some(edge.id.clone()),
+                                    suggestion: None,
+                                });
+                            }
+                        } else {
+                            let known_fields: Vec<&str> =
+                                rs.fields.keys().map(|k| k.as_str()).collect();
+                            let suggestion = find_closest_match(prop_name, known_fields, 2)
+                                .map(|s| format!("Did you mean property '{s}'?"));
+                            report.add(ConformanceDiagnostic {
+                                severity: DiagnosticSeverity::Warning,
+                                code: "UNDECLARED_PROPERTY".to_string(),
+                                message: format!(
+                                    "Property '{prop_name}' is not declared on relationship '{rel_type}'"
+                                ),
+                                entity_id: Some(edge.id.clone()),
+                                suggestion,
+                            });
+                        }
+                    }
+                } else if !all_rels.is_empty() {
+                    let known_types: Vec<&str> =
+                        all_rels.iter().map(|r| r.type_name.as_str()).collect();
+                    let suggestion = find_closest_match(rel_type, known_types, 3)
+                        .map(|s| format!("Did you mean relationship '{s}'?"));
+                    report.add(ConformanceDiagnostic {
+                        severity: DiagnosticSeverity::Error,
+                        code: "UNKNOWN_RELATIONSHIP_TYPE".to_string(),
+                        message: format!(
+                            "Relationship type '{rel_type}' is not registered in SchemaRegistry"
+                        ),
+                        entity_id: Some(edge.id.clone()),
+                        suggestion,
+                    });
+                }
+            }
+        }
+
+        report
+    }
+}
+
+/// Diagnostic severity for schema topology conformance checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum DiagnosticSeverity {
+    /// Severe error causing query rejection.
+    Error,
+    /// Warning representing potential intent discrepancy or undeclared attribute.
+    Warning,
+    /// Informational note.
+    Info,
+}
+
+impl DiagnosticSeverity {
+    /// Canonical uppercase name.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Error => "ERROR",
+            Self::Warning => "WARNING",
+            Self::Info => "INFO",
+        }
+    }
+}
+
+impl fmt::Display for DiagnosticSeverity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// A single diagnostic finding produced during schema topology validation.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ConformanceDiagnostic {
+    /// Diagnostic severity.
+    pub severity: DiagnosticSeverity,
+    /// Diagnostic machine-readable error code.
+    pub code: String,
+    /// Human-readable diagnostic description.
+    pub message: String,
+    /// Identifier or variable of the offending entity (e.g. node or edge id/var).
+    pub entity_id: Option<String>,
+    /// Actionable suggestion if a typo or close match was identified.
+    pub suggestion: Option<String>,
+}
+
+/// Aggregated report produced by validating a query topology against a schema registry.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ConformanceReport {
+    /// Whether the topology conforms to the schema (no Error-level diagnostics).
+    pub is_valid: bool,
+    /// List of diagnostic findings.
+    pub diagnostics: Vec<ConformanceDiagnostic>,
+}
+
+impl Default for ConformanceReport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ConformanceReport {
+    /// Creates a new valid, empty conformance report.
+    pub fn new() -> Self {
+        Self {
+            is_valid: true,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    /// Adds a diagnostic to this report. If severity is Error, marks is_valid as false.
+    pub fn add(&mut self, diag: ConformanceDiagnostic) {
+        if diag.severity == DiagnosticSeverity::Error {
+            self.is_valid = false;
+        }
+        self.diagnostics.push(diag);
+    }
+
+    /// Returns a list of all error-level diagnostic messages.
+    pub fn error_messages(&self) -> Vec<String> {
+        self.diagnostics
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Error)
+            .map(|d| {
+                if let Some(s) = &d.suggestion {
+                    format!("{} ({})", d.message, s)
+                } else {
+                    d.message.clone()
+                }
+            })
+            .collect()
+    }
+
+    /// Returns a list of all warning-level diagnostic messages.
+    pub fn warning_messages(&self) -> Vec<String> {
+        self.diagnostics
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Warning)
+            .map(|d| {
+                if let Some(s) = &d.suggestion {
+                    format!("{} ({})", d.message, s)
+                } else {
+                    d.message.clone()
+                }
+            })
+            .collect()
+    }
+}
+
+/// Computes the Levenshtein distance between two strings (case-insensitive).
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let m = a_chars.len();
+    let n = b_chars.len();
+    let mut dp = vec![vec![0; n + 1]; m + 1];
+    for (i, row) in dp.iter_mut().enumerate().take(m + 1) {
+        row[0] = i;
+    }
+    for (j, val) in dp[0].iter_mut().enumerate().take(n + 1) {
+        *val = j;
+    }
+    for i in 1..=m {
+        for j in 1..=n {
+            let cost = if a_chars[i - 1].eq_ignore_ascii_case(&b_chars[j - 1]) {
+                0
+            } else {
+                1
+            };
+            dp[i][j] = (dp[i - 1][j] + 1)
+                .min(dp[i][j - 1] + 1)
+                .min(dp[i - 1][j - 1] + cost);
+        }
+    }
+    dp[m][n]
+}
+
+/// Finds the closest matching string in candidates within max_dist edit distance.
+fn find_closest_match<'a, I>(target: &str, candidates: I, max_dist: usize) -> Option<String>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut best: Option<(&'a str, usize)> = None;
+    for cand in candidates {
+        let dist = levenshtein(target, cand);
+        if dist <= max_dist {
+            match best {
+                None => best = Some((cand, dist)),
+                Some((_, best_dist)) if dist < best_dist => best = Some((cand, dist)),
+                _ => {}
+            }
+        }
+    }
+    best.map(|(s, _)| s.to_string())
 }
 
 /// Point-in-time snapshot of all registered node and relationship schemas.
