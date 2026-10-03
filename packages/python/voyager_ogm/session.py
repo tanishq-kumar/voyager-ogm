@@ -646,16 +646,6 @@ class _SessionBase:
         if self._native_client is not None and self._requested_backend in ("native", "auto"):
             self._circuit_router.reset()
 
-    def _should_probe_native(self) -> bool:
-        """Checks whether circuit breaker cooldown has passed to probe native re-enablement."""
-        if (
-            self._native_client is not None
-            and self._requested_backend in ("native", "auto")
-            and self._circuit_router.state != "closed"
-        ):
-            return self._circuit_router.should_probe()
-        return False
-
     def _record_native_success(self) -> None:
         """Records successful native query execution, restoring native backend if previously downgraded."""
         was_degraded = self._circuit_router.state != "closed"
