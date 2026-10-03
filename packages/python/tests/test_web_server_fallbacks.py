@@ -275,3 +275,204 @@ async def test_backend_downgrade_logs_warning_and_circuit_breaker_probe_async(ca
 
     assert session.backend == "native"
     assert any("Native execution backend recovered" in record.message for record in caplog.records)
+
+
+def test_native_circuit_router_lifecycle():
+    """Verify NativeCircuitRouter transitions through Closed -> Open -> HalfOpen -> Closed."""
+    from voyager_ogm import NativeCircuitRouter
+
+    router = NativeCircuitRouter(failure_threshold=2, cooldown_seconds=0.03, success_threshold=1)
+    assert router.state == "closed"
+    assert router.route() == "native"
+    assert router.should_route_native()
+    assert not router.should_probe()
+    assert router.consecutive_failures == 0
+    assert router.failure_threshold == 2
+    assert router.cooldown_seconds == pytest.approx(0.03)
+    assert "NativeCircuitRouter" in repr(router)
+
+    # 1. Semantic error does not increment failure count
+    router.record_failure(is_transient=False)
+    assert router.consecutive_failures == 0
+    assert router.state == "closed"
+
+    # 2. First transient failure: below threshold 2
+    router.record_failure(is_transient=True)
+    assert router.consecutive_failures == 1
+    assert router.state == "closed"
+    assert router.route() == "native"
+
+    # 3. Second transient failure: trips to Open
+    router.record_failure(is_transient=True)
+    assert router.consecutive_failures == 2
+    assert router.state == "open"
+    assert router.route() == "fallback"
+    assert not router.should_route_native()
+    assert not router.should_probe()
+
+    # 4. Wait for cooldown to expire
+    time.sleep(0.05)
+
+    # 5. Automatically transitions to HalfOpen for trial probe
+    assert router.state == "half_open"
+    assert router.route() == "probe"
+    assert router.should_probe()
+    assert router.should_route_native()
+
+    # 6. Successful probe restores Closed state
+    router.record_success()
+    assert router.state == "closed"
+    assert router.route() == "native"
+    assert router.consecutive_failures == 0
+
+
+def test_native_circuit_router_half_open_failure_reopens():
+    """Verify a probe failure in HalfOpen immediately returns the circuit to Open."""
+    from voyager_ogm import NativeCircuitRouter
+
+    router = NativeCircuitRouter(failure_threshold=1, cooldown_seconds=0.02)
+    router.record_failure(is_transient=True)
+    assert router.state == "open"
+
+    time.sleep(0.04)
+    assert router.state == "half_open"
+    assert router.route() == "probe"
+
+    # Probe fails
+    router.record_failure(is_transient=True)
+    assert router.state == "open"
+    assert router.route() == "fallback"
+
+
+def test_native_circuit_router_manual_trip_and_reset():
+    """Verify manual trip() and reset() methods."""
+    from voyager_ogm import NativeCircuitRouter
+
+    router = NativeCircuitRouter()
+    assert router.state == "closed"
+
+    router.trip()
+    assert router.state == "open"
+    assert router.route() == "fallback"
+
+    router.reset()
+    assert router.state == "closed"
+    assert router.route() == "native"
+    assert router.consecutive_failures == 0
+
+
+def test_native_circuit_router_error_classification_static():
+    """Verify static classification helpers on NativeCircuitRouter."""
+    from voyager_ogm import NativeCircuitRouter
+
+    assert NativeCircuitRouter.is_semantic_error("SyntaxError: near SELECT")
+    assert NativeCircuitRouter.is_semantic_error("ConstraintValidationFailed: key exists")
+    assert not NativeCircuitRouter.is_semantic_error("Connection reset by peer")
+    assert not NativeCircuitRouter.is_semantic_error("Timed out")
+
+    assert NativeCircuitRouter.classify_error("syntax error") == "semantic"
+    assert NativeCircuitRouter.classify_error("Connection refused") == "transient"
+
+
+def test_session_configurable_failure_threshold_sync():
+    """Verify Session respects circuit_failure_threshold before tripping backend."""
+    native_mock = MockNativeClientWithErrors(
+        ConnectionResetError("Socket broken: connection reset by peer")
+    )
+    # Threshold = 3: requires 3 transient failures before tripping to bridge
+    session = Session(
+        bridge=native_mock,
+        backend="auto",
+        circuit_cooldown_seconds=0.05,
+        circuit_failure_threshold=3,
+    )
+    session._is_explicit_mock = True
+    assert session.backend == "native"
+    assert session.circuit_router.failure_threshold == 3
+
+    # Attempt 1: fails, but below threshold -> falls back for this query, but backend remains native candidate
+    session.execute("MATCH (n) RETURN n")
+    assert session.circuit_router.consecutive_failures == 1
+    assert session.backend == "native"
+
+    # Attempt 2: second failure
+    session.execute("MATCH (n) RETURN n")
+    assert session.circuit_router.consecutive_failures == 2
+    assert session.backend == "native"
+
+    # Attempt 3: third failure -> reaches threshold 3, trips circuit to Open!
+    session.execute("MATCH (n) RETURN n")
+    assert session.circuit_router.consecutive_failures == 3
+    assert session.backend == "bridge"
+
+    # Heal native mock and wait for cooldown
+    native_mock.error_to_raise = None
+    time.sleep(0.08)
+
+    # Next query executes probe and recovers
+    session.execute("MATCH (n) RETURN n")
+    assert session.backend == "native"
+    assert session.circuit_router.consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_session_configurable_failure_threshold_async():
+    """Verify AsyncSession respects circuit_failure_threshold before tripping backend."""
+    import asyncio
+
+    native_mock = MockNativeClientWithErrors(
+        ConnectionResetError("Socket broken: connection reset by peer")
+    )
+    session = AsyncSession(
+        bridge=native_mock,
+        backend="auto",
+        circuit_cooldown_seconds=0.05,
+        circuit_failure_threshold=2,
+    )
+    session._is_explicit_mock = True
+    assert session.backend == "native"
+    assert session.circuit_router.failure_threshold == 2
+
+    # Attempt 1
+    await session.execute("MATCH (n) RETURN n")
+    assert session.circuit_router.consecutive_failures == 1
+    assert session.backend == "native"
+
+    # Attempt 2 -> trips to bridge
+    await session.execute("MATCH (n) RETURN n")
+    assert session.circuit_router.consecutive_failures == 2
+    assert session.backend == "bridge"
+
+    # Heal and recover
+    native_mock.error_to_raise = None
+    await asyncio.sleep(0.08)
+
+    await session.execute("MATCH (n) RETURN n")
+    assert session.backend == "native"
+    assert session.circuit_router.consecutive_failures == 0
+
+
+def test_live_tcp_circuit_failover_on_unreachable_endpoint():
+    """Verify Session trips circuit when NativeClient encounters real OS socket connection failure."""
+    import socket
+
+    # Bind and immediately close a socket to find an unused local port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        dead_port = s.getsockname()[1]
+
+    dead_uri = f"bolt://127.0.0.1:{dead_port}?connect_timeout=1"
+    # When NativeClient tries to connect to dead_uri, the OS kernel rejects the connection
+    session = Session(bridge=dead_uri, backend="auto", circuit_cooldown_seconds=0.05)
+    # Enable explicit mock bridge fallback for testing the graceful downgrade
+    session._is_explicit_mock = True
+    assert session.backend == "native"
+
+    # Query fails on native TCP transport and seamlessly falls back to bridge
+    res = session.execute("MATCH (n) RETURN n")
+    assert res == []
+
+    # Circuit breaker has tripped to Open! Backend is now bridge.
+    assert session.backend == "bridge"
+    assert session.circuit_router.state == "open"
+    assert session.circuit_router.consecutive_failures == 1

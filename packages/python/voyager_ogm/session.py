@@ -511,25 +511,11 @@ def _is_query_semantic_error(exc: Exception) -> bool:
 
     In async web servers, semantic query errors must NEVER trigger permanent backend degradation,
     as they are query-specific defects that would fail identically across all drivers.
+    Delegates directly to the native voyager-net error classification engine.
     """
-    msg = str(exc)
-    semantic_indicators = (
-        "SyntaxError",
-        "syntax error",
-        "SemanticError",
-        "ConstraintValidationFailed",
-        "ParameterMissing",
-        "TypeError",
-        "EntityNotFound",
-        "Unknown function",
-        "Invalid input",
-        "already exists",
-        "does not exist",
-        "violates unique constraint",
-        "violates not-null constraint",
-        "violates foreign key constraint",
-    )
-    return any(indicator in msg for indicator in semantic_indicators)
+    from voyager_ogm._voyager_rs import NativeCircuitRouter
+
+    return NativeCircuitRouter.is_semantic_error(str(exc))
 
 
 class _SessionBase:
@@ -549,6 +535,7 @@ class _SessionBase:
         pool_size: int = 10,
         is_async: bool = False,
         circuit_cooldown_seconds: float = 30.0,
+        circuit_failure_threshold: int = 1,
     ) -> None:
         cfg = get_config()
         self._dialect = dialect or cfg.default_dialect
@@ -573,10 +560,16 @@ class _SessionBase:
 
         self._requested_backend = backend.lower() if isinstance(backend, str) else "auto"
         self._native_client: Any = None
-        self._active_backend = "bridge"
         self._circuit_cooldown_seconds = circuit_cooldown_seconds
-        self._fallback_timestamp: float | None = None
-        self._consecutive_native_failures = 0
+        self._circuit_failure_threshold = circuit_failure_threshold
+
+        from voyager_ogm._voyager_rs import NativeCircuitRouter
+
+        self._circuit_router = NativeCircuitRouter(
+            failure_threshold=circuit_failure_threshold,
+            cooldown_seconds=circuit_cooldown_seconds,
+        )
+
         self._bridge: Any = None
 
         # Check if bridge was passed directly as a NativeClient instance or test double
@@ -592,7 +585,6 @@ class _SessionBase:
 
         if is_native_candidate:
             self._native_client = bridge
-            self._active_backend = "native"
             self._bridge = AsyncMockBridge() if is_async else MockBridge()
         elif (
             self._requested_backend in ("native", "auto")
@@ -603,7 +595,6 @@ class _SessionBase:
                 from voyager_ogm._voyager_rs import NativeClient
 
                 self._native_client = NativeClient(bridge, min_idle=1, max_size=pool_size)
-                self._active_backend = "native"
                 try:
                     self._bridge = create_bridge(bridge, is_async=is_async)
                 except Exception:
@@ -611,7 +602,7 @@ class _SessionBase:
             except Exception as e:
                 if self._requested_backend == "native":
                     raise RuntimeError(f"Failed to initialize native backend: {e}") from e
-                self._active_backend = "bridge"
+                self._circuit_router.trip()
                 self._bridge = create_bridge(bridge, is_async=is_async)
         elif self._requested_backend == "native":
             raise ValueError(
@@ -630,6 +621,56 @@ class _SessionBase:
             or isinstance(bridge, (MockBridge, AsyncMockBridge))
         )
 
+    @property
+    def circuit_router(self) -> Any:
+        """The native CircuitRouter managing backend routing, error classification, and failover."""
+        return self._circuit_router
+
+    @property
+    def _active_backend(self) -> str:
+        if self._native_client is None or self._requested_backend == "bridge":
+            return "bridge"
+        return "native" if self._circuit_router.state == "closed" else "bridge"
+
+    @_active_backend.setter
+    def _active_backend(self, value: str) -> None:
+        if value == "bridge":
+            self._circuit_router.trip()
+        elif value == "native":
+            self._circuit_router.reset()
+
+    @property
+    def backend(self) -> str:
+        """The active query execution backend ('native' or 'bridge')."""
+        return self._active_backend
+
+    @property
+    def consecutive_native_failures(self) -> int:
+        """Number of consecutive native execution failures tracked by the circuit router."""
+        return self._circuit_router.consecutive_failures
+
+    @property
+    def _consecutive_native_failures(self) -> int:
+        return self._circuit_router.consecutive_failures
+
+    @_consecutive_native_failures.setter
+    def _consecutive_native_failures(self, value: int) -> None:
+        if value == 0:
+            self._circuit_router.reset()
+
+    @property
+    def _fallback_timestamp(self) -> float | None:
+        if self._circuit_router.state == "closed":
+            return None
+        return time.monotonic()
+
+    @_fallback_timestamp.setter
+    def _fallback_timestamp(self, value: float | None) -> None:
+        if value is None:
+            self._circuit_router.reset()
+        else:
+            self._circuit_router.trip()
+
     def reset_backend(self) -> None:
         """Resets the active backend back to native if NativeClient is available.
 
@@ -637,50 +678,41 @@ class _SessionBase:
         execution after transient network connectivity issues resolve.
         """
         if self._native_client is not None and self._requested_backend in ("native", "auto"):
-            self._active_backend = "native"
-            self._fallback_timestamp = None
-            self._consecutive_native_failures = 0
+            self._circuit_router.reset()
 
     def _should_probe_native(self) -> bool:
         """Checks whether circuit breaker cooldown has passed to probe native re-enablement."""
         if (
-            self._active_backend == "bridge"
+            self._native_client is not None
             and self._requested_backend in ("native", "auto")
-            and self._native_client is not None
-            and self._fallback_timestamp is not None
+            and self._circuit_router.state != "closed"
         ):
-            return (time.monotonic() - self._fallback_timestamp) >= self._circuit_cooldown_seconds
+            return self._circuit_router.should_probe()
         return False
 
     def _record_native_success(self) -> None:
         """Records successful native query execution, restoring native backend if previously downgraded."""
-        if self._active_backend != "native":
+        was_degraded = self._circuit_router.state != "closed"
+        self._circuit_router.record_success()
+        if was_degraded:
             logger.info("Native execution backend recovered. Restored active backend to 'native'.")
-            self._active_backend = "native"
-        self._fallback_timestamp = None
-        self._consecutive_native_failures = 0
 
     def _record_native_failure(self, exc: Exception) -> None:
         """Records a native execution failure, logging a warning and opening the circuit breaker."""
-        self._fallback_timestamp = time.monotonic()
-        self._consecutive_native_failures += 1
-        if self._active_backend == "native":
+        was_closed = self._circuit_router.state == "closed"
+        is_transient = not _is_query_semantic_error(exc)
+        self._circuit_router.record_failure(is_transient)
+        if was_closed:
             logger.warning(
                 "Native backend execution failed: %s. Falling back to bridge backend.",
                 exc,
                 exc_info=True,
             )
-            self._active_backend = "bridge"
         else:
             logger.debug(
                 "Native re-enablement probe failed: %s. Remaining on bridge backend.",
                 exc,
             )
-
-    @property
-    def backend(self) -> str:
-        """The active query execution backend ('native' or 'bridge')."""
-        return self._active_backend
 
     @property
     def native_client(self) -> Any:
@@ -942,6 +974,7 @@ class Session(_SessionBase):
         backend: str = "auto",
         pool_size: int = 10,
         circuit_cooldown_seconds: float = 30.0,
+        circuit_failure_threshold: int = 1,
     ) -> None:
         """Initializes a new Voyager Session.
 
@@ -962,6 +995,7 @@ class Session(_SessionBase):
                 pooling and direct wire-to-Arrow streaming, falling back to 'bridge' if unavailable.
             pool_size: Connection pool capacity for native network engine connections (default 10).
             circuit_cooldown_seconds: Cooldown duration in seconds before attempting to probe native re-enablement.
+            circuit_failure_threshold: Number of consecutive transient failures before opening the circuit breaker (default 1).
         """
         super().__init__(
             bridge=bridge,
@@ -973,6 +1007,7 @@ class Session(_SessionBase):
             pool_size=pool_size,
             is_async=False,
             circuit_cooldown_seconds=circuit_cooldown_seconds,
+            circuit_failure_threshold=circuit_failure_threshold,
         )
 
     @property
@@ -1320,6 +1355,7 @@ class AsyncSession(_SessionBase):
         backend: str = "auto",
         pool_size: int = 10,
         circuit_cooldown_seconds: float = 30.0,
+        circuit_failure_threshold: int = 1,
     ) -> None:
         """Initializes a new asynchronous Voyager Session.
 
@@ -1337,6 +1373,7 @@ class AsyncSession(_SessionBase):
                 pooling and direct wire-to-Arrow streaming, falling back to 'bridge' if unavailable.
             pool_size: Connection pool capacity for native network engine connections (default 10).
             circuit_cooldown_seconds: Cooldown duration in seconds before attempting to probe native re-enablement.
+            circuit_failure_threshold: Number of consecutive transient failures before opening the circuit breaker (default 1).
         """
         super().__init__(
             bridge=bridge,
@@ -1348,6 +1385,7 @@ class AsyncSession(_SessionBase):
             pool_size=pool_size,
             is_async=True,
             circuit_cooldown_seconds=circuit_cooldown_seconds,
+            circuit_failure_threshold=circuit_failure_threshold,
         )
 
     @property

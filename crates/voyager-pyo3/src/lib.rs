@@ -2764,6 +2764,122 @@ impl PyNativeClient {
     }
 }
 
+/// Native thread-safe circuit breaker and backend router for Voyager sessions.
+#[pyclass(name = "NativeCircuitRouter")]
+pub struct PyNativeCircuitRouter {
+    router: voyager_net::CircuitRouter,
+}
+
+#[pymethods]
+impl PyNativeCircuitRouter {
+    /// Creates a new `NativeCircuitRouter` with configurable failure threshold, cooldown, and success threshold.
+    #[new]
+    #[pyo3(signature = (failure_threshold=1, cooldown_seconds=30.0, success_threshold=1))]
+    fn new(failure_threshold: u32, cooldown_seconds: f64, success_threshold: u32) -> Self {
+        let config = voyager_net::CircuitConfig::new(
+            failure_threshold,
+            std::time::Duration::from_secs_f64(cooldown_seconds.max(0.0)),
+        )
+        .with_success_threshold(success_threshold);
+        Self {
+            router: voyager_net::CircuitRouter::new(config),
+        }
+    }
+
+    /// Returns the current state of the circuit breaker ("closed", "open", "half_open").
+    #[getter]
+    fn state(&self) -> &'static str {
+        self.router.state().as_str()
+    }
+
+    /// Determines the routing destination for an incoming query ("native", "fallback", "probe").
+    fn route(&self) -> &'static str {
+        self.router.route().as_str()
+    }
+
+    /// Returns `true` if the cooldown has elapsed and a trial probe should be executed.
+    fn should_probe(&self) -> bool {
+        self.router.should_probe()
+    }
+
+    /// Returns `true` if the query should be routed to the native engine or probed.
+    fn should_route_native(&self) -> bool {
+        self.router.should_route_native()
+    }
+
+    /// Records a query failure, tripping the circuit if transient and threshold reached.
+    #[pyo3(signature = (is_transient=true))]
+    fn record_failure(&self, is_transient: bool) {
+        self.router.record_failure(is_transient);
+    }
+
+    /// Records a successful query execution, resetting failures or closing a half-open circuit.
+    fn record_success(&self) {
+        self.router.record_success();
+    }
+
+    /// Classifies an error message and records it, returning `true` if counted as transient.
+    fn record_error(&self, error_msg: &str) -> bool {
+        self.router.record_error(error_msg)
+    }
+
+    /// Manually trips the circuit breaker to `Open`.
+    fn trip(&self) {
+        self.router.trip();
+    }
+
+    /// Manually resets the circuit breaker to `Closed`.
+    fn reset(&self) {
+        self.router.reset();
+    }
+
+    /// Returns the current count of consecutive transient failures.
+    #[getter]
+    fn consecutive_failures(&self) -> u32 {
+        self.router.consecutive_failures()
+    }
+
+    /// Returns the current count of consecutive successful probes.
+    #[getter]
+    fn consecutive_successes(&self) -> u32 {
+        self.router.consecutive_successes()
+    }
+
+    /// Returns the configured failure threshold.
+    #[getter]
+    fn failure_threshold(&self) -> u32 {
+        self.router.failure_threshold()
+    }
+
+    /// Returns the configured cooldown duration in seconds.
+    #[getter]
+    fn cooldown_seconds(&self) -> f64 {
+        self.router.cooldown_seconds()
+    }
+
+    /// Checks if an error string represents a query syntax, semantic, or constraint error.
+    #[staticmethod]
+    fn is_semantic_error(error_msg: &str) -> bool {
+        voyager_net::is_semantic_error(error_msg)
+    }
+
+    /// Classifies an error string as "semantic" or "transient".
+    #[staticmethod]
+    fn classify_error(error_msg: &str) -> &'static str {
+        voyager_net::classify_error(error_msg).as_str()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "NativeCircuitRouter(state='{}', failures={}, threshold={}, cooldown={:.2}s)",
+            self.router.state().as_str(),
+            self.router.consecutive_failures(),
+            self.router.failure_threshold(),
+            self.router.cooldown_seconds(),
+        )
+    }
+}
+
 fn parse_field_descriptor(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<FieldDescriptor> {
     if let Ok(dict) = obj.downcast::<PyDict>() {
         let field_name = if let Some(n) = dict.get_item("name")? {
@@ -4049,6 +4165,7 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyArrowStream>()?;
     m.add_class::<PyNativeQueryResult>()?;
     m.add_class::<PyNativeClient>()?;
+    m.add_class::<PyNativeCircuitRouter>()?;
     m.add_class::<PyUnitOfWork>()?;
     m.add_class::<PyTransaction>()?;
     m.add_class::<PyNativeSchemaRegistry>()?;

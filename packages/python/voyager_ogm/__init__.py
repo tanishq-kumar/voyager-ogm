@@ -4,6 +4,7 @@ from voyager_ogm import expressions, fn
 from voyager_ogm._voyager_rs import (
     ArrowStream,
     AstExpr,
+    NativeCircuitRouter,
     NativeClient,
     NativeQueryBuilder,
     NativeQueryResult,
@@ -162,6 +163,7 @@ __all__ = [
     "LiteralExpr",
     "MappingsResult",
     "MockBridge",
+    "NativeCircuitRouter",
     "NativeClient",
     "NativeQueryBuilder",
     "NativeQueryResult",
