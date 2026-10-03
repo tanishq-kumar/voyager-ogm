@@ -142,8 +142,8 @@ def test_reset_backend_restores_native_mode():
     session = Session(bridge=native_mock, backend="auto")
     assert session.backend == "native"
 
-    # Simulate degradation to bridge
-    session._active_backend = "bridge"
+    # Simulate degradation to bridge via circuit trip
+    session.circuit_router.trip()
     assert session.backend == "bridge"
 
     # Reset backend
@@ -158,7 +158,7 @@ async def test_async_reset_backend_restores_native_mode():
     session = AsyncSession(bridge=native_mock, backend="auto")
     assert session.backend == "native"
 
-    session._active_backend = "bridge"
+    session.circuit_router.trip()
     assert session.backend == "bridge"
 
     session.reset_backend()
@@ -345,13 +345,30 @@ def test_native_circuit_router_half_open_failure_reopens():
 
 
 def test_native_circuit_router_manual_trip_and_reset():
-    """Verify manual trip() and reset() methods."""
+    """Verify manual trip() and reset() methods, snapshot telemetry, and open-state success no-op."""
     from voyager_ogm import NativeCircuitRouter
 
     router = NativeCircuitRouter()
     assert router.state == "closed"
+    assert router.remaining_cooldown() is None
+
+    snap = router.snapshot()
+    assert snap["state"] == "closed"
+    assert snap["consecutive_failures"] == 0
+    assert snap["remaining_cooldown_seconds"] is None
 
     router.trip()
+    assert router.state == "open"
+    assert router.route() == "fallback"
+    assert router.remaining_cooldown() is not None
+    assert router.remaining_cooldown() > 0.0
+
+    snap_open = router.snapshot()
+    assert snap_open["state"] == "open"
+    assert snap_open["remaining_cooldown_seconds"] is not None
+
+    # In-flight success while Open must be a no-op (preserves cooldown and probe discipline)
+    router.record_success()
     assert router.state == "open"
     assert router.route() == "fallback"
 
@@ -359,6 +376,7 @@ def test_native_circuit_router_manual_trip_and_reset():
     assert router.state == "closed"
     assert router.route() == "native"
     assert router.consecutive_failures == 0
+    assert router.remaining_cooldown() is None
 
 
 def test_native_circuit_router_error_classification_static():

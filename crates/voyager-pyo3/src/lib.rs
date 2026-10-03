@@ -2857,6 +2857,27 @@ impl PyNativeCircuitRouter {
         self.router.cooldown_seconds()
     }
 
+    /// Returns the remaining cooldown duration in seconds if currently Open, or `None`.
+    fn remaining_cooldown(&self) -> Option<f64> {
+        self.router.remaining_cooldown().map(|d| d.as_secs_f64())
+    }
+
+    /// Returns an immutable telemetry snapshot dictionary of the circuit breaker metrics.
+    fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let snap = self.router.snapshot();
+        let dict = PyDict::new(py);
+        dict.set_item("state", snap.state.as_str())?;
+        dict.set_item("consecutive_failures", snap.consecutive_failures)?;
+        dict.set_item("consecutive_successes", snap.consecutive_successes)?;
+        dict.set_item("failure_threshold", snap.failure_threshold)?;
+        dict.set_item("cooldown_seconds", snap.cooldown_seconds)?;
+        dict.set_item(
+            "remaining_cooldown_seconds",
+            snap.remaining_cooldown_seconds,
+        )?;
+        Ok(dict)
+    }
+
     /// Checks if an error string represents a query syntax, semantic, or constraint error.
     #[staticmethod]
     fn is_semantic_error(error_msg: &str) -> bool {

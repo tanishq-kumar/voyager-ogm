@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import time
 import warnings
 import weakref
 from collections import defaultdict
@@ -627,49 +626,16 @@ class _SessionBase:
         return self._circuit_router
 
     @property
-    def _active_backend(self) -> str:
+    def backend(self) -> str:
+        """The active query execution backend ('native' or 'bridge')."""
         if self._native_client is None or self._requested_backend == "bridge":
             return "bridge"
         return "native" if self._circuit_router.state == "closed" else "bridge"
-
-    @_active_backend.setter
-    def _active_backend(self, value: str) -> None:
-        if value == "bridge":
-            self._circuit_router.trip()
-        elif value == "native":
-            self._circuit_router.reset()
-
-    @property
-    def backend(self) -> str:
-        """The active query execution backend ('native' or 'bridge')."""
-        return self._active_backend
 
     @property
     def consecutive_native_failures(self) -> int:
         """Number of consecutive native execution failures tracked by the circuit router."""
         return self._circuit_router.consecutive_failures
-
-    @property
-    def _consecutive_native_failures(self) -> int:
-        return self._circuit_router.consecutive_failures
-
-    @_consecutive_native_failures.setter
-    def _consecutive_native_failures(self, value: int) -> None:
-        if value == 0:
-            self._circuit_router.reset()
-
-    @property
-    def _fallback_timestamp(self) -> float | None:
-        if self._circuit_router.state == "closed":
-            return None
-        return time.monotonic()
-
-    @_fallback_timestamp.setter
-    def _fallback_timestamp(self, value: float | None) -> None:
-        if value is None:
-            self._circuit_router.reset()
-        else:
-            self._circuit_router.trip()
 
     def reset_backend(self) -> None:
         """Resets the active backend back to native if NativeClient is available.
@@ -1032,8 +998,10 @@ class Session(_SessionBase):
         stmt, params, q_obj = self._prepare_statement(query_or_statement, parameters)
 
         should_try_native = (
-            self._active_backend == "native" or self._should_probe_native()
-        ) and self._native_client is not None
+            self._native_client is not None
+            and self._requested_backend in ("native", "auto")
+            and self._circuit_router.should_route_native()
+        )
 
         if should_try_native:
             try:
@@ -1087,8 +1055,10 @@ class Session(_SessionBase):
         stmt, params, _ = self._prepare_statement(query_or_statement, parameters)
 
         should_try_native = (
-            self._active_backend == "native" or self._should_probe_native()
-        ) and self._native_client is not None
+            self._native_client is not None
+            and self._requested_backend in ("native", "auto")
+            and self._circuit_router.should_route_native()
+        )
 
         if should_try_native:
             try:
@@ -1131,8 +1101,10 @@ class Session(_SessionBase):
         stmt, params, _ = self._prepare_statement(query_or_statement, parameters)
 
         should_try_native = (
-            self._active_backend == "native" or self._should_probe_native()
-        ) and self._native_client is not None
+            self._native_client is not None
+            and self._requested_backend in ("native", "auto")
+            and self._circuit_router.should_route_native()
+        )
 
         if should_try_native:
             try:
@@ -1159,7 +1131,7 @@ class Session(_SessionBase):
 
     def ping(self) -> bool:
         """Pings the database connection to verify liveness and network connectivity."""
-        if self._active_backend == "native" and self._native_client is not None:
+        if self.backend == "native" and self._native_client is not None:
             try:
                 return bool(self._native_client.ping_sync())
             except Exception:
@@ -1410,8 +1382,10 @@ class AsyncSession(_SessionBase):
         stmt, params, q_obj = self._prepare_statement(query_or_statement, parameters)
 
         should_try_native = (
-            self._active_backend == "native" or self._should_probe_native()
-        ) and self._native_client is not None
+            self._native_client is not None
+            and self._requested_backend in ("native", "auto")
+            and self._circuit_router.should_route_native()
+        )
 
         if should_try_native:
             try:
@@ -1465,8 +1439,10 @@ class AsyncSession(_SessionBase):
         stmt, params, _ = self._prepare_statement(query_or_statement, parameters)
 
         should_try_native = (
-            self._active_backend == "native" or self._should_probe_native()
-        ) and self._native_client is not None
+            self._native_client is not None
+            and self._requested_backend in ("native", "auto")
+            and self._circuit_router.should_route_native()
+        )
 
         if should_try_native:
             try:
@@ -1509,8 +1485,10 @@ class AsyncSession(_SessionBase):
         stmt, params, _ = self._prepare_statement(query_or_statement, parameters)
 
         should_try_native = (
-            self._active_backend == "native" or self._should_probe_native()
-        ) and self._native_client is not None
+            self._native_client is not None
+            and self._requested_backend in ("native", "auto")
+            and self._circuit_router.should_route_native()
+        )
 
         if should_try_native:
             try:
@@ -1537,7 +1515,7 @@ class AsyncSession(_SessionBase):
 
     async def ping(self) -> bool:
         """Pings the database connection asynchronously to verify liveness."""
-        if self._active_backend == "native" and self._native_client is not None:
+        if self.backend == "native" and self._native_client is not None:
             try:
                 return bool(await self._native_client.ping())
             except Exception:

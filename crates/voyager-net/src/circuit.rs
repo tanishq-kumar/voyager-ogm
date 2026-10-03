@@ -152,6 +152,11 @@ impl std::fmt::Display for ErrorClassification {
 /// In graph databases and web services, semantic query errors must never trip
 /// the circuit breaker or degrade the connection backend, as the failure is
 /// specific to the query text rather than the network transport.
+///
+/// NOTE: String message matching is a transitional heuristic. This will be replaced
+/// by structured protocol status code classification (e.g. Neo4j Neo.ClientError.*
+/// codes, PostgreSQL SQLSTATE 42xxx/23xxx classes, GQLSTATUS codes) as drivers
+/// propagate structured server errors directly.
 pub fn is_semantic_error(error_msg: &str) -> bool {
     const SEMANTIC_PATTERNS: &[&str] = &[
         "syntaxerror",
@@ -245,6 +250,8 @@ pub struct CircuitSnapshot {
     pub failure_threshold: u32,
     /// Configured cooldown duration in seconds.
     pub cooldown_seconds: f64,
+    /// Remaining cooldown duration in seconds if currently Open, or `None`.
+    pub remaining_cooldown_seconds: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -352,10 +359,8 @@ impl CircuitRouter {
                 }
             }
             CircuitState::Open => {
-                inner.state = CircuitState::Closed;
-                inner.consecutive_failures = 0;
-                inner.consecutive_successes = 0;
-                inner.opened_at = None;
+                // In-flight queries completing after the circuit has already tripped
+                // to Open must not bypass the cooldown duration or HalfOpen probe discipline.
             }
         }
     }
@@ -468,12 +473,26 @@ impl CircuitRouter {
     /// Returns an immutable telemetry snapshot of the circuit router's status.
     pub fn snapshot(&self) -> CircuitSnapshot {
         let inner = self.inner.lock();
+        let remaining_cooldown = if inner.state == CircuitState::Open
+            && let Some(opened_at) = inner.opened_at
+        {
+            let elapsed = Instant::now().duration_since(opened_at);
+            if elapsed < inner.config.cooldown_duration {
+                Some((inner.config.cooldown_duration - elapsed).as_secs_f64())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         CircuitSnapshot {
             state: inner.state,
             consecutive_failures: inner.consecutive_failures,
             consecutive_successes: inner.consecutive_successes,
             failure_threshold: inner.config.failure_threshold,
             cooldown_seconds: inner.config.cooldown_duration.as_secs_f64(),
+            remaining_cooldown_seconds: remaining_cooldown,
         }
     }
 }
@@ -629,5 +648,24 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
+    }
+
+    #[test]
+    fn test_record_success_while_open_is_noop() {
+        let config = CircuitConfig::new(1, Duration::from_millis(50));
+        let router = CircuitRouter::new(config);
+
+        router.record_failure(true);
+        assert_eq!(router.state(), CircuitState::Open);
+
+        // In-flight success while Open must not close the circuit or bypass probe discipline
+        router.record_success();
+        assert_eq!(router.state(), CircuitState::Open);
+        assert_eq!(router.route(), BackendRoute::Fallback);
+
+        let snap = router.snapshot();
+        assert_eq!(snap.state, CircuitState::Open);
+        assert!(snap.remaining_cooldown_seconds.is_some());
+        assert!(snap.remaining_cooldown_seconds.unwrap() > 0.0);
     }
 }
