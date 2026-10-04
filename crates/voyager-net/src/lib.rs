@@ -13,6 +13,7 @@
 #![warn(missing_docs)]
 
 pub mod bolt;
+pub mod circuit;
 pub mod client;
 pub mod config;
 pub mod engine;
@@ -27,6 +28,10 @@ pub mod uri;
 pub use bolt::{
     BoltConnection, BoltNode, BoltPath, BoltRelationship, BoltRequest, BoltResponse,
     BoltStubServer, BoltUnboundRelationship, BoltValue, BoltVersion, PackStream,
+};
+pub use circuit::{
+    BackendRoute, CircuitConfig, CircuitRouter, CircuitSnapshot, CircuitState, ErrorClassification,
+    classify_error, classify_net_error, is_semantic_error,
 };
 pub use client::{NativeClient, connect_any};
 pub use config::{Auth, ConnectionConfig, PoolConfig, TlsMode};
