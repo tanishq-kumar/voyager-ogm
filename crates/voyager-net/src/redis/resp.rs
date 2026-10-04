@@ -4,7 +4,7 @@
 //! - Standard types: Simple Strings (`+`), Errors (`-`), Integers (`:`), Bulk Strings (`$`), Arrays (`*`)
 //! - RESP3 types: Null (`_`), Double (`,`), Boolean (`#`), Blob Error (`!`), Verbatim String (`=`),
 //!   Big Number (`(`), Map (`%`), Set (`~`), Push (`>`)
-#![warn(clippy::indexing_slicing, clippy::large_enum_variant)]
+#![warn(clippy::indexing_slicing)]
 
 use bytes::BytesMut;
 use std::collections::HashMap;

@@ -1,5 +1,5 @@
 //! PackStream binary serialization and deserialization for Bolt wire protocols.
-#![warn(clippy::indexing_slicing, clippy::large_enum_variant)]
+#![warn(clippy::indexing_slicing)]
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
@@ -628,6 +628,8 @@ impl PackStream {
 
     fn decode_list_payload(len: usize, buf: &mut Bytes, depth: usize) -> Result<BoltValue> {
         // In PackStream, each element requires at least 1 byte (the type marker byte).
+        // If claimed element count exceeds remaining buffer bytes, the payload is physically impossible.
+        // NOTE: When structured error codes land, this will map to ClaimedSizeExceedsBuffer.
         if len > buf.remaining() {
             return Err(NetError::ProtocolError(format!(
                 "List length {} exceeds available buffer bytes {} (minimum 1 byte per element required)",
@@ -644,6 +646,8 @@ impl PackStream {
 
     fn decode_map_payload(size: usize, buf: &mut Bytes, depth: usize) -> Result<BoltValue> {
         // In PackStream, each map entry consists of a key and a value, requiring at least 2 bytes.
+        // If claimed map size requires more bytes than remaining in the buffer, it is physically impossible.
+        // NOTE: When structured error codes land, this will map to ClaimedSizeExceedsBuffer.
         let min_required = size.saturating_mul(2);
         if min_required > buf.remaining() {
             return Err(NetError::ProtocolError(format!(

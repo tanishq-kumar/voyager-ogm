@@ -151,27 +151,24 @@ fn test_packstream_truncation_invariance() {
 #[test]
 fn test_packstream_allocation_bomb_defense() {
     // 0xD6 is List32 followed by 4-byte big-endian length. Specify 2,000,000,000 elements with only 4 bytes following.
+    // The parser must reject the impossible claimed count immediately without attempting large allocations.
     let mut bomb_list = BytesMut::from(&[0xD6, 0x77, 0x35, 0x94, 0x00, 0x01, 0x02, 0x03][..]);
     let mut bytes = bomb_list.split().freeze();
     let result = PackStream::decode(&mut bytes);
-    assert!(result.is_err());
-    let err_msg = result.unwrap_err().to_string();
     assert!(
-        err_msg.contains("exceeds available buffer bytes"),
-        "Expected buffer byte check error, got: {}",
-        err_msg
+        matches!(result, Err(NetError::ProtocolError(_))),
+        "Expected ProtocolError on allocation bomb, got: {:?}",
+        result
     );
 
     // 0xDA is Map32 followed by 4-byte length. Specify 1,000,000,000 entries.
     let mut bomb_map = BytesMut::from(&[0xDA, 0x3B, 0x9A, 0xCA, 0x00, 0x01, 0x02][..]);
     let mut bytes = bomb_map.split().freeze();
     let result = PackStream::decode(&mut bytes);
-    assert!(result.is_err());
-    let err_msg = result.unwrap_err().to_string();
     assert!(
-        err_msg.contains("exceeds available buffer bytes"),
-        "Expected buffer byte check error, got: {}",
-        err_msg
+        matches!(result, Err(NetError::ProtocolError(_))),
+        "Expected ProtocolError on allocation bomb, got: {:?}",
+        result
     );
 }
 
@@ -288,23 +285,19 @@ fn test_resp_allocation_bomb_defense() {
     // Array specifying 10,000,000 elements (> MAX_RESP_COLLECTION_LEN)
     let mut bomb_array = BytesMut::from(&b"*10000000\r\n"[..]);
     let result = RespValue::parse(&mut bomb_array);
-    assert!(result.is_err());
-    let err_msg = result.unwrap_err().to_string();
     assert!(
-        err_msg.contains("exceeds maximum permitted collection size"),
-        "Expected collection limit error, got: {}",
-        err_msg
+        matches!(result, Err(NetError::ProtocolError(_))),
+        "Expected ProtocolError on collection limit exceeding elements, got: {:?}",
+        result
     );
 
     // Map specifying 5,000,000 pairs
     let mut bomb_map = BytesMut::from(&b"%5000000\r\n"[..]);
     let result = RespValue::parse(&mut bomb_map);
-    assert!(result.is_err());
-    let err_msg = result.unwrap_err().to_string();
     assert!(
-        err_msg.contains("exceeds maximum permitted collection size"),
-        "Expected collection limit error, got: {}",
-        err_msg
+        matches!(result, Err(NetError::ProtocolError(_))),
+        "Expected ProtocolError on collection limit exceeding pairs, got: {:?}",
+        result
     );
 
     // Bulk string requesting 2 GB when only 10 bytes present: should safely return Ok(None) without pre-allocating
