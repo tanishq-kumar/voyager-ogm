@@ -122,7 +122,7 @@ impl IsoGqlEmitter {
         let node = arena.get(handle)?;
         if let AstNode::NodePattern {
             variable,
-            labels,
+            label_expression,
             predicates,
         } = node
         {
@@ -130,7 +130,7 @@ impl IsoGqlEmitter {
             if let Some(var) = variable {
                 self.buffer.push_str(var);
             }
-            crate::emitters::emit_label_expression(&mut self.buffer, labels, false);
+            crate::emitters::emit_gql_node_labels(&mut self.buffer, label_expression.as_ref());
             if !predicates.is_empty() {
                 self.buffer.push_str(" {");
                 for (i, &pred_handle) in predicates.iter().enumerate() {
@@ -174,7 +174,7 @@ impl IsoGqlEmitter {
         let node = arena.get(handle)?;
         if let AstNode::EdgePattern {
             variable,
-            edge_types,
+            label_expression,
             direction,
             predicates,
             target_node,
@@ -190,14 +190,7 @@ impl IsoGqlEmitter {
                 self.buffer.push_str(var);
             }
 
-            for (i, edge_type) in edge_types.iter().enumerate() {
-                if i == 0 {
-                    self.buffer.push(':');
-                } else {
-                    self.buffer.push('|');
-                }
-                self.buffer.push_str(edge_type);
-            }
+            crate::emitters::emit_gql_edge_labels(&mut self.buffer, label_expression.as_ref());
 
             if !predicates.is_empty() {
                 self.buffer.push_str(" {");
@@ -228,7 +221,7 @@ impl IsoGqlEmitter {
         let node = arena.get(handle)?;
         if let AstNode::EdgePattern {
             variable,
-            edge_types,
+            label_expression,
             direction,
             min_hops,
             max_hops,
@@ -245,14 +238,7 @@ impl IsoGqlEmitter {
                 self.buffer.push_str(var);
             }
 
-            for (i, edge_type) in edge_types.iter().enumerate() {
-                if i == 0 {
-                    self.buffer.push(':');
-                } else {
-                    self.buffer.push('|');
-                }
-                self.buffer.push_str(edge_type);
-            }
+            crate::emitters::emit_gql_edge_labels(&mut self.buffer, label_expression.as_ref());
 
             if !predicates.is_empty() {
                 self.buffer.push_str(" {");

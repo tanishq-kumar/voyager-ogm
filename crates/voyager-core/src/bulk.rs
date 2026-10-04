@@ -3,7 +3,7 @@
 //! Generates parameterized batch queries leveraging `UNWIND $batch AS row`
 //! for million-row bulk creations and upserts across graph dialects.
 
-use crate::ast::{AstNode, Direction, ExecutionMode, QueryAstArena};
+use crate::ast::{AstNode, Direction, ExecutionMode, LabelExpression, QueryAstArena};
 use crate::emitters::{CypherEmitter, IsoGqlEmitter};
 use crate::error::Result;
 use crate::visitor::{AstVisitor, CompiledQuery};
@@ -40,7 +40,7 @@ pub fn compile_bulk_create(
     // 2. CREATE (node_var:Label)
     let node_pattern_handle = arena.alloc(AstNode::NodePattern {
         variable: Some(node_var.clone()),
-        labels: vec![label.to_string()],
+        label_expression: Some(LabelExpression::Label(label.to_string())),
         predicates: Vec::new(),
     });
     let create_handle = arena.alloc(AstNode::CreateClause {
@@ -145,7 +145,7 @@ pub fn compile_bulk_merge(
 
     let node_pattern_handle = arena.alloc(AstNode::NodePattern {
         variable: Some(node_var.clone()),
-        labels: vec![label.to_string()],
+        label_expression: Some(LabelExpression::Label(label.to_string())),
         predicates: vec![key_pred],
     });
 
@@ -245,7 +245,7 @@ pub fn compile_bulk_create_rel(
     });
     let from_node_handle = arena.alloc(AstNode::NodePattern {
         variable: Some(from_var.clone()),
-        labels: vec![from_label.to_string()],
+        label_expression: Some(LabelExpression::Label(from_label.to_string())),
         predicates: vec![from_pred],
     });
 
@@ -264,7 +264,7 @@ pub fn compile_bulk_create_rel(
     });
     let to_node_handle = arena.alloc(AstNode::NodePattern {
         variable: Some(to_var.clone()),
-        labels: vec![to_label.to_string()],
+        label_expression: Some(LabelExpression::Label(to_label.to_string())),
         predicates: vec![to_pred],
     });
 
@@ -277,12 +277,12 @@ pub fn compile_bulk_create_rel(
     // 3. CREATE (from)-[rel:TYPE]->(to)
     let dest_node_ref = arena.alloc(AstNode::NodePattern {
         variable: Some(to_var),
-        labels: Vec::new(),
+        label_expression: None,
         predicates: Vec::new(),
     });
     let edge_pattern = arena.alloc(AstNode::EdgePattern {
         variable: Some(rel_var.clone()),
-        edge_types: vec![rel_type.to_string()],
+        label_expression: Some(LabelExpression::Label(rel_type.to_string())),
         direction: Direction::Outgoing,
         min_hops: None,
         max_hops: None,
@@ -291,7 +291,7 @@ pub fn compile_bulk_create_rel(
     });
     let src_node_ref = arena.alloc(AstNode::NodePattern {
         variable: Some(from_var),
-        labels: Vec::new(),
+        label_expression: None,
         predicates: Vec::new(),
     });
     let path_chain = arena.alloc(AstNode::PathChain {

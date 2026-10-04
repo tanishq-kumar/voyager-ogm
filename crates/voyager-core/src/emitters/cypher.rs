@@ -77,7 +77,7 @@ impl CypherEmitter {
         let node = arena.get(handle)?;
         if let AstNode::NodePattern {
             variable,
-            labels,
+            label_expression,
             predicates,
         } = node
         {
@@ -85,7 +85,7 @@ impl CypherEmitter {
             if let Some(var) = variable {
                 self.buffer.push_str(var);
             }
-            crate::emitters::emit_label_expression(&mut self.buffer, labels, true);
+            crate::emitters::emit_cypher_node_labels(&mut self.buffer, label_expression.as_ref());
             if !predicates.is_empty() {
                 self.buffer.push_str(" {");
                 for (i, &pred_handle) in predicates.iter().enumerate() {
@@ -109,7 +109,7 @@ impl CypherEmitter {
         let node = arena.get(handle)?;
         if let AstNode::EdgePattern {
             variable,
-            edge_types,
+            label_expression,
             direction,
             min_hops,
             max_hops,
@@ -126,14 +126,7 @@ impl CypherEmitter {
                 self.buffer.push_str(var);
             }
 
-            for (i, edge_type) in edge_types.iter().enumerate() {
-                if i == 0 {
-                    self.buffer.push(':');
-                } else {
-                    self.buffer.push('|');
-                }
-                self.buffer.push_str(edge_type);
-            }
+            crate::emitters::emit_cypher_edge_labels(&mut self.buffer, label_expression.as_ref());
 
             if min_hops.is_some() || max_hops.is_some() {
                 self.buffer.push('*');
