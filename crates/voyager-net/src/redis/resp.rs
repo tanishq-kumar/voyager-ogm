@@ -4,6 +4,7 @@
 //! - Standard types: Simple Strings (`+`), Errors (`-`), Integers (`:`), Bulk Strings (`$`), Arrays (`*`)
 //! - RESP3 types: Null (`_`), Double (`,`), Boolean (`#`), Blob Error (`!`), Verbatim String (`=`),
 //!   Big Number (`(`), Map (`%`), Set (`~`), Push (`>`)
+#![warn(clippy::indexing_slicing)]
 
 use bytes::BytesMut;
 use std::collections::HashMap;
@@ -321,9 +322,9 @@ impl RespValue {
             // Check if array is structured as [[k1, v1], [k2, v2]] (FalkorDB properties format)
             for item in items {
                 if let Some(pair) = item.as_array()
-                    && pair.len() == 2
+                    && let (Some(k), Some(v)) = (pair.first(), pair.get(1))
                 {
-                    map.insert(pair[0].to_string_lossy(), pair[1].clone());
+                    map.insert(k.to_string_lossy(), v.clone());
                 }
             }
         }
@@ -339,13 +340,14 @@ impl fmt::Display for RespValue {
 
 /// Finds the first `\r\n` in slice, returning the index of `\r`.
 fn find_crlf(src: &[u8]) -> Option<usize> {
-    (0..src.len().saturating_sub(1)).find(|&i| src[i] == b'\r' && src[i + 1] == b'\n')
+    src.windows(2).position(|w| w == b"\r\n")
 }
 
 /// Parses a line up to `\r\n`, returning the line slice and total consumed bytes (including `\r\n`).
 fn parse_line(src: &[u8]) -> Option<(&[u8], usize)> {
     let crlf_idx = find_crlf(src)?;
-    Some((&src[..crlf_idx], crlf_idx + 2))
+    let line = src.get(..crlf_idx)?;
+    Some((line, crlf_idx + 2))
 }
 
 /// Internal slice-based parser returning `Ok(Some((value, total_bytes_consumed)))`.
@@ -356,12 +358,9 @@ fn parse_resp_slice(src: &[u8], depth: usize) -> Result<Option<(RespValue, usize
             MAX_RESP_DEPTH
         )));
     }
-    if src.is_empty() {
+    let Some((&type_marker, rest)) = src.split_first() else {
         return Ok(None);
-    }
-
-    let type_marker = src[0];
-    let rest = &src[1..];
+    };
 
     match type_marker {
         // Simple String: +<str>\r\n
@@ -436,13 +435,18 @@ fn parse_resp_slice(src: &[u8], depth: usize) -> Result<Option<(RespValue, usize
                 }
 
                 // Verify trailing \r\n
-                if rest[payload_end] != b'\r' || rest[payload_end + 1] != b'\n' {
+                if rest.get(payload_end) != Some(&b'\r')
+                    || rest.get(payload_end + 1) != Some(&b'\n')
+                {
                     return Err(NetError::ProtocolError(
                         "Bulk string payload missing trailing CRLF".to_string(),
                     ));
                 }
 
-                let bytes = rest[payload_start..payload_end].to_vec();
+                let payload = rest.get(payload_start..payload_end).ok_or_else(|| {
+                    NetError::ProtocolError("Incomplete bulk string payload".to_string())
+                })?;
+                let bytes = payload.to_vec();
                 Ok(Some((
                     RespValue::BulkString(Some(bytes)),
                     total_consumed + 1,
@@ -483,10 +487,10 @@ fn parse_resp_slice(src: &[u8], depth: usize) -> Result<Option<(RespValue, usize
                 let mut offset = hdr_consumed;
 
                 for _ in 0..num_elements {
-                    if offset >= rest.len() {
+                    let Some(remaining) = rest.get(offset..) else {
                         return Ok(None);
-                    }
-                    match parse_resp_slice(&rest[offset..], depth + 1)? {
+                    };
+                    match parse_resp_slice(remaining, depth + 1)? {
                         Some((item, item_consumed)) => {
                             elements.push(item);
                             offset += item_consumed;
@@ -505,7 +509,7 @@ fn parse_resp_slice(src: &[u8], depth: usize) -> Result<Option<(RespValue, usize
             if rest.len() < 2 {
                 return Ok(None);
             }
-            if rest[0] == b'\r' && rest[1] == b'\n' {
+            if rest.starts_with(b"\r\n") {
                 Ok(Some((RespValue::Null, 3)))
             } else {
                 Err(NetError::ProtocolError(
@@ -541,16 +545,17 @@ fn parse_resp_slice(src: &[u8], depth: usize) -> Result<Option<(RespValue, usize
             if rest.len() < 3 {
                 return Ok(None);
             }
-            if rest[1] == b'\r' && rest[2] == b'\n' {
-                let b = match rest[0] {
-                    b't' => true,
-                    b'f' => false,
-                    other => {
+            if rest.get(1..3) == Some(b"\r\n") {
+                let b = match rest.first() {
+                    Some(b't') => true,
+                    Some(b'f') => false,
+                    Some(&other) => {
                         return Err(NetError::ProtocolError(format!(
                             "Invalid RESP3 boolean character: '{}'",
                             other as char
                         )));
                     }
+                    None => return Ok(None),
                 };
                 Ok(Some((RespValue::Boolean(b), 4)))
             } else {
@@ -581,13 +586,18 @@ fn parse_resp_slice(src: &[u8], depth: usize) -> Result<Option<(RespValue, usize
                     return Ok(None);
                 }
 
-                if rest[payload_end] != b'\r' || rest[payload_end + 1] != b'\n' {
+                if rest.get(payload_end) != Some(&b'\r')
+                    || rest.get(payload_end + 1) != Some(&b'\n')
+                {
                     return Err(NetError::ProtocolError(
                         "Blob error payload missing trailing CRLF".to_string(),
                     ));
                 }
 
-                let bytes = rest[payload_start..payload_end].to_vec();
+                let payload = rest.get(payload_start..payload_end).ok_or_else(|| {
+                    NetError::ProtocolError("Incomplete blob error payload".to_string())
+                })?;
+                let bytes = payload.to_vec();
                 Ok(Some((RespValue::BlobError(bytes), total_consumed + 1)))
             }
             None => Ok(None),
@@ -621,22 +631,29 @@ fn parse_resp_slice(src: &[u8], depth: usize) -> Result<Option<(RespValue, usize
                     return Ok(None);
                 }
 
-                if rest[payload_end] != b'\r' || rest[payload_end + 1] != b'\n' {
+                if rest.get(payload_end) != Some(&b'\r')
+                    || rest.get(payload_end + 1) != Some(&b'\n')
+                {
                     return Err(NetError::ProtocolError(
                         "Verbatim string payload missing trailing CRLF".to_string(),
                     ));
                 }
 
-                let raw = &rest[payload_start..payload_end];
-                if raw[3] != b':' {
+                let raw = rest.get(payload_start..payload_end).ok_or_else(|| {
+                    NetError::ProtocolError("Incomplete verbatim string payload".to_string())
+                })?;
+                if raw.get(3) != Some(&b':') {
                     return Err(NetError::ProtocolError(
                         "Verbatim string missing ':' after 3-byte format".to_string(),
                     ));
                 }
 
+                let fmt_slice = raw.get(0..3).ok_or_else(|| {
+                    NetError::ProtocolError("Incomplete verbatim format".to_string())
+                })?;
                 let mut fmt_bytes = [0u8; 3];
-                fmt_bytes.copy_from_slice(&raw[0..3]);
-                let text = raw[4..].to_vec();
+                fmt_bytes.copy_from_slice(fmt_slice);
+                let text = raw.get(4..).unwrap_or_default().to_vec();
 
                 Ok(Some((
                     RespValue::VerbatimString {
@@ -680,10 +697,10 @@ fn parse_resp_slice(src: &[u8], depth: usize) -> Result<Option<(RespValue, usize
 
                 for _ in 0..num_pairs {
                     // Key
-                    if offset >= rest.len() {
+                    let Some(rem_key) = rest.get(offset..) else {
                         return Ok(None);
-                    }
-                    let key = match parse_resp_slice(&rest[offset..], depth + 1)? {
+                    };
+                    let key = match parse_resp_slice(rem_key, depth + 1)? {
                         Some((k, k_consumed)) => {
                             offset += k_consumed;
                             k
@@ -692,10 +709,10 @@ fn parse_resp_slice(src: &[u8], depth: usize) -> Result<Option<(RespValue, usize
                     };
 
                     // Value
-                    if offset >= rest.len() {
+                    let Some(rem_val) = rest.get(offset..) else {
                         return Ok(None);
-                    }
-                    let val = match parse_resp_slice(&rest[offset..], depth + 1)? {
+                    };
+                    let val = match parse_resp_slice(rem_val, depth + 1)? {
                         Some((v, v_consumed)) => {
                             offset += v_consumed;
                             v
@@ -730,10 +747,10 @@ fn parse_resp_slice(src: &[u8], depth: usize) -> Result<Option<(RespValue, usize
                 let mut offset = hdr_consumed;
 
                 for _ in 0..num_items {
-                    if offset >= rest.len() {
+                    let Some(remaining) = rest.get(offset..) else {
                         return Ok(None);
-                    }
-                    match parse_resp_slice(&rest[offset..], depth + 1)? {
+                    };
+                    match parse_resp_slice(remaining, depth + 1)? {
                         Some((item, item_consumed)) => {
                             items.push(item);
                             offset += item_consumed;
@@ -766,10 +783,10 @@ fn parse_resp_slice(src: &[u8], depth: usize) -> Result<Option<(RespValue, usize
                 let mut offset = hdr_consumed;
 
                 for _ in 0..num_items {
-                    if offset >= rest.len() {
+                    let Some(remaining) = rest.get(offset..) else {
                         return Ok(None);
-                    }
-                    match parse_resp_slice(&rest[offset..], depth + 1)? {
+                    };
+                    match parse_resp_slice(remaining, depth + 1)? {
                         Some((item, item_consumed)) => {
                             items.push(item);
                             offset += item_consumed;

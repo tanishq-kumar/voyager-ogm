@@ -1,0 +1,25 @@
+[package]
+name = "voyager-net-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+voyager-net = { path = "../crates/voyager-net" }
+bytes = "1.9"
+
+[[bin]]
+name = "fuzz_packstream"
+path = "fuzz_targets/fuzz_packstream.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_resp"
+path = "fuzz_targets/fuzz_resp.rs"
+test = false
+doc = false
