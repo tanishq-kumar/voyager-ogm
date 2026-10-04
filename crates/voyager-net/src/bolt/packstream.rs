@@ -1,4 +1,5 @@
 //! PackStream binary serialization and deserialization for Bolt wire protocols.
+#![warn(clippy::indexing_slicing, clippy::large_enum_variant)]
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
@@ -706,12 +707,12 @@ impl PackStream {
         if fields.len() < 3 {
             return Ok(BoltValue::Structure { tag: 0x4E, fields });
         }
-        let id = match fields[0] {
-            BoltValue::Integer(i) => i,
+        let id = match fields.first() {
+            Some(BoltValue::Integer(i)) => *i,
             _ => return Ok(BoltValue::Structure { tag: 0x4E, fields }),
         };
-        let labels = match &fields[1] {
-            BoltValue::List(l) => l
+        let labels = match fields.get(1) {
+            Some(BoltValue::List(l)) => l
                 .iter()
                 .filter_map(|v| match v {
                     BoltValue::String(s) => Some(s.clone()),
@@ -720,13 +721,13 @@ impl PackStream {
                 .collect(),
             _ => Vec::new(),
         };
-        let properties = match &fields[2] {
-            BoltValue::Map(m) => m.clone(),
+        let properties = match fields.get(2) {
+            Some(BoltValue::Map(m)) => m.clone(),
             _ => HashMap::new(),
         };
         let element_id = if fields.len() >= 4 {
-            match &fields[3] {
-                BoltValue::String(s) => Some(s.clone()),
+            match fields.get(3) {
+                Some(BoltValue::String(s)) => Some(s.clone()),
                 _ => None,
             }
         } else {
@@ -745,31 +746,40 @@ impl PackStream {
         if fields.len() < 5 {
             return Ok(BoltValue::Structure { tag: 0x52, fields });
         }
-        let id = match fields[0] {
-            BoltValue::Integer(i) => i,
+        let id = match fields.first() {
+            Some(BoltValue::Integer(i)) => *i,
             _ => return Ok(BoltValue::Structure { tag: 0x52, fields }),
         };
-        let start_node_id = match fields[1] {
-            BoltValue::Integer(i) => i,
+        let start_node_id = match fields.get(1) {
+            Some(BoltValue::Integer(i)) => *i,
             _ => 0,
         };
-        let end_node_id = match fields[2] {
-            BoltValue::Integer(i) => i,
+        let end_node_id = match fields.get(2) {
+            Some(BoltValue::Integer(i)) => *i,
             _ => 0,
         };
-        let rel_type = match &fields[3] {
-            BoltValue::String(s) => s.clone(),
+        let rel_type = match fields.get(3) {
+            Some(BoltValue::String(s)) => s.clone(),
             _ => String::new(),
         };
-        let properties = match &fields[4] {
-            BoltValue::Map(m) => m.clone(),
+        let properties = match fields.get(4) {
+            Some(BoltValue::Map(m)) => m.clone(),
             _ => HashMap::new(),
         };
         let (element_id, start_element_id, end_element_id) = if fields.len() >= 8 {
             (
-                fields[5].as_str().map(|s| s.to_string()),
-                fields[6].as_str().map(|s| s.to_string()),
-                fields[7].as_str().map(|s| s.to_string()),
+                fields
+                    .get(5)
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                fields
+                    .get(6)
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                fields
+                    .get(7)
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
             )
         } else {
             (None, None, None)
@@ -791,8 +801,8 @@ impl PackStream {
         if fields.len() < 3 {
             return Ok(BoltValue::Structure { tag: 0x50, fields });
         }
-        let nodes = match &fields[0] {
-            BoltValue::List(l) => l
+        let nodes = match fields.first() {
+            Some(BoltValue::List(l)) => l
                 .iter()
                 .filter_map(|v| match v {
                     BoltValue::Node(n) => Some(n.clone()),
@@ -801,22 +811,22 @@ impl PackStream {
                 .collect(),
             _ => Vec::new(),
         };
-        let relationships = match &fields[1] {
-            BoltValue::List(l) => l
+        let relationships = match fields.get(1) {
+            Some(BoltValue::List(l)) => l
                 .iter()
                 .filter_map(|v| match v {
                     BoltValue::Structure { tag: 0x72, fields } => {
                         if fields.len() >= 3 {
-                            let id = match fields[0] {
-                                BoltValue::Integer(i) => i,
+                            let id = match fields.first() {
+                                Some(BoltValue::Integer(i)) => *i,
                                 _ => 0,
                             };
-                            let rel_type = match &fields[1] {
-                                BoltValue::String(s) => s.clone(),
+                            let rel_type = match fields.get(1) {
+                                Some(BoltValue::String(s)) => s.clone(),
                                 _ => String::new(),
                             };
-                            let properties = match &fields[2] {
-                                BoltValue::Map(m) => m.clone(),
+                            let properties = match fields.get(2) {
+                                Some(BoltValue::Map(m)) => m.clone(),
                                 _ => HashMap::new(),
                             };
                             let element_id = fields
@@ -838,8 +848,8 @@ impl PackStream {
                 .collect(),
             _ => Vec::new(),
         };
-        let sequence = match &fields[2] {
-            BoltValue::List(l) => l
+        let sequence = match fields.get(2) {
+            Some(BoltValue::List(l)) => l
                 .iter()
                 .filter_map(|v| match v {
                     BoltValue::Integer(i) => Some(*i),

@@ -43,6 +43,7 @@ jobs:
           filters: |
             rust:
               - 'crates/**'
+              - 'fuzz/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain*'
@@ -201,12 +202,56 @@ jobs:
         run: uv run --all-extras --python ${{ matrix.python-version }} pytest -m "not live"
 
   # =========================================================================
-  # 5. Consolidated CI Gate (Required Status Check for Branch Protection)
+  # 5. Wire Protocol Fuzzing & Memory Sanitizers (AddressSanitizer / LeakSanitizer)
+  # =========================================================================
+  sanitizer-and-fuzz:
+    name: Memory Sanitizer & Fuzz (Linux)
+    needs: [changes, lint]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust Nightly Toolchain (for Sanitizers & cargo-fuzz)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        continue-on-error: true
+        with:
+          workspaces: |
+            .
+            crates/*
+            fuzz
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Run AddressSanitizer & LeakSanitizer on Wire Protocol Tests
+        env:
+          RUSTFLAGS: "-Zsanitizer=address"
+          ASAN_OPTIONS: "detect_leaks=1"
+        run: cargo test -p voyager-net --test wire_fuzz_tests --target x86_64-unknown-linux-gnu
+
+      - name: Smoke Test PackStream Fuzz Target
+        run: cargo fuzz run fuzz_packstream -- -runs=1000 -max_total_time=15
+
+      - name: Smoke Test RESP Fuzz Target
+        run: cargo fuzz run fuzz_resp -- -runs=1000 -max_total_time=15
+
+  # =========================================================================
+  # 6. Consolidated CI Gate (Required Status Check for Branch Protection)
   # =========================================================================
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [lint, changes, test-rust, test-python]
+    needs: [lint, changes, test-rust, test-python, sanitizer-and-fuzz]
     runs-on: ubuntu-latest
     steps:
       - name: Verify All Matrix Jobs Passed

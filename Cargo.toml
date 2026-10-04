@@ -6,6 +6,12 @@ members = [
     "crates/voyager-pyo3",
     "crates/voyager-net",
 ]
+exclude = [
+    "fuzz",
+]
+
+[workspace.lints.clippy]
+large_enum_variant = "warn"
 
 [workspace.package]
 version = "0.4.0-alpha.6"
