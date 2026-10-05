@@ -37,7 +37,14 @@ pub(crate) fn emit_cypher_node_labels(buffer: &mut String, expr: Option<&LabelEx
         }
     } else {
         buffer.push(':');
+        let wrap_top_or = matches!(expr, LabelExpression::Or(_, _));
+        if wrap_top_or {
+            buffer.push('(');
+        }
         format_cypher_label_expr(buffer, expr);
+        if wrap_top_or {
+            buffer.push(')');
+        }
     }
 }
 
@@ -73,7 +80,14 @@ pub(crate) fn emit_gql_node_labels(buffer: &mut String, expr: Option<&LabelExpre
         }
     } else {
         buffer.push(':');
+        let wrap_top_or = matches!(expr, LabelExpression::Or(_, _));
+        if wrap_top_or {
+            buffer.push('(');
+        }
         format_cypher_label_expr(buffer, expr);
+        if wrap_top_or {
+            buffer.push(')');
+        }
     }
 }
 
@@ -175,7 +189,7 @@ fn format_pgq_label_expr(buffer: &mut String, expr: &LabelExpression) {
         LabelExpression::Label(s) => buffer.push_str(s),
         LabelExpression::Wildcard => buffer.push('%'),
         LabelExpression::Not(inner) => {
-            buffer.push_str("NOT ");
+            buffer.push('!');
             match &**inner {
                 LabelExpression::And(_, _) | LabelExpression::Or(_, _) => {
                     buffer.push('(');

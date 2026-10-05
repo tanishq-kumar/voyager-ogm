@@ -647,7 +647,7 @@ fn test_label_expression_ast_dialects_emission() {
     let mut pgq = SqlPgqEmitter::new("voyager_graph");
     assert_eq!(
         pgq.visit_query(&arena, root).unwrap().statement,
-        "SELECT * FROM GRAPH_TABLE (voyager_graph MATCH (n IS (Person | Company) & NOT Inactive) COLUMNS (n))"
+        "SELECT * FROM GRAPH_TABLE (voyager_graph MATCH (n IS (Person | Company) & !Inactive) COLUMNS (n))"
     );
 
     // Test 2: Edge traversal with disjunction: -[r:KNOWS|FOLLOWS]->
