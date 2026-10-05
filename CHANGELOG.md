@@ -2,8 +2,12 @@
 
 ## [0.4.0-alpha.6] - 2026-10-02
 
-<!-- TODO: have to add updates here -->
-Updates
+### Removed (Breaking Changes)
+- **Legacy Query Builder & Comprehension Aliases (#131)**:
+  - Removed redundant `Query.add_*` aliases (`add_match`, `add_optional_match`, `add_create`, `add_merge`, `add_unwind`, `add_load_csv`) in favor of direct fluent methods (`match`, `optional_match`, `create`, `merge`, `unwind`, `load_csv`).
+  - Removed `Query.filter` alias on `Query` class in favor of `Query.where`.
+  - Updated comprehension parameter `where_filter` to `where` across `list_comprehension()` and `pattern_comprehension()`.
+  - Removed module-level free functions `unwind()` and `load_csv()` from `voyager_ogm` and `voyager_ogm.query`. Use `Query.unwind()` and `Query.load_csv()`.
 
 ---
 
