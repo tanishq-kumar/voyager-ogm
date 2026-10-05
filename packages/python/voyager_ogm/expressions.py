@@ -404,22 +404,22 @@ class ListCompExpr(Expression):
         self,
         var: str,
         list_expr: Expression,
-        where_filter: Expression | None = None,
+        where: Expression | None = None,
         map_expr: Expression | None = None,
     ) -> None:
         self.var = var
         self.list_expr = list_expr
-        self.where_filter = where_filter
+        self.where = where
         self.map_expr = map_expr
 
     def to_spec(self) -> tuple[str, str, Any, Any, Any]:
         """Converts this list comprehension into an AST spec descriptor tuple."""
-        where_spec = self.where_filter.to_spec() if self.where_filter is not None else None
+        where_spec = self.where.to_spec() if self.where is not None else None
         map_spec = self.map_expr.to_spec() if self.map_expr is not None else None
         return ("list_comp", self.var, self.list_expr.to_spec(), where_spec, map_spec)
 
     def __repr__(self) -> str:
-        wh_str = f" WHERE {self.where_filter!r}" if self.where_filter is not None else ""
+        wh_str = f" WHERE {self.where!r}" if self.where is not None else ""
         map_str = f" | {self.map_expr!r}" if self.map_expr is not None else ""
         return f"[{self.var} IN {self.list_expr!r}{wh_str}{map_str}]"
 
@@ -431,20 +431,20 @@ class PatternCompExpr(Expression):
         self,
         path: Any,
         proj: Expression,
-        where_filter: Expression | None = None,
+        where: Expression | None = None,
     ) -> None:
         self.path = path
         self.proj = proj
-        self.where_filter = where_filter
+        self.where = where
 
     def to_spec(self) -> tuple[str, Any, Any, Any]:
         """Converts this pattern comprehension into an AST spec descriptor tuple."""
         path_spec = self.path.to_spec() if hasattr(self.path, "to_spec") else self.path
-        where_spec = self.where_filter.to_spec() if self.where_filter is not None else None
+        where_spec = self.where.to_spec() if self.where is not None else None
         return ("pattern_comp", path_spec, where_spec, self.proj.to_spec())
 
     def __repr__(self) -> str:
-        wh_str = f" WHERE {self.where_filter!r}" if self.where_filter is not None else ""
+        wh_str = f" WHERE {self.where!r}" if self.where is not None else ""
         return f"[({self.path!r}){wh_str} | {self.proj!r}]"
 
 
@@ -539,12 +539,12 @@ def lit(val: Any) -> LiteralExpr:
 def list_comprehension(
     var: str | IdentExpr,
     list_expr: Any,
-    where_filter: Any = None,
+    where: Any = None,
     map_expr: Any = None,
 ) -> ListCompExpr:
     """Creates a list comprehension expression `[x IN list WHERE cond | map_expr]`."""
     var_name = var.name if isinstance(var, IdentExpr) else str(var)
-    wh = to_expression(where_filter) if where_filter is not None else None
+    wh = to_expression(where) if where is not None else None
     mp = to_expression(map_expr) if map_expr is not None else None
     return ListCompExpr(var_name, to_expression(list_expr), wh, mp)
 
@@ -552,10 +552,10 @@ def list_comprehension(
 def pattern_comprehension(
     path: Any,
     proj: Any,
-    where_filter: Any = None,
+    where: Any = None,
 ) -> PatternCompExpr:
     """Creates a pattern comprehension expression `[(pattern) WHERE cond | proj]`."""
-    wh = to_expression(where_filter) if where_filter is not None else None
+    wh = to_expression(where) if where is not None else None
     return PatternCompExpr(path, to_expression(proj), wh)
 
 

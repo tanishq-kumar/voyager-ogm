@@ -65,7 +65,7 @@ def test_query_optional_match_and_distinct():
 
     query = (
         Query.match(p)
-        .add_optional_match(c)
+        .optional_match(c)
         .to(Manages, var="m")
         .node(p)
         .where(p.score >= 50.0)
@@ -496,33 +496,50 @@ def test_query_hybrid_chaining_path_boundaries():
     p = Person("p")
     c = Company("c")
 
-    # q.match(p).match(c) should produce separate paths matching add_match
+    # q.match(p).match(c) should produce separate MATCH clauses
     q_match = Query.match(p).match(c)
     assert q_match.compile("cypher").statement == "MATCH (p:Person) MATCH (c:Company)"
 
-    q_add_match = Query.match(p).add_match(c)
-    assert q_add_match.compile("cypher").statement == q_match.compile("cypher").statement
-
-    # q.match(p).optional_match(c) should produce separate paths matching add_optional_match
+    # q.match(p).optional_match(c) should produce separate OPTIONAL MATCH clauses
     q_opt = Query.match(p).optional_match(c)
     assert q_opt.compile("cypher").statement == "MATCH (p:Person) OPTIONAL MATCH (c:Company)"
 
-    q_add_opt = Query.match(p).add_optional_match(c)
-    assert q_add_opt.compile("cypher").statement == q_opt.compile("cypher").statement
-
-    # q.match(p).create(c) should produce separate paths matching add_create
+    # q.match(p).create(c) should produce separate CREATE clauses
     q_create = Query.match(p).create(c)
     assert q_create.compile("cypher").statement == "MATCH (p:Person) CREATE (c:Company)"
 
-    q_add_create = Query.match(p).add_create(c)
-    assert q_add_create.compile("cypher").statement == q_create.compile("cypher").statement
-
-    # q.match(p).merge(c) should produce separate paths matching add_merge
+    # q.match(p).merge(c) should produce separate MERGE clauses
     q_merge = Query.match(p).merge(c)
     assert q_merge.compile("cypher").statement == "MATCH (p:Person) MERGE (c:Company)"
 
-    q_add_merge = Query.match(p).add_merge(c)
-    assert q_add_merge.compile("cypher").statement == q_merge.compile("cypher").statement
+    # Verify legacy add_* and filter aliases have been completely removed from Query
+    for removed_attr in [
+        "add_match",
+        "add_optional_match",
+        "add_create",
+        "add_merge",
+        "add_unwind",
+        "add_load_csv",
+        "filter",
+    ]:
+        assert not hasattr(q_match, removed_attr), (
+            f"Legacy alias {removed_attr} should not exist on Query"
+        )
+        assert not hasattr(Query, removed_attr), (
+            f"Legacy alias {removed_attr} should not exist on Query class"
+        )
+
+    import sys
+
+    import voyager_ogm
+
+    assert not hasattr(voyager_ogm, "unwind")
+    assert not hasattr(voyager_ogm, "load_csv")
+    query_mod = sys.modules["voyager_ogm.query"]
+    assert not hasattr(query_mod, "unwind")
+    assert not hasattr(query_mod, "load_csv")
+    assert "unwind" not in query_mod.__all__
+    assert "load_csv" not in query_mod.__all__
 
 
 def test_query_has_mutations_native():

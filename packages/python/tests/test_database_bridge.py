@@ -49,7 +49,7 @@ def test_mock_bridge_query_recording():
     session = Session(bridge=bridge, dialect="cypher")
 
     p = Person()
-    q = Query.match(p).filter(p.age > 21)
+    q = Query.match(p).where(p.age > 21)
     res = session.execute(q)
 
     assert res == []
@@ -106,7 +106,7 @@ async def test_async_session_and_async_mock_bridge():
 
     session = AsyncSession(bridge=bridge, dialect="cypher")
     p = Person()
-    records = await session.execute(Query.match(p).filter(p.name == "Charlie"))
+    records = await session.execute(Query.match(p).where(p.name == "Charlie"))
 
     assert len(records) == 1
     assert records[0]["name"] == "Charlie"
@@ -519,7 +519,7 @@ def test_session_runtime_parameters_merging():
     session = Session(bridge=bridge, dialect="cypher")
 
     p = Person()
-    q = Query.match(p).filter(p.age > 21)
+    q = Query.match(p).where(p.age > 21)
 
     # 1. session.execute(query, parameters={...})
     session.execute(q, parameters={"runtime_limit": 10})
@@ -549,7 +549,7 @@ async def test_async_session_runtime_parameters_merging():
     session = AsyncSession(bridge=bridge, dialect="cypher")
 
     p = Person()
-    q = Query.match(p).filter(p.age > 25)
+    q = Query.match(p).where(p.age > 25)
 
     await session.execute(q, parameters={"runtime_limit": 5})
     stmt, params = bridge.executed_queries[-1]

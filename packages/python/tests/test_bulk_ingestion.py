@@ -38,10 +38,7 @@ def _reset_aliases():
 def test_fluent_unwind_query():
     """Test manual UNWIND query assembly using Query builder."""
     compiled = (
-        Query.unwind("batch", alias="row")
-        .add_create(Person)
-        .set(Person.name == 26)
-        .compile("cypher")
+        Query.unwind("batch", alias="row").create(Person).set(Person.name == 26).compile("cypher")
     )
 
     assert compiled.statement.startswith("UNWIND $batch AS row CREATE (_person_0:Person)")

@@ -190,7 +190,7 @@ def test_list_comprehension() -> None:
     comp = list_comprehension(
         var="x",
         list_expr=p.skills,
-        where_filter=(x != "Legacy"),
+        where=(x != "Legacy"),
         map_expr=fn.to_upper(x),
     )
     assert isinstance(comp, ListCompExpr)
@@ -207,7 +207,7 @@ def test_pattern_comprehension() -> None:
     comp = pattern_comprehension(
         path=Query.match(p).to(ActedIn).node(m),
         proj=m.title,
-        where_filter=(m.released >= 2010),
+        where=(m.released >= 2010),
     )
     assert isinstance(comp, PatternCompExpr)
 

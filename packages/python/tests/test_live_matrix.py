@@ -407,7 +407,7 @@ class TestNeo4jLiveMatrix:
             Query.match(a)
             .to(r1)
             .node(b)
-            .add_match(a)
+            .match(a)
             .to(r2)
             .node(c)
             .where(
@@ -691,7 +691,7 @@ class TestMemgraphLiveMatrix:
             Query.match(a)
             .to(r1)
             .node(b)
-            .add_match(a)
+            .match(a)
             .to(r2)
             .node(c)
             .where(
@@ -949,7 +949,7 @@ class TestApacheAgeLiveMatrix:
                 Query.match(a)
                 .to(r1)
                 .node(b)
-                .add_match(a)
+                .match(a)
                 .to(r2)
                 .node(c)
                 .where(
@@ -1734,7 +1734,7 @@ class TestFalkorDBLiveMatrix:
             Query.match(a)
             .to(r1)
             .node(b)
-            .add_match(a)
+            .match(a)
             .to(r2)
             .node(c)
             .where(

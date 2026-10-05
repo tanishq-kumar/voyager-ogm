@@ -501,24 +501,24 @@ def test_tck_mutation_and_dml_permutations(
     ("action_fn", "expected_cypher", "expected_params"),
     [
         (
-            lambda: Query.unwind("batch", "row").add_create(Person(alias="p")),
+            lambda: Query.unwind("batch", "row").create(Person(alias="p")),
             "UNWIND $batch AS row CREATE (p:Person)",
             {},
         ),
         (
-            lambda: Query.unwind("payload_items", "item").add_create(Company(alias="c")),
+            lambda: Query.unwind("payload_items", "item").create(Company(alias="c")),
             "UNWIND $payload_items AS item CREATE (c:Company)",
             {},
         ),
         (
-            lambda: Query.load_csv("file:///data.csv", with_headers=True, alias="row").add_create(
+            lambda: Query.load_csv("file:///data.csv", with_headers=True, alias="row").create(
                 Person(alias="p")
             ),
             "LOAD CSV WITH HEADERS FROM $p0 AS row CREATE (p:Person)",
             {"p0": "file:///data.csv"},
         ),
         (
-            lambda: Query.load_csv("file:///raw.csv", with_headers=False, alias="line").add_create(
+            lambda: Query.load_csv("file:///raw.csv", with_headers=False, alias="line").create(
                 Person(alias="p")
             ),
             "LOAD CSV FROM $p0 AS line CREATE (p:Person)",
@@ -561,7 +561,7 @@ def test_tck_optional_match_outer_join_null_semantics(neo4j_session: Session | N
     c = Company(alias="c")
     q = (
         Query.match(a)
-        .add_optional_match(a)
+        .optional_match(a)
         .to(WorksAt, var="r")
         .node(c)
         .return_(person=a.name, company=c.name)
