@@ -293,11 +293,17 @@ fn test_memgraph_gqlalchemy_chaining_style() {
             {
                 let start = arena.get(*start_node).unwrap();
                 if let AstNode::NodePattern {
-                    variable, labels, ..
+                    variable,
+                    label_expression,
+                    ..
                 } = start
                 {
                     assert_eq!(variable.as_deref(), Some("p"));
-                    assert_eq!(labels, &["Person"]);
+                    assert_eq!(start.node_labels(), vec!["Person".to_string()]);
+                    assert_eq!(
+                        label_expression.as_ref(),
+                        Some(&LabelExpression::Label("Person".into()))
+                    );
                 }
 
                 assert_eq!(edges.len(), 2);
@@ -306,7 +312,7 @@ fn test_memgraph_gqlalchemy_chaining_style() {
                 let edge1 = arena.get(edges[0]).unwrap();
                 if let AstNode::EdgePattern {
                     direction,
-                    edge_types,
+                    label_expression,
                     min_hops,
                     max_hops,
                     target_node,
@@ -314,16 +320,26 @@ fn test_memgraph_gqlalchemy_chaining_style() {
                 } = edge1
                 {
                     assert_eq!(*direction, Direction::Outgoing);
-                    assert_eq!(edge_types, &["ACTED_IN"]);
+                    assert_eq!(edge1.edge_types(), vec!["ACTED_IN".to_string()]);
+                    assert_eq!(
+                        label_expression.as_ref(),
+                        Some(&LabelExpression::Label("ACTED_IN".into()))
+                    );
                     assert_eq!(*min_hops, Some(1));
                     assert_eq!(*max_hops, Some(2));
                     let target1 = arena.get(*target_node).unwrap();
                     if let AstNode::NodePattern {
-                        variable, labels, ..
+                        variable,
+                        label_expression,
+                        ..
                     } = target1
                     {
                         assert_eq!(variable.as_deref(), Some("m"));
-                        assert_eq!(labels, &["Movie"]);
+                        assert_eq!(target1.node_labels(), vec!["Movie".to_string()]);
+                        assert_eq!(
+                            label_expression.as_ref(),
+                            Some(&LabelExpression::Label("Movie".into()))
+                        );
                     }
                 }
 
@@ -331,20 +347,30 @@ fn test_memgraph_gqlalchemy_chaining_style() {
                 let edge2 = arena.get(edges[1]).unwrap();
                 if let AstNode::EdgePattern {
                     direction,
-                    edge_types,
+                    label_expression,
                     target_node,
                     ..
                 } = edge2
                 {
                     assert_eq!(*direction, Direction::Incoming);
-                    assert_eq!(edge_types, &["DIRECTED"]);
+                    assert_eq!(edge2.edge_types(), vec!["DIRECTED".to_string()]);
+                    assert_eq!(
+                        label_expression.as_ref(),
+                        Some(&LabelExpression::Label("DIRECTED".into()))
+                    );
                     let target2 = arena.get(*target_node).unwrap();
                     if let AstNode::NodePattern {
-                        variable, labels, ..
+                        variable,
+                        label_expression,
+                        ..
                     } = target2
                     {
                         assert_eq!(variable.as_deref(), Some("d"));
-                        assert_eq!(labels, &["Director"]);
+                        assert_eq!(target2.node_labels(), vec!["Director".to_string()]);
+                        assert_eq!(
+                            label_expression.as_ref(),
+                            Some(&LabelExpression::Label("Director".into()))
+                        );
                     }
                 }
             }
@@ -452,21 +478,18 @@ fn test_query_builder_import_match_patterns_deduplication() {
                 start_node, edges, ..
             } = arena.get(paths[0]).unwrap()
             {
-                if let AstNode::NodePattern {
-                    variable, labels, ..
-                } = arena.get(*start_node).unwrap()
-                {
+                let start = arena.get(*start_node).unwrap();
+                if let AstNode::NodePattern { variable, .. } = start {
                     assert_eq!(variable.as_deref(), Some("p"));
-                    assert_eq!(labels, &["Person"]);
+                    assert_eq!(start.node_labels(), vec!["Person".to_string()]);
                 }
                 let edge = arena.get(edges[0]).unwrap();
-                if let AstNode::EdgePattern { target_node, .. } = edge
-                    && let AstNode::NodePattern {
-                        variable, labels, ..
-                    } = arena.get(*target_node).unwrap()
-                {
-                    assert_eq!(variable.as_deref(), Some("c"));
-                    assert_eq!(labels, &["Company"]);
+                if let AstNode::EdgePattern { target_node, .. } = edge {
+                    let target = arena.get(*target_node).unwrap();
+                    if let AstNode::NodePattern { variable, .. } = target {
+                        assert_eq!(variable.as_deref(), Some("c"));
+                        assert_eq!(target.node_labels(), vec!["Company".to_string()]);
+                    }
                 }
             }
 
@@ -475,29 +498,226 @@ fn test_query_builder_import_match_patterns_deduplication() {
                 start_node, edges, ..
             } = arena.get(paths[1]).unwrap()
             {
+                let start = arena.get(*start_node).unwrap();
                 if let AstNode::NodePattern {
-                    variable, labels, ..
-                } = arena.get(*start_node).unwrap()
+                    variable,
+                    label_expression,
+                    ..
+                } = start
                 {
                     assert_eq!(variable.as_deref(), Some("p"));
                     assert!(
-                        labels.is_empty(),
-                        "Expected empty labels for reused variable p, got {labels:?}"
+                        label_expression.is_none(),
+                        "Expected empty label_expression for reused variable p, got {label_expression:?}"
+                    );
+                    assert!(
+                        start.node_labels().is_empty(),
+                        "Expected empty labels for reused variable p"
                     );
                 }
                 let edge = arena.get(edges[0]).unwrap();
-                if let AstNode::EdgePattern { target_node, .. } = edge
-                    && let AstNode::NodePattern {
-                        variable, labels, ..
-                    } = arena.get(*target_node).unwrap()
-                {
-                    assert_eq!(variable.as_deref(), Some("c"));
-                    assert!(
-                        labels.is_empty(),
-                        "Expected empty labels for reused variable c, got {labels:?}"
-                    );
+                if let AstNode::EdgePattern { target_node, .. } = edge {
+                    let target = arena.get(*target_node).unwrap();
+                    if let AstNode::NodePattern {
+                        variable,
+                        label_expression,
+                        ..
+                    } = target
+                    {
+                        assert_eq!(variable.as_deref(), Some("c"));
+                        assert!(
+                            label_expression.is_none(),
+                            "Expected empty label_expression for reused variable c, got {label_expression:?}"
+                        );
+                        assert!(
+                            target.node_labels().is_empty(),
+                            "Expected empty labels for reused variable c"
+                        );
+                    }
                 }
             }
         }
     }
+}
+
+#[test]
+fn test_label_expression_parsing_and_combinators() {
+    // 1. Single label
+    let expr = LabelExpression::parse("Person").unwrap();
+    assert_eq!(expr, LabelExpression::Label("Person".into()));
+    assert_eq!(expr.collect_labels(), vec!["Person".to_string()]);
+    assert!(expr.is_simple_conjunction());
+    assert_eq!(expr.to_conjunction_labels(), Some(vec!["Person".into()]));
+
+    // 2. Wildcard
+    assert_eq!(
+        LabelExpression::parse("%").unwrap(),
+        LabelExpression::Wildcard
+    );
+    assert_eq!(
+        LabelExpression::parse("*").unwrap(),
+        LabelExpression::Wildcard
+    );
+
+    // 3. Negation
+    let not_expr = LabelExpression::parse("!Bot").unwrap();
+    assert_eq!(
+        not_expr,
+        LabelExpression::Not(Box::new(LabelExpression::Label("Bot".into())))
+    );
+    assert_eq!(not_expr.collect_labels(), vec!["Bot".to_string()]);
+    assert!(!not_expr.is_simple_conjunction());
+
+    // 4. Conjunction
+    let and_expr = LabelExpression::parse("Person & Developer").unwrap();
+    assert_eq!(
+        and_expr,
+        LabelExpression::And(
+            Box::new(LabelExpression::Label("Person".into())),
+            Box::new(LabelExpression::Label("Developer".into()))
+        )
+    );
+    assert_eq!(
+        and_expr.to_conjunction_labels(),
+        Some(vec!["Person".into(), "Developer".into()])
+    );
+
+    // 5. Disjunction
+    let or_expr = LabelExpression::parse("Teacher | Student").unwrap();
+    assert_eq!(
+        or_expr,
+        LabelExpression::Or(
+            Box::new(LabelExpression::Label("Teacher".into())),
+            Box::new(LabelExpression::Label("Student".into()))
+        )
+    );
+    assert_eq!(
+        or_expr.to_disjunction_labels(),
+        Some(vec!["Teacher".into(), "Student".into()])
+    );
+
+    // 6. Deeply nested: (A & (B | !C))
+    let nested = LabelExpression::parse("(A & (B | !C))").unwrap();
+    let expected = LabelExpression::and(
+        LabelExpression::label("A"),
+        LabelExpression::or(
+            LabelExpression::label("B"),
+            LabelExpression::not(LabelExpression::label("C")),
+        ),
+    );
+    assert_eq!(nested, expected);
+    assert_eq!(nested.collect_labels(), vec!["A", "B", "C"]);
+
+    // 7. Heuristic parsing & helpers
+    let from_labels = LabelExpression::from_labels(["Person", "Developer"]).unwrap();
+    assert_eq!(from_labels, and_expr);
+
+    let from_edges = LabelExpression::from_edge_types(["Teacher", "Student"]).unwrap();
+    assert_eq!(from_edges, or_expr);
+}
+
+#[test]
+fn test_label_expression_ast_dialects_emission() {
+    use voyager_core::emitters::{CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
+    use voyager_core::visitor::AstVisitor;
+
+    // Test 1: Complex nested node expression: (Person | Company) & !Inactive
+    let complex_expr = LabelExpression::parse("(Person | Company) & !Inactive").unwrap();
+    let mut b = QueryBuilder::new();
+    let n_id = b.ident("n");
+    b.r#match()
+        .node_expr(Some("n"), complex_expr)
+        .r#return()
+        .select_expr(n_id, None::<String>);
+
+    let (arena, root) = b.build();
+
+    let mut cypher = CypherEmitter::new();
+    assert_eq!(
+        cypher.visit_query(&arena, root).unwrap().statement,
+        "MATCH (n:(Person|Company)&!Inactive) RETURN n"
+    );
+
+    let mut gql = IsoGqlEmitter::new();
+    assert_eq!(
+        gql.visit_query(&arena, root).unwrap().statement,
+        "MATCH (n:(Person|Company)&!Inactive) RETURN n"
+    );
+
+    let mut pgq = SqlPgqEmitter::new("voyager_graph");
+    assert_eq!(
+        pgq.visit_query(&arena, root).unwrap().statement,
+        "SELECT * FROM GRAPH_TABLE (voyager_graph MATCH (n IS (Person | Company) & !Inactive) COLUMNS (n))"
+    );
+
+    // Test 2: Edge traversal with disjunction: -[r:KNOWS|FOLLOWS]->
+    let mut b2 = QueryBuilder::new();
+    let a_id = b2.ident("a");
+    b2.r#match()
+        .node(Some("a"), vec!["User"])
+        .to(vec!["KNOWS", "FOLLOWS"], Some("r"))
+        .node(Some("b"), vec!["User"])
+        .r#return()
+        .select_expr(a_id, None::<String>);
+
+    let (arena2, root2) = b2.build();
+
+    let mut cypher2 = CypherEmitter::new();
+    assert_eq!(
+        cypher2.visit_query(&arena2, root2).unwrap().statement,
+        "MATCH (a:User)-[r:KNOWS|FOLLOWS]->(b:User) RETURN a"
+    );
+
+    let mut gql2 = IsoGqlEmitter::new();
+    assert_eq!(
+        gql2.visit_query(&arena2, root2).unwrap().statement,
+        "MATCH (a:User)-[r:KNOWS|FOLLOWS]->(b:User) RETURN a"
+    );
+
+    let mut pgq2 = SqlPgqEmitter::new("voyager_graph");
+    assert_eq!(
+        pgq2.visit_query(&arena2, root2).unwrap().statement,
+        "SELECT * FROM GRAPH_TABLE (voyager_graph MATCH (a IS User) -[r IS KNOWS | FOLLOWS]-> (b IS User) COLUMNS (a))"
+    );
+}
+
+#[test]
+fn test_label_expression_topology_extraction() {
+    use voyager_core::topology::GraphTopology;
+
+    let query = "MATCH (a:Person)-[r:KNOWS|FOLLOWS]->(b:Company) RETURN a";
+    let topo = GraphTopology::from_query_str(query);
+
+    let a_node = topo.nodes.iter().find(|n| n.id == "a").unwrap();
+    assert_eq!(a_node.labels, vec!["Person"]);
+    assert_eq!(
+        a_node.label_expression,
+        Some(LabelExpression::Label("Person".into()))
+    );
+
+    let b_node = topo.nodes.iter().find(|n| n.id == "b").unwrap();
+    assert_eq!(b_node.labels, vec!["Company"]);
+    assert_eq!(
+        b_node.label_expression,
+        Some(LabelExpression::Label("Company".into()))
+    );
+
+    let edge = &topo.edges[0];
+    assert_eq!(edge.types, vec!["KNOWS", "FOLLOWS"]);
+    assert_eq!(
+        edge.label_expression,
+        Some(LabelExpression::or(
+            LabelExpression::label("KNOWS"),
+            LabelExpression::label("FOLLOWS")
+        ))
+    );
+}
+
+#[test]
+fn test_label_expression_serde_roundtrip() {
+    let expr = LabelExpression::parse("(A & (B | !C))").unwrap();
+    let json = serde_json::to_string(&expr).expect("Serialization failed");
+    let deserialized: LabelExpression =
+        serde_json::from_str(&json).expect("Deserialization failed");
+    assert_eq!(expr, deserialized);
 }

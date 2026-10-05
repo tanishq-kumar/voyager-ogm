@@ -20,48 +20,210 @@ pub use ddl::{
 pub use iso_gql::IsoGqlEmitter;
 pub use sql_pgq::SqlPgqEmitter;
 
-// TODO(RFC-0004): Migrate string-based label expressions in `labels: Vec<String>` to a first-class
-// `AstNode::LabelExpression` AST node once the RFC-0004 AST grammar is fully implemented across FFI.
-pub(crate) fn emit_label_expression(buffer: &mut String, labels: &[String], is_cypher: bool) {
-    if labels.is_empty() {
-        return;
-    }
-    if is_cypher {
-        let has_expr = labels
-            .iter()
-            .any(|l| l.contains('|') || l.contains('&') || l.contains('!'));
-        if !has_expr {
-            for label in labels {
-                buffer.push(':');
-                buffer.push_str(label);
-            }
-            return;
+use crate::ast::LabelExpression;
+
+/// Emits a node label expression for openCypher.
+///
+/// For simple conjunctions of labels (e.g. `Person & Developer`), emits standard colon-separated
+/// labels `:Person:Developer` for universal backwards compatibility.
+/// For complex boolean label expressions (e.g. `(Person | Company) & !Inactive`), emits
+/// standard Cypher 9 / 25 label expressions.
+pub(crate) fn emit_cypher_node_labels(buffer: &mut String, expr: Option<&LabelExpression>) {
+    let Some(expr) = expr else { return };
+    if let Some(labels) = expr.to_conjunction_labels() {
+        for label in labels {
+            buffer.push(':');
+            buffer.push_str(&label);
         }
-    }
-    buffer.push(':');
-    for (i, label) in labels.iter().enumerate() {
-        if i > 0 {
-            buffer.push('&');
-        }
-        let trimmed = label.trim();
-        if let Some(inner) = trimmed.strip_prefix('!') {
-            let inner_trimmed = inner.trim();
-            if inner_trimmed.contains('|') && !inner_trimmed.starts_with('(') {
-                let parts: Vec<&str> = inner_trimmed.split('|').map(|s| s.trim()).collect();
-                buffer.push_str("!(");
-                buffer.push_str(&parts.join("|"));
-                buffer.push(')');
-            } else {
-                buffer.push('!');
-                buffer.push_str(inner_trimmed);
-            }
-        } else if trimmed.contains('|') && !trimmed.starts_with('(') {
-            let parts: Vec<&str> = trimmed.split('|').map(|s| s.trim()).collect();
+    } else {
+        buffer.push(':');
+        let wrap_top_or = matches!(expr, LabelExpression::Or(_, _));
+        if wrap_top_or {
             buffer.push('(');
-            buffer.push_str(&parts.join("|"));
+        }
+        format_cypher_label_expr(buffer, expr);
+        if wrap_top_or {
             buffer.push(')');
-        } else {
-            buffer.push_str(trimmed);
+        }
+    }
+}
+
+/// Emits an edge label expression for openCypher: `[:TYPE1|TYPE2]`.
+pub(crate) fn emit_cypher_edge_labels(buffer: &mut String, expr: Option<&LabelExpression>) {
+    let Some(expr) = expr else { return };
+    buffer.push(':');
+    if let Some(types) = expr.to_disjunction_labels() {
+        for (i, t) in types.iter().enumerate() {
+            if i > 0 {
+                buffer.push('|');
+            }
+            buffer.push_str(t);
+        }
+    } else {
+        format_cypher_label_expr(buffer, expr);
+    }
+}
+
+/// Emits a node label expression for ISO GQL.
+///
+/// For simple conjunctions of multiple labels, emits `:Label1&Label2`.
+/// For complex boolean expressions, emits Cypher 9 / GQL standard syntax.
+pub(crate) fn emit_gql_node_labels(buffer: &mut String, expr: Option<&LabelExpression>) {
+    let Some(expr) = expr else { return };
+    if let Some(labels) = expr.to_conjunction_labels() {
+        buffer.push(':');
+        for (i, label) in labels.iter().enumerate() {
+            if i > 0 {
+                buffer.push('&');
+            }
+            buffer.push_str(label);
+        }
+    } else {
+        buffer.push(':');
+        let wrap_top_or = matches!(expr, LabelExpression::Or(_, _));
+        if wrap_top_or {
+            buffer.push('(');
+        }
+        format_cypher_label_expr(buffer, expr);
+        if wrap_top_or {
+            buffer.push(')');
+        }
+    }
+}
+
+/// Emits an edge label expression for ISO GQL: `[:TYPE1|TYPE2]`.
+pub(crate) fn emit_gql_edge_labels(buffer: &mut String, expr: Option<&LabelExpression>) {
+    let Some(expr) = expr else { return };
+    buffer.push(':');
+    if let Some(types) = expr.to_disjunction_labels() {
+        for (i, t) in types.iter().enumerate() {
+            if i > 0 {
+                buffer.push('|');
+            }
+            buffer.push_str(t);
+        }
+    } else {
+        format_cypher_label_expr(buffer, expr);
+    }
+}
+
+/// Emits a node label expression for SQL:2023 PGQ.
+///
+/// For simple conjunctions, emits ` IS Label1 IS Label2...`.
+/// For complex expressions, emits ` IS <formatted_expr>`.
+pub(crate) fn emit_pgq_node_labels(buffer: &mut String, expr: Option<&LabelExpression>) {
+    let Some(expr) = expr else { return };
+    if let Some(labels) = expr.to_conjunction_labels() {
+        for label in labels {
+            buffer.push_str(" IS ");
+            buffer.push_str(&label);
+        }
+    } else {
+        buffer.push_str(" IS ");
+        format_pgq_label_expr(buffer, expr);
+    }
+}
+
+/// Emits an edge label expression for SQL:2023 PGQ: `-[r IS TYPE1 | TYPE2]->`.
+pub(crate) fn emit_pgq_edge_labels(buffer: &mut String, expr: Option<&LabelExpression>) {
+    let Some(expr) = expr else { return };
+    buffer.push_str(" IS ");
+    if let Some(types) = expr.to_disjunction_labels() {
+        for (i, t) in types.iter().enumerate() {
+            if i > 0 {
+                buffer.push_str(" | ");
+            }
+            buffer.push_str(t);
+        }
+    } else {
+        format_pgq_label_expr(buffer, expr);
+    }
+}
+
+fn format_cypher_label_expr(buffer: &mut String, expr: &LabelExpression) {
+    match expr {
+        LabelExpression::Label(s) => buffer.push_str(s),
+        LabelExpression::Wildcard => buffer.push('%'),
+        LabelExpression::Not(inner) => {
+            buffer.push('!');
+            match &**inner {
+                LabelExpression::And(_, _) | LabelExpression::Or(_, _) => {
+                    buffer.push('(');
+                    format_cypher_label_expr(buffer, inner);
+                    buffer.push(')');
+                }
+                _ => format_cypher_label_expr(buffer, inner),
+            }
+        }
+        LabelExpression::And(left, right) => {
+            let wrap_left = matches!(&**left, LabelExpression::Or(_, _));
+            if wrap_left {
+                buffer.push('(');
+            }
+            format_cypher_label_expr(buffer, left);
+            if wrap_left {
+                buffer.push(')');
+            }
+
+            buffer.push('&');
+
+            let wrap_right = matches!(&**right, LabelExpression::Or(_, _));
+            if wrap_right {
+                buffer.push('(');
+            }
+            format_cypher_label_expr(buffer, right);
+            if wrap_right {
+                buffer.push(')');
+            }
+        }
+        LabelExpression::Or(left, right) => {
+            format_cypher_label_expr(buffer, left);
+            buffer.push('|');
+            format_cypher_label_expr(buffer, right);
+        }
+    }
+}
+
+fn format_pgq_label_expr(buffer: &mut String, expr: &LabelExpression) {
+    match expr {
+        LabelExpression::Label(s) => buffer.push_str(s),
+        LabelExpression::Wildcard => buffer.push('%'),
+        LabelExpression::Not(inner) => {
+            buffer.push('!');
+            match &**inner {
+                LabelExpression::And(_, _) | LabelExpression::Or(_, _) => {
+                    buffer.push('(');
+                    format_pgq_label_expr(buffer, inner);
+                    buffer.push(')');
+                }
+                _ => format_pgq_label_expr(buffer, inner),
+            }
+        }
+        LabelExpression::And(left, right) => {
+            let wrap_left = matches!(&**left, LabelExpression::Or(_, _));
+            if wrap_left {
+                buffer.push('(');
+            }
+            format_pgq_label_expr(buffer, left);
+            if wrap_left {
+                buffer.push(')');
+            }
+
+            buffer.push_str(" & ");
+
+            let wrap_right = matches!(&**right, LabelExpression::Or(_, _));
+            if wrap_right {
+                buffer.push('(');
+            }
+            format_pgq_label_expr(buffer, right);
+            if wrap_right {
+                buffer.push(')');
+            }
+        }
+        LabelExpression::Or(left, right) => {
+            format_pgq_label_expr(buffer, left);
+            buffer.push_str(" | ");
+            format_pgq_label_expr(buffer, right);
         }
     }
 }

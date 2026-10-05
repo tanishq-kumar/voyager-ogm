@@ -27,14 +27,14 @@
 use std::collections::HashSet;
 
 use crate::ast::{
-    AggregationFunc, AstNode, BinaryOp, Direction, ExecutionMode, LiteralValue, NodeHandle,
-    PathMode, ProjectionItem, QueryAstArena, UnaryOp,
+    AggregationFunc, AstNode, BinaryOp, Direction, ExecutionMode, LabelExpression, LiteralValue,
+    NodeHandle, PathMode, ProjectionItem, QueryAstArena, UnaryOp,
 };
 
 #[derive(Debug, Clone)]
 struct PendingEdge {
     direction: Direction,
-    edge_types: Vec<String>,
+    label_expression: Option<LabelExpression>,
     variable: Option<String>,
     min_hops: Option<u32>,
     max_hops: Option<u32>,
@@ -518,16 +518,34 @@ impl QueryBuilder {
         variable: Option<impl Into<String>>,
         labels: Vec<impl Into<String>>,
     ) -> &mut Self {
+        let label_expr = LabelExpression::from_labels(labels.into_iter().map(Into::into));
+        self.node_pattern_internal(variable.map(Into::into), label_expr)
+    }
+
+    /// Defines a node with an explicit typed [`LabelExpression`].
+    pub fn node_expr(
+        &mut self,
+        variable: Option<impl Into<String>>,
+        expr: LabelExpression,
+    ) -> &mut Self {
+        self.node_pattern_internal(variable.map(Into::into), Some(expr))
+    }
+
+    pub(crate) fn node_pattern_internal(
+        &mut self,
+        variable: Option<String>,
+        label_expression: Option<LabelExpression>,
+    ) -> &mut Self {
         let node_handle = self.arena.alloc(AstNode::NodePattern {
-            variable: variable.map(Into::into),
-            labels: labels.into_iter().map(Into::into).collect(),
+            variable,
+            label_expression,
             predicates: Vec::new(),
         });
 
         if let Some(pending) = self.pending_edge.take() {
             let edge_handle = self.arena.alloc(AstNode::EdgePattern {
                 variable: pending.variable,
-                edge_types: pending.edge_types,
+                label_expression: pending.label_expression,
                 direction: pending.direction,
                 min_hops: pending.min_hops,
                 max_hops: pending.max_hops,
@@ -585,9 +603,28 @@ impl QueryBuilder {
         edge_types: Vec<impl Into<String>>,
         variable: Option<impl Into<String>>,
     ) -> &mut Self {
+        let expr = LabelExpression::from_edge_types(edge_types.into_iter().map(Into::into));
+        self.to_expr_opt(expr, variable)
+    }
+
+    /// Chains an **outgoing** relationship traversal with an explicit [`LabelExpression`].
+    pub fn to_expr(
+        &mut self,
+        expr: LabelExpression,
+        variable: Option<impl Into<String>>,
+    ) -> &mut Self {
+        self.to_expr_opt(Some(expr), variable)
+    }
+
+    /// Chains an **outgoing** relationship traversal with an optional [`LabelExpression`].
+    pub fn to_expr_opt(
+        &mut self,
+        expr: Option<LabelExpression>,
+        variable: Option<impl Into<String>>,
+    ) -> &mut Self {
         self.pending_edge = Some(PendingEdge {
             direction: Direction::Outgoing,
-            edge_types: edge_types.into_iter().map(Into::into).collect(),
+            label_expression: expr,
             variable: variable.map(Into::into),
             min_hops: None,
             max_hops: None,
@@ -617,9 +654,28 @@ impl QueryBuilder {
         edge_types: Vec<impl Into<String>>,
         variable: Option<impl Into<String>>,
     ) -> &mut Self {
+        let expr = LabelExpression::from_edge_types(edge_types.into_iter().map(Into::into));
+        self.from_expr_opt(expr, variable)
+    }
+
+    /// Chains an **incoming** relationship traversal with an explicit [`LabelExpression`].
+    pub fn from_expr(
+        &mut self,
+        expr: LabelExpression,
+        variable: Option<impl Into<String>>,
+    ) -> &mut Self {
+        self.from_expr_opt(Some(expr), variable)
+    }
+
+    /// Chains an **incoming** relationship traversal with an optional [`LabelExpression`].
+    pub fn from_expr_opt(
+        &mut self,
+        expr: Option<LabelExpression>,
+        variable: Option<impl Into<String>>,
+    ) -> &mut Self {
         self.pending_edge = Some(PendingEdge {
             direction: Direction::Incoming,
-            edge_types: edge_types.into_iter().map(Into::into).collect(),
+            label_expression: expr,
             variable: variable.map(Into::into),
             min_hops: None,
             max_hops: None,
@@ -649,9 +705,28 @@ impl QueryBuilder {
         edge_types: Vec<impl Into<String>>,
         variable: Option<impl Into<String>>,
     ) -> &mut Self {
+        let expr = LabelExpression::from_edge_types(edge_types.into_iter().map(Into::into));
+        self.edge_expr_opt(expr, variable)
+    }
+
+    /// Chains an **undirected** relationship traversal with an explicit [`LabelExpression`].
+    pub fn edge_expr(
+        &mut self,
+        expr: LabelExpression,
+        variable: Option<impl Into<String>>,
+    ) -> &mut Self {
+        self.edge_expr_opt(Some(expr), variable)
+    }
+
+    /// Chains an **undirected** relationship traversal with an optional [`LabelExpression`].
+    pub fn edge_expr_opt(
+        &mut self,
+        expr: Option<LabelExpression>,
+        variable: Option<impl Into<String>>,
+    ) -> &mut Self {
         self.pending_edge = Some(PendingEdge {
             direction: Direction::Undirected,
-            edge_types: edge_types.into_iter().map(Into::into).collect(),
+            label_expression: expr,
             variable: variable.map(Into::into),
             min_hops: None,
             max_hops: None,
@@ -1391,19 +1466,21 @@ impl QueryBuilder {
 
                 match other.arena.get(path_handle) {
                     Ok(AstNode::NodePattern {
-                        variable, labels, ..
+                        variable,
+                        label_expression,
+                        ..
                     }) => {
-                        let (var, lbls) = if let Some(v) = variable {
+                        let (var, expr) = if let Some(v) = variable {
                             if seen_vars.contains(v) {
-                                (Some(v.clone()), Vec::new())
+                                (Some(v.clone()), None)
                             } else {
                                 seen_vars.insert(v.clone());
-                                (Some(v.clone()), labels.clone())
+                                (Some(v.clone()), label_expression.clone())
                             }
                         } else {
-                            (None, labels.clone())
+                            (None, label_expression.clone())
                         };
-                        self.node(var, lbls);
+                        self.node_pattern_internal(var, expr);
                     }
                     Ok(AstNode::PathChain {
                         start_node, edges, ..
@@ -1412,26 +1489,28 @@ impl QueryBuilder {
                         let edge_handles = edges.clone();
 
                         if let Ok(AstNode::NodePattern {
-                            variable, labels, ..
+                            variable,
+                            label_expression,
+                            ..
                         }) = other.arena.get(start_handle)
                         {
-                            let (var, lbls) = if let Some(v) = variable {
+                            let (var, expr) = if let Some(v) = variable {
                                 if seen_vars.contains(v) {
-                                    (Some(v.clone()), Vec::new())
+                                    (Some(v.clone()), None)
                                 } else {
                                     seen_vars.insert(v.clone());
-                                    (Some(v.clone()), labels.clone())
+                                    (Some(v.clone()), label_expression.clone())
                                 }
                             } else {
-                                (None, labels.clone())
+                                (None, label_expression.clone())
                             };
-                            self.node(var, lbls);
+                            self.node_pattern_internal(var, expr);
                         }
 
                         for edge_h in edge_handles {
                             if let Ok(AstNode::EdgePattern {
                                 variable,
-                                edge_types,
+                                label_expression,
                                 direction,
                                 min_hops,
                                 max_hops,
@@ -1444,13 +1523,22 @@ impl QueryBuilder {
                                 }
                                 match direction {
                                     Direction::Outgoing => {
-                                        self.to(edge_types.clone(), variable.clone());
+                                        self.to_expr_opt(
+                                            label_expression.clone(),
+                                            variable.clone(),
+                                        );
                                     }
                                     Direction::Incoming => {
-                                        self.from(edge_types.clone(), variable.clone());
+                                        self.from_expr_opt(
+                                            label_expression.clone(),
+                                            variable.clone(),
+                                        );
                                     }
                                     Direction::Undirected => {
-                                        self.edge(edge_types.clone(), variable.clone());
+                                        self.edge_expr_opt(
+                                            label_expression.clone(),
+                                            variable.clone(),
+                                        );
                                     }
                                 }
                                 if min_hops.is_some() || max_hops.is_some() {
@@ -1461,21 +1549,21 @@ impl QueryBuilder {
 
                                 if let Ok(AstNode::NodePattern {
                                     variable: target_var,
-                                    labels: target_lbls,
+                                    label_expression: target_expr,
                                     ..
                                 }) = other.arena.get(*target_node)
                                 {
-                                    let (t_var, t_lbls) = if let Some(v) = target_var {
+                                    let (t_var, t_expr) = if let Some(v) = target_var {
                                         if seen_vars.contains(v) {
-                                            (Some(v.clone()), Vec::new())
+                                            (Some(v.clone()), None)
                                         } else {
                                             seen_vars.insert(v.clone());
-                                            (Some(v.clone()), target_lbls.clone())
+                                            (Some(v.clone()), target_expr.clone())
                                         }
                                     } else {
-                                        (None, target_lbls.clone())
+                                        (None, target_expr.clone())
                                     };
-                                    self.node(t_var, t_lbls);
+                                    self.node_pattern_internal(t_var, t_expr);
                                 }
                             }
                         }

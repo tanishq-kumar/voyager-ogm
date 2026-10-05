@@ -18,7 +18,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::ast::{AstNode, BinaryOp, Direction, LiteralValue, NodeHandle, QueryAstArena};
+use crate::ast::{
+    AstNode, BinaryOp, Direction, LabelExpression, LiteralValue, NodeHandle, QueryAstArena,
+};
 use crate::error::Result;
 
 /// A graph node extracted from query path patterns.
@@ -39,6 +41,12 @@ pub struct TopologyNode {
     pub properties: BTreeMap<String, LiteralValue>,
     /// Additional metadata payload.
     pub data: BTreeMap<String, LiteralValue>,
+    /// Structured typed label expression if present.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub label_expression: Option<LabelExpression>,
 }
 
 impl TopologyNode {
@@ -51,10 +59,13 @@ impl TopologyNode {
         } else {
             label_str.clone()
         };
-        let labels = if label_str.is_empty() {
-            Vec::new()
+        let (labels, label_expression) = if label_str.is_empty() {
+            (Vec::new(), None)
         } else {
-            vec![label_str.clone()]
+            (
+                vec![label_str.clone()],
+                Some(LabelExpression::Label(label_str.clone())),
+            )
         };
         Self {
             id: id_str,
@@ -64,6 +75,7 @@ impl TopologyNode {
             size: 11,
             properties: BTreeMap::new(),
             data: BTreeMap::new(),
+            label_expression,
         }
     }
 }
@@ -94,6 +106,12 @@ pub struct TopologyEdge {
     pub properties: BTreeMap<String, LiteralValue>,
     /// Additional metadata payload.
     pub data: BTreeMap<String, LiteralValue>,
+    /// Structured typed label expression if present.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub label_expression: Option<LabelExpression>,
 }
 
 impl TopologyEdge {
@@ -106,10 +124,13 @@ impl TopologyEdge {
         direction: Direction,
     ) -> Self {
         let label_str = label.into();
-        let types = if label_str.is_empty() {
-            Vec::new()
+        let (types, label_expression) = if label_str.is_empty() {
+            (Vec::new(), None)
         } else {
-            vec![label_str.clone()]
+            (
+                vec![label_str.clone()],
+                Some(LabelExpression::Label(label_str.clone())),
+            )
         };
         Self {
             id: id.into(),
@@ -127,6 +148,7 @@ impl TopologyEdge {
             max_hops: None,
             properties: BTreeMap::new(),
             data: BTreeMap::new(),
+            label_expression,
         }
     }
 }
@@ -254,7 +276,7 @@ impl GraphTopology {
                         for &edge_h in edge_handles {
                             if let Ok(AstNode::EdgePattern {
                                 variable,
-                                edge_types,
+                                label_expression,
                                 direction,
                                 min_hops,
                                 max_hops,
@@ -274,6 +296,11 @@ impl GraphTopology {
                                 let edge_id = variable
                                     .clone()
                                     .unwrap_or_else(|| format!("rel_{edge_counter}"));
+
+                                let edge_types = label_expression
+                                    .as_ref()
+                                    .map(|e| e.collect_labels())
+                                    .unwrap_or_default();
 
                                 let primary_label = edge_types
                                     .first()
@@ -298,10 +325,15 @@ impl GraphTopology {
                                 }
 
                                 if let Some(existing) = edges.iter_mut().find(|e| e.id == edge_id) {
-                                    for t in edge_types {
+                                    for t in &edge_types {
                                         if !existing.types.contains(t) {
                                             existing.types.push(t.clone());
                                         }
+                                    }
+                                    if existing.label_expression.is_none()
+                                        && label_expression.is_some()
+                                    {
+                                        existing.label_expression = label_expression.clone();
                                     }
                                     for (k, v) in edge_props {
                                         existing.properties.insert(k.clone(), v.clone());
@@ -313,13 +345,14 @@ impl GraphTopology {
                                         source: src,
                                         target: tgt,
                                         label: primary_label,
-                                        types: edge_types.clone(),
+                                        types: edge_types,
                                         direction: *direction,
                                         color: "#64748b".to_string(),
                                         min_hops: *min_hops,
                                         max_hops: *max_hops,
                                         properties: edge_props,
                                         data: edge_data,
+                                        label_expression: label_expression.clone(),
                                     });
                                 }
 
@@ -615,11 +648,15 @@ fn extract_node_from_handle(
 ) -> String {
     if let Ok(AstNode::NodePattern {
         variable,
-        labels,
+        label_expression,
         predicates,
     }) = arena.get(handle)
     {
         *counter += 1;
+        let labels = label_expression
+            .as_ref()
+            .map(|e| e.collect_labels())
+            .unwrap_or_default();
         let primary_label = labels.first().cloned();
         let node_id = match variable {
             Some(v) if !v.is_empty() => v.clone(),
@@ -630,10 +667,13 @@ fn extract_node_from_handle(
         };
 
         if let Some(node) = nodes_map.get_mut(&node_id) {
-            for l in labels {
+            for l in &labels {
                 if !node.labels.contains(l) {
                     node.labels.push(l.clone());
                 }
+            }
+            if node.label_expression.is_none() && label_expression.is_some() {
+                node.label_expression = label_expression.clone();
             }
             let mut props = BTreeMap::new();
             extract_predicates_to_props(arena, predicates, &mut props);
@@ -662,11 +702,12 @@ fn extract_node_from_handle(
                 TopologyNode {
                     id: node_id.clone(),
                     label: display_label,
-                    labels: labels.clone(),
+                    labels,
                     group,
                     size: 11,
                     properties: props,
                     data,
+                    label_expression: label_expression.clone(),
                 },
             );
             nodes_order.push(node_id.clone());
@@ -1279,16 +1320,20 @@ fn parse_path_sequence(
                 }
 
                 if let Some(existing) = edges.iter_mut().find(|e| e.id == edge_id) {
-                    for t in edge_types {
-                        if !existing.types.contains(&t) {
-                            existing.types.push(t);
+                    for t in &edge_types {
+                        if !existing.types.contains(t) {
+                            existing.types.push(t.clone());
                         }
+                    }
+                    if existing.label_expression.is_none() {
+                        existing.label_expression = LabelExpression::from_edge_types(&edge_types);
                     }
                     for (k, v) in edge_props {
                         existing.properties.insert(k.clone(), v.clone());
                         existing.data.insert(k, v);
                     }
                 } else {
+                    let label_expr = LabelExpression::from_edge_types(&edge_types);
                     edges.push(TopologyEdge {
                         id: edge_id,
                         source: src,
@@ -1301,6 +1346,7 @@ fn parse_path_sequence(
                         max_hops: max_h,
                         properties: edge_props,
                         data,
+                        label_expression: label_expr,
                     });
                 }
 
@@ -1445,6 +1491,7 @@ fn parse_node_body(
             data.insert(k.clone(), v.clone());
         }
 
+        let label_expr = LabelExpression::from_labels(&labels);
         nodes_map.insert(
             node_id.clone(),
             TopologyNode {
@@ -1455,6 +1502,7 @@ fn parse_node_body(
                 size: 11,
                 properties: inline_props,
                 data,
+                label_expression: label_expr,
             },
         );
         nodes_order.push(node_id.clone());

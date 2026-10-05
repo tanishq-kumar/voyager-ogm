@@ -14,7 +14,7 @@ fn main() {
     // 1. Allocate NodePattern in the AST arena: (p:Person:Developer)
     let node_handle = arena.alloc(AstNode::NodePattern {
         variable: Some("p".into()),
-        labels: vec!["Person".into(), "Developer".into()],
+        label_expression: LabelExpression::from_labels(["Person", "Developer"]),
         predicates: vec![],
     });
 

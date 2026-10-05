@@ -38,7 +38,7 @@ impl SqlPgqEmitter {
         let node = arena.get(handle)?;
         if let AstNode::NodePattern {
             variable,
-            labels,
+            label_expression,
             predicates,
         } = node
         {
@@ -48,9 +48,8 @@ impl SqlPgqEmitter {
                 self.buffer.push_str(var);
                 has_prefix = true;
             }
-            for label in labels {
-                self.buffer.push_str(" IS ");
-                self.buffer.push_str(label);
+            if label_expression.is_some() {
+                crate::emitters::emit_pgq_node_labels(&mut self.buffer, label_expression.as_ref());
                 has_prefix = true;
             }
             if !predicates.is_empty() {
@@ -78,7 +77,7 @@ impl SqlPgqEmitter {
         let node = arena.get(handle)?;
         if let AstNode::EdgePattern {
             variable,
-            edge_types,
+            label_expression,
             direction,
             min_hops,
             max_hops,
@@ -95,14 +94,7 @@ impl SqlPgqEmitter {
                 self.buffer.push_str(var);
             }
 
-            for (i, edge_type) in edge_types.iter().enumerate() {
-                if i == 0 {
-                    self.buffer.push_str(" IS ");
-                } else {
-                    self.buffer.push_str(" | ");
-                }
-                self.buffer.push_str(edge_type);
-            }
+            crate::emitters::emit_pgq_edge_labels(&mut self.buffer, label_expression.as_ref());
 
             if !predicates.is_empty() {
                 self.buffer.push_str(" WHERE ");
