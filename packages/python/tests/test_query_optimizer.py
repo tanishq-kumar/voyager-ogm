@@ -117,7 +117,7 @@ def test_optimizer_branching_patterns_pushdown():
         Query.match(p)
         .to(w)
         .node(c)
-        .add_match(p)
+        .match(p)
         .to(w)
         .node(p2)
         .where(
@@ -185,7 +185,7 @@ def test_optimizer_anti_optimizations_and_safety_guards():
     # Guard 1: Cross-variable equality (p1.city == p2.city) MUST NOT be hoisted into property maps
     q1 = (
         Query.match(p1)
-        .add_match(p2)
+        .match(p2)
         .where(p1.city == p2.city, p1.name == "Alice")
         .return_(p1.name, p2.name)
         .optimize()
@@ -199,7 +199,7 @@ def test_optimizer_anti_optimizations_and_safety_guards():
     # into the main MATCH, as doing so would alter left-outer-join NULL production semantics
     q2 = (
         Query.match(p1)
-        .add_optional_match(p2)
+        .optional_match(p2)
         .where(p1.city == "Berlin")
         .return_(p1.name, p2.name)
         .optimize()

@@ -429,20 +429,6 @@ class Query:
         q._native.load_csv(url, with_headers, alias)
         return q
 
-    def add_load_csv(self, url: str, with_headers: bool = True, alias: str = "row") -> Query:
-        """Adds a LOAD CSV ingestion clause to the active query statement.
-
-        Args:
-            url: File URL or path (e.g. 'file:///persons.csv').
-            with_headers: Whether to parse the first line as column header keys (default: True).
-            alias: Row alias variable name (default: 'row').
-
-        Returns:
-            The Query instance for fluent chaining.
-        """
-        self._native.load_csv(url, with_headers, alias)
-        return self
-
     def yield_(self, *yield_items: str) -> Query:
         """Yields columns from a procedure call.
 
@@ -454,92 +440,6 @@ class Query:
         """
         self._native.yield_items(list(yield_items))
         return self
-
-    def add_unwind(self, batch_param: str, alias: str = "row") -> Query:
-        """Adds an UNWIND batch expansion clause: `UNWIND $batch_param AS alias`.
-
-        Args:
-            batch_param: Name of the parameter list (e.g. 'batch').
-            alias: Row alias name (default: 'row').
-
-        Returns:
-            The Query instance for fluent chaining.
-        """
-        param_clean = batch_param.lstrip("$")
-        self._native.unwind(param_clean, alias)
-        return self
-
-    def add_create(
-        self,
-        node_or_type: Node | type[Node] | str | None = None,
-        labels: list[str] | str | None = None,
-        variable: str | None = None,
-    ) -> Query:
-        """Adds a CREATE mutation clause to the active query statement.
-
-        Args:
-            node_or_type: Optional Node instance, subclass, or variable alias.
-            labels: Optional label or list of labels.
-            variable: Optional variable alias name.
-
-        Returns:
-            The Query instance for fluent chaining.
-        """
-        return self.create(node_or_type=node_or_type, labels=labels, variable=variable)
-
-    def add_merge(
-        self,
-        node_or_type: Node | type[Node] | str | None = None,
-        labels: list[str] | str | None = None,
-        variable: str | None = None,
-    ) -> Query:
-        """Adds a MERGE idempotent upsert clause to the active query statement.
-
-        Args:
-            node_or_type: Optional Node instance, subclass, or variable alias.
-            labels: Optional label or list of labels.
-            variable: Optional variable alias name.
-
-        Returns:
-            The Query instance for fluent chaining.
-        """
-        return self.merge(node_or_type=node_or_type, labels=labels, variable=variable)
-
-    def add_match(
-        self,
-        node_or_type: Node | type[Node] | str | None = None,
-        labels: list[str] | str | None = None,
-        variable: str | None = None,
-    ) -> Query:
-        """Adds a successive MATCH clause.
-
-        Args:
-            node_or_type: Optional Node instance or Node subclass to append.
-            labels: Optional label(s) for the node pattern.
-            variable: Optional variable alias.
-
-        Returns:
-            The Query instance for fluent chaining.
-        """
-        return self.match(node_or_type=node_or_type, labels=labels, variable=variable)
-
-    def add_optional_match(
-        self,
-        node_or_type: Node | type[Node] | str | None = None,
-        labels: list[str] | str | None = None,
-        variable: str | None = None,
-    ) -> Query:
-        """Adds a successive OPTIONAL MATCH clause.
-
-        Args:
-            node_or_type: Optional Node instance, subclass, or variable alias.
-            labels: Optional label or list of labels.
-            variable: Optional variable alias name.
-
-        Returns:
-            The Query instance for fluent chaining.
-        """
-        return self.optional_match(node_or_type=node_or_type, labels=labels, variable=variable)
 
     def node(
         self,
@@ -838,8 +738,6 @@ class Query:
     def to_spec(self) -> Any:
         """Returns the underlying native query builder handle for subquery embedding."""
         return self._native
-
-    filter = where
 
     def where_not(self, *predicates: Any) -> Query:
         """Applies negated filter predicates `NOT (pred)` to the current query path.
@@ -1443,16 +1341,6 @@ class Path(Query):
     pass
 
 
-def unwind(batch_param: str, alias: str = "row") -> Query:
-    """Starts an UNWIND batch expansion query statement: `UNWIND $batch_param AS alias`."""
-    return Query.unwind(batch_param, alias=alias)
-
-
-def load_csv(url: str, with_headers: bool = True, alias: str = "row") -> Query:
-    """Starts a LOAD CSV file ingestion query statement: `LOAD CSV [WITH HEADERS] FROM url AS alias`."""
-    return Query.load_csv(url, with_headers=with_headers, alias=alias)
-
-
 def explain(target: Query) -> Query:
     """Dry run plan explanation modifier.
 
@@ -1531,8 +1419,6 @@ __all__ = [
     "SchemaValidationError",
     "explain",
     "hybridmethod",
-    "load_csv",
     "profile",
-    "unwind",
     "validate_query",
 ]

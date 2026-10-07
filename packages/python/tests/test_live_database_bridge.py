@@ -534,7 +534,7 @@ def test_live_neo4j_gql_capabilities():
         q_rel = (
             Query.match(LiveGqlPerson(alias="p"))
             .where(LiveGqlPerson("p").name == "Alice Smith")
-            .add_match(LiveGqlCompany(alias="c"))
+            .match(LiveGqlCompany(alias="c"))
             .where(LiveGqlCompany("c").name == "Acme Corp")
             .create()
             .node("p")

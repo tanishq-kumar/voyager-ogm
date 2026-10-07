@@ -86,9 +86,7 @@ from voyager_ogm.query import (
     Query,
     SchemaValidationError,
     explain,
-    load_csv,
     profile,
-    unwind,
     validate_query,
 )
 from voyager_ogm.schema import SchemaManager, SchemaRegistry
@@ -214,7 +212,6 @@ __all__ = [
     "ident",
     "list_comprehension",
     "lit",
-    "load_csv",
     "node",
     "param",
     "pattern_comprehension",
@@ -229,7 +226,6 @@ __all__ = [
     "to_arrow",
     "to_expression",
     "to_polars",
-    "unwind",
     "validate_query",
     "version",
     "view_graph",

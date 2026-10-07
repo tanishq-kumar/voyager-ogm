@@ -310,7 +310,7 @@ def test_gql_dml_mutations(
 
 def test_gql_unwind_and_procedures():
     """ISO GQL: UNWIND $batch AS row INSERT (p:Person) and CALL proc YIELD."""
-    q_unwind = Query.unwind("batch", "row").add_create(Person(alias="p"))
+    q_unwind = Query.unwind("batch", "row").create(Person(alias="p"))
     comp_unwind = q_unwind.compile(dialect="iso_gql")
     assert comp_unwind.statement == "UNWIND $batch AS row INSERT (p:Person)"
 
@@ -325,7 +325,7 @@ def test_gql_optional_match_outer_join():
     c = Company(alias="c")
     q = (
         Query.match(a)
-        .add_optional_match(a)
+        .optional_match(a)
         .to(WorksAt, var="r")
         .node(c)
         .return_(person=a.name, company=c.name)

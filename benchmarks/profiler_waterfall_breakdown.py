@@ -444,7 +444,7 @@ def profile_bulk_ingestion_cpu():
     polars_creation_ms = (t1 - t0) / 1_000_000.0
 
     # Phase 2: Generating UNWIND Cypher Parameter Batch
-    bulk_q = Query.unwind("batch", alias="row").add_create(ProfileUser)
+    bulk_q = Query.unwind("batch", alias="row").create(ProfileUser)
 
     t_compile = benchmark_phase(lambda: bulk_q.compile("cypher"), iterations=50)["mean_us"]
 
