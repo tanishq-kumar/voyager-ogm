@@ -283,6 +283,7 @@ impl SqlPgqEmitter {
                     "toupper" | "upper" => "UPPER",
                     "size" | "length" | "char_length" | "character_length" => "LENGTH",
                     "cardinality" => "CARDINALITY",
+                    "distance" | "point.distance" | "point_distance" => "ST_Distance",
                     "coalesce" => "COALESCE",
                     "trim" => "TRIM",
                     "ltrim" => "LTRIM",

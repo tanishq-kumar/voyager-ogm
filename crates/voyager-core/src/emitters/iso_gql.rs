@@ -441,6 +441,7 @@ impl IsoGqlEmitter {
                     "length" | "char_length" | "character_length" => "char_length",
                     "size" | "cardinality" => "cardinality",
                     "path_length" => "path_length",
+                    "distance" | "point.distance" | "point_distance" => "point.distance",
                     "elements" => "elements",
                     "coalesce" => "coalesce",
                     "trim" => "trim",

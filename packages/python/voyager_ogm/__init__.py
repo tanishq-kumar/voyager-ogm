@@ -1,6 +1,6 @@
 """Voyager OGM: Multi-Dialect, Vendor-Neutral Object-Graph Mapper."""
 
-from voyager_ogm import expressions, fn
+from voyager_ogm import expressions, fn, types
 from voyager_ogm._voyager_rs import (
     ArrowStream,
     AstExpr,
@@ -108,6 +108,7 @@ from voyager_ogm.sqlalchemy import (
 )
 from voyager_ogm.streaming import QueryResult, to_arrow, to_polars
 from voyager_ogm.transaction import SavepointContext, Transaction
+from voyager_ogm.types import Point
 from voyager_ogm.viewer import GraphViewer, explore, show, view_graph, visualize_query
 
 __version__ = version()
@@ -170,6 +171,7 @@ __all__ = [
     "Node",
     "ParamExpr",
     "Path",
+    "Point",
     "PatternCompExpr",
     "PostgresBridge",
     "PredicateExpr",
@@ -226,6 +228,7 @@ __all__ = [
     "to_arrow",
     "to_expression",
     "to_polars",
+    "types",
     "validate_query",
     "version",
     "view_graph",

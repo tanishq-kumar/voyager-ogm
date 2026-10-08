@@ -14,7 +14,14 @@ import weakref
 from collections import defaultdict
 from typing import Any, ClassVar, Generic, TypeVar, cast, dataclass_transform
 
-from voyager_ogm.expressions import BinaryExpr, Expression, PropExpr, to_expression
+from voyager_ogm.expressions import (
+    BinaryExpr,
+    Expression,
+    FunctionExpr,
+    PropExpr,
+    to_expression,
+)
+from voyager_ogm.types import Point
 
 try:
     from voyager_ogm._voyager_rs import NativeSchemaRegistry
@@ -35,6 +42,7 @@ _BUILTIN_TYPES = {
     "bool": bool,
     "list": list,
     "dict": dict,
+    "Point": Point,
 }
 
 
@@ -175,6 +183,18 @@ class Field(Generic[_T]):
         assert self.name is not None
         return BoundField(alias, self.name)
 
+    def distance_to(self, other: Any) -> FunctionExpr:
+        """Computes spatial distance expression `point.distance(field, other)`.
+
+        Args:
+            other: A Point, BoundField, or Expression.
+
+        Returns:
+            FunctionExpr representing the spatial distance expression.
+        """
+        name = self.name or ""
+        return BoundField("", name).distance_to(other)
+
 
 class BoundField(Expression):
     """A field bound to a specific node or relationship alias instance.
@@ -292,6 +312,17 @@ class BoundField(Expression):
     def collect(self) -> AggregationExpr:
         """Returns a `COLLECT(alias.prop)` aggregation expression."""
         return AggregationExpr(self.target_alias, self.field_name, "collect")
+
+    def distance_to(self, other: Any) -> FunctionExpr:
+        """Creates a spatial distance expression `point.distance(self, other)`.
+
+        Args:
+            other: A Point, BoundField, or Expression.
+
+        Returns:
+            FunctionExpr representing the spatial distance expression.
+        """
+        return FunctionExpr("point.distance", [self, to_expression(other)])
 
 
 class AggregationExpr(Expression):
@@ -508,8 +539,23 @@ class Node:
         self._session_ref: weakref.ref[Any] | None = (
             weakref.ref(session) if session is not None else None
         )
-        self._values: dict[str, Any] = dict(values)
-        self._dirty_fields: dict[str, Any] = dict(values)
+        hydrated_values: dict[str, Any] = {}
+        schema = getattr(self, "_schema_fields", {})
+        for k, v in values.items():
+            field_desc = schema.get(k)
+            if (
+                field_desc is not None
+                and (
+                    field_desc.type_annotation is Point
+                    or getattr(field_desc.type_annotation, "__name__", "") == "Point"
+                )
+                and isinstance(v, dict)
+            ):
+                hydrated_values[k] = Point.from_dict(v)
+            else:
+                hydrated_values[k] = v
+        self._values: dict[str, Any] = hydrated_values
+        self._dirty_fields: dict[str, Any] = dict(hydrated_values)
         if session is not None and getattr(session, "identity_map_enabled", False):
             session.register(self)
 
@@ -650,6 +696,13 @@ class Node:
                 self._values = {}
             if not hasattr(self, "_dirty_fields"):
                 self._dirty_fields = {}
+            if hasattr(self, "_schema_fields") and name in self._schema_fields:
+                field_desc = self._schema_fields[name]
+                if (
+                    field_desc.type_annotation is Point
+                    or getattr(field_desc.type_annotation, "__name__", "") == "Point"
+                ) and isinstance(value, dict):
+                    value = Point.from_dict(value)
             self._values[name] = value
             self._dirty_fields[name] = value
 
@@ -797,7 +850,22 @@ class Relationship:
         self._alias = alias or _get_next_alias(rel_type)
         self._cached_alias = self._alias
         self._bound_fields: dict[str, BoundField] = {}
-        self._values = values
+        hydrated_values: dict[str, Any] = {}
+        schema = getattr(self, "_schema_fields", {})
+        for k, v in values.items():
+            field_desc = schema.get(k)
+            if (
+                field_desc is not None
+                and (
+                    field_desc.type_annotation is Point
+                    or getattr(field_desc.type_annotation, "__name__", "") == "Point"
+                )
+                and isinstance(v, dict)
+            ):
+                hydrated_values[k] = Point.from_dict(v)
+            else:
+                hydrated_values[k] = v
+        self._values = hydrated_values
 
     @property
     def alias(self) -> str:
@@ -814,6 +882,21 @@ class Relationship:
     def get(self, name: str, default: Any = None) -> Any:
         """Retrieves an in-memory property value."""
         return self._values.get(name, default)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name.startswith("_"):
+            super().__setattr__(name, value)
+        else:
+            if not hasattr(self, "_values"):
+                self._values = {}
+            if hasattr(self, "_schema_fields") and name in self._schema_fields:
+                field_desc = self._schema_fields[name]
+                if (
+                    field_desc.type_annotation is Point
+                    or getattr(field_desc.type_annotation, "__name__", "") == "Point"
+                ) and isinstance(value, dict):
+                    value = Point.from_dict(value)
+            self._values[name] = value
 
     def __getattr__(self, name: str) -> BoundField:
         """Dynamically resolves unknown edge property names into BoundField descriptors.

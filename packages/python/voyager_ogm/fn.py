@@ -417,6 +417,73 @@ def case(operand: Any | None = None) -> CaseBuilder:
     return CaseBuilder(operand)
 
 
+# Geospatial & Spatial Distance Functions
+class _PointHelper:
+    """Helper for spatial `point(...)` constructors and `point.distance(...)` functions."""
+
+    def __call__(
+        self,
+        target: Any = None,
+        *,
+        latitude: Any = None,
+        longitude: Any = None,
+        height: Any = None,
+        x: Any = None,
+        y: Any = None,
+        z: Any = None,
+        crs: Any = None,
+        srid: Any = None,
+        **kwargs: Any,
+    ) -> FunctionExpr:
+        """Emits `point(...)` function call in queries."""
+        if target is not None:
+            if hasattr(target, "to_cypher_dict"):
+                return FunctionExpr("point", [to_expression(target.to_cypher_dict())])
+            if isinstance(target, dict):
+                return FunctionExpr("point", [to_expression(target)])
+            if isinstance(target, (list, tuple)):
+                if len(target) == 2:
+                    return FunctionExpr("point", [to_expression({"x": target[0], "y": target[1]})])
+                elif len(target) == 3:
+                    return FunctionExpr(
+                        "point",
+                        [to_expression({"x": target[0], "y": target[1], "z": target[2]})],
+                    )
+            return FunctionExpr("point", [to_expression(target)])
+
+        d: dict[str, Any] = {}
+        if latitude is not None:
+            d["latitude"] = latitude
+        if longitude is not None:
+            d["longitude"] = longitude
+        if height is not None:
+            d["height"] = height
+        if x is not None:
+            d["x"] = x
+        if y is not None:
+            d["y"] = y
+        if z is not None:
+            d["z"] = z
+        if crs is not None:
+            d["crs"] = crs
+        if srid is not None:
+            d["srid"] = srid
+        d.update(kwargs)
+        return FunctionExpr("point", [to_expression(d)])
+
+    def distance(self, p1: Any, p2: Any) -> FunctionExpr:
+        """Emits `point.distance(p1, p2)` function call."""
+        return FunctionExpr("point.distance", [to_expression(p1), to_expression(p2)])
+
+
+point = _PointHelper()
+
+
+def distance(p1: Any, p2: Any) -> FunctionExpr:
+    """Emits `point.distance(p1, p2)` function call."""
+    return point.distance(p1, p2)
+
+
 # Universal Dynamic & Custom Function Dispatch
 def call(name: str, *args: Any) -> FunctionExpr:
     """Invokes any arbitrary user-defined function (UDF), vendor function, or database extension.

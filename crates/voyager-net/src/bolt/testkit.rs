@@ -11,7 +11,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
 use super::connection::BoltConnection;
-use super::packstream::BoltValue;
+use super::packstream::{BoltPoint2D, BoltPoint3D, BoltValue};
 use crate::config::{Auth, ConnectionConfig};
 use crate::engine::AsyncConnection;
 use crate::error::Result;
@@ -89,6 +89,17 @@ impl TestkitBackend {
                 }
                 Value::Object(map)
             }
+            BoltValue::Point2D(p) => json!({
+                "srid": p.srid,
+                "x": p.x,
+                "y": p.y,
+            }),
+            BoltValue::Point3D(p) => json!({
+                "srid": p.srid,
+                "x": p.x,
+                "y": p.y,
+                "z": p.z,
+            }),
             _ => Value::Null,
         }
     }
@@ -275,6 +286,23 @@ impl TestkitBackend {
                     }
                 })
             }
+            BoltValue::Point2D(p) => json!({
+                "name": "Point2D",
+                "data": {
+                    "srid": json!({"name": "CypherInt", "data": {"value": p.srid}}),
+                    "x": json!({"name": "CypherFloat", "data": {"value": p.x}}),
+                    "y": json!({"name": "CypherFloat", "data": {"value": p.y}}),
+                }
+            }),
+            BoltValue::Point3D(p) => json!({
+                "name": "Point3D",
+                "data": {
+                    "srid": json!({"name": "CypherInt", "data": {"value": p.srid}}),
+                    "x": json!({"name": "CypherFloat", "data": {"value": p.x}}),
+                    "y": json!({"name": "CypherFloat", "data": {"value": p.y}}),
+                    "z": json!({"name": "CypherFloat", "data": {"value": p.z}}),
+                }
+            }),
             BoltValue::Structure { .. } => json!({"name": "CypherNull"}),
         }
     }
@@ -355,6 +383,54 @@ impl TestkitBackend {
                             }
                         }
                         BoltValue::Map(map)
+                    }
+                    "Point2D" => {
+                        let srid = data
+                            .and_then(|d| d.get("srid"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(4326);
+                        let x = data
+                            .and_then(|d| d.get("x"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0);
+                        let y = data
+                            .and_then(|d| d.get("y"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0);
+                        BoltValue::Point2D(BoltPoint2D { srid, x, y })
+                    }
+                    "Point3D" => {
+                        let srid = data
+                            .and_then(|d| d.get("srid"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(4979);
+                        let x = data
+                            .and_then(|d| d.get("x"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0);
+                        let y = data
+                            .and_then(|d| d.get("y"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0);
+                        let z = data
+                            .and_then(|d| d.get("z"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0);
+                        BoltValue::Point3D(BoltPoint3D { srid, x, y, z })
                     }
                     _ => BoltValue::from(val),
                 }
