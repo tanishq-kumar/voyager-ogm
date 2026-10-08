@@ -322,6 +322,57 @@ class AsyncMockBridge:
         pass
 
 
+def _adapt_bolt_batch_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Adapts spatial property maps inside bulk ingestion batch records to Bolt spatial types if available."""
+    try:
+        from neo4j.spatial import CartesianPoint, WGS84Point
+    except ImportError:
+        return record
+
+    out: dict[str, Any] = {}
+    for k, v in record.items():
+        if isinstance(v, dict):
+            if "latitude" in v and "longitude" in v and len(v) <= 4:
+                lat = v["latitude"]
+                lon = v["longitude"]
+                height = v.get("height")
+                out[k] = (
+                    WGS84Point((lon, lat, height)) if height is not None else WGS84Point((lon, lat))
+                )
+                continue
+            if "srid" in v and "x" in v and "y" in v and len(v) <= 5:
+                srid = v["srid"]
+                z = v.get("z")
+                if srid in (4326, 4979):
+                    out[k] = (
+                        WGS84Point((v["x"], v["y"], z))
+                        if z is not None
+                        else WGS84Point((v["x"], v["y"]))
+                    )
+                    continue
+                elif srid in (7203, 9157):
+                    out[k] = (
+                        CartesianPoint((v["x"], v["y"], z))
+                        if z is not None
+                        else CartesianPoint((v["x"], v["y"]))
+                    )
+                    continue
+        out[k] = v
+    return out
+
+
+def _adapt_bolt_parameters(params: dict[str, Any]) -> dict[str, Any]:
+    """Adapts batch parameters for Bolt protocol execution, converting spatial maps in batches to native spatial points."""
+    if "batch" in params and isinstance(params["batch"], list):
+        return {
+            **params,
+            "batch": [
+                _adapt_bolt_batch_record(r) if isinstance(r, dict) else r for r in params["batch"]
+            ],
+        }
+    return params
+
+
 class Neo4jBoltBridge:
     """Synchronous Neo4j / Memgraph Bolt protocol driver bridge."""
 
@@ -396,14 +447,14 @@ class Neo4jBoltBridge:
                 for b in batch_list:
                     batch_data = b.get("batch", [])
                     total_records += len(batch_data)
-                    session.run(statement, b)
+                    session.run(statement, _adapt_bolt_parameters(b))
             else:
                 statement = plan_or_statement.statement
                 for batch_item in plan_or_statement:
                     total_batches += 1
                     batch_data = batch_item.parameters.get("batch", [])
                     total_records += len(batch_data)
-                    session.run(statement, batch_item.parameters)
+                    session.run(statement, _adapt_bolt_parameters(batch_item.parameters))
 
         return BulkExecutionResult(
             total_batches=total_batches,
@@ -507,14 +558,14 @@ class AsyncNeo4jBoltBridge:
                 for b in batch_list:
                     batch_data = b.get("batch", [])
                     total_records += len(batch_data)
-                    await session.run(statement, b)
+                    await session.run(statement, _adapt_bolt_parameters(b))
             else:
                 statement = plan_or_statement.statement
                 for batch_item in plan_or_statement:
                     total_batches += 1
                     batch_data = batch_item.parameters.get("batch", [])
                     total_records += len(batch_data)
-                    await session.run(statement, batch_item.parameters)
+                    await session.run(statement, _adapt_bolt_parameters(batch_item.parameters))
 
         return BulkExecutionResult(
             total_batches=total_batches,

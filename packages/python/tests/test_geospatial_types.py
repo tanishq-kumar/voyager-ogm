@@ -334,3 +334,63 @@ def test_mixed_2d_3d_distance():
     dist_mixed = p2d.distance(p3d)
     dist_flat = p2d.distance(p3d_flat)
     assert math.isclose(dist_mixed, dist_flat)
+
+
+def test_point_from_spatial_and_driver_interop():
+    """Verify Point.from_spatial handles Voyager Point, dicts, duck-typed objects, and Neo4j spatial points."""
+    p_orig = Point(latitude=52.52, longitude=13.405)
+
+    # 1. Self return
+    assert Point.from_spatial(p_orig) is p_orig
+
+    # 2. Dict delegation
+    p_from_dict = Point.from_spatial({"latitude": 52.52, "longitude": 13.405})
+    assert p_from_dict == p_orig
+
+    # 3. Duck-typed spatial object
+    class CustomSpatial:
+        def __init__(self, srid: int, x: float, y: float, z: float | None = None) -> None:
+            self.srid = srid
+            self.x = x
+            self.y = y
+            self.z = z
+
+    custom_geo = CustomSpatial(4326, 13.405, 52.52)
+    p_from_custom = Point.from_spatial(custom_geo)
+    assert p_from_custom == p_orig
+    assert p_from_custom.is_geographic
+
+    custom_cart = CustomSpatial(7203, 10.0, 20.0)
+    p_cart = Point.from_spatial(custom_cart)
+    assert p_cart.srid == 7203
+    assert p_cart.x == 10.0 and p_cart.y == 20.0
+
+    # 4. Neo4j spatial objects if neo4j package is installed
+    try:
+        from neo4j.spatial import CartesianPoint, WGS84Point
+
+        neo_wgs = WGS84Point((13.405, 52.52))
+        p_from_neo = Point.from_spatial(neo_wgs)
+        assert p_from_neo == p_orig
+        assert p_orig == neo_wgs
+
+        neo_wgs_3d = WGS84Point((13.405, 52.52, 100.0))
+        p_from_neo_3d = Point.from_spatial(neo_wgs_3d)
+        assert p_from_neo_3d.is_3d
+        assert p_from_neo_3d.height == 100.0
+
+        neo_cart = CartesianPoint((10.0, 20.0))
+        p_from_cart = Point.from_spatial(neo_cart)
+        assert p_from_cart == Point(x=10.0, y=20.0)
+        assert p_from_cart == neo_cart
+
+        # Test hydration in Node model
+        tower = Place(name="Berlin Tower", location=neo_wgs)
+        assert isinstance(tower.get("location"), Point)
+        assert tower.get("location") == p_orig
+    except ImportError:
+        pass
+
+    # 5. Invalid input raises TypeError
+    with pytest.raises(TypeError, match="Cannot convert"):
+        Point.from_spatial(12345)

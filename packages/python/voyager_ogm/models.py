@@ -45,26 +45,34 @@ _BUILTIN_TYPES = {
     "Point": Point,
 }
 
-# Registry for automatic field hydration from raw database values (e.g. dicts)
+# Registry for automatic field hydration from raw database values (e.g. dicts, driver spatial objects)
 _HYDRATORS: dict[Any, Any] = {
-    Point: Point.from_dict,
+    Point: Point.from_spatial,
 }
 
 
 def _hydrate_field_value(field_desc: Field | None, value: Any) -> Any:
-    """Hydrates a raw property value (such as a dictionary) into a rich type via the _HYDRATORS registry."""
-    if field_desc is None or not isinstance(value, dict):
+    """Hydrates a raw property value (such as a dictionary or driver spatial object) into a rich type via the _HYDRATORS registry."""
+    if field_desc is None or value is None:
         return value
     ann = getattr(field_desc, "type_annotation", None)
     if ann is None:
         return value
+    if isinstance(ann, type) and isinstance(value, ann):
+        return value
     hydrator = _HYDRATORS.get(ann)
     if hydrator is not None:
-        return hydrator(value)
+        try:
+            return hydrator(value)
+        except Exception:
+            return value
     ann_name = getattr(ann, "__name__", "")
     for registered_type, h in _HYDRATORS.items():
         if getattr(registered_type, "__name__", "") == ann_name:
-            return h(value)
+            try:
+                return h(value)
+            except Exception:
+                return value
     return value
 
 

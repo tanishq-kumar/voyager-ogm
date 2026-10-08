@@ -450,6 +450,45 @@ class Point(Expression):
             crs=crs,
         )
 
+    @classmethod
+    def from_spatial(cls, val: Any) -> Point:
+        """Constructs a Point from a spatial object, dict, or existing Point.
+
+        Supports:
+        - voyager_ogm.Point instances (returned as-is)
+        - Dictionaries (delegated to Point.from_dict)
+        - Neo4j / Bolt spatial objects (e.g. neo4j.spatial.WGS84Point, CartesianPoint)
+        - Duck-typed spatial objects with x, y, and optional srid/z/latitude/longitude
+        """
+        if isinstance(val, Point):
+            return val
+        if isinstance(val, dict):
+            return cls.from_dict(val)
+        if hasattr(val, "srid") and hasattr(val, "x") and hasattr(val, "y"):
+            srid = getattr(val, "srid", None)
+            is_geo = (srid in (WGS_84_2D, WGS_84_3D)) or hasattr(val, "latitude")
+            if is_geo and hasattr(val, "latitude") and val.latitude is not None:
+                return cls(
+                    latitude=val.latitude,
+                    longitude=getattr(val, "longitude", getattr(val, "x", None)),
+                    height=getattr(val, "height", getattr(val, "z", None)),
+                    srid=srid,
+                )
+            return cls(
+                x=val.x,
+                y=val.y,
+                z=getattr(val, "z", None),
+                srid=srid,
+            )
+        if hasattr(val, "latitude") and hasattr(val, "longitude"):
+            return cls(
+                latitude=val.latitude,
+                longitude=val.longitude,
+                height=getattr(val, "height", None),
+                srid=getattr(val, "srid", None),
+            )
+        raise TypeError(f"Cannot convert {type(val).__name__} to Point")
+
     def to_arrow(self) -> pa.Scalar | dict[str, Any]:
         """Converts this Point into a PyArrow struct scalar (or dict fallback)."""
         try:
@@ -525,9 +564,13 @@ class Point(Expression):
             if self._is_3d:
                 return math.isclose(self._z or 0.0, other._z or 0.0, abs_tol=1e-7)
             return True
-        if isinstance(other, dict):
+        if (
+            isinstance(other, dict)
+            or (hasattr(other, "srid") and hasattr(other, "x") and hasattr(other, "y"))
+            or (hasattr(other, "latitude") and hasattr(other, "longitude"))
+        ):
             try:
-                coerced = Point.from_dict(other)
+                coerced = Point.from_spatial(other)
                 return self == coerced
             except Exception:
                 return False
@@ -536,7 +579,11 @@ class Point(Expression):
         return False
 
     def __ne__(self, other: Any) -> Any:  # type: ignore[override]
-        if isinstance(other, (Point, dict)):
+        if (
+            isinstance(other, (Point, dict))
+            or (hasattr(other, "srid") and hasattr(other, "x"))
+            or (hasattr(other, "latitude") and hasattr(other, "longitude"))
+        ):
             eq_res = self.__eq__(other)
             if isinstance(eq_res, bool):
                 return not eq_res
