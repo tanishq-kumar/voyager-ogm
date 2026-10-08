@@ -26,6 +26,7 @@ from voyager_ogm.ingestion import (
 )
 from voyager_ogm.query import CompiledQuery, Query
 from voyager_ogm.transaction import Transaction
+from voyager_ogm.types import serialize_param_value
 
 logger = logging.getLogger("voyager_ogm.session")
 
@@ -777,10 +778,10 @@ class _SessionBase:
         for model_cls, nodes in dirty_by_model.items():
             batch_data: list[dict[str, Any]] = []
             for n in nodes:
-                record = dict(n.dirty_fields)
+                record = {k: serialize_param_value(v) for k, v in n.dirty_fields.items()}
                 primary_val = n.get(key_field) if hasattr(n, "get") else getattr(n, key_field, None)
                 if primary_val is not None:
-                    record[key_field] = primary_val
+                    record[key_field] = serialize_param_value(primary_val)
                 batch_data.append(record)
 
             if batch_data:
@@ -850,6 +851,7 @@ class _SessionBase:
         else:
             stmt = str(query_or_statement)
 
+        params = {k: serialize_param_value(v) for k, v in params.items()}
         return stmt, params, q_obj
 
     def bulk_create(

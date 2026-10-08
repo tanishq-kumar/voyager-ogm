@@ -35,6 +35,8 @@ WGS_84_3D: int = 4979
 CARTESIAN_2D: int = 7203
 CARTESIAN_3D: int = 9157
 
+SUPPORTED_SRIDS: frozenset[int] = frozenset({WGS_84_2D, WGS_84_3D, CARTESIAN_2D, CARTESIAN_3D})
+
 # Neo4j and openCypher standard mean Earth radius in meters
 EARTH_RADIUS_METERS: float = 6371008.8
 
@@ -155,6 +157,13 @@ class Point(Expression):
         resolved_srid: int
         if srid is not None:
             resolved_srid = int(srid)
+            if resolved_srid not in SUPPORTED_SRIDS:
+                raise ValueError(
+                    f"Unsupported spatial reference system identifier (SRID): {resolved_srid}. "
+                    f"Supported SRIDs are: {sorted(SUPPORTED_SRIDS)} "
+                    f"({WGS_84_2D} for WGS-84 2D, {WGS_84_3D} for WGS-84 3D, "
+                    f"{CARTESIAN_2D} for Cartesian 2D, {CARTESIAN_3D} for Cartesian 3D)."
+                )
         elif norm_crs is not None:
             if has_3d and norm_crs in _CRS_TO_SRID_3D:
                 resolved_srid = _CRS_TO_SRID_3D[norm_crs]
@@ -311,28 +320,31 @@ class Point(Expression):
         """Height in meters for 3D WGS-84 points (None if 2D or Cartesian)."""
         return self._z if (self._is_geo and self._is_3d) else None
 
-    def distance(self, other: Any) -> float | FunctionExpr:
+    def distance(self, other: Point) -> float:
         """Calculates in-memory distance to another Point.
 
         Uses the Haversine formula (Earth radius 6,371,008.8m) for WGS-84 geographic points,
-        and Euclidean distance for Cartesian points.
+        and Euclidean distance for Cartesian points. Strictly in-memory calculation.
+        For AST query expression building, use `distance_to(other)`.
+
+        Note:
+            When calculating distance between mixed 2D and 3D points, the height (or z coordinate)
+            is ignored and 2D surface distance is computed.
 
         Args:
             other: Another Point instance.
 
         Returns:
-            Distance in meters (for WGS-84) or coordinate units (for Cartesian).
+            Distance in meters (for WGS-84) or coordinate units (for Cartesian) as a float.
 
         Raises:
             TypeError: If other is not a Point.
             ValueError: If coordinate reference systems are incompatible.
         """
         if not isinstance(other, Point):
-            if isinstance(other, Expression):
-                # Redirect query expression to distance_to
-                return self.distance_to(other)  # type: ignore[return-value]
             raise TypeError(
-                f"Cannot calculate in-memory distance between Point and {type(other).__name__}"
+                f"Point.distance() calculates in-memory distance and requires another Point instance, "
+                f"got {type(other).__name__}. For query expressions, use Point.distance_to()."
             )
 
         if self._is_geo != other._is_geo:
@@ -471,18 +483,22 @@ class Point(Expression):
             return cls.from_dict(scalar)
         raise TypeError(f"Cannot convert {type(scalar).__name__} to Point")
 
-    def to_polars(self) -> pl.DataFrame | dict[str, Any]:
-        """Converts this Point into a single-row Polars DataFrame."""
+    def to_polars(self) -> pl.Series | dict[str, Any]:
+        """Converts this Point into a Polars Series (struct representation)."""
         try:
             import polars as pl
 
-            return pl.DataFrame([self.to_dict()])
+            return pl.Series("point", [self.to_dict()])
         except ImportError:
             return self.to_dict()
 
     @classmethod
     def from_polars(cls, data: Any) -> Point:
-        """Constructs a Point from a Polars DataFrame row or Series element."""
+        """Constructs a Point from a Polars Series, DataFrame, or struct element."""
+        if hasattr(data, "to_list"):
+            items = data.to_list()
+            if items and isinstance(items[0], dict):
+                return cls.from_dict(items[0])
         if hasattr(data, "to_dicts"):
             dicts = data.to_dicts()
             if dicts:
@@ -509,17 +525,32 @@ class Point(Expression):
             if self._is_3d:
                 return math.isclose(self._z or 0.0, other._z or 0.0, abs_tol=1e-7)
             return True
+        if isinstance(other, dict):
+            try:
+                coerced = Point.from_dict(other)
+                return self == coerced
+            except Exception:
+                return False
         if isinstance(other, Expression):
             return super().__eq__(other)
         return False
+
+    def __ne__(self, other: Any) -> Any:  # type: ignore[override]
+        if isinstance(other, (Point, dict)):
+            eq_res = self.__eq__(other)
+            if isinstance(eq_res, bool):
+                return not eq_res
+        if isinstance(other, Expression):
+            return super().__ne__(other)
+        return True
 
     def __hash__(self) -> int:
         return hash(
             (
                 self._srid,
-                round(self._x, 7),
-                round(self._y, 7),
-                round(self._z, 7) if self._z is not None else None,
+                round(self._x, 5),
+                round(self._y, 5),
+                round(self._z, 5) if self._z is not None else None,
             )
         )
 
@@ -534,21 +565,39 @@ class Point(Expression):
             return f"Point(x={self.x}, y={self.y}, crs='{self.crs}')"
 
 
-def distance(point1: Any, point2: Any) -> float | FunctionExpr:
-    """Calculates spatial distance between two points.
+def distance(point1: Any, point2: Any) -> float:
+    """Calculates in-memory spatial distance between two Point instances.
 
-    If both arguments are in-memory `Point` instances, calculates exact spherical (Haversine)
-    or Euclidean distance as a float.
-    If either argument is a query `Expression`, `BoundField`, or `Field`, returns a `FunctionExpr`
-    representing `point.distance(point1, point2)`.
+    Strictly in-memory calculation. For AST query expressions, use `fn.point.distance()`
+    or `Point.distance_to()`.
 
     Args:
-        point1: First Point or query expression.
-        point2: Second Point or query expression.
+        point1: First Point instance.
+        point2: Second Point instance.
 
     Returns:
-        Float distance or FunctionExpr.
+        Float distance in meters (WGS-84) or coordinate units (Cartesian).
+
+    Raises:
+        TypeError: If either argument is not a Point instance.
     """
-    if isinstance(point1, Point) and isinstance(point2, Point):
-        return point1.distance(point2)
-    return FunctionExpr("point.distance", [to_expression(point1), to_expression(point2)])
+    if not (isinstance(point1, Point) and isinstance(point2, Point)):
+        raise TypeError(
+            "distance() calculates in-memory distance between two Point instances. "
+            "For query expressions, use fn.point.distance() or Point.distance_to()."
+        )
+    return point1.distance(point2)
+
+
+def serialize_param_value(val: Any) -> Any:
+    """Recursively serializes rich types (such as Point) to database-compatible parameter values.
+
+    Maps `Point` objects to their Cypher/Bolt map dictionary (`to_cypher_dict()`).
+    """
+    if hasattr(val, "to_cypher_dict"):
+        return val.to_cypher_dict()
+    if isinstance(val, dict):
+        return {k: serialize_param_value(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple)):
+        return [serialize_param_value(item) for item in val]
+    return val

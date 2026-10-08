@@ -5,9 +5,11 @@ import math
 import pytest
 from voyager_ogm import (
     Field,
+    MockBridge,
     Node,
     Point,
     Query,
+    Session,
     fn,
 )
 from voyager_ogm.types import (
@@ -236,3 +238,99 @@ def test_query_spatial_fn_helpers():
     cypher_pt = q_point_call.compile("cypher")
     assert "point(" in cypher_pt.statement
     assert "AS pt" in cypher_pt.statement
+
+
+def test_point_write_path_mock_bridge_roundtrip():
+    """Verify write path: Point properties are serialized to Cypher dict maps on the wire."""
+    bridge = MockBridge()
+    session = Session(bridge=bridge)
+
+    # 1. Entity active record .save() with Point
+    tower = Place(name="Eiffel Tower", location=Point(latitude=48.8584, longitude=2.2945))
+    tower.save(session=session, key_field="name")
+
+    assert len(bridge.executed_queries) == 1
+    stmt, params = bridge.executed_queries[0]
+    assert "UNWIND $batch AS row" in stmt
+    assert ":Place {name: row.name})" in stmt
+    assert "batch" in params
+    batch_records = params["batch"]
+    assert len(batch_records) == 1
+    record = batch_records[0]
+    assert record["name"] == "Eiffel Tower"
+    assert record["location"] == {"latitude": 48.8584, "longitude": 2.2945}
+
+    # 2. Direct session.bulk_upsert()
+    bridge.executed_queries.clear()
+    plan = session.bulk_upsert(
+        Place,
+        [{"name": "Louvre", "location": Point(latitude=48.8606, longitude=2.3376)}],
+        key_field="name",
+    )
+    session.run_bulk(plan)
+    assert len(bridge.executed_queries) == 1
+    stmt2, params2 = bridge.executed_queries[0]
+    assert params2["batch"][0]["location"] == {"latitude": 48.8606, "longitude": 2.3376}
+
+    # 3. Direct session.execute() parameter passing
+    bridge.executed_queries.clear()
+    session.execute(
+        "CREATE (p:Place {name: $name, loc: $loc})",
+        {"name": "Notre-Dame", "loc": Point(latitude=48.8530, longitude=2.3499)},
+    )
+    assert len(bridge.executed_queries) == 1
+    _, params3 = bridge.executed_queries[0]
+    assert params3["loc"] == {"latitude": 48.8530, "longitude": 2.3499}
+
+
+def test_point_distance_strict_in_memory_type_error():
+    """Verify Point.distance() strictly requires a Point instance and raises TypeError for AST expressions."""
+    p = Place(alias="p")
+    target = Point(latitude=52.52, longitude=13.405)
+
+    with pytest.raises(TypeError, match="Point.distance\\(\\) calculates in-memory distance"):
+        target.distance(p.location)  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError, match="Point.distance\\(\\) calculates in-memory distance"):
+        target.distance("invalid")  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError, match="distance\\(\\) calculates in-memory distance"):
+        distance(target, p.location)
+
+
+def test_point_eq_dict_coercion_and_hash_tolerance():
+    """Verify Point == dict coercion ergonomics and hash consistency across rounding boundaries."""
+    p = Point(latitude=52.52, longitude=13.405)
+
+    # Point == dict coercion
+    assert p == {"latitude": 52.52, "longitude": 13.405}
+    assert {"latitude": 52.52, "longitude": 13.405} == p
+    assert p == {"srid": 4326, "x": 13.405, "y": 52.52}
+    assert p != {"latitude": 10.0, "longitude": 20.0}
+    assert p != {"non_point_dict": True}
+    assert p != "non_point_string"
+
+    # Hash consistency for points within floating-point tolerance
+    p1 = Point(latitude=52.52000001, longitude=13.40500001)
+    p2 = Point(latitude=52.52000004, longitude=13.40500004)
+    assert p1 == p2
+    assert hash(p1) == hash(p2)
+
+
+def test_unknown_srid_rejected():
+    """Verify unknown or unhandled SRIDs (e.g. 3857) raise ValueError with informative message."""
+    with pytest.raises(
+        ValueError, match="Unsupported spatial reference system identifier \\(SRID\\): 3857"
+    ):
+        Point(x=100.0, y=200.0, srid=3857)
+
+
+def test_mixed_2d_3d_distance():
+    """Verify mixed 2D and 3D distance ignores height and computes 2D surface distance."""
+    p2d = Point(latitude=52.52, longitude=13.405)
+    p3d = Point(latitude=48.8566, longitude=2.3522, height=500.0)
+    p3d_flat = Point(latitude=48.8566, longitude=2.3522)
+
+    dist_mixed = p2d.distance(p3d)
+    dist_flat = p2d.distance(p3d_flat)
+    assert math.isclose(dist_mixed, dist_flat)

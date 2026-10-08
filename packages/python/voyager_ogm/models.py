@@ -21,7 +21,7 @@ from voyager_ogm.expressions import (
     PropExpr,
     to_expression,
 )
-from voyager_ogm.types import Point
+from voyager_ogm.types import Point, serialize_param_value
 
 try:
     from voyager_ogm._voyager_rs import NativeSchemaRegistry
@@ -44,6 +44,28 @@ _BUILTIN_TYPES = {
     "dict": dict,
     "Point": Point,
 }
+
+# Registry for automatic field hydration from raw database values (e.g. dicts)
+_HYDRATORS: dict[Any, Any] = {
+    Point: Point.from_dict,
+}
+
+
+def _hydrate_field_value(field_desc: Field | None, value: Any) -> Any:
+    """Hydrates a raw property value (such as a dictionary) into a rich type via the _HYDRATORS registry."""
+    if field_desc is None or not isinstance(value, dict):
+        return value
+    ann = getattr(field_desc, "type_annotation", None)
+    if ann is None:
+        return value
+    hydrator = _HYDRATORS.get(ann)
+    if hydrator is not None:
+        return hydrator(value)
+    ann_name = getattr(ann, "__name__", "")
+    for registered_type, h in _HYDRATORS.items():
+        if getattr(registered_type, "__name__", "") == ann_name:
+            return h(value)
+    return value
 
 
 def _get_next_alias(label: str) -> str:
@@ -542,18 +564,7 @@ class Node:
         hydrated_values: dict[str, Any] = {}
         schema = getattr(self, "_schema_fields", {})
         for k, v in values.items():
-            field_desc = schema.get(k)
-            if (
-                field_desc is not None
-                and (
-                    field_desc.type_annotation is Point
-                    or getattr(field_desc.type_annotation, "__name__", "") == "Point"
-                )
-                and isinstance(v, dict)
-            ):
-                hydrated_values[k] = Point.from_dict(v)
-            else:
-                hydrated_values[k] = v
+            hydrated_values[k] = _hydrate_field_value(schema.get(k), v)
         self._values: dict[str, Any] = hydrated_values
         self._dirty_fields: dict[str, Any] = dict(hydrated_values)
         if session is not None and getattr(session, "identity_map_enabled", False):
@@ -600,10 +611,10 @@ class Node:
         if not self._dirty_fields:
             return None
 
-        record = dict(self._dirty_fields)
+        record = {k: serialize_param_value(v) for k, v in self._dirty_fields.items()}
         primary_val = self.get(key_field)
         if primary_val is not None:
-            record[key_field] = primary_val
+            record[key_field] = serialize_param_value(primary_val)
 
         plan = active_session.bulk_upsert(
             model=self.__class__,
@@ -651,10 +662,10 @@ class Node:
         if not self._dirty_fields:
             return None
 
-        record = dict(self._dirty_fields)
+        record = {k: serialize_param_value(v) for k, v in self._dirty_fields.items()}
         primary_val = self.get(key_field)
         if primary_val is not None:
-            record[key_field] = primary_val
+            record[key_field] = serialize_param_value(primary_val)
 
         plan = active_session.bulk_upsert(
             model=self.__class__,
@@ -697,12 +708,7 @@ class Node:
             if not hasattr(self, "_dirty_fields"):
                 self._dirty_fields = {}
             if hasattr(self, "_schema_fields") and name in self._schema_fields:
-                field_desc = self._schema_fields[name]
-                if (
-                    field_desc.type_annotation is Point
-                    or getattr(field_desc.type_annotation, "__name__", "") == "Point"
-                ) and isinstance(value, dict):
-                    value = Point.from_dict(value)
+                value = _hydrate_field_value(self._schema_fields[name], value)
             self._values[name] = value
             self._dirty_fields[name] = value
 
@@ -853,18 +859,7 @@ class Relationship:
         hydrated_values: dict[str, Any] = {}
         schema = getattr(self, "_schema_fields", {})
         for k, v in values.items():
-            field_desc = schema.get(k)
-            if (
-                field_desc is not None
-                and (
-                    field_desc.type_annotation is Point
-                    or getattr(field_desc.type_annotation, "__name__", "") == "Point"
-                )
-                and isinstance(v, dict)
-            ):
-                hydrated_values[k] = Point.from_dict(v)
-            else:
-                hydrated_values[k] = v
+            hydrated_values[k] = _hydrate_field_value(schema.get(k), v)
         self._values = hydrated_values
 
     @property
@@ -890,12 +885,7 @@ class Relationship:
             if not hasattr(self, "_values"):
                 self._values = {}
             if hasattr(self, "_schema_fields") and name in self._schema_fields:
-                field_desc = self._schema_fields[name]
-                if (
-                    field_desc.type_annotation is Point
-                    or getattr(field_desc.type_annotation, "__name__", "") == "Point"
-                ) and isinstance(value, dict):
-                    value = Point.from_dict(value)
+                value = _hydrate_field_value(self._schema_fields[name], value)
             self._values[name] = value
 
     def __getattr__(self, name: str) -> BoundField:
