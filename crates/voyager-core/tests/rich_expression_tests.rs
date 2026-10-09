@@ -304,3 +304,38 @@ fn test_sql_pgq_rich_expressions() {
         "SELECT * FROM GRAPH_TABLE (social_graph MATCH (p IS Person) COLUMNS (UPPER(p.name) AS upper_name))"
     );
 }
+
+#[test]
+fn test_spatial_distance_functions() {
+    let mut builder = QueryBuilder::new();
+    builder.r#match().node(Some("p"), vec!["Place"]);
+
+    let loc1 = builder.prop("p", "location");
+    let loc2 = builder.prop("p", "destination");
+    let dist_call = builder.function("distance", vec![loc1, loc2]);
+
+    builder.r#return().custom_expr(dist_call, Some("dist"));
+
+    let (arena, root) = builder.build();
+
+    let mut cypher_emitter = CypherEmitter::new();
+    let compiled = cypher_emitter.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        compiled.statement,
+        "MATCH (p:Place) RETURN point.distance(p.location, p.destination) AS dist"
+    );
+
+    let mut gql_emitter = IsoGqlEmitter::new();
+    let compiled_gql = gql_emitter.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        compiled_gql.statement,
+        "MATCH (p:Place) RETURN point.distance(p.location, p.destination) AS dist"
+    );
+
+    let mut pgq_emitter = SqlPgqEmitter::new("places_graph");
+    let compiled_pgq = pgq_emitter.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        compiled_pgq.statement,
+        "SELECT * FROM GRAPH_TABLE (places_graph MATCH (p IS Place) COLUMNS (ST_Distance(p.location, p.destination) AS dist))"
+    );
+}

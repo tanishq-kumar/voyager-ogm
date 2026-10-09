@@ -19,6 +19,7 @@ from voyager_ogm._voyager_rs import (
 from voyager_ogm._voyager_rs import (
     compile_bulk_merge as _rs_compile_bulk_merge,
 )
+from voyager_ogm.types import serialize_param_value
 
 if TYPE_CHECKING:
     import polars as pl
@@ -123,7 +124,7 @@ class BulkIngestionPlan:
             yield BulkIngestionBatch(
                 batch_index=idx,
                 statement=self.statement,
-                parameters={"batch": chunk},
+                parameters={"batch": [serialize_param_value(r) for r in chunk]},
                 record_count=len(chunk),
             )
 
@@ -164,7 +165,8 @@ def create_bulk_create_plan(
     fields = getattr(model, "_schema_fields", getattr(model, "__fields__", {}))
     properties = list(fields.keys())
 
-    batches = list(chunk_dataframe(data, batch_size=batch_size))
+    raw_batches = list(chunk_dataframe(data, batch_size=batch_size))
+    batches = [[serialize_param_value(r) for r in chunk] for chunk in raw_batches]
     total_records = sum(len(b) for b in batches)
 
     if not properties and batches and batches[0]:
@@ -211,7 +213,8 @@ def create_bulk_merge_plan(
     fields = getattr(model, "_schema_fields", getattr(model, "__fields__", {}))
     properties = [f for f in fields.keys() if f != key_field]
 
-    batches = list(chunk_dataframe(data, batch_size=batch_size))
+    raw_batches = list(chunk_dataframe(data, batch_size=batch_size))
+    batches = [[serialize_param_value(r) for r in chunk] for chunk in raw_batches]
     total_records = sum(len(b) for b in batches)
 
     if not properties and batches and batches[0]:
@@ -274,7 +277,8 @@ def create_bulk_create_rel_plan(
     expected_from = f"from_{from_key}"
     expected_to = f"to_{to_key}"
 
-    batches = list(chunk_dataframe(data, batch_size=batch_size))
+    raw_batches = list(chunk_dataframe(data, batch_size=batch_size))
+    batches = [[serialize_param_value(r) for r in chunk] for chunk in raw_batches]
     total_records = sum(len(b) for b in batches)
 
     if batches and batches[0]:

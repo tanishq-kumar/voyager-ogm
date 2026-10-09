@@ -69,6 +69,42 @@ pub struct BoltPath {
     pub sequence: Vec<i64>,
 }
 
+/// Standard spatial reference system identifiers (SRIDs) for Bolt PackStream spatial types.
+pub mod srid {
+    /// WGS-84 2D geographic coordinate reference system (longitude, latitude).
+    pub const WGS_84_2D: i64 = 4326;
+    /// WGS-84 3D geographic coordinate reference system (longitude, latitude, height).
+    pub const WGS_84_3D: i64 = 4979;
+    /// Cartesian 2D coordinate reference system (x, y).
+    pub const CARTESIAN_2D: i64 = 7203;
+    /// Cartesian 3D coordinate reference system (x, y, z).
+    pub const CARTESIAN_3D: i64 = 9157;
+}
+
+/// Represents a 2D spatial point decoded from a Bolt PackStream structure (`tag = 0x58`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BoltPoint2D {
+    /// Spatial reference system identifier (e.g. 4326 for WGS-84, 7203 for Cartesian).
+    pub srid: i64,
+    /// X coordinate (or longitude for geographic WGS-84).
+    pub x: f64,
+    /// Y coordinate (or latitude for geographic WGS-84).
+    pub y: f64,
+}
+
+/// Represents a 3D spatial point decoded from a Bolt PackStream structure (`tag = 0x59`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BoltPoint3D {
+    /// Spatial reference system identifier (e.g. 4979 for WGS-84 3D, 9157 for Cartesian 3D).
+    pub srid: i64,
+    /// X coordinate (or longitude for geographic WGS-84).
+    pub x: f64,
+    /// Y coordinate (or latitude for geographic WGS-84).
+    pub y: f64,
+    /// Z coordinate (or height for geographic WGS-84).
+    pub z: f64,
+}
+
 /// Represents any dynamically typed value supported by Bolt PackStream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BoltValue {
@@ -101,6 +137,10 @@ pub enum BoltValue {
     Relationship(BoltRelationship),
     /// Graph Path structure (`0x50`).
     Path(BoltPath),
+    /// 2D spatial point structure (`0x58`).
+    Point2D(BoltPoint2D),
+    /// 3D spatial point structure (`0x59`).
+    Point3D(BoltPoint3D),
 }
 
 impl From<bool> for BoltValue {
@@ -203,6 +243,8 @@ impl PackStream {
             BoltValue::Node(node) => Self::encode_node(node, buf),
             BoltValue::Relationship(rel) => Self::encode_relationship(rel, buf),
             BoltValue::Path(path) => Self::encode_path(path, buf),
+            BoltValue::Point2D(point) => Self::encode_point2d(point, buf),
+            BoltValue::Point3D(point) => Self::encode_point3d(point, buf),
         }
     }
 
@@ -599,6 +641,25 @@ impl PackStream {
         Self::encode_structure(0x50, &[nodes_val, rels_val, seq_val], buf);
     }
 
+    fn encode_point2d(point: &BoltPoint2D, buf: &mut BytesMut) {
+        let fields = [
+            BoltValue::Integer(point.srid),
+            BoltValue::Float(point.x),
+            BoltValue::Float(point.y),
+        ];
+        Self::encode_structure(0x58, &fields, buf);
+    }
+
+    fn encode_point3d(point: &BoltPoint3D, buf: &mut BytesMut) {
+        let fields = [
+            BoltValue::Integer(point.srid),
+            BoltValue::Float(point.x),
+            BoltValue::Float(point.y),
+            BoltValue::Float(point.z),
+        ];
+        Self::encode_structure(0x59, &fields, buf);
+    }
+
     // --- Decoders ---
 
     fn decode_string_payload(len: usize, buf: &mut Bytes) -> Result<BoltValue> {
@@ -703,6 +764,8 @@ impl PackStream {
             0x4E => Self::decode_node_structure(fields),
             0x52 => Self::decode_relationship_structure(fields),
             0x50 => Self::decode_path_structure(fields),
+            0x58 => Self::decode_point2d_structure(fields),
+            0x59 => Self::decode_point3d_structure(fields),
             _ => Ok(BoltValue::Structure { tag, fields }),
         }
     }
@@ -868,6 +931,53 @@ impl PackStream {
             relationships,
             sequence,
         }))
+    }
+
+    fn decode_point2d_structure(fields: Vec<BoltValue>) -> Result<BoltValue> {
+        if fields.len() < 3 {
+            return Ok(BoltValue::Structure { tag: 0x58, fields });
+        }
+        let srid = match fields.first() {
+            Some(BoltValue::Integer(i)) => *i,
+            _ => return Ok(BoltValue::Structure { tag: 0x58, fields }),
+        };
+        let x = match fields.get(1) {
+            Some(BoltValue::Float(f)) => *f,
+            Some(BoltValue::Integer(i)) => *i as f64,
+            _ => return Ok(BoltValue::Structure { tag: 0x58, fields }),
+        };
+        let y = match fields.get(2) {
+            Some(BoltValue::Float(f)) => *f,
+            Some(BoltValue::Integer(i)) => *i as f64,
+            _ => return Ok(BoltValue::Structure { tag: 0x58, fields }),
+        };
+        Ok(BoltValue::Point2D(BoltPoint2D { srid, x, y }))
+    }
+
+    fn decode_point3d_structure(fields: Vec<BoltValue>) -> Result<BoltValue> {
+        if fields.len() < 4 {
+            return Ok(BoltValue::Structure { tag: 0x59, fields });
+        }
+        let srid = match fields.first() {
+            Some(BoltValue::Integer(i)) => *i,
+            _ => return Ok(BoltValue::Structure { tag: 0x59, fields }),
+        };
+        let x = match fields.get(1) {
+            Some(BoltValue::Float(f)) => *f,
+            Some(BoltValue::Integer(i)) => *i as f64,
+            _ => return Ok(BoltValue::Structure { tag: 0x59, fields }),
+        };
+        let y = match fields.get(2) {
+            Some(BoltValue::Float(f)) => *f,
+            Some(BoltValue::Integer(i)) => *i as f64,
+            _ => return Ok(BoltValue::Structure { tag: 0x59, fields }),
+        };
+        let z = match fields.get(3) {
+            Some(BoltValue::Float(f)) => *f,
+            Some(BoltValue::Integer(i)) => *i as f64,
+            _ => return Ok(BoltValue::Structure { tag: 0x59, fields }),
+        };
+        Ok(BoltValue::Point3D(BoltPoint3D { srid, x, y, z }))
     }
 }
 

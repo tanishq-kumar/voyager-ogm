@@ -5,9 +5,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use voyager_net::bolt::{
-    BoltConnection, BoltNode, BoltPath, BoltRelationship, BoltRequest, BoltResponse,
-    BoltStubServer, BoltUnboundRelationship, BoltValue, PackStream, encode_chunks,
-    read_message_frame,
+    BoltConnection, BoltNode, BoltPath, BoltPoint2D, BoltPoint3D, BoltRelationship, BoltRequest,
+    BoltResponse, BoltStubServer, BoltUnboundRelationship, BoltValue, PackStream, encode_chunks,
+    read_message_frame, srid,
 };
 use voyager_net::config::{ConnectionConfig, PoolConfig};
 use voyager_net::engine::{AsyncConnection, ConnectionFactory};
@@ -127,6 +127,57 @@ fn test_packstream_graph_structures_roundtrip() {
     let mut bytes = buf.freeze();
     let decoded_path = PackStream::decode(&mut bytes).expect("Failed to decode path");
     assert_eq!(path_val, decoded_path);
+}
+
+#[test]
+fn test_packstream_spatial_points_roundtrip() {
+    // 1. Point2D WGS-84 (SRID 4326)
+    let p2d_wgs = BoltValue::Point2D(BoltPoint2D {
+        srid: srid::WGS_84_2D,
+        x: 12.56,
+        y: 55.67,
+    });
+    let mut buf = BytesMut::new();
+    PackStream::encode(&p2d_wgs, &mut buf);
+    let mut bytes = buf.freeze();
+    let decoded_p2d = PackStream::decode(&mut bytes).expect("Failed to decode Point2D");
+    assert_eq!(p2d_wgs, decoded_p2d);
+
+    // 2. Point2D Cartesian (SRID 7203)
+    let p2d_cart = BoltValue::Point2D(BoltPoint2D {
+        srid: srid::CARTESIAN_2D,
+        x: 100.0,
+        y: 200.0,
+    });
+    let mut buf = BytesMut::new();
+    PackStream::encode(&p2d_cart, &mut buf);
+    let mut bytes = buf.freeze();
+    assert_eq!(p2d_cart, PackStream::decode(&mut bytes).unwrap());
+
+    // 3. Point3D WGS-84 (SRID 4979)
+    let p3d_wgs = BoltValue::Point3D(BoltPoint3D {
+        srid: srid::WGS_84_3D,
+        x: 13.4,
+        y: 52.5,
+        z: 35.0,
+    });
+    let mut buf = BytesMut::new();
+    PackStream::encode(&p3d_wgs, &mut buf);
+    let mut bytes = buf.freeze();
+    let decoded_p3d = PackStream::decode(&mut bytes).expect("Failed to decode Point3D");
+    assert_eq!(p3d_wgs, decoded_p3d);
+
+    // 4. Point3D Cartesian (SRID 9157)
+    let p3d_cart = BoltValue::Point3D(BoltPoint3D {
+        srid: srid::CARTESIAN_3D,
+        x: 10.0,
+        y: 20.0,
+        z: 30.0,
+    });
+    let mut buf = BytesMut::new();
+    PackStream::encode(&p3d_cart, &mut buf);
+    let mut bytes = buf.freeze();
+    assert_eq!(p3d_cart, PackStream::decode(&mut bytes).unwrap());
 }
 
 #[test]

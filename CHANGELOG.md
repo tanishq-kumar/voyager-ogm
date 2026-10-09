@@ -2,6 +2,14 @@
 
 ## [0.4.0-alpha.6] - 2026-10-02
 
+### Added
+- **Geospatial Point Types & Spatial Distance Engine (#114)**:
+  - Added Bolt wire protocol PackStream encoding and decoding for `Point2D` (`0x58`) and `Point3D` (`0x59`) with standard SRIDs (`4326` WGS-84 2D, `4979` WGS-84 3D, `7203` Cartesian 2D, `9157` Cartesian 3D).
+  - Added `Point` class in `voyager_ogm.types` supporting geographic and Cartesian coordinates, in-memory spherical Haversine and Euclidean distance calculations, PyArrow/Polars conversion, and `to_dict()`/`from_dict()`.
+  - Added spatial query expressions `Point.distance_to()`, `BoundField.distance_to()`, `Field.distance_to()`, `fn.point()`, `fn.point.distance()`, and `fn.distance()`.
+  - Added cross-dialect spatial function compilation: normalized to `point.distance()` for openCypher and ISO GQL, and `ST_Distance()` for SQL/PGQ.
+  - Added automatic model hydration for `Point` fields on `Node` and `Relationship` entities.
+
 ### Removed (Breaking Changes)
 - **Legacy Query Builder & Comprehension Aliases (#131)**:
   - Removed redundant `Query.add_*` aliases (`add_match`, `add_optional_match`, `add_create`, `add_merge`, `add_unwind`, `add_load_csv`) in favor of direct fluent methods (`match`, `optional_match`, `create`, `merge`, `unwind`, `load_csv`).

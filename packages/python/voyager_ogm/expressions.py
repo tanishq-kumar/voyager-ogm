@@ -172,6 +172,10 @@ class Expression:
 
         return lower(self)
 
+    def distance_to(self, other: Any) -> FunctionExpr:
+        """Computes spatial distance expression `point.distance(self, other)`."""
+        return FunctionExpr("point.distance", [self, to_expression(other)])
+
 
 class PropExpr(Expression):
     """Property expression accessing a property on an aliased node or edge variable: `var.prop`."""

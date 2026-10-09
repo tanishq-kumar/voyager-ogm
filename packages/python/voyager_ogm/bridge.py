@@ -17,6 +17,7 @@ from typing import Any, Literal, Protocol, overload, runtime_checkable
 import polars as pl
 
 from voyager_ogm.ingestion import BulkIngestionPlan
+from voyager_ogm.types import unwrap_spatial_param
 
 
 @dataclass
@@ -169,7 +170,7 @@ class MockBridge:
         Returns:
             List of record dictionaries.
         """
-        params = parameters or {}
+        params = unwrap_spatial_param(parameters or {})
         self.executed_queries.append((statement, params))
         if self._canned_results:
             res = self._canned_results.pop(0)
@@ -190,7 +191,7 @@ class MockBridge:
         Returns:
             Polars DataFrame.
         """
-        params = parameters or {}
+        params = unwrap_spatial_param(parameters or {})
         self.executed_queries.append((statement, params))
         if self._canned_results:
             res = self._canned_results.pop(0)
@@ -225,14 +226,16 @@ class MockBridge:
             for b in batch_list:
                 batch_data = b.get("batch", [])
                 total_records += len(batch_data)
-                self.executed_queries.append((statement, b))
+                self.executed_queries.append((statement, unwrap_spatial_param(b)))
         else:
             statement = plan_or_statement.statement
             for batch_item in plan_or_statement:
                 total_batches += 1
                 batch_data = batch_item.parameters.get("batch", [])
                 total_records += len(batch_data)
-                self.executed_queries.append((statement, batch_item.parameters))
+                self.executed_queries.append(
+                    (statement, unwrap_spatial_param(batch_item.parameters))
+                )
 
         return BulkExecutionResult(
             total_batches=total_batches,
@@ -322,6 +325,77 @@ class AsyncMockBridge:
         pass
 
 
+def _adapt_bolt_value(val: Any) -> Any:
+    """Adapts tagged spatial values to Bolt driver spatial objects (WGS84Point / CartesianPoint)."""
+    try:
+        from neo4j.spatial import CartesianPoint, WGS84Point
+    except ImportError:
+        if isinstance(val, dict) and "__voyager_spatial__" in val:
+            return val["__voyager_spatial__"]
+        return val
+
+    from voyager_ogm.types import WGS_84_2D, WGS_84_3D, Point
+
+    if isinstance(val, Point):
+        if val.is_geographic:
+            lat = float(val.latitude) if val.latitude is not None else float(val.y)
+            lon = float(val.longitude) if val.longitude is not None else float(val.x)
+            if val.is_3d and val.height is not None:
+                return WGS84Point((lon, lat, float(val.height)))
+            return WGS84Point((lon, lat))
+        else:
+            if val.is_3d and val.z is not None:
+                return CartesianPoint((float(val.x), float(val.y), float(val.z)))
+            return CartesianPoint((float(val.x), float(val.y)))
+
+    if isinstance(val, dict):
+        if "__voyager_spatial__" in val:
+            sp = val["__voyager_spatial__"]
+            if not isinstance(sp, dict):
+                return sp
+            srid = sp.get("srid")
+            is_geo = (
+                (srid in (WGS_84_2D, WGS_84_3D))
+                if srid
+                else ("latitude" in sp or "longitude" in sp)
+            )
+            if is_geo:
+                lat_raw = sp.get("latitude") if "latitude" in sp else sp.get("y")
+                lon_raw = sp.get("longitude") if "longitude" in sp else sp.get("x")
+                if lat_raw is None or lon_raw is None:
+                    raise ValueError(
+                        f"Geographic spatial data missing required latitude/longitude: {sp}"
+                    )
+                lat = float(lat_raw)
+                lon = float(lon_raw)
+                height = sp.get("height", sp.get("z"))
+                if height is not None:
+                    return WGS84Point((lon, lat, float(height)))
+                return WGS84Point((lon, lat))
+            else:
+                if "x" not in sp or "y" not in sp or sp["x"] is None or sp["y"] is None:
+                    raise ValueError(
+                        f"Cartesian spatial data missing required 'x' or 'y' coordinate: {sp}"
+                    )
+                x = float(sp["x"])
+                y = float(sp["y"])
+                z = sp.get("z")
+                if z is not None:
+                    return CartesianPoint((x, y, float(z)))
+                return CartesianPoint((x, y))
+        return {k: _adapt_bolt_value(v) for k, v in val.items()}
+
+    if isinstance(val, (list, tuple)):
+        return [_adapt_bolt_value(x) for x in val]
+
+    return val
+
+
+def _adapt_bolt_parameters(params: dict[str, Any]) -> dict[str, Any]:
+    """Adapts statement and batch parameters for Bolt protocol execution, converting tagged spatial values to native spatial points."""
+    return {k: _adapt_bolt_value(v) for k, v in params.items()}
+
+
 class Neo4jBoltBridge:
     """Synchronous Neo4j / Memgraph Bolt protocol driver bridge."""
 
@@ -347,7 +421,7 @@ class Neo4jBoltBridge:
         Returns:
             List of record dictionaries.
         """
-        params = parameters or {}
+        params = _adapt_bolt_parameters(parameters or {})
         session_kwargs = {"database": self.database} if self.database else {}
         with self.driver.session(**session_kwargs) as session:
             result = session.run(statement, params)
@@ -396,14 +470,14 @@ class Neo4jBoltBridge:
                 for b in batch_list:
                     batch_data = b.get("batch", [])
                     total_records += len(batch_data)
-                    session.run(statement, b)
+                    session.run(statement, _adapt_bolt_parameters(b))
             else:
                 statement = plan_or_statement.statement
                 for batch_item in plan_or_statement:
                     total_batches += 1
                     batch_data = batch_item.parameters.get("batch", [])
                     total_records += len(batch_data)
-                    session.run(statement, batch_item.parameters)
+                    session.run(statement, _adapt_bolt_parameters(batch_item.parameters))
 
         return BulkExecutionResult(
             total_batches=total_batches,
@@ -457,7 +531,7 @@ class AsyncNeo4jBoltBridge:
         Returns:
             List of record dictionaries.
         """
-        params = parameters or {}
+        params = _adapt_bolt_parameters(parameters or {})
         session_kwargs = {"database": self.database} if self.database else {}
         async with self.driver.session(**session_kwargs) as session:
             result = await session.run(statement, params)
@@ -507,14 +581,14 @@ class AsyncNeo4jBoltBridge:
                 for b in batch_list:
                     batch_data = b.get("batch", [])
                     total_records += len(batch_data)
-                    await session.run(statement, b)
+                    await session.run(statement, _adapt_bolt_parameters(b))
             else:
                 statement = plan_or_statement.statement
                 for batch_item in plan_or_statement:
                     total_batches += 1
                     batch_data = batch_item.parameters.get("batch", [])
                     total_records += len(batch_data)
-                    await session.run(statement, batch_item.parameters)
+                    await session.run(statement, _adapt_bolt_parameters(batch_item.parameters))
 
         return BulkExecutionResult(
             total_batches=total_batches,

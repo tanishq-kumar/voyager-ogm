@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 
 def main() -> int:
@@ -112,12 +113,32 @@ def main() -> int:
                 }
             )
 
+        # Read existing benchmark rows to preserve baselines when live network/database tests are skipped
+        merged_rows: dict[str, dict[str, Any]] = {}
+        if summary_csv.exists():
+            try:
+                with open(summary_csv, encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    for r in reader:
+                        b_name = r.get("benchmark")
+                        if b_name:
+                            merged_rows[b_name] = r
+            except Exception:
+                pass
+
+        for r in rows:
+            merged_rows[r["benchmark"]] = r
+
+        final_rows = sorted(merged_rows.values(), key=lambda r: r.get("benchmark", ""))
+
         with open(summary_csv, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(rows)
+            writer.writerows(final_rows)
 
-        print(f"[Benchmark Runner] Successfully wrote {len(rows)} benchmarks to: {summary_csv}")
+        print(
+            f"[Benchmark Runner] Successfully wrote {len(final_rows)} benchmarks to: {summary_csv}"
+        )
 
     finally:
         if tmp_json_path.exists():

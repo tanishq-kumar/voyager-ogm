@@ -14,7 +14,14 @@ import weakref
 from collections import defaultdict
 from typing import Any, ClassVar, Generic, TypeVar, cast, dataclass_transform
 
-from voyager_ogm.expressions import BinaryExpr, Expression, PropExpr, to_expression
+from voyager_ogm.expressions import (
+    BinaryExpr,
+    Expression,
+    FunctionExpr,
+    PropExpr,
+    to_expression,
+)
+from voyager_ogm.types import Point, serialize_param_value
 
 try:
     from voyager_ogm._voyager_rs import NativeSchemaRegistry
@@ -35,7 +42,52 @@ _BUILTIN_TYPES = {
     "bool": bool,
     "list": list,
     "dict": dict,
+    "Point": Point,
 }
+
+# Registry for automatic field hydration from raw database values (e.g. dicts, driver spatial objects)
+_HYDRATORS: dict[Any, Any] = {
+    Point: Point.from_spatial,
+}
+
+
+def _hydrate_field_value(field_desc: Field | None, value: Any) -> Any:
+    """Hydrates a raw property value (such as a dictionary or driver spatial object) into a rich type via the _HYDRATORS registry."""
+    if field_desc is None or value is None:
+        return value
+    ann = getattr(field_desc, "type_annotation", None)
+    if ann is None:
+        return value
+    if isinstance(ann, type) and isinstance(value, ann):
+        return value
+    hydrator = _HYDRATORS.get(ann)
+    if hydrator is not None:
+        try:
+            return hydrator(value)
+        except Exception as exc:
+            logger.debug(
+                "Failed to hydrate field '%s' with value %r via %s: %s",
+                getattr(field_desc, "name", "unknown"),
+                value,
+                hydrator,
+                exc,
+            )
+            return value
+    ann_name = getattr(ann, "__name__", "")
+    for registered_type, h in _HYDRATORS.items():
+        if getattr(registered_type, "__name__", "") == ann_name:
+            try:
+                return h(value)
+            except Exception as exc:
+                logger.debug(
+                    "Failed to hydrate field '%s' with value %r via %s: %s",
+                    getattr(field_desc, "name", "unknown"),
+                    value,
+                    h,
+                    exc,
+                )
+                return value
+    return value
 
 
 def _get_next_alias(label: str) -> str:
@@ -175,6 +227,18 @@ class Field(Generic[_T]):
         assert self.name is not None
         return BoundField(alias, self.name)
 
+    def distance_to(self, other: Any) -> FunctionExpr:
+        """Computes spatial distance expression `point.distance(field, other)`.
+
+        Args:
+            other: A Point, BoundField, or Expression.
+
+        Returns:
+            FunctionExpr representing the spatial distance expression.
+        """
+        name = self.name or ""
+        return BoundField("", name).distance_to(other)
+
 
 class BoundField(Expression):
     """A field bound to a specific node or relationship alias instance.
@@ -292,6 +356,17 @@ class BoundField(Expression):
     def collect(self) -> AggregationExpr:
         """Returns a `COLLECT(alias.prop)` aggregation expression."""
         return AggregationExpr(self.target_alias, self.field_name, "collect")
+
+    def distance_to(self, other: Any) -> FunctionExpr:
+        """Creates a spatial distance expression `point.distance(self, other)`.
+
+        Args:
+            other: A Point, BoundField, or Expression.
+
+        Returns:
+            FunctionExpr representing the spatial distance expression.
+        """
+        return FunctionExpr("point.distance", [self, to_expression(other)])
 
 
 class AggregationExpr(Expression):
@@ -508,8 +583,12 @@ class Node:
         self._session_ref: weakref.ref[Any] | None = (
             weakref.ref(session) if session is not None else None
         )
-        self._values: dict[str, Any] = dict(values)
-        self._dirty_fields: dict[str, Any] = dict(values)
+        hydrated_values: dict[str, Any] = {}
+        schema = getattr(self, "_schema_fields", {})
+        for k, v in values.items():
+            hydrated_values[k] = _hydrate_field_value(schema.get(k), v)
+        self._values: dict[str, Any] = hydrated_values
+        self._dirty_fields: dict[str, Any] = dict(hydrated_values)
         if session is not None and getattr(session, "identity_map_enabled", False):
             session.register(self)
 
@@ -554,10 +633,10 @@ class Node:
         if not self._dirty_fields:
             return None
 
-        record = dict(self._dirty_fields)
+        record = {k: serialize_param_value(v) for k, v in self._dirty_fields.items()}
         primary_val = self.get(key_field)
         if primary_val is not None:
-            record[key_field] = primary_val
+            record[key_field] = serialize_param_value(primary_val)
 
         plan = active_session.bulk_upsert(
             model=self.__class__,
@@ -605,10 +684,10 @@ class Node:
         if not self._dirty_fields:
             return None
 
-        record = dict(self._dirty_fields)
+        record = {k: serialize_param_value(v) for k, v in self._dirty_fields.items()}
         primary_val = self.get(key_field)
         if primary_val is not None:
-            record[key_field] = primary_val
+            record[key_field] = serialize_param_value(primary_val)
 
         plan = active_session.bulk_upsert(
             model=self.__class__,
@@ -650,6 +729,8 @@ class Node:
                 self._values = {}
             if not hasattr(self, "_dirty_fields"):
                 self._dirty_fields = {}
+            if hasattr(self, "_schema_fields") and name in self._schema_fields:
+                value = _hydrate_field_value(self._schema_fields[name], value)
             self._values[name] = value
             self._dirty_fields[name] = value
 
@@ -797,7 +878,11 @@ class Relationship:
         self._alias = alias or _get_next_alias(rel_type)
         self._cached_alias = self._alias
         self._bound_fields: dict[str, BoundField] = {}
-        self._values = values
+        hydrated_values: dict[str, Any] = {}
+        schema = getattr(self, "_schema_fields", {})
+        for k, v in values.items():
+            hydrated_values[k] = _hydrate_field_value(schema.get(k), v)
+        self._values = hydrated_values
 
     @property
     def alias(self) -> str:
@@ -814,6 +899,16 @@ class Relationship:
     def get(self, name: str, default: Any = None) -> Any:
         """Retrieves an in-memory property value."""
         return self._values.get(name, default)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name.startswith("_"):
+            super().__setattr__(name, value)
+        else:
+            if not hasattr(self, "_values"):
+                self._values = {}
+            if hasattr(self, "_schema_fields") and name in self._schema_fields:
+                value = _hydrate_field_value(self._schema_fields[name], value)
+            self._values[name] = value
 
     def __getattr__(self, name: str) -> BoundField:
         """Dynamically resolves unknown edge property names into BoundField descriptors.

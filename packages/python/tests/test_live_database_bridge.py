@@ -11,7 +11,9 @@ import pytest
 from voyager_ogm import (
     AsyncSession,
     Field,
+    Neo4jBoltBridge,
     Node,
+    Point,
     Query,
     Relationship,
     Session,
@@ -622,3 +624,90 @@ def test_live_neo4j_gql_capabilities():
         session.execute(Query.match(n_c).detach_delete(n_c))
     finally:
         driver.close()
+
+
+@node("LiveSpatialPlace")
+class LiveSpatialPlace(Node):
+    name: str = Field(primary_key=True)
+    location: Point = Field()
+
+
+@pytest.mark.skipif(not NEO4J_ONLINE, reason="Live Neo4j instance not online on localhost:7687")
+def test_live_neo4j_geospatial_point_write_read_and_distance(clean_neo4j):
+    """Verify end-to-end geospatial Point write, read hydration, and distance queries against live Neo4j."""
+    driver = clean_neo4j
+    bridge = Neo4jBoltBridge(driver)
+    session = Session(bridge=bridge)
+
+    berlin = Point(latitude=52.5200, longitude=13.4050)
+    paris = Point(latitude=48.8566, longitude=2.3522)
+
+    # 1. Bulk upsert write path with Point entities
+    plan = session.bulk_upsert(
+        LiveSpatialPlace,
+        [
+            {"name": "Berlin", "location": berlin},
+            {"name": "Paris", "location": paris},
+        ],
+        key_field="name",
+    )
+    res_bulk = session.run_bulk(plan)
+    assert res_bulk.total_records == 2
+
+    # 2. Read back & verify hydration into voyager_ogm.Point
+    p = LiveSpatialPlace(alias="p")
+    q_read = Query.match(p).return_(p.name, p.location).order_by(p.name)
+    records = session.execute(q_read).all()
+    assert len(records) == 2
+    assert records[0]["p.name"] == "Berlin"
+    assert records[1]["p.name"] == "Paris"
+
+    # Hydrate entities using LiveSpatialPlace model constructor
+    berlin_node = LiveSpatialPlace(name=records[0]["p.name"], location=records[0]["p.location"])
+    paris_node = LiveSpatialPlace(name=records[1]["p.name"], location=records[1]["p.location"])
+
+    assert isinstance(berlin_node.get("location"), Point)
+    assert isinstance(paris_node.get("location"), Point)
+    assert berlin_node.get("location") == berlin
+    assert paris_node.get("location") == paris
+
+    # In-memory Haversine distance between Berlin and Paris (~878 km)
+    dist_mem = berlin_node.get("location").distance(paris_node.get("location"))
+    assert 870_000.0 < dist_mem < 890_000.0
+
+    # 3. Query spatial filtering using distance_to() < threshold
+    # Near Berlin (< 50 km) - only Berlin matches
+    q_near_berlin = Query.match(p).where(p.location.distance_to(berlin) < 50_000.0).return_(p.name)
+    res_near = session.execute(q_near_berlin).all()
+    assert len(res_near) == 1
+    assert res_near[0]["p.name"] == "Berlin"
+
+    # Within 1,000 km of Berlin - both Berlin and Paris match
+    q_within_1000km = (
+        Query.match(p)
+        .where(p.location.distance_to(berlin) < 1_000_000.0)
+        .return_(p.name)
+        .order_by(p.name)
+    )
+    res_1000km = session.execute(q_within_1000km).all()
+    assert len(res_1000km) == 2
+    # 4. Single-statement direct session.execute() write with Point parameter
+    q_single = (
+        "CREATE (p:LiveSpatialPlace {name: $name, location: $loc}) "
+        "RETURN p.name AS name, p.location AS loc"
+    )
+    munich = Point(latitude=48.1351, longitude=11.5820)
+    res_single = session.execute(q_single, {"name": "Munich", "loc": munich}).all()
+    assert len(res_single) == 1
+    assert res_single[0]["name"] == "Munich"
+    munich_wire_loc = res_single[0]["loc"]
+    # Check that Neo4j received and stored it as a native spatial point
+    from neo4j.spatial import WGS84Point
+
+    assert isinstance(munich_wire_loc, WGS84Point)
+    munich_node = LiveSpatialPlace(name="Munich", location=munich_wire_loc)
+    assert isinstance(munich_node.get("location"), Point)
+    assert munich_node.get("location") == munich
+
+    # 5. Clean up
+    session.execute(Query.match(p).detach_delete(p))

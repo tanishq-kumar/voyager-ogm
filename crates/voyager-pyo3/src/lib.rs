@@ -2449,6 +2449,9 @@ fn py_any_to_json_value(val: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
             let s: String = val.str()?.extract()?;
             Ok(serde_json::Value::String(s))
         }
+    } else if val.hasattr("to_cypher_dict")? {
+        let cypher_dict = val.call_method0("to_cypher_dict")?;
+        py_any_to_json_value(&cypher_dict)
     } else {
         let s: String = val.str()?.extract()?;
         Ok(serde_json::Value::String(s))

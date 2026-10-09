@@ -310,6 +310,7 @@ impl CypherEmitter {
                     "lower" => "toLower",
                     "upper" => "toUpper",
                     "path_length" => "length",
+                    "distance" | "point.distance" | "point_distance" => "point.distance",
                     _ => name.as_str(),
                 };
                 self.buffer.push_str(cypher_func);
