@@ -669,11 +669,19 @@ def unwrap_spatial_param(val: Any) -> Any:
                         "latitude": sp["latitude"],
                         "longitude": sp["longitude"],
                     }
+                    if "srid" in sp and sp["srid"] is not None:
+                        res["srid"] = sp["srid"]
+                    if "crs" in sp and sp["crs"] is not None:
+                        res["crs"] = sp["crs"]
                     if "height" in sp and sp["height"] is not None:
                         res["height"] = sp["height"]
                     return res
                 if "x" in sp and "y" in sp:
                     res = {"x": sp["x"], "y": sp["y"]}
+                    if "srid" in sp and sp["srid"] is not None:
+                        res["srid"] = sp["srid"]
+                    if "crs" in sp and sp["crs"] is not None:
+                        res["crs"] = sp["crs"]
                     if "z" in sp and sp["z"] is not None:
                         res["z"] = sp["z"]
                     return res

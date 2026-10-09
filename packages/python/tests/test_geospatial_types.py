@@ -258,7 +258,13 @@ def test_point_write_path_mock_bridge_roundtrip():
     assert len(batch_records) == 1
     record = batch_records[0]
     assert record["name"] == "Eiffel Tower"
-    assert record["location"] == {"latitude": 48.8584, "longitude": 2.2945}
+    assert record["location"] == {
+        "latitude": 48.8584,
+        "longitude": 2.2945,
+        "srid": WGS_84_2D,
+        "crs": "wgs-84",
+    }
+    assert Point.from_dict(record["location"]) == Point(latitude=48.8584, longitude=2.2945)
 
     # 2. Direct session.bulk_upsert()
     bridge.executed_queries.clear()
@@ -270,7 +276,12 @@ def test_point_write_path_mock_bridge_roundtrip():
     session.run_bulk(plan)
     assert len(bridge.executed_queries) == 1
     stmt2, params2 = bridge.executed_queries[0]
-    assert params2["batch"][0]["location"] == {"latitude": 48.8606, "longitude": 2.3376}
+    assert params2["batch"][0]["location"] == {
+        "latitude": 48.8606,
+        "longitude": 2.3376,
+        "srid": WGS_84_2D,
+        "crs": "wgs-84",
+    }
 
     # 3. Direct session.execute() parameter passing
     bridge.executed_queries.clear()
@@ -280,7 +291,12 @@ def test_point_write_path_mock_bridge_roundtrip():
     )
     assert len(bridge.executed_queries) == 1
     _, params3 = bridge.executed_queries[0]
-    assert params3["loc"] == {"latitude": 48.8530, "longitude": 2.3499}
+    assert params3["loc"] == {
+        "latitude": 48.8530,
+        "longitude": 2.3499,
+        "srid": WGS_84_2D,
+        "crs": "wgs-84",
+    }
 
 
 def test_point_distance_strict_in_memory_type_error():
@@ -415,7 +431,14 @@ def test_tagged_spatial_serialization_and_bridge_adaptation(caplog):
 
     # 2. Unwrapping for mock / generic inspection
     unwrapped = unwrap_spatial_param(tagged)
-    assert unwrapped == {"latitude": 52.52, "longitude": 13.405}
+    assert unwrapped == {
+        "latitude": 52.52,
+        "longitude": 13.405,
+        "srid": WGS_84_2D,
+        "crs": "wgs-84",
+    }
+    assert Point.from_dict(unwrapped) == pt
+    assert Point.from_dict(unwrapped).srid == pt.srid
 
     # 3. Point.from_dict and Point.from_spatial handle tagged dict
     p_from_tagged = Point.from_dict(tagged)
@@ -448,3 +471,70 @@ def test_tagged_spatial_serialization_and_bridge_adaptation(caplog):
         fallback_val = _hydrate_field_value(DummyField(), "invalid_spatial_payload")
         assert fallback_val == "invalid_spatial_payload"
         assert any("Failed to hydrate field" in rec.message for rec in caplog.records)
+
+
+def test_bolt_adaptation_missing_coordinates_raises():
+    """Verify _adapt_bolt_value raises ValueError when coordinates are missing instead of fabricating 0.0."""
+    from voyager_ogm.bridge import _adapt_bolt_value
+
+    # Cartesian missing coordinates
+    with pytest.raises(
+        ValueError, match="Cartesian spatial data missing required 'x' or 'y' coordinate"
+    ):
+        _adapt_bolt_value({"__voyager_spatial__": {"srid": CARTESIAN_2D}})
+
+    with pytest.raises(
+        ValueError, match="Cartesian spatial data missing required 'x' or 'y' coordinate"
+    ):
+        _adapt_bolt_value({"__voyager_spatial__": {"x": 10.0}})
+
+    with pytest.raises(
+        ValueError, match="Cartesian spatial data missing required 'x' or 'y' coordinate"
+    ):
+        _adapt_bolt_value({"__voyager_spatial__": {"y": 20.0}})
+
+    with pytest.raises(
+        ValueError, match="Cartesian spatial data missing required 'x' or 'y' coordinate"
+    ):
+        _adapt_bolt_value({"__voyager_spatial__": {"x": None, "y": 20.0}})
+
+    # Geographic missing coordinates
+    with pytest.raises(
+        ValueError, match="Geographic spatial data missing required latitude/longitude"
+    ):
+        _adapt_bolt_value({"__voyager_spatial__": {"srid": WGS_84_2D}})
+
+    with pytest.raises(
+        ValueError, match="Geographic spatial data missing required latitude/longitude"
+    ):
+        _adapt_bolt_value({"__voyager_spatial__": {"latitude": 52.52}})
+
+    with pytest.raises(
+        ValueError, match="Geographic spatial data missing required latitude/longitude"
+    ):
+        _adapt_bolt_value({"__voyager_spatial__": {"longitude": 13.405}})
+
+
+def test_unwrap_spatial_param_cartesian_srid_roundtrip():
+    """Verify unwrap_spatial_param preserves srid and crs for Cartesian 2D and 3D points."""
+    from voyager_ogm.types import serialize_param_value, unwrap_spatial_param
+
+    # Cartesian 2D
+    c2 = Point(x=10.5, y=20.5)
+    unwrapped2 = unwrap_spatial_param(serialize_param_value(c2))
+    assert unwrapped2 == {"x": 10.5, "y": 20.5, "srid": CARTESIAN_2D, "crs": "cartesian"}
+    assert Point.from_dict(unwrapped2) == c2
+    assert Point.from_dict(unwrapped2).srid == CARTESIAN_2D
+
+    # Cartesian 3D
+    c3 = Point(x=1.0, y=2.0, z=3.0)
+    unwrapped3 = unwrap_spatial_param(serialize_param_value(c3))
+    assert unwrapped3 == {
+        "x": 1.0,
+        "y": 2.0,
+        "z": 3.0,
+        "srid": CARTESIAN_3D,
+        "crs": "cartesian-3d",
+    }
+    assert Point.from_dict(unwrapped3) == c3
+    assert Point.from_dict(unwrapped3).srid == CARTESIAN_3D
