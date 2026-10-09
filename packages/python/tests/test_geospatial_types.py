@@ -394,3 +394,57 @@ def test_point_from_spatial_and_driver_interop():
     # 5. Invalid input raises TypeError
     with pytest.raises(TypeError, match="Cannot convert"):
         Point.from_spatial(12345)
+
+
+def test_tagged_spatial_serialization_and_bridge_adaptation(caplog):
+    """Verify tagged spatial serialization, unwrap, and deterministic bridge adaptation."""
+    import logging
+
+    from voyager_ogm.bridge import _adapt_bolt_parameters
+    from voyager_ogm.models import _hydrate_field_value
+    from voyager_ogm.types import serialize_param_value, unwrap_spatial_param
+
+    pt = Point(latitude=52.52, longitude=13.405)
+
+    # 1. Tagged serialization
+    tagged = serialize_param_value(pt)
+    assert isinstance(tagged, dict)
+    assert "__voyager_spatial__" in tagged
+    assert tagged["__voyager_spatial__"]["latitude"] == 52.52
+    assert tagged["__voyager_spatial__"]["longitude"] == 13.405
+
+    # 2. Unwrapping for mock / generic inspection
+    unwrapped = unwrap_spatial_param(tagged)
+    assert unwrapped == {"latitude": 52.52, "longitude": 13.405}
+
+    # 3. Point.from_dict and Point.from_spatial handle tagged dict
+    p_from_tagged = Point.from_dict(tagged)
+    assert p_from_tagged == pt
+    assert Point.from_spatial(tagged) == pt
+
+    # 4. Bolt adaptation converts tagged spatial to WGS84Point if neo4j installed
+    try:
+        from neo4j.spatial import WGS84Point
+
+        adapted = _adapt_bolt_parameters({"loc": tagged})
+        assert isinstance(adapted["loc"], WGS84Point)
+        assert adapted["loc"].latitude == 52.52
+        assert adapted["loc"].longitude == 13.405
+
+        # Non-spatial user dictionary with latitude/longitude keys is NOT converted
+        user_dict = {"latitude": 1.0, "longitude": 2.0}
+        adapted_user = _adapt_bolt_parameters({"meta": user_dict})
+        assert adapted_user["meta"] == user_dict
+        assert not isinstance(adapted_user["meta"], WGS84Point)
+    except ImportError:
+        pass
+
+    # 5. _hydrate_field_value logs debug on exception fallback without crashing
+    class DummyField:
+        name = "bad_field"
+        type_annotation = Point
+
+    with caplog.at_level(logging.DEBUG, logger="voyager_ogm"):
+        fallback_val = _hydrate_field_value(DummyField(), "invalid_spatial_payload")
+        assert fallback_val == "invalid_spatial_payload"
+        assert any("Failed to hydrate field" in rec.message for rec in caplog.records)

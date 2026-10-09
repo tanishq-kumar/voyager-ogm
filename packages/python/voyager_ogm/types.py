@@ -428,6 +428,9 @@ class Point(Expression):
         Supports Bolt wire dictionaries (`srid`, `x`, `y`, `z`), geographic dictionaries
         (`latitude`, `longitude`, `height`), and Cartesian dictionaries (`x`, `y`, `z`).
         """
+        if "__voyager_spatial__" in data and isinstance(data["__voyager_spatial__"], dict):
+            data = data["__voyager_spatial__"]
+
         srid = data.get("srid")
         crs = data.get("crs")
 
@@ -639,12 +642,43 @@ def distance(point1: Any, point2: Any) -> float:
 def serialize_param_value(val: Any) -> Any:
     """Recursively serializes rich types (such as Point) to database-compatible parameter values.
 
-    Maps `Point` objects to their Cypher/Bolt map dictionary (`to_cypher_dict()`).
+    Maps `Point` objects to a tagged dictionary `{"__voyager_spatial__": ...}`.
     """
+    if isinstance(val, Point):
+        return {"__voyager_spatial__": val.to_dict()}
     if hasattr(val, "to_cypher_dict"):
-        return val.to_cypher_dict()
+        d = val.to_cypher_dict()
+        if hasattr(val, "srid"):
+            d["srid"] = val.srid
+        return {"__voyager_spatial__": d}
     if isinstance(val, dict):
         return {k: serialize_param_value(v) for k, v in val.items()}
     if isinstance(val, (list, tuple)):
         return [serialize_param_value(item) for item in val]
+    return val
+
+
+def unwrap_spatial_param(val: Any) -> Any:
+    """Recursively unwraps tagged spatial values `{"__voyager_spatial__": ...}` into plain Cypher/map dicts."""
+    if isinstance(val, dict):
+        if "__voyager_spatial__" in val:
+            sp = val["__voyager_spatial__"]
+            if isinstance(sp, dict):
+                if "latitude" in sp and "longitude" in sp:
+                    res: dict[str, Any] = {
+                        "latitude": sp["latitude"],
+                        "longitude": sp["longitude"],
+                    }
+                    if "height" in sp and sp["height"] is not None:
+                        res["height"] = sp["height"]
+                    return res
+                if "x" in sp and "y" in sp:
+                    res = {"x": sp["x"], "y": sp["y"]}
+                    if "z" in sp and sp["z"] is not None:
+                        res["z"] = sp["z"]
+                    return res
+            return sp
+        return {k: unwrap_spatial_param(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple)):
+        return [unwrap_spatial_param(x) for x in val]
     return val

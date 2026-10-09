@@ -17,6 +17,7 @@ from typing import Any, Literal, Protocol, overload, runtime_checkable
 import polars as pl
 
 from voyager_ogm.ingestion import BulkIngestionPlan
+from voyager_ogm.types import unwrap_spatial_param
 
 
 @dataclass
@@ -169,7 +170,7 @@ class MockBridge:
         Returns:
             List of record dictionaries.
         """
-        params = parameters or {}
+        params = unwrap_spatial_param(parameters or {})
         self.executed_queries.append((statement, params))
         if self._canned_results:
             res = self._canned_results.pop(0)
@@ -190,7 +191,7 @@ class MockBridge:
         Returns:
             Polars DataFrame.
         """
-        params = parameters or {}
+        params = unwrap_spatial_param(parameters or {})
         self.executed_queries.append((statement, params))
         if self._canned_results:
             res = self._canned_results.pop(0)
@@ -225,14 +226,16 @@ class MockBridge:
             for b in batch_list:
                 batch_data = b.get("batch", [])
                 total_records += len(batch_data)
-                self.executed_queries.append((statement, b))
+                self.executed_queries.append((statement, unwrap_spatial_param(b)))
         else:
             statement = plan_or_statement.statement
             for batch_item in plan_or_statement:
                 total_batches += 1
                 batch_data = batch_item.parameters.get("batch", [])
                 total_records += len(batch_data)
-                self.executed_queries.append((statement, batch_item.parameters))
+                self.executed_queries.append(
+                    (statement, unwrap_spatial_param(batch_item.parameters))
+                )
 
         return BulkExecutionResult(
             total_batches=total_batches,
@@ -322,55 +325,59 @@ class AsyncMockBridge:
         pass
 
 
-def _adapt_bolt_batch_record(record: dict[str, Any]) -> dict[str, Any]:
-    """Adapts spatial property maps inside bulk ingestion batch records to Bolt spatial types if available."""
+def _adapt_bolt_value(val: Any) -> Any:
+    """Adapts tagged spatial values to Bolt driver spatial objects (WGS84Point / CartesianPoint)."""
     try:
         from neo4j.spatial import CartesianPoint, WGS84Point
     except ImportError:
-        return record
+        if isinstance(val, dict) and "__voyager_spatial__" in val:
+            return val["__voyager_spatial__"]
+        return val
 
-    out: dict[str, Any] = {}
-    for k, v in record.items():
-        if isinstance(v, dict):
-            if "latitude" in v and "longitude" in v and len(v) <= 4:
-                lat = v["latitude"]
-                lon = v["longitude"]
-                height = v.get("height")
-                out[k] = (
-                    WGS84Point((lon, lat, height)) if height is not None else WGS84Point((lon, lat))
-                )
-                continue
-            if "srid" in v and "x" in v and "y" in v and len(v) <= 5:
-                srid = v["srid"]
-                z = v.get("z")
-                if srid in (4326, 4979):
-                    out[k] = (
-                        WGS84Point((v["x"], v["y"], z))
-                        if z is not None
-                        else WGS84Point((v["x"], v["y"]))
-                    )
-                    continue
-                elif srid in (7203, 9157):
-                    out[k] = (
-                        CartesianPoint((v["x"], v["y"], z))
-                        if z is not None
-                        else CartesianPoint((v["x"], v["y"]))
-                    )
-                    continue
-        out[k] = v
-    return out
+    from voyager_ogm.types import WGS_84_2D, WGS_84_3D, Point
+
+    if isinstance(val, Point):
+        if val.is_geographic:
+            lat = float(val.latitude) if val.latitude is not None else float(val.y)
+            lon = float(val.longitude) if val.longitude is not None else float(val.x)
+            if val.is_3d and val.height is not None:
+                return WGS84Point((lon, lat, float(val.height)))
+            return WGS84Point((lon, lat))
+        else:
+            if val.is_3d and val.z is not None:
+                return CartesianPoint((float(val.x), float(val.y), float(val.z)))
+            return CartesianPoint((float(val.x), float(val.y)))
+
+    if isinstance(val, dict):
+        if "__voyager_spatial__" in val:
+            sp = val["__voyager_spatial__"]
+            srid = sp.get("srid")
+            is_geo = (srid in (WGS_84_2D, WGS_84_3D)) if srid else ("latitude" in sp)
+            if is_geo:
+                lat = float(sp.get("latitude", sp.get("y", 0.0)))
+                lon = float(sp.get("longitude", sp.get("x", 0.0)))
+                height = sp.get("height", sp.get("z"))
+                if height is not None:
+                    return WGS84Point((lon, lat, float(height)))
+                return WGS84Point((lon, lat))
+            else:
+                x = float(sp.get("x", 0.0))
+                y = float(sp.get("y", 0.0))
+                z = sp.get("z")
+                if z is not None:
+                    return CartesianPoint((x, y, float(z)))
+                return CartesianPoint((x, y))
+        return {k: _adapt_bolt_value(v) for k, v in val.items()}
+
+    if isinstance(val, (list, tuple)):
+        return [_adapt_bolt_value(x) for x in val]
+
+    return val
 
 
 def _adapt_bolt_parameters(params: dict[str, Any]) -> dict[str, Any]:
-    """Adapts batch parameters for Bolt protocol execution, converting spatial maps in batches to native spatial points."""
-    if "batch" in params and isinstance(params["batch"], list):
-        return {
-            **params,
-            "batch": [
-                _adapt_bolt_batch_record(r) if isinstance(r, dict) else r for r in params["batch"]
-            ],
-        }
-    return params
+    """Adapts statement and batch parameters for Bolt protocol execution, converting tagged spatial values to native spatial points."""
+    return {k: _adapt_bolt_value(v) for k, v in params.items()}
 
 
 class Neo4jBoltBridge:
@@ -398,7 +405,7 @@ class Neo4jBoltBridge:
         Returns:
             List of record dictionaries.
         """
-        params = parameters or {}
+        params = _adapt_bolt_parameters(parameters or {})
         session_kwargs = {"database": self.database} if self.database else {}
         with self.driver.session(**session_kwargs) as session:
             result = session.run(statement, params)
@@ -508,7 +515,7 @@ class AsyncNeo4jBoltBridge:
         Returns:
             List of record dictionaries.
         """
-        params = parameters or {}
+        params = _adapt_bolt_parameters(parameters or {})
         session_kwargs = {"database": self.database} if self.database else {}
         async with self.driver.session(**session_kwargs) as session:
             result = await session.run(statement, params)

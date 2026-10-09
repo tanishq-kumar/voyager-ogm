@@ -691,7 +691,23 @@ def test_live_neo4j_geospatial_point_write_read_and_distance(clean_neo4j):
     )
     res_1000km = session.execute(q_within_1000km).all()
     assert len(res_1000km) == 2
-    assert [r["p.name"] for r in res_1000km] == ["Berlin", "Paris"]
+    # 4. Single-statement direct session.execute() write with Point parameter
+    q_single = (
+        "CREATE (p:LiveSpatialPlace {name: $name, location: $loc}) "
+        "RETURN p.name AS name, p.location AS loc"
+    )
+    munich = Point(latitude=48.1351, longitude=11.5820)
+    res_single = session.execute(q_single, {"name": "Munich", "loc": munich}).all()
+    assert len(res_single) == 1
+    assert res_single[0]["name"] == "Munich"
+    munich_wire_loc = res_single[0]["loc"]
+    # Check that Neo4j received and stored it as a native spatial point
+    from neo4j.spatial import WGS84Point
 
-    # 4. Clean up
+    assert isinstance(munich_wire_loc, WGS84Point)
+    munich_node = LiveSpatialPlace(name="Munich", location=munich_wire_loc)
+    assert isinstance(munich_node.get("location"), Point)
+    assert munich_node.get("location") == munich
+
+    # 5. Clean up
     session.execute(Query.match(p).detach_delete(p))

@@ -64,14 +64,28 @@ def _hydrate_field_value(field_desc: Field | None, value: Any) -> Any:
     if hydrator is not None:
         try:
             return hydrator(value)
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "Failed to hydrate field '%s' with value %r via %s: %s",
+                getattr(field_desc, "name", "unknown"),
+                value,
+                hydrator,
+                exc,
+            )
             return value
     ann_name = getattr(ann, "__name__", "")
     for registered_type, h in _HYDRATORS.items():
         if getattr(registered_type, "__name__", "") == ann_name:
             try:
                 return h(value)
-            except Exception:
+            except Exception as exc:
+                logger.debug(
+                    "Failed to hydrate field '%s' with value %r via %s: %s",
+                    getattr(field_desc, "name", "unknown"),
+                    value,
+                    h,
+                    exc,
+                )
                 return value
     return value
 
