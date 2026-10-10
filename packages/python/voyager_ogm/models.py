@@ -6,6 +6,7 @@ automatic descriptor binding, base class injection, and type reflection.
 
 from __future__ import annotations
 
+import datetime
 import difflib
 import inspect
 import logging
@@ -21,7 +22,14 @@ from voyager_ogm.expressions import (
     PropExpr,
     to_expression,
 )
-from voyager_ogm.types import Point, serialize_param_value
+from voyager_ogm.types import (
+    Point,
+    _hydrate_date,
+    _hydrate_datetime,
+    _hydrate_time,
+    _hydrate_timedelta,
+    serialize_param_value,
+)
 
 try:
     from voyager_ogm._voyager_rs import NativeSchemaRegistry
@@ -43,11 +51,19 @@ _BUILTIN_TYPES = {
     "list": list,
     "dict": dict,
     "Point": Point,
+    "date": datetime.date,
+    "time": datetime.time,
+    "datetime": datetime.datetime,
+    "timedelta": datetime.timedelta,
 }
 
-# Registry for automatic field hydration from raw database values (e.g. dicts, driver spatial objects)
+# Registry for automatic field hydration from raw database values (e.g. dicts, driver spatial objects, timestamps)
 _HYDRATORS: dict[Any, Any] = {
     Point: Point.from_spatial,
+    datetime.date: _hydrate_date,
+    datetime.time: _hydrate_time,
+    datetime.datetime: _hydrate_datetime,
+    datetime.timedelta: _hydrate_timedelta,
 }
 
 
@@ -59,6 +75,10 @@ def _hydrate_field_value(field_desc: Field | None, value: Any) -> Any:
     if ann is None:
         return value
     if isinstance(ann, type) and isinstance(value, ann):
+        # Special case: datetime is a subclass of date in Python stdlib.
+        # If the annotation is specifically date, but value is datetime, convert via date hydrator.
+        if ann is datetime.date and isinstance(value, datetime.datetime):
+            return _hydrate_date(value)
         return value
     hydrator = _HYDRATORS.get(ann)
     if hydrator is not None:

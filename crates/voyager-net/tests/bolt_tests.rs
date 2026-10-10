@@ -5,9 +5,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use voyager_net::bolt::{
-    BoltConnection, BoltNode, BoltPath, BoltPoint2D, BoltPoint3D, BoltRelationship, BoltRequest,
-    BoltResponse, BoltStubServer, BoltUnboundRelationship, BoltValue, PackStream, encode_chunks,
-    read_message_frame, srid,
+    BoltConnection, BoltDate, BoltDateTime, BoltDateTimeZoneId, BoltDuration, BoltLocalDateTime,
+    BoltLocalTime, BoltNode, BoltPath, BoltPoint2D, BoltPoint3D, BoltRelationship, BoltRequest,
+    BoltResponse, BoltStubServer, BoltTime, BoltUnboundRelationship, BoltValue, PackStream,
+    encode_chunks, read_message_frame, srid,
 };
 use voyager_net::config::{ConnectionConfig, PoolConfig};
 use voyager_net::engine::{AsyncConnection, ConnectionFactory};
@@ -412,4 +413,122 @@ async fn test_heterogeneous_and_mixed_number_arrow_conversions() {
     );
 
     conn.close().await.expect("Close failed");
+}
+
+#[test]
+fn test_packstream_temporal_types_roundtrip() {
+    // 1. Date
+    let date_epoch = BoltValue::Date(BoltDate::new(0));
+    let mut buf = BytesMut::new();
+    PackStream::encode(&date_epoch, &mut buf);
+    let mut bytes = buf.freeze();
+    let decoded = PackStream::decode(&mut bytes).expect("Failed to decode epoch date");
+    assert_eq!(decoded, date_epoch);
+    assert_eq!(date_epoch.as_date().unwrap().to_iso_string(), "1970-01-01");
+
+    // Leap year date (Feb 29, 2024)
+    let date_leap = BoltValue::Date(BoltDate::from_ymd(2024, 2, 29).expect("valid leap date"));
+    let mut buf = BytesMut::new();
+    PackStream::encode(&date_leap, &mut buf);
+    let mut bytes = buf.freeze();
+    let decoded_leap = PackStream::decode(&mut bytes).expect("Failed to decode leap date");
+    assert_eq!(decoded_leap, date_leap);
+    assert_eq!(date_leap.as_date().unwrap().to_iso_string(), "2024-02-29");
+    assert_eq!(date_leap.as_date().unwrap().to_ymd(), (2024, 2, 29));
+
+    // Pre-epoch date (Moon Landing: July 20, 1969)
+    let date_moon = BoltValue::Date(BoltDate::from_ymd(1969, 7, 20).expect("valid date"));
+    let mut buf = BytesMut::new();
+    PackStream::encode(&date_moon, &mut buf);
+    let mut bytes = buf.freeze();
+    let decoded_moon = PackStream::decode(&mut bytes).expect("Failed to decode pre-epoch date");
+    assert_eq!(decoded_moon, date_moon);
+    assert_eq!(date_moon.as_date().unwrap().to_iso_string(), "1969-07-20");
+
+    // 2. Time (with timezone offset)
+    let time_val = BoltValue::Time(BoltTime::new(52215_123456000, 7200));
+    let mut buf = BytesMut::new();
+    PackStream::encode(&time_val, &mut buf);
+    let mut bytes = buf.freeze();
+    let decoded_time = PackStream::decode(&mut bytes).expect("Failed to decode Time");
+    assert_eq!(decoded_time, time_val);
+    assert_eq!(
+        time_val.as_time().unwrap().to_iso_string(),
+        "14:30:15.123456+02:00"
+    );
+
+    // Negative offset time (14:30:15-05:00)
+    let time_neg = BoltValue::Time(BoltTime::new(52215_000000000, -18000));
+    assert_eq!(
+        time_neg.as_time().unwrap().to_iso_string(),
+        "14:30:15-05:00"
+    );
+
+    // 3. LocalTime (no timezone offset)
+    let ltime_val = BoltValue::LocalTime(BoltLocalTime::new(52215_123456789));
+    let mut buf = BytesMut::new();
+    PackStream::encode(&ltime_val, &mut buf);
+    let mut bytes = buf.freeze();
+    let decoded_ltime = PackStream::decode(&mut bytes).expect("Failed to decode LocalTime");
+    assert_eq!(decoded_ltime, ltime_val);
+    assert_eq!(
+        ltime_val.as_local_time().unwrap().to_iso_string(),
+        "14:30:15.123456789"
+    );
+
+    // 4. DateTime (with timezone offset)
+    let dt_val = BoltValue::DateTime(BoltDateTime::new(1710513015, 123456000, 7200));
+    let mut buf = BytesMut::new();
+    PackStream::encode(&dt_val, &mut buf);
+    let mut bytes = buf.freeze();
+    let decoded_dt = PackStream::decode(&mut bytes).expect("Failed to decode DateTime");
+    assert_eq!(decoded_dt, dt_val);
+    assert_eq!(
+        dt_val.as_datetime().unwrap().to_iso_string(),
+        "2024-03-15T16:30:15.123456+02:00"
+    );
+
+    // 5. LocalDateTime
+    let ldt_val = BoltValue::LocalDateTime(BoltLocalDateTime::new(1710513015, 500000000));
+    let mut buf = BytesMut::new();
+    PackStream::encode(&ldt_val, &mut buf);
+    let mut bytes = buf.freeze();
+    let decoded_ldt = PackStream::decode(&mut bytes).expect("Failed to decode LocalDateTime");
+    assert_eq!(decoded_ldt, ldt_val);
+    assert_eq!(
+        ldt_val.as_local_datetime().unwrap().to_iso_string(),
+        "2024-03-15T14:30:15.500"
+    );
+
+    // 6. DateTimeZoneId (with IANA timezone name)
+    let dtz_val = BoltValue::DateTimeZoneId(BoltDateTimeZoneId::new(
+        1710513015,
+        123456000,
+        "Europe/Berlin",
+    ));
+    let mut buf = BytesMut::new();
+    PackStream::encode(&dtz_val, &mut buf);
+    let mut bytes = buf.freeze();
+    let decoded_dtz = PackStream::decode(&mut bytes).expect("Failed to decode DateTimeZoneId");
+    assert_eq!(decoded_dtz, dtz_val);
+    assert_eq!(
+        dtz_val.as_datetime_zone_id().unwrap().to_iso_string(),
+        "2024-03-15T14:30:15.123456[Europe/Berlin]"
+    );
+
+    // 7. Duration
+    let dur_val = BoltValue::Duration(BoltDuration::new(14, 3, 14706, 789000000));
+    let mut buf = BytesMut::new();
+    PackStream::encode(&dur_val, &mut buf);
+    let mut bytes = buf.freeze();
+    let decoded_dur = PackStream::decode(&mut bytes).expect("Failed to decode Duration");
+    assert_eq!(decoded_dur, dur_val);
+    assert_eq!(
+        dur_val.as_duration().unwrap().to_iso_string(),
+        "P1Y2M3DT4H5M6.789S"
+    );
+
+    // Zero duration
+    let dur_zero = BoltValue::Duration(BoltDuration::new(0, 0, 0, 0));
+    assert_eq!(dur_zero.as_duration().unwrap().to_iso_string(), "PT0S");
 }

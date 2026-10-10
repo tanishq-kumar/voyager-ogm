@@ -8,6 +8,7 @@ or mock bridges without hard coupling to specific driver packages.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import inspect
 import time
 from collections.abc import Callable, Sequence
@@ -1048,6 +1049,29 @@ class AsyncPostgresBridge:
         await asyncio.to_thread(self.sync_bridge.close)
 
 
+def _adapt_falkordb_value(val: Any) -> Any:
+    """Adapts rich parameter values (temporal types, Point, etc.) for FalkorDB query execution."""
+    if isinstance(val, (datetime.date, datetime.time, datetime.datetime)):
+        return val.isoformat()
+    if isinstance(val, datetime.timedelta):
+        from voyager_ogm.types import to_iso_duration
+
+        return to_iso_duration(val)
+    if isinstance(val, dict):
+        if "__voyager_spatial__" in val:
+            sp = val["__voyager_spatial__"]
+            return unwrap_spatial_param(sp) if isinstance(sp, dict) else sp
+        return {k: _adapt_falkordb_value(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple)):
+        return [_adapt_falkordb_value(x) for x in val]
+    return val
+
+
+def _adapt_falkordb_parameters(params: dict[str, Any]) -> dict[str, Any]:
+    """Adapts query parameters for FalkorDB execution."""
+    return {k: _adapt_falkordb_value(v) for k, v in params.items()}
+
+
 class FalkorDBBridge:
     """FalkorDB driver bridge for graph execution."""
 
@@ -1080,7 +1104,7 @@ class FalkorDBBridge:
         Returns:
             List of record dictionaries.
         """
-        params = parameters or {}
+        params = _adapt_falkordb_parameters(parameters or {})
         try:
             res = self.graph.query(statement, params)
         except Exception as e:
@@ -1156,14 +1180,14 @@ class FalkorDBBridge:
             for b in batch_list:
                 batch_data = b.get("batch", [])
                 total_records += len(batch_data)
-                self.graph.query(statement, b)
+                self.graph.query(statement, _adapt_falkordb_parameters(b))
         else:
             statement = plan_or_statement.statement
             for batch_item in plan_or_statement:
                 total_batches += 1
                 batch_data = batch_item.parameters.get("batch", [])
                 total_records += len(batch_data)
-                self.graph.query(statement, batch_item.parameters)
+                self.graph.query(statement, _adapt_falkordb_parameters(batch_item.parameters))
 
         return BulkExecutionResult(
             total_batches=total_batches,
