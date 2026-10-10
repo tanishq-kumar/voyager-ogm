@@ -717,6 +717,12 @@ def parse_iso_duration(val: str) -> datetime.timedelta:
         - Date only: 'P2D', 'P1W'
         - Zero: 'PT0S', 'P0D'
         - Negative: '-PT5M'
+
+    Note:
+        Year and month components are approximated as 365.25 days and 30.4375 days
+        respectively when converting to a fixed-duration timedelta, which loses
+        calendar month-boundary fidelity by design (e.g. 'P1M' does not preserve
+        differing calendar month lengths on round-trip).
     """
     val = val.strip().upper()
     match = _ISO_DURATION_REGEX.match(val)
@@ -724,6 +730,15 @@ def parse_iso_duration(val: str) -> datetime.timedelta:
         raise ValueError(f"Invalid ISO-8601 duration format: {val}")
 
     parts = match.groupdict()
+    # ISO-8601 requires at least one component designator; bare 'P' or 'PT' is invalid
+    if not any(
+        parts[k] is not None
+        for k in ("years", "months", "weeks", "days", "hours", "minutes", "seconds")
+    ):
+        raise ValueError(
+            f"Invalid ISO-8601 duration format: {val} (must contain at least one designator)"
+        )
+
     sign = -1 if parts["sign"] == "-" else 1
 
     years = float(parts["years"]) if parts["years"] is not None else 0.0
@@ -821,6 +836,11 @@ def _hydrate_date(val: Any) -> Any:
                 pass
     if isinstance(val, (int, float)):
         try:
+            # Heuristic epoch classification:
+            # - |val| < 100,000 (~273 years): interpreted as epoch days (e.g. Neo4j Bolt Date epoch_days).
+            # - |val| >= 100,000: interpreted as Unix epoch seconds.
+            # Ambiguity window: raw Unix timestamps between 0 and 100,000 (Jan 1 to Jan 2 1970)
+            # would be treated as epoch days. Graph protocols send epoch days for dates.
             if abs(val) < 100_000:
                 return datetime.date(1970, 1, 1) + datetime.timedelta(days=int(val))
             return datetime.datetime.fromtimestamp(val, tz=datetime.UTC).date()
@@ -917,7 +937,11 @@ def _hydrate_datetime(val: Any) -> Any:
                 try:
                     import zoneinfo
 
-                    dt = dt.replace(tzinfo=zoneinfo.ZoneInfo(tz_name))
+                    # If naive (e.g. wall clock parsed without offset), anchor to UTC first
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=datetime.UTC)
+                    # Convert to target named timezone, strictly preserving exact instant & .timestamp()
+                    dt = dt.astimezone(zoneinfo.ZoneInfo(tz_name))
                 except Exception:
                     pass
             return dt
@@ -925,6 +949,10 @@ def _hydrate_datetime(val: Any) -> Any:
             pass
     if isinstance(val, (int, float)):
         try:
+            # Heuristic epoch timestamp classification:
+            # - |val| >= 1e11 (100 billion): interpreted as epoch milliseconds (or scaled nanos).
+            # - |val| < 1e11: interpreted as Unix epoch seconds.
+            # Ambiguity window: epoch seconds beyond the year 5138 (1e11) would be treated as milliseconds.
             if abs(val) >= 1e11:
                 return datetime.datetime.fromtimestamp(val / 1000.0, tz=datetime.UTC)
             return datetime.datetime.fromtimestamp(val, tz=datetime.UTC)

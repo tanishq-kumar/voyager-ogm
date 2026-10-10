@@ -513,7 +513,7 @@ fn test_packstream_temporal_types_roundtrip() {
     assert_eq!(decoded_dtz, dtz_val);
     assert_eq!(
         dtz_val.as_datetime_zone_id().unwrap().to_iso_string(),
-        "2024-03-15T14:30:15.123456[Europe/Berlin]"
+        "2024-03-15T14:30:15.123456Z[Europe/Berlin]"
     );
 
     // 7. Duration

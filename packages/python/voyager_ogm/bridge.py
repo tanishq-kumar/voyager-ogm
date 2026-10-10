@@ -1060,7 +1060,10 @@ def _adapt_falkordb_value(val: Any) -> Any:
     if isinstance(val, dict):
         if "__voyager_spatial__" in val:
             sp = val["__voyager_spatial__"]
-            return unwrap_spatial_param(sp) if isinstance(sp, dict) else sp
+            unwrapped = unwrap_spatial_param(sp) if isinstance(sp, dict) else sp
+            import json
+
+            return json.dumps(unwrapped)
         return {k: _adapt_falkordb_value(v) for k, v in val.items()}
     if isinstance(val, (list, tuple)):
         return [_adapt_falkordb_value(x) for x in val]

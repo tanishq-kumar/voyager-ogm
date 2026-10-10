@@ -356,7 +356,7 @@ impl BoltDateTimeZoneId {
         let h = (secs_of_day / 3600) as u32;
         let min = ((secs_of_day % 3600) / 60) as u32;
         let sec = (secs_of_day % 60) as u32;
-        let time_part = format_time_string(h, min, sec, self.nanoseconds as u32, None);
+        let time_part = format_time_string(h, min, sec, self.nanoseconds as u32, Some("Z"));
         format!("{:04}-{:02}-{:02}T{}[{}]", y, m, d, time_part, self.zone_id)
     }
 }

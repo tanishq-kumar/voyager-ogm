@@ -14,6 +14,9 @@ Tests Issue #115:
 from __future__ import annotations
 
 import datetime
+import math
+import os
+import socket
 
 import polars as pl
 import pytest
@@ -105,6 +108,12 @@ def test_iso_duration_invalid_format_raises() -> None:
     with pytest.raises(ValueError, match="Invalid ISO-8601 duration format"):
         parse_iso_duration("10 days")
 
+    with pytest.raises(ValueError, match="Invalid ISO-8601 duration format"):
+        parse_iso_duration("P")
+
+    with pytest.raises(ValueError, match="Invalid ISO-8601 duration format"):
+        parse_iso_duration("PT")
+
 
 # ==============================================================================
 # 2. Field Hydrator Unit Tests
@@ -179,11 +188,16 @@ def test_hydrate_datetime() -> None:
     assert _hydrate_datetime(b"2024-03-15T14:30:45.123456Z") == dt_utc
 
     # Named IANA timezone: RFC 9557 / ISO-8601 extended format
-    dt_berlin_str = "2024-03-15T14:30:45.123456[Europe/Berlin]"
+    # Instant is 14:30:45.123456 UTC -> 15:30:45.123456 in Europe/Berlin (UTC+1 CET)
+    dt_berlin_str = "2024-03-15T14:30:45.123456Z[Europe/Berlin]"
     dt_berlin = _hydrate_datetime(dt_berlin_str)
     assert isinstance(dt_berlin, datetime.datetime)
     assert dt_berlin.year == 2024 and dt_berlin.month == 3 and dt_berlin.day == 15
+    assert dt_berlin.hour == 15 and dt_berlin.minute == 30 and dt_berlin.second == 45
+    assert dt_berlin.microsecond == 123456
     assert dt_berlin.tzinfo is not None
+    # Exact instant (.timestamp()) is preserved without offset drift
+    assert math.isclose(dt_berlin.timestamp(), 1710513045.123456, abs_tol=1e-5)
 
     # Unix timestamp integer (seconds)
     ts = 1710513045
@@ -363,15 +377,43 @@ def test_falkordb_bridge_parameter_adaptation() -> None:
 # ==============================================================================
 
 
+def _is_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
+    """Fast socket probe to detect whether a container port is actively listening."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+NEO4J_HOST = os.getenv("NEO4J_HOST", "127.0.0.1")
+NEO4J_PORT = int(os.getenv("NEO4J_PORT", "7687"))
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "voyagerpass123")
+NEO4J_URI = os.getenv("NEO4J_URI", f"bolt://{NEO4J_HOST}:{NEO4J_PORT}")
+
+AGE_HOST = os.getenv("AGE_HOST", "127.0.0.1")
+AGE_PORT = int(os.getenv("AGE_PORT", "5455"))
+AGE_USER = os.getenv("AGE_USER", "postgres")
+AGE_PASSWORD = os.getenv("AGE_PASSWORD", "voyagerpass123")
+AGE_DB = os.getenv("AGE_DB", "voyager_graph")
+
+FALKORDB_HOST = os.getenv("FALKORDB_HOST", "127.0.0.1")
+FALKORDB_PORT = int(os.getenv("FALKORDB_PORT", "6379"))
+
+
 @pytest.mark.live
 def test_live_neo4j_temporal_roundtrip() -> None:
     """End-to-end verification against live Neo4j: native temporal types and sub-millisecond precision."""
+    if not _is_port_open(NEO4J_HOST, NEO4J_PORT):
+        pytest.skip(f"Live Neo4j container not reachable on {NEO4J_HOST}:{NEO4J_PORT}")
+
     try:
         import neo4j
     except ImportError:
         pytest.skip("neo4j driver not installed")
 
-    driver = neo4j.GraphDatabase.driver("bolt://127.0.0.1:7687", auth=("neo4j", "voyagerpass123"))
+    driver = neo4j.GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
     try:
         with driver.session() as s:
             ev_date = datetime.date(2024, 3, 15)
@@ -413,13 +455,16 @@ def test_live_neo4j_temporal_roundtrip() -> None:
 @pytest.mark.live
 def test_live_apache_age_temporal_roundtrip() -> None:
     """End-to-end verification against live Apache AGE PostgreSQL backend."""
+    if not _is_port_open(AGE_HOST, AGE_PORT):
+        pytest.skip(f"Live Apache AGE container not reachable on {AGE_HOST}:{AGE_PORT}")
+
     try:
         import psycopg
     except ImportError:
         pytest.skip("psycopg not installed")
 
     conn = psycopg.connect(
-        "host=127.0.0.1 port=5455 user=postgres password=voyagerpass123 dbname=voyager_graph"
+        f"host={AGE_HOST} port={AGE_PORT} user={AGE_USER} password={AGE_PASSWORD} dbname={AGE_DB}"
     )
     try:
         cur = conn.cursor()
@@ -454,12 +499,15 @@ def test_live_apache_age_temporal_roundtrip() -> None:
 @pytest.mark.live
 def test_live_falkordb_temporal_roundtrip() -> None:
     """End-to-end verification against live FalkorDB graph backend."""
+    if not _is_port_open(FALKORDB_HOST, FALKORDB_PORT):
+        pytest.skip(f"Live FalkorDB container not reachable on {FALKORDB_HOST}:{FALKORDB_PORT}")
+
     try:
         import falkordb
     except ImportError:
         pytest.skip("falkordb not installed")
 
-    db = falkordb.FalkorDB(host="127.0.0.1", port=6379)
+    db = falkordb.FalkorDB(host=FALKORDB_HOST, port=FALKORDB_PORT)
     graph = db.select_graph("voyager_temporal_live_test")
     try:
         bridge = FalkorDBBridge(graph)
