@@ -1716,22 +1716,9 @@ class AsyncSession(_SessionBase):
         """
         from voyager_ogm.schema import SchemaManager
 
-        applied: list[str] = []
-        try:
-            c_stmts = SchemaManager.generate_constraint_ddl(
-                *models, dialect=self._dialect, include_type_constraints=include_type_constraints
-            )
-            for stmt in c_stmts:
-                await self.execute(stmt)
-                applied.append(stmt)
-        except NotImplementedError:
-            pass
-
-        i_stmts = SchemaManager.generate_index_ddl(*models, dialect=self._dialect)
-        for stmt in i_stmts:
-            await self.execute(stmt)
-            applied.append(stmt)
-        return applied
+        return await SchemaManager.apply_schema_async(
+            self, *models, include_type_constraints=include_type_constraints
+        )
 
     async def vector_search(
         self,

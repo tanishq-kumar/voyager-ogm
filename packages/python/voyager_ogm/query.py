@@ -417,8 +417,33 @@ class Query:
         """
         index_name: str
         if isinstance(index_or_model, str):
-            index_name = index_or_model
+            from voyager_ogm.schema import SchemaRegistry, canonical_vector_index_name
+
+            reg = SchemaRegistry.global_registry()
+            node_schema = reg.get_node(index_or_model) if reg.has_node(index_or_model) else None
+            if node_schema is not None:
+                vec_field = next(
+                    (
+                        f
+                        for f in node_schema.get("fields", {}).values()
+                        if f.get("index_type") == "VECTOR" or f.get("dimensions") is not None
+                    ),
+                    None,
+                )
+                if vec_field and vec_field.get("index_name"):
+                    index_name = vec_field["index_name"]
+                elif vec_field:
+                    primary_lbl = node_schema.get("labels", [index_or_model])[0]
+                    index_name = canonical_vector_index_name(
+                        primary_lbl, vec_field["name"], dialect=dialect
+                    )
+                else:
+                    index_name = index_or_model
+            else:
+                index_name = index_or_model
         elif hasattr(index_or_model, "_schema_fields"):
+            from voyager_ogm.schema import canonical_vector_index_name
+
             fields = getattr(index_or_model, "_schema_fields", {})
             vec_prop = None
             for f in fields.values():
@@ -434,7 +459,7 @@ class Query:
                     getattr(index_or_model, "__name__", "Node"),
                 )
                 prop_name = getattr(vec_prop, "name", "embedding") if vec_prop else "embedding"
-                index_name = f"index_{label.lower()}_{prop_name.lower()}"
+                index_name = canonical_vector_index_name(label, prop_name, dialect=dialect)
         else:
             index_name = str(index_or_model)
 

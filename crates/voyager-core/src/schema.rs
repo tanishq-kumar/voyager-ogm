@@ -191,6 +191,64 @@ impl fmt::Display for IndexType {
     }
 }
 
+/// Target DDL dialect family for index and constraint generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum DdlDialect {
+    /// Standard openCypher / Neo4j dialect.
+    Cypher,
+    /// Relational SQL dialect (PostgreSQL, SQL:2023 PGQ).
+    Sql,
+    /// FalkorDB Redis Graph dialect.
+    FalkorDb,
+    /// Apache AGE dialect (PostgreSQL ag_catalog tables).
+    Age,
+    /// Memgraph dialect (v3.2+ vector index and openCypher syntax).
+    Memgraph,
+    /// DuckDB dialect (vss extension for vector index and relational SQL).
+    DuckDb,
+}
+
+impl DdlDialect {
+    /// Parses a dialect name string into the corresponding `DdlDialect` variant.
+    pub fn parse_str(s: &str) -> Option<Self> {
+        let norm = s.trim().to_ascii_lowercase();
+        match norm.as_str() {
+            "cypher" | "opencypher" | "neo4j" => Some(Self::Cypher),
+            "sql" | "postgres" | "postgresql" | "sql_pgq" | "pgq" => Some(Self::Sql),
+            "falkordb" | "falkor" => Some(Self::FalkorDb),
+            "age" | "apache_age" => Some(Self::Age),
+            "memgraph" => Some(Self::Memgraph),
+            "duckdb" | "duckpgq" => Some(Self::DuckDb),
+            _ => None,
+        }
+    }
+}
+
+/// Default vector embedding dimensionality when unspecified.
+pub const DEFAULT_VECTOR_DIMENSIONS: usize = 1536;
+
+/// Default capacity for Memgraph vector indexes.
+pub const DEFAULT_MEMGRAPH_VECTOR_CAPACITY: usize = 10000;
+
+/// Canonical default vector index identifier across supported dialects.
+///
+/// Ensures uniform lowercase naming between DDL statement emitters and query builders:
+/// - Cypher / Memgraph / FalkorDB: `"index_{label}_{prop}"`
+/// - DuckDB / SQL / Apache AGE: `"idx_{label}_{prop}_vector"`
+pub fn canonical_vector_index_name(label: &str, prop: &str, dialect: DdlDialect) -> String {
+    let lbl = label.to_ascii_lowercase();
+    let prp = prop.to_ascii_lowercase();
+    match dialect {
+        DdlDialect::Cypher | DdlDialect::Memgraph | DdlDialect::FalkorDb => {
+            format!("index_{lbl}_{prp}")
+        }
+        DdlDialect::DuckDb | DdlDialect::Sql | DdlDialect::Age => {
+            format!("idx_{lbl}_{prp}_vector")
+        }
+    }
+}
+
 /// Supported vector similarity functions for Approximate Nearest Neighbor (ANN) search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -221,6 +279,45 @@ impl VectorSimilarity {
             Self::Cosine => "cosine",
             Self::Euclidean => "euclidean",
             Self::Dot => "dot",
+        }
+    }
+
+    /// Returns the dialect-specific metric name for this similarity function.
+    ///
+    /// # Dialect Specifics
+    /// - **Neo4j / openCypher**: `"cosine"` and `"euclidean"`. Note: Neo4j 5.x vector indexes
+    ///   do not have native dot product support; `Dot` degrades to `"cosine"` as a deliberate fallback.
+    /// - **FalkorDB**: `"cosine"`, `"euclidean"`, and `"ip"` (native inner product `similarityFunction`).
+    /// - **Memgraph**: `"cos"`, `"l2"`, and `"ip"`.
+    /// - **DuckDB**: `"cosine"`, `"l2sq"`, and `"ip"` (DuckDB `vss` HNSW extension).
+    /// - **SQL / Apache AGE**: `"vector_cosine_ops"`, `"vector_l2_ops"`, and `"vector_ip_ops"` (`pgvector` HNSW operator classes).
+    pub fn metric_for(&self, dialect: DdlDialect) -> &'static str {
+        match dialect {
+            DdlDialect::Cypher => match self {
+                Self::Cosine => "cosine",
+                Self::Euclidean => "euclidean",
+                Self::Dot => "cosine", // Deliberate degradation: Neo4j 5.x openCypher vector indexes only support cosine & euclidean
+            },
+            DdlDialect::FalkorDb => match self {
+                Self::Cosine => "cosine",
+                Self::Euclidean => "euclidean",
+                Self::Dot => "ip",
+            },
+            DdlDialect::Memgraph => match self {
+                Self::Cosine => "cos",
+                Self::Euclidean => "l2",
+                Self::Dot => "ip",
+            },
+            DdlDialect::DuckDb => match self {
+                Self::Cosine => "cosine",
+                Self::Euclidean => "l2sq",
+                Self::Dot => "ip",
+            },
+            DdlDialect::Sql | DdlDialect::Age => match self {
+                Self::Cosine => "vector_cosine_ops",
+                Self::Euclidean => "vector_l2_ops",
+                Self::Dot => "vector_ip_ops",
+            },
         }
     }
 }

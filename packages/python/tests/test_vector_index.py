@@ -116,6 +116,22 @@ class TestVectorModelReflectionAndDDL:
             == "CREATE VECTOR INDEX FOR (n:DocumentFalkor) ON (n.vec) OPTIONS {dimension: 128, similarityFunction: 'cosine'}"
         )
 
+        # FalkorDB natively supports inner product ('ip')
+        class DocFalkorDot(Node):
+            vec: list[float] = VectorProperty(dimensions=128, similarity="dot")
+
+        stmts_dot = SchemaManager.generate_index_ddl(DocFalkorDot, dialect="falkordb")
+        vec_stmt_dot = next(s for s in stmts_dot if "VECTOR" in s)
+        assert (
+            vec_stmt_dot
+            == "CREATE VECTOR INDEX FOR (n:DocFalkorDot) ON (n.vec) OPTIONS {dimension: 128, similarityFunction: 'ip'}"
+        )
+
+        # Neo4j openCypher deliberately degrades dot/inner_product to cosine
+        stmts_cypher_dot = SchemaManager.generate_index_ddl(DocFalkorDot, dialect="cypher")
+        vec_stmt_cypher = next(s for s in stmts_cypher_dot if "VECTOR" in s)
+        assert "`vector.similarity_function`: 'cosine'" in vec_stmt_cypher
+
         # Drop DDL
         drop_stmts = SchemaManager.generate_drop_index_ddl(DocumentFalkor, dialect="falkordb")
         assert any(s == "DROP VECTOR INDEX FOR (n:DocumentFalkor) ON (n.vec)" for s in drop_stmts)
@@ -202,6 +218,41 @@ class TestVectorModelReflectionAndDDL:
             vec_stmt
             == "CREATE VECTOR INDEX index_chunk_embedding IF NOT EXISTS FOR (n:Chunk) ON (n.embedding) OPTIONS {indexConfig: {`vector.dimensions`: 768, `vector.similarity_function`: 'cosine'}}"
         )
+
+    def test_mixed_case_canonical_index_naming(self) -> None:
+        class MyDoc(Node):
+            Embedding: list[float] = VectorProperty(dimensions=1536)
+
+        # DDL uses canonical name index_mydoc_embedding
+        stmts = SchemaManager.generate_index_ddl(MyDoc, dialect="cypher")
+        assert any("index_mydoc_embedding" in s for s in stmts)
+
+        # Query.vector_search resolves MyDoc model to index_mydoc_embedding
+        q = Query.vector_search(MyDoc, [0.1, 0.2], k=5)
+        compiled = q.compile()
+        assert compiled.parameters["p0"] == "index_mydoc_embedding"
+
+        # SchemaRegistry lookup by model name string resolves to canonical name
+        q_str = Query.vector_search("MyDoc", [0.1, 0.2], k=5)
+        compiled_str = q_str.compile()
+        assert compiled_str.parameters["p0"] == "index_mydoc_embedding"
+
+    def test_pyo3_dimensions_validation(self) -> None:
+        # SchemaManager passing raw spec dict with invalid dimensions raises ValueError loudly
+        with pytest.raises(ValueError, match="Vector dimensions must be a positive integer"):
+            SchemaManager.generate_index_ddl(
+                {"name": "BadDoc", "fields": {"vec": {"index_type": "VECTOR", "dimensions": 0}}},
+                dialect="cypher",
+            )
+
+        with pytest.raises(ValueError, match="Invalid vector dimensions"):
+            SchemaManager.generate_index_ddl(
+                {
+                    "name": "BadDocStr",
+                    "fields": {"vec": {"index_type": "VECTOR", "dimensions": "invalid"}},
+                },
+                dialect="cypher",
+            )
 
 
 class TestVectorSearchQuery:
@@ -385,3 +436,50 @@ class TestLiveEngineVectorIntegration:
                 session.drop_indexes(FalkorLiveDoc)
             except Exception:
                 pass
+
+    @pytest.mark.skipif(
+        not is_port_open("127.0.0.1", 7688),
+        reason="Memgraph container not reachable on port 7688",
+    )
+    def test_live_memgraph_vector_lifecycle(self) -> None:
+        pytest.importorskip("neo4j")
+        from neo4j import GraphDatabase
+
+        uri = os.environ.get("MEMGRAPH_URI", "bolt://127.0.0.1:7688")
+        driver = GraphDatabase.driver(uri, auth=("", ""))
+        session = Session(driver, dialect="memgraph")
+
+        class LiveMgArticle(Node):
+            title: str = Field(index=True)
+            embedding: list[float] = VectorProperty(
+                dimensions=4, similarity="cosine", index_name="live_mg_art_vec_idx"
+            )
+
+        try:
+            # 1. Apply vector index
+            applied = session.apply_schema(LiveMgArticle)
+            assert any("live_mg_art_vec_idx" in s for s in applied)
+            assert any("CREATE VECTOR INDEX live_mg_art_vec_idx" in s for s in applied)
+
+            # 2. Insert test node with vector
+            session.execute(
+                "CREATE (a:LiveMgArticle {title: 'Voyager Memgraph Vector', embedding: [1.0, 0.0, 0.0, 0.0]})"
+            )
+
+            # 3. Query via vector_search
+            results = session.vector_search(
+                LiveMgArticle, [1.0, 0.0, 0.0, 0.0], k=1, yield_node="n", yield_score="score"
+            )
+            records = results.all()
+            assert len(records) > 0
+            first = records[0]
+            assert "score" in first
+            assert first["score"] > 0.99  # Identical cosine similarity
+        finally:
+            # 4. Clean up
+            try:
+                session.execute("MATCH (a:LiveMgArticle) DETACH DELETE a")
+                session.drop_indexes(LiveMgArticle)
+            except Exception:
+                pass
+            driver.close()

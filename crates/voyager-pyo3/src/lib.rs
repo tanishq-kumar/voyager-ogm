@@ -26,8 +26,9 @@ use voyager_core::builder::QueryBuilder;
 use voyager_core::emitters::{AgeEmitter, CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
 use voyager_core::optimizer::{AstOptimizer, OptimizationLevel};
 use voyager_core::schema::{
-    ConformanceReport, FieldDescriptor, FieldType, IndexType, NodeSchema, RelationshipSchema,
-    SchemaRegistry, VectorIndexConfig, VectorSimilarity, global_schema_registry,
+    ConformanceReport, DEFAULT_VECTOR_DIMENSIONS, DdlDialect, FieldDescriptor, FieldType,
+    IndexType, NodeSchema, RelationshipSchema, SchemaRegistry, VectorIndexConfig, VectorSimilarity,
+    canonical_vector_index_name as core_canonical_vector_index_name, global_schema_registry,
 };
 use voyager_core::topology::GraphTopology;
 use voyager_core::visitor::{AstVisitor, CompiledQuery};
@@ -2994,9 +2995,25 @@ fn parse_field_descriptor(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<FieldD
             || dict.contains("vector_config")?
         {
             let dims: usize = if let Some(d) = dict.get_item("dimensions")? {
-                d.extract().unwrap_or(1536)
+                if d.is_none() {
+                    DEFAULT_VECTOR_DIMENSIONS
+                } else {
+                    match d.extract::<usize>() {
+                        Ok(v) if v > 0 => v,
+                        Ok(_) => {
+                            return Err(PyValueError::new_err(
+                                "Vector dimensions must be a positive integer greater than 0",
+                            ));
+                        }
+                        Err(e) => {
+                            return Err(PyValueError::new_err(format!(
+                                "Invalid vector dimensions: expected positive integer, got: {e}"
+                            )));
+                        }
+                    }
+                }
             } else {
-                1536
+                DEFAULT_VECTOR_DIMENSIONS
             };
             let sim_str: String = if let Some(s) = dict.get_item("similarity")? {
                 s.extract().unwrap_or_else(|_| "cosine".to_string())
@@ -3140,12 +3157,24 @@ fn parse_field_descriptor(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<FieldD
             let dims: usize = if obj.hasattr("dimensions")? {
                 let d = obj.getattr("dimensions")?;
                 if d.is_none() {
-                    1536
+                    DEFAULT_VECTOR_DIMENSIONS
                 } else {
-                    d.extract::<usize>().unwrap_or(1536)
+                    match d.extract::<usize>() {
+                        Ok(v) if v > 0 => v,
+                        Ok(_) => {
+                            return Err(PyValueError::new_err(
+                                "Vector dimensions must be a positive integer greater than 0",
+                            ));
+                        }
+                        Err(e) => {
+                            return Err(PyValueError::new_err(format!(
+                                "Invalid vector dimensions: expected positive integer, got: {e}"
+                            )));
+                        }
+                    }
                 }
             } else {
-                1536
+                DEFAULT_VECTOR_DIMENSIONS
             };
             let sim_str: String = if obj.hasattr("similarity")? {
                 let s = obj.getattr("similarity")?;
@@ -4243,6 +4272,17 @@ fn emit_rel_drop_constraint_ddl(
         .map_err(to_py_schema_err)
 }
 
+#[pyfunction]
+#[pyo3(signature = (label, prop, dialect=None))]
+fn canonical_vector_index_name(label: &str, prop: &str, dialect: Option<&str>) -> PyResult<String> {
+    let ddl_dialect = if let Some(d) = dialect {
+        DdlDialect::parse_str(d).unwrap_or(DdlDialect::Cypher)
+    } else {
+        DdlDialect::Cypher
+    };
+    Ok(core_canonical_vector_index_name(label, prop, ddl_dialect))
+}
+
 /// Native Python module definition for `_voyager_rs`.
 #[pymodule]
 fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -4277,6 +4317,7 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(emit_rel_drop_index_ddl, m)?)?;
     m.add_function(wrap_pyfunction!(emit_node_drop_constraint_ddl, m)?)?;
     m.add_function(wrap_pyfunction!(emit_rel_drop_constraint_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(canonical_vector_index_name, m)?)?;
     m.add_class::<PyQueryBuilder>()?;
     m.add_class::<PyAstExpr>()?;
     m.add_class::<PyArrowStream>()?;

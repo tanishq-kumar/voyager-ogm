@@ -33,6 +33,9 @@ from voyager_ogm._voyager_rs import (
     emit_rel_drop_index_ddl,
     emit_rel_index_ddl,
 )
+from voyager_ogm._voyager_rs import (
+    canonical_vector_index_name as _native_canonical_vector_index_name,
+)
 
 if TYPE_CHECKING:
     from voyager_ogm.models import Node, Relationship
@@ -40,6 +43,30 @@ if TYPE_CHECKING:
 
 # Ergonomic alias for the centralized thread-safe native schema registry
 SchemaRegistry = NativeSchemaRegistry
+
+
+def canonical_vector_index_name(label: str, prop: str, dialect: str = "cypher") -> str:
+    """Returns the canonical deterministic vector index name for a given label and property across dialects.
+
+    - Cypher / Memgraph / FalkorDB: `index_{label.lower()}_{prop.lower()}`
+    - DuckDB / SQL / Apache AGE: `idx_{label.lower()}_{prop.lower()}_vector`
+
+    Args:
+        label: Entity node label or model name.
+        prop: Vector property / column name.
+        dialect: Target DDL dialect ('cypher', 'memgraph', 'falkordb', 'duckdb', etc.). Defaults to 'cypher'.
+
+    Returns:
+        Canonical index name string.
+    """
+    try:
+        return _native_canonical_vector_index_name(label, prop, dialect)
+    except Exception:
+        lbl = label.lower()
+        prp = prop.lower()
+        if dialect.lower() in ("duckdb", "sql", "postgres", "postgresql", "age", "apache_age"):
+            return f"idx_{lbl}_{prp}_vector"
+        return f"index_{lbl}_{prp}"
 
 
 def _is_relationship_model(model: Any) -> bool:
@@ -138,6 +165,11 @@ def _resolve_model_specs(
 
 class SchemaManager:
     """Manages schema constraints, indexes, graph types, and DDL migrations."""
+
+    @staticmethod
+    def canonical_vector_index_name(label: str, prop: str, dialect: str = "cypher") -> str:
+        """Returns the canonical deterministic vector index name for a given label and property across dialects."""
+        return canonical_vector_index_name(label, prop, dialect)
 
     @staticmethod
     def generate_cypher_ddl(
@@ -239,6 +271,10 @@ class SchemaManager:
         """Generates DDL statements for the specified model and dialect.
 
         Delegates directly to native voyager-core Rust emitters.
+
+        Note on DuckDB:
+            DuckDB's property graph extensions implement SQL:2023 PGQ (DuckPGQ), while pure
+            relational secondary and vector indexes use DuckDB SQL DDL with the `vss` HNSW extension.
 
         Args:
             model: Target Node or Relationship model class, schema dict, or model name.
@@ -521,6 +557,44 @@ class SchemaManager:
         i_stmts = cls.generate_index_ddl(*models, dialect=dialect)
         for stmt in i_stmts:
             session.execute(stmt)
+            applied.append(stmt)
+        return applied
+
+    @classmethod
+    async def apply_schema_async(
+        cls,
+        session: Any,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        include_type_constraints: bool = False,
+    ) -> list[str]:
+        """Asynchronously applies declarative constraints and indexes (including vector indexes) to the session.
+
+        If no models are provided, discovers and applies schema for all models registered
+        in the global SchemaRegistry.
+
+        Args:
+            session: Active asynchronous database session.
+            *models: Optional Node and Relationship model classes, schema dicts, or model names.
+            include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
+
+        Returns:
+            List of executed DDL query statement strings.
+        """
+        dialect = getattr(session, "dialect", getattr(session, "_dialect", "cypher"))
+        applied: list[str] = []
+        try:
+            c_stmts = cls.generate_constraint_ddl(
+                *models, dialect=dialect, include_type_constraints=include_type_constraints
+            )
+            for stmt in c_stmts:
+                await session.execute(stmt)
+                applied.append(stmt)
+        except NotImplementedError:
+            pass
+
+        i_stmts = cls.generate_index_ddl(*models, dialect=dialect)
+        for stmt in i_stmts:
+            await session.execute(stmt)
             applied.append(stmt)
         return applied
 

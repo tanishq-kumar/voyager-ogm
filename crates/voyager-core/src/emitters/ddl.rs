@@ -6,7 +6,8 @@
 
 use crate::error::{Error, Result};
 use crate::schema::{
-    FieldDescriptor, FieldType, IndexType, NodeSchema, RelationshipSchema, VectorSimilarity,
+    DEFAULT_MEMGRAPH_VECTOR_CAPACITY, DEFAULT_VECTOR_DIMENSIONS, FieldDescriptor, FieldType,
+    IndexType, NodeSchema, RelationshipSchema, VectorSimilarity, canonical_vector_index_name,
 };
 
 /// Maps a canonical `FieldType` to the openCypher / Neo4j 5.x property type identifier.
@@ -164,7 +165,13 @@ pub fn emit_cypher_node_ddl(node: &NodeSchema, include_type_constraints: bool) -
                 .vector_config
                 .as_ref()
                 .and_then(|vc| vc.index_name.clone())
-                .unwrap_or_else(|| cypher_index_name(primary_label, db_name));
+                .unwrap_or_else(|| {
+                    if field.index_type == Some(IndexType::Vector) {
+                        canonical_vector_index_name(primary_label, db_name, DdlDialect::Cypher)
+                    } else {
+                        cypher_index_name(primary_label, db_name)
+                    }
+                });
             match field.index_type {
                 Some(IndexType::Text) => {
                     statements.push(format!(
@@ -178,14 +185,12 @@ pub fn emit_cypher_node_ddl(node: &NodeSchema, include_type_constraints: bool) -
                 }
                 Some(IndexType::Vector) => {
                     let (dims, sim) = if let Some(ref vc) = field.vector_config {
-                        let sim_name = match vc.similarity {
-                            VectorSimilarity::Cosine => "cosine",
-                            VectorSimilarity::Euclidean => "euclidean",
-                            VectorSimilarity::Dot => "cosine",
-                        };
-                        (vc.dimensions, sim_name)
+                        (vc.dimensions, vc.similarity.metric_for(DdlDialect::Cypher))
                     } else {
-                        (1536, "cosine")
+                        (
+                            DEFAULT_VECTOR_DIMENSIONS,
+                            VectorSimilarity::Cosine.metric_for(DdlDialect::Cypher),
+                        )
                     };
                     statements.push(format!(
                         "CREATE VECTOR INDEX {i_name} IF NOT EXISTS FOR (n:{primary_label}) ON (n.{db_name}) OPTIONS {{indexConfig: {{`vector.dimensions`: {dims}, `vector.similarity_function`: '{sim}'}}}}"
@@ -268,7 +273,13 @@ pub fn emit_cypher_drop_node_ddl(node: &NodeSchema, include_type_constraints: bo
                 .vector_config
                 .as_ref()
                 .and_then(|vc| vc.index_name.clone())
-                .unwrap_or_else(|| cypher_index_name(primary_label, db_name));
+                .unwrap_or_else(|| {
+                    if field.index_type == Some(IndexType::Vector) {
+                        canonical_vector_index_name(primary_label, db_name, DdlDialect::Cypher)
+                    } else {
+                        cypher_index_name(primary_label, db_name)
+                    }
+                });
             statements.push(format!("DROP INDEX {i_name} IF EXISTS"));
         }
         if include_type_constraints {
@@ -703,22 +714,7 @@ impl DdlOp {
     }
 }
 
-/// Target DDL dialect family.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DdlDialect {
-    /// Standard openCypher / Neo4j dialect.
-    Cypher,
-    /// Relational SQL dialect (PostgreSQL, SQL:2023 PGQ).
-    Sql,
-    /// FalkorDB Redis Graph dialect.
-    FalkorDb,
-    /// Apache AGE dialect (PostgreSQL ag_catalog tables).
-    Age,
-    /// Memgraph dialect (v3.2+ vector index and openCypher syntax).
-    Memgraph,
-    /// DuckDB dialect (vss extension for vector index and relational SQL).
-    DuckDb,
-}
+pub use crate::schema::DdlDialect;
 
 /// Checks dialect compatibility for a given DDL operation, returning the dialect family.
 pub fn ensure_ddl_supported(dialect: &str, op: DdlOp) -> Result<DdlDialect> {
@@ -778,19 +774,23 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                     if field.index_type == Some(IndexType::Vector) {
                         let (dims, metric, custom_name) = if let Some(ref vc) = field.vector_config
                         {
-                            let m = match vc.similarity {
-                                VectorSimilarity::Cosine => "cos",
-                                VectorSimilarity::Euclidean => "l2",
-                                VectorSimilarity::Dot => "ip",
-                            };
-                            (vc.dimensions, m, vc.index_name.clone())
+                            (
+                                vc.dimensions,
+                                vc.similarity.metric_for(ddl_dialect),
+                                vc.index_name.clone(),
+                            )
                         } else {
-                            (1536, "cos", None)
+                            (
+                                DEFAULT_VECTOR_DIMENSIONS,
+                                VectorSimilarity::Cosine.metric_for(ddl_dialect),
+                                None,
+                            )
                         };
-                        let idx_name = custom_name
-                            .unwrap_or_else(|| cypher_index_name(primary_label, &field.name));
+                        let idx_name = custom_name.unwrap_or_else(|| {
+                            canonical_vector_index_name(primary_label, &field.name, ddl_dialect)
+                        });
                         statements.push(format!(
-                            "CREATE VECTOR INDEX {idx_name} ON :{primary_label}({}) WITH CONFIG {{\"dimension\": {dims}, \"capacity\": 10000, \"metric\": \"{metric}\"}};",
+                            "CREATE VECTOR INDEX {idx_name} ON :{primary_label}({}) WITH CONFIG {{\"dimension\": {dims}, \"capacity\": {DEFAULT_MEMGRAPH_VECTOR_CAPACITY}, \"metric\": \"{metric}\"}};",
                             field.name
                         ));
                     } else {
@@ -808,24 +808,20 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                     let q_col = escape_sql_ident(&field.name);
                     if field.index_type == Some(IndexType::Vector) {
                         let (metric, custom_name) = if let Some(ref vc) = field.vector_config {
-                            let m = match vc.similarity {
-                                VectorSimilarity::Cosine => "cosine",
-                                VectorSimilarity::Euclidean => "l2sq",
-                                VectorSimilarity::Dot => "ip",
-                            };
-                            (m, vc.index_name.clone())
+                            (vc.similarity.metric_for(ddl_dialect), vc.index_name.clone())
                         } else {
-                            ("cosine", None)
+                            (VectorSimilarity::Cosine.metric_for(ddl_dialect), None)
                         };
-                        let idx_name = custom_name
-                            .unwrap_or_else(|| format!("idx_{table}_{}_vector", field.name));
+                        let idx_name = custom_name.unwrap_or_else(|| {
+                            canonical_vector_index_name(primary_label, &field.name, ddl_dialect)
+                        });
                         statements.push(format!(
                             "CREATE INDEX IF NOT EXISTS {idx_name} ON {q_table} USING HNSW ({q_col}) WITH (metric = '{metric}');"
                         ));
                     } else {
+                        let idx_name = format!("idx_{table}_{}", field.name.to_ascii_lowercase());
                         statements.push(format!(
-                            "CREATE INDEX IF NOT EXISTS idx_{table}_{} ON {q_table} ({q_col});",
-                            field.name
+                            "CREATE INDEX IF NOT EXISTS {idx_name} ON {q_table} ({q_col});"
                         ));
                     }
                 }
@@ -836,14 +832,12 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                 if is_pure_index_field(field) {
                     if field.index_type == Some(IndexType::Vector) {
                         let (dims, sim) = if let Some(ref vc) = field.vector_config {
-                            let s = match vc.similarity {
-                                VectorSimilarity::Cosine => "cosine",
-                                VectorSimilarity::Euclidean => "euclidean",
-                                VectorSimilarity::Dot => "cosine",
-                            };
-                            (vc.dimensions, s)
+                            (vc.dimensions, vc.similarity.metric_for(ddl_dialect))
                         } else {
-                            (1536, "cosine")
+                            (
+                                DEFAULT_VECTOR_DIMENSIONS,
+                                VectorSimilarity::Cosine.metric_for(ddl_dialect),
+                            )
                         };
                         statements.push(format!(
                             "CREATE VECTOR INDEX FOR (n:{primary_label}) ON (n.{}) OPTIONS {{dimension: {dims}, similarityFunction: '{sim}'}}",
@@ -872,21 +866,12 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
             for field in node.fields.values() {
                 if is_pure_index_field(field) && field.index_type == Some(IndexType::Vector) {
                     let (opclass, custom_name) = if let Some(ref vc) = field.vector_config {
-                        let opc = match vc.similarity {
-                            VectorSimilarity::Cosine => "vector_cosine_ops",
-                            VectorSimilarity::Euclidean => "vector_l2_ops",
-                            VectorSimilarity::Dot => "vector_ip_ops",
-                        };
-                        (opc, vc.index_name.clone())
+                        (vc.similarity.metric_for(ddl_dialect), vc.index_name.clone())
                     } else {
-                        ("vector_cosine_ops", None)
+                        (VectorSimilarity::Cosine.metric_for(ddl_dialect), None)
                     };
                     let idx_name = custom_name.unwrap_or_else(|| {
-                        format!(
-                            "idx_{}_{}_vector",
-                            primary_label.to_ascii_lowercase(),
-                            field.name.to_ascii_lowercase()
-                        )
+                        canonical_vector_index_name(primary_label, &field.name, ddl_dialect)
                     });
                     statements.push(format!(
                         "CREATE INDEX IF NOT EXISTS {idx_name} ON ag_catalog.\"{primary_label}\" USING hnsw ({} {opclass});",
@@ -903,24 +888,20 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                     let q_col = escape_sql_ident(&field.name);
                     if field.index_type == Some(IndexType::Vector) {
                         let (opclass, custom_name) = if let Some(ref vc) = field.vector_config {
-                            let opc = match vc.similarity {
-                                VectorSimilarity::Cosine => "vector_cosine_ops",
-                                VectorSimilarity::Euclidean => "vector_l2_ops",
-                                VectorSimilarity::Dot => "vector_ip_ops",
-                            };
-                            (opc, vc.index_name.clone())
+                            (vc.similarity.metric_for(ddl_dialect), vc.index_name.clone())
                         } else {
-                            ("vector_cosine_ops", None)
+                            (VectorSimilarity::Cosine.metric_for(ddl_dialect), None)
                         };
-                        let idx_name = custom_name
-                            .unwrap_or_else(|| format!("idx_{table}_{}_vector", field.name));
+                        let idx_name = custom_name.unwrap_or_else(|| {
+                            canonical_vector_index_name(primary_label, &field.name, ddl_dialect)
+                        });
                         statements.push(format!(
                             "CREATE INDEX IF NOT EXISTS {idx_name} ON {q_table} USING hnsw ({q_col} {opclass});"
                         ));
                     } else {
+                        let idx_name = format!("idx_{table}_{}", field.name.to_ascii_lowercase());
                         statements.push(format!(
-                            "CREATE INDEX IF NOT EXISTS idx_{table}_{} ON {q_table} ({q_col});",
-                            field.name
+                            "CREATE INDEX IF NOT EXISTS {idx_name} ON {q_table} ({q_col});"
                         ));
                     }
                 }
@@ -933,7 +914,13 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                         .vector_config
                         .as_ref()
                         .and_then(|vc| vc.index_name.clone())
-                        .unwrap_or_else(|| cypher_index_name(primary_label, &field.name));
+                        .unwrap_or_else(|| {
+                            if field.index_type == Some(IndexType::Vector) {
+                                canonical_vector_index_name(primary_label, &field.name, ddl_dialect)
+                            } else {
+                                cypher_index_name(primary_label, &field.name)
+                            }
+                        });
                     match field.index_type {
                         Some(IndexType::Text) => {
                             statements.push(format!(
@@ -949,14 +936,12 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                         }
                         Some(IndexType::Vector) => {
                             let (dims, sim) = if let Some(ref vc) = field.vector_config {
-                                let s = match vc.similarity {
-                                    VectorSimilarity::Cosine => "cosine",
-                                    VectorSimilarity::Euclidean => "euclidean",
-                                    VectorSimilarity::Dot => "cosine",
-                                };
-                                (vc.dimensions, s)
+                                (vc.dimensions, vc.similarity.metric_for(ddl_dialect))
                             } else {
-                                (1536, "cosine")
+                                (
+                                    DEFAULT_VECTOR_DIMENSIONS,
+                                    VectorSimilarity::Cosine.metric_for(ddl_dialect),
+                                )
                             };
                             statements.push(format!(
                                 "CREATE VECTOR INDEX {i_name} IF NOT EXISTS FOR (n:{primary_label}) ON (n.{}) OPTIONS {{indexConfig: {{`vector.dimensions`: {dims}, `vector.similarity_function`: '{sim}'}}}}",
@@ -1184,7 +1169,9 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
                             .vector_config
                             .as_ref()
                             .and_then(|vc| vc.index_name.clone())
-                            .unwrap_or_else(|| cypher_index_name(primary_label, &field.name));
+                            .unwrap_or_else(|| {
+                                canonical_vector_index_name(primary_label, &field.name, ddl_dialect)
+                            });
                         statements.push(format!("DROP VECTOR INDEX {idx_name};"));
                     } else {
                         statements.push(format!("DROP INDEX ON :{primary_label}({});", field.name));
@@ -1202,9 +1189,9 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
                         .and_then(|vc| vc.index_name.clone())
                         .unwrap_or_else(|| {
                             if field.index_type == Some(IndexType::Vector) {
-                                format!("idx_{table}_{}_vector", field.name)
+                                canonical_vector_index_name(primary_label, &field.name, ddl_dialect)
                             } else {
-                                format!("idx_{table}_{}", field.name)
+                                format!("idx_{table}_{}", field.name.to_ascii_lowercase())
                             }
                         });
                     statements.push(format!("DROP INDEX IF EXISTS {idx_name};"));
@@ -1246,11 +1233,7 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
                         .as_ref()
                         .and_then(|vc| vc.index_name.clone())
                         .unwrap_or_else(|| {
-                            format!(
-                                "idx_{}_{}_vector",
-                                primary_label.to_ascii_lowercase(),
-                                field.name.to_ascii_lowercase()
-                            )
+                            canonical_vector_index_name(primary_label, &field.name, ddl_dialect)
                         });
                     statements.push(format!("DROP INDEX IF EXISTS {idx_name};"));
                 }
@@ -1266,9 +1249,9 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
                         .and_then(|vc| vc.index_name.clone())
                         .unwrap_or_else(|| {
                             if field.index_type == Some(IndexType::Vector) {
-                                format!("idx_{table}_{}_vector", field.name)
+                                canonical_vector_index_name(primary_label, &field.name, ddl_dialect)
                             } else {
-                                format!("idx_{table}_{}", field.name)
+                                format!("idx_{table}_{}", field.name.to_ascii_lowercase())
                             }
                         });
                     statements.push(format!("DROP INDEX IF EXISTS {idx_name};"));
@@ -1282,7 +1265,13 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
                         .vector_config
                         .as_ref()
                         .and_then(|vc| vc.index_name.clone())
-                        .unwrap_or_else(|| cypher_index_name(primary_label, &field.name));
+                        .unwrap_or_else(|| {
+                            if field.index_type == Some(IndexType::Vector) {
+                                canonical_vector_index_name(primary_label, &field.name, ddl_dialect)
+                            } else {
+                                cypher_index_name(primary_label, &field.name)
+                            }
+                        });
                     statements.push(format!("DROP INDEX {i_name} IF EXISTS"));
                 }
             }
