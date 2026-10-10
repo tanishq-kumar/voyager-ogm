@@ -1331,6 +1331,7 @@ class Session(_SessionBase):
             k=k,
             yield_node=yield_node,
             yield_score=yield_score,
+            dialect=self._dialect,
         )
         return self.execute(query)
 
@@ -1760,6 +1761,7 @@ class AsyncSession(_SessionBase):
             k=k,
             yield_node=yield_node,
             yield_score=yield_score,
+            dialect=self._dialect,
         )
         return await self.execute(query)
 

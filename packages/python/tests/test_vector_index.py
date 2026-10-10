@@ -146,6 +146,51 @@ class TestVectorModelReflectionAndDDL:
             for s in sql_stmts
         )
 
+    def test_memgraph_ddl_generation(self) -> None:
+        class DocumentMemgraph(Node):
+            title: str = Field(index=True)
+            embedding: list[float] = VectorProperty(
+                dimensions=1536, similarity="cosine", index_name="mg_vec_idx"
+            )
+
+        stmts = SchemaManager.generate_index_ddl(DocumentMemgraph, dialect="memgraph")
+        assert len(stmts) == 2
+        vec_stmt = next(s for s in stmts if "VECTOR" in s)
+        assert (
+            vec_stmt
+            == 'CREATE VECTOR INDEX mg_vec_idx ON :DocumentMemgraph(embedding) WITH CONFIG {"dimension": 1536, "capacity": 10000, "metric": "cos"};'
+        )
+        scalar_stmt = next(s for s in stmts if "VECTOR" not in s)
+        assert scalar_stmt == "CREATE INDEX ON :DocumentMemgraph(title);"
+
+        drop_stmts = SchemaManager.generate_drop_index_ddl(DocumentMemgraph, dialect="memgraph")
+        assert "DROP VECTOR INDEX mg_vec_idx;" in drop_stmts
+        assert "DROP INDEX ON :DocumentMemgraph(title);" in drop_stmts
+
+    def test_duckdb_ddl_generation(self) -> None:
+        class DocumentDuck(Node):
+            title: str = Field(index=True)
+            vec: list[float] = VectorProperty(
+                dimensions=256, similarity="cosine", index_name="duck_vec_idx"
+            )
+
+        stmts = SchemaManager.generate_index_ddl(DocumentDuck, dialect="duckdb")
+        assert len(stmts) == 2
+        vec_stmt = next(s for s in stmts if "HNSW" in s)
+        assert (
+            vec_stmt
+            == 'CREATE INDEX IF NOT EXISTS duck_vec_idx ON "documentduck" USING HNSW ("vec") WITH (metric = \'cosine\');'
+        )
+        scalar_stmt = next(s for s in stmts if "HNSW" not in s)
+        assert (
+            scalar_stmt
+            == 'CREATE INDEX IF NOT EXISTS idx_documentduck_title ON "documentduck" ("title");'
+        )
+
+        drop_stmts = SchemaManager.generate_drop_index_ddl(DocumentDuck, dialect="duckdb")
+        assert "DROP INDEX IF EXISTS duck_vec_idx;" in drop_stmts
+        assert "DROP INDEX IF EXISTS idx_documentduck_title;" in drop_stmts
+
     def test_auto_generated_index_name_when_omitted(self) -> None:
         class Chunk(Node):
             content: str = Field()
@@ -160,7 +205,7 @@ class TestVectorModelReflectionAndDDL:
 
 
 class TestVectorSearchQuery:
-    """Tests Query.vector_search builder for openCypher/Neo4j 5+."""
+    """Tests Query.vector_search builder for openCypher/Neo4j 5+ and Memgraph."""
 
     def test_vector_search_with_model(self) -> None:
         class ArticleModel(Node):
@@ -173,6 +218,33 @@ class TestVectorSearchQuery:
             compiled.statement == "CALL db.index.vector.queryNodes($p0, $p1, $p2) YIELD node, score"
         )
         assert compiled.parameters == {"p0": "art_vec_idx", "p1": 5, "p2": [0.1, 0.2, 0.3]}
+
+    def test_memgraph_vector_search_query(self) -> None:
+        class MgItem(Node):
+            vec: list[float] = VectorProperty(dimensions=1536, index_name="mg_item_idx")
+
+        q = Query.vector_search(MgItem, [0.1, 0.2], k=5, dialect="memgraph")
+        compiled = q.compile()
+        assert (
+            compiled.statement
+            == "CALL vector_search.search($p0, $p1, $p2) YIELD node, similarity AS score"
+        )
+        assert compiled.parameters == {"p0": "mg_item_idx", "p1": 5, "p2": [0.1, 0.2]}
+
+        # With custom yields
+        q_custom = Query.vector_search(
+            "custom_idx",
+            [0.3, 0.4],
+            k=10,
+            yield_node="matched",
+            yield_score="sim",
+            dialect="memgraph",
+        )
+        compiled_custom = q_custom.compile()
+        assert (
+            compiled_custom.statement
+            == "CALL vector_search.search($p0, $p1, $p2) YIELD node AS matched, similarity AS sim"
+        )
 
     def test_vector_search_with_index_name(self) -> None:
         q = Query.vector_search(

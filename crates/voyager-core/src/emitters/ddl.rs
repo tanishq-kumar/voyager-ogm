@@ -706,19 +706,29 @@ impl DdlOp {
 /// Target DDL dialect family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DdlDialect {
-    /// Standard openCypher / Neo4j / Memgraph dialect.
+    /// Standard openCypher / Neo4j dialect.
     Cypher,
-    /// Relational SQL dialect (PostgreSQL, DuckDB, DuckPGQ).
+    /// Relational SQL dialect (PostgreSQL, SQL:2023 PGQ).
     Sql,
     /// FalkorDB Redis Graph dialect.
     FalkorDb,
     /// Apache AGE dialect (PostgreSQL ag_catalog tables).
     Age,
+    /// Memgraph dialect (v3.2+ vector index and openCypher syntax).
+    Memgraph,
+    /// DuckDB dialect (vss extension for vector index and relational SQL).
+    DuckDb,
 }
 
 /// Checks dialect compatibility for a given DDL operation, returning the dialect family.
 pub fn ensure_ddl_supported(dialect: &str, op: DdlOp) -> Result<DdlDialect> {
     let norm = dialect.to_ascii_lowercase();
+    if norm == "memgraph" {
+        return Ok(DdlDialect::Memgraph);
+    }
+    if norm == "duckdb" || norm == "duckpgq" {
+        return Ok(DdlDialect::DuckDb);
+    }
     if norm == "age" || norm == "apache_age" {
         if matches!(op, DdlOp::CreateIndex | DdlOp::DropIndex) {
             return Ok(DdlDialect::Age);
@@ -742,10 +752,7 @@ pub fn ensure_ddl_supported(dialect: &str, op: DdlOp) -> Result<DdlDialect> {
         return Ok(DdlDialect::FalkorDb);
     }
 
-    if matches!(
-        norm.as_str(),
-        "postgres" | "postgresql" | "duckdb" | "sql_pgq" | "pgq"
-    ) {
+    if matches!(norm.as_str(), "postgres" | "postgresql" | "sql_pgq" | "pgq") {
         return Ok(DdlDialect::Sql);
     }
 
@@ -765,6 +772,65 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
     let primary_label = node.primary_label();
 
     match ddl_dialect {
+        DdlDialect::Memgraph => {
+            for field in node.fields.values() {
+                if is_pure_index_field(field) {
+                    if field.index_type == Some(IndexType::Vector) {
+                        let (dims, metric, custom_name) = if let Some(ref vc) = field.vector_config
+                        {
+                            let m = match vc.similarity {
+                                VectorSimilarity::Cosine => "cos",
+                                VectorSimilarity::Euclidean => "l2",
+                                VectorSimilarity::Dot => "ip",
+                            };
+                            (vc.dimensions, m, vc.index_name.clone())
+                        } else {
+                            (1536, "cos", None)
+                        };
+                        let idx_name = custom_name
+                            .unwrap_or_else(|| cypher_index_name(primary_label, &field.name));
+                        statements.push(format!(
+                            "CREATE VECTOR INDEX {idx_name} ON :{primary_label}({}) WITH CONFIG {{\"dimension\": {dims}, \"capacity\": 10000, \"metric\": \"{metric}\"}};",
+                            field.name
+                        ));
+                    } else {
+                        statements
+                            .push(format!("CREATE INDEX ON :{primary_label}({});", field.name));
+                    }
+                }
+            }
+        }
+        DdlDialect::DuckDb => {
+            let table = primary_label.to_ascii_lowercase();
+            let q_table = escape_sql_ident(&table);
+            for field in node.fields.values() {
+                if is_pure_index_field(field) {
+                    let q_col = escape_sql_ident(&field.name);
+                    if field.index_type == Some(IndexType::Vector) {
+                        let (metric, custom_name) = if let Some(ref vc) = field.vector_config {
+                            let m = match vc.similarity {
+                                VectorSimilarity::Cosine => "cosine",
+                                VectorSimilarity::Euclidean => "l2sq",
+                                VectorSimilarity::Dot => "ip",
+                            };
+                            (m, vc.index_name.clone())
+                        } else {
+                            ("cosine", None)
+                        };
+                        let idx_name = custom_name
+                            .unwrap_or_else(|| format!("idx_{table}_{}_vector", field.name));
+                        statements.push(format!(
+                            "CREATE INDEX IF NOT EXISTS {idx_name} ON {q_table} USING HNSW ({q_col}) WITH (metric = '{metric}');"
+                        ));
+                    } else {
+                        statements.push(format!(
+                            "CREATE INDEX IF NOT EXISTS idx_{table}_{} ON {q_table} ({q_col});",
+                            field.name
+                        ));
+                    }
+                }
+            }
+        }
         DdlDialect::FalkorDb => {
             for field in node.fields.values() {
                 if is_pure_index_field(field) {
@@ -918,6 +984,29 @@ pub fn emit_rel_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Result<Vec
     let type_name = &rel.type_name;
 
     match ddl_dialect {
+        DdlDialect::Memgraph => {
+            for field in rel.fields.values() {
+                if is_pure_index_field(field) {
+                    statements.push(format!(
+                        "CREATE EDGE INDEX ON :{type_name}({});",
+                        field.name
+                    ));
+                }
+            }
+        }
+        DdlDialect::DuckDb => {
+            let table = type_name.to_ascii_lowercase();
+            let q_table = escape_sql_ident(&table);
+            for field in rel.fields.values() {
+                if is_pure_index_field(field) {
+                    let q_col = escape_sql_ident(&field.name);
+                    statements.push(format!(
+                        "CREATE INDEX IF NOT EXISTS idx_{table}_{} ON {q_table} ({q_col});",
+                        field.name
+                    ));
+                }
+            }
+        }
         DdlDialect::FalkorDb => {
             for field in rel.fields.values() {
                 if is_pure_index_field(field) {
@@ -974,7 +1063,22 @@ pub fn emit_node_constraint_ddl(
 
     match ddl_dialect {
         DdlDialect::FalkorDb | DdlDialect::Age => unreachable!(),
-        DdlDialect::Sql => {
+        DdlDialect::Memgraph => {
+            for field in node.fields.values() {
+                let db_name = &field.name;
+                if !field.nullable {
+                    statements.push(format!(
+                        "CREATE CONSTRAINT ON (n:{primary_label}) ASSERT EXISTS (n.{db_name});"
+                    ));
+                }
+                if field.unique || field.primary_key {
+                    statements.push(format!(
+                        "CREATE CONSTRAINT ON (n:{primary_label}) ASSERT n.{db_name} IS UNIQUE;"
+                    ));
+                }
+            }
+        }
+        DdlDialect::Sql | DdlDialect::DuckDb => {
             let table = primary_label.to_ascii_lowercase();
             let q_table = escape_sql_ident(&table);
             for field in node.fields.values() {
@@ -1027,7 +1131,10 @@ pub fn emit_rel_constraint_ddl(
 
     match ddl_dialect {
         DdlDialect::FalkorDb | DdlDialect::Age => unreachable!(),
-        DdlDialect::Sql => {
+        DdlDialect::Memgraph => {
+            // Memgraph does not support edge constraints; no-op.
+        }
+        DdlDialect::Sql | DdlDialect::DuckDb => {
             let table = type_name.to_ascii_lowercase();
             let q_table = escape_sql_ident(&table);
             for field in rel.fields.values() {
@@ -1069,6 +1176,41 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
     let primary_label = node.primary_label();
 
     match ddl_dialect {
+        DdlDialect::Memgraph => {
+            for field in node.fields.values() {
+                if is_pure_index_field(field) {
+                    if field.index_type == Some(IndexType::Vector) {
+                        let idx_name = field
+                            .vector_config
+                            .as_ref()
+                            .and_then(|vc| vc.index_name.clone())
+                            .unwrap_or_else(|| cypher_index_name(primary_label, &field.name));
+                        statements.push(format!("DROP VECTOR INDEX {idx_name};"));
+                    } else {
+                        statements.push(format!("DROP INDEX ON :{primary_label}({});", field.name));
+                    }
+                }
+            }
+        }
+        DdlDialect::DuckDb => {
+            let table = primary_label.to_ascii_lowercase();
+            for field in node.fields.values() {
+                if is_pure_index_field(field) {
+                    let idx_name = field
+                        .vector_config
+                        .as_ref()
+                        .and_then(|vc| vc.index_name.clone())
+                        .unwrap_or_else(|| {
+                            if field.index_type == Some(IndexType::Vector) {
+                                format!("idx_{table}_{}_vector", field.name)
+                            } else {
+                                format!("idx_{table}_{}", field.name)
+                            }
+                        });
+                    statements.push(format!("DROP INDEX IF EXISTS {idx_name};"));
+                }
+            }
+        }
         DdlDialect::FalkorDb => {
             for field in node.fields.values() {
                 if is_pure_index_field(field) {
@@ -1156,6 +1298,21 @@ pub fn emit_rel_drop_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Resul
     let type_name = &rel.type_name;
 
     match ddl_dialect {
+        DdlDialect::Memgraph => {
+            for field in rel.fields.values() {
+                if is_pure_index_field(field) {
+                    statements.push(format!("DROP EDGE INDEX ON :{type_name}({});", field.name));
+                }
+            }
+        }
+        DdlDialect::DuckDb => {
+            let table = type_name.to_ascii_lowercase();
+            for field in rel.fields.values() {
+                if is_pure_index_field(field) {
+                    statements.push(format!("DROP INDEX IF EXISTS idx_{table}_{};", field.name));
+                }
+            }
+        }
         DdlDialect::FalkorDb => {
             for field in rel.fields.values() {
                 if is_pure_index_field(field) {
@@ -1204,7 +1361,22 @@ pub fn emit_node_drop_constraint_ddl(
 
     match ddl_dialect {
         DdlDialect::FalkorDb | DdlDialect::Age => unreachable!(),
-        DdlDialect::Sql => {
+        DdlDialect::Memgraph => {
+            for field in node.fields.values() {
+                let db_name = &field.name;
+                if !field.nullable {
+                    statements.push(format!(
+                        "DROP CONSTRAINT ON (n:{primary_label}) ASSERT EXISTS (n.{db_name});"
+                    ));
+                }
+                if field.unique || field.primary_key {
+                    statements.push(format!(
+                        "DROP CONSTRAINT ON (n:{primary_label}) ASSERT n.{db_name} IS UNIQUE;"
+                    ));
+                }
+            }
+        }
+        DdlDialect::Sql | DdlDialect::DuckDb => {
             let table = primary_label.to_ascii_lowercase();
             let q_table = escape_sql_ident(&table);
             for field in node.fields.values() {
@@ -1249,7 +1421,10 @@ pub fn emit_rel_drop_constraint_ddl(
 
     match ddl_dialect {
         DdlDialect::FalkorDb | DdlDialect::Age => unreachable!(),
-        DdlDialect::Sql => {
+        DdlDialect::Memgraph => {
+            // Memgraph does not support edge constraints; no-op.
+        }
+        DdlDialect::Sql | DdlDialect::DuckDb => {
             let table = type_name.to_ascii_lowercase();
             let q_table = escape_sql_ident(&table);
             for field in rel.fields.values() {

@@ -7,10 +7,12 @@
   - Added declarative `VectorProperty(dimensions, similarity, index_name)` descriptor to `voyager_ogm.models` and exported in `voyager_ogm`.
   - Implemented multi-dialect vector index DDL compilation in `voyager-core`:
     - **Neo4j 5+**: `CREATE VECTOR INDEX {index_name} IF NOT EXISTS FOR (n:{label}) ON (n.{prop}) OPTIONS {indexConfig: {`vector.dimensions`: {dims}, `vector.similarity_function`: '{sim}'}}` and `DROP INDEX {index_name} IF EXISTS`.
+    - **Memgraph (v3.2+)**: `CREATE VECTOR INDEX {index_name} ON :{label}({prop}) WITH CONFIG {"dimension": {dims}, "capacity": 10000, "metric": "{metric}"};` and `DROP VECTOR INDEX {index_name};`.
+    - **DuckDB (vss)**: `CREATE INDEX IF NOT EXISTS {index_name} ON "{table}" USING HNSW ("{prop}") WITH (metric = '{metric}');` and `DROP INDEX IF EXISTS {index_name};`.
     - **FalkorDB**: `CREATE VECTOR INDEX FOR (n:{label}) ON (n.{prop}) OPTIONS {dimension: {dims}, similarityFunction: '{sim}'}` and `DROP VECTOR INDEX FOR (n:{label}) ON (n.{prop})`.
     - **Apache AGE / PostgreSQL (pgvector)**: `CREATE INDEX IF NOT EXISTS {index_name} ON ag_catalog."{label}" USING hnsw ({prop} {opclass});` and `DROP INDEX IF EXISTS {index_name};`.
   - Added full schema lifecycle support via `Session.apply_schema()`, `AsyncSession.apply_schema()`, and `SchemaManager.apply_schema()` with automatic model discovery from `SchemaRegistry.global_registry()` when models are omitted.
-  - Added vector search query builder `Query.vector_search(index_or_model, query_vector, k=10, yield_node="node", yield_score="score")` and convenience execution wrappers `Session.vector_search()` and `AsyncSession.vector_search()`.
+  - Added vector search query builder `Query.vector_search(index_or_model, query_vector, k=10, yield_node="node", yield_score="score", dialect="cypher")` supporting Neo4j (`db.index.vector.queryNodes`) and Memgraph (`vector_search.search`), plus convenience execution wrappers `Session.vector_search()` and `AsyncSession.vector_search()`.
 - **Temporal Types Normalization, Timezone Semantics & Dialect Roundtrips (#115)**:
   - Added Bolt wire protocol PackStream typed structures for all 7 temporal specifications (`BoltDate`, `BoltTime`, `BoltLocalTime`, `BoltDateTime`, `BoltLocalDateTime`, `BoltDateTimeZoneId`, `BoltDuration`) in `voyager-net`.
   - Implemented Howard Hinnant Gregorian calendar algorithms without external dependencies for $O(1)$ day-to-YMD and YMD-to-day calculations.

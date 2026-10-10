@@ -262,7 +262,7 @@ class SchemaManager:
                     return [stmt] if stmt else []
                 return []
             return [cls.generate_alter_graph_type_ddl(model)]
-        if dialect_norm in ("pgq", "sql_pgq", "duckpgq", "postgres", "postgresql"):
+        if dialect_norm in ("pgq", "sql_pgq", "duckpgq", "postgres", "postgresql", "duckdb"):
             if isinstance(model, str):
                 reg = SchemaRegistry.global_registry()
                 return [reg.generate_pgq_ddl(model, [model])]
@@ -279,13 +279,16 @@ class SchemaManager:
         """Generates CREATE INDEX DDL statements without executing them.
 
         Supports multi-dialect generation via native Rust emitters (RFC-0004 §4.4):
-        - 'cypher': openCypher / Neo4j / Memgraph index syntax
-        - 'postgres' / 'duckdb' / 'pgq': standard SQL relational index syntax
+        - 'cypher': openCypher / Neo4j 5+ index syntax
+        - 'memgraph': Memgraph vector index and openCypher index syntax
+        - 'duckdb': DuckDB vss HNSW vector index and relational SQL index syntax
+        - 'postgres' / 'pgq': standard SQL relational index syntax
         - 'falkordb': FalkorDB Cypher index syntax
+        - 'age': Apache AGE relational index syntax
 
         Args:
             *models: Node and Relationship model classes, schema dicts, or registered model names.
-            dialect: Target dialect ('cypher', 'postgres', 'duckdb', 'falkordb', 'pgq'). Defaults to 'cypher'.
+            dialect: Target dialect ('cypher', 'memgraph', 'duckdb', 'postgres', 'falkordb', 'age', 'pgq'). Defaults to 'cypher'.
 
         Returns:
             List of executable CREATE INDEX statement strings.

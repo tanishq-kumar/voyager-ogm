@@ -394,11 +394,15 @@ class Query:
         k: int = 10,
         yield_node: str = "node",
         yield_score: str = "score",
+        dialect: str = "cypher",
     ) -> Query:
         """Starts or appends a vector index search procedure call.
 
         For openCypher / Neo4j 5+, emits:
             `CALL db.index.vector.queryNodes(index_name, k, query_vector) YIELD node, score`
+
+        For Memgraph (v3.2+), emits:
+            `CALL vector_search.search(index_name, k, query_vector) YIELD node, similarity AS score`
 
         Args:
             index_or_model: Target vector index name (str) or a Node model class declaring a VectorProperty.
@@ -406,6 +410,7 @@ class Query:
             k: Top-k nearest neighbors to retrieve (default: 10).
             yield_node: Yielded variable alias for the matched entity node (default: 'node').
             yield_score: Yielded variable alias for the similarity score (default: 'score').
+            dialect: Query dialect ('cypher', 'memgraph', etc.). Defaults to 'cypher'.
 
         Returns:
             The Query instance chained with the vector search procedure call and YIELD clause.
@@ -439,6 +444,14 @@ class Query:
             q = self
 
         node_yield = f"node AS {yield_node}" if yield_node != "node" else "node"
+        if dialect.lower() == "memgraph":
+            score_yield = (
+                f"similarity AS {yield_score}" if yield_score != "similarity" else "similarity"
+            )
+            return q.call("vector_search.search", index_name, k, query_vector).yield_(
+                node_yield, score_yield
+            )
+
         score_yield = f"score AS {yield_score}" if yield_score != "score" else "score"
         return q.call("db.index.vector.queryNodes", index_name, k, query_vector).yield_(
             node_yield, score_yield

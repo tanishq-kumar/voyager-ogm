@@ -418,4 +418,48 @@ fn test_vector_index_schema_and_ddl_emission() {
             .iter()
             .any(|s| s.contains("DROP INDEX IF EXISTS art_vec_idx;"))
     );
+
+    // 5. Memgraph DDL
+    let memgraph_create = emit_node_index_ddl(&schema, "memgraph").unwrap();
+    assert_eq!(memgraph_create.len(), 2);
+    assert!(
+        memgraph_create.iter().any(|s| s.contains("CREATE VECTOR INDEX art_vec_idx ON :Article(embedding) WITH CONFIG {\"dimension\": 1536, \"capacity\": 10000, \"metric\": \"cos\"};"))
+    );
+    assert!(
+        memgraph_create
+            .iter()
+            .any(|s| s.contains("CREATE INDEX ON :Article(title);"))
+    );
+    let memgraph_drop = emit_node_drop_index_ddl(&schema, "memgraph").unwrap();
+    assert!(
+        memgraph_drop
+            .iter()
+            .any(|s| s.contains("DROP VECTOR INDEX art_vec_idx;"))
+    );
+    assert!(
+        memgraph_drop
+            .iter()
+            .any(|s| s.contains("DROP INDEX ON :Article(title);"))
+    );
+
+    // 6. DuckDB DDL
+    let duckdb_create = emit_node_index_ddl(&schema, "duckdb").unwrap();
+    assert_eq!(duckdb_create.len(), 2);
+    assert!(
+        duckdb_create.iter().any(|s| s.contains("CREATE INDEX IF NOT EXISTS art_vec_idx ON \"article\" USING HNSW (\"embedding\") WITH (metric = 'cosine');"))
+    );
+    assert!(duckdb_create.iter().any(|s| {
+        s.contains("CREATE INDEX IF NOT EXISTS idx_article_title ON \"article\" (\"title\");")
+    }));
+    let duckdb_drop = emit_node_drop_index_ddl(&schema, "duckdb").unwrap();
+    assert!(
+        duckdb_drop
+            .iter()
+            .any(|s| s.contains("DROP INDEX IF EXISTS art_vec_idx;"))
+    );
+    assert!(
+        duckdb_drop
+            .iter()
+            .any(|s| s.contains("DROP INDEX IF EXISTS idx_article_title;"))
+    );
 }
