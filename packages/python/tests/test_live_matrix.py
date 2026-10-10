@@ -56,11 +56,11 @@ from __future__ import annotations
 
 import json
 import os
-import socket
 from pathlib import Path
 
 import polars as pl
 import pytest
+from conftest import is_port_open as _is_port_open
 from neo4j import GraphDatabase
 from voyager_ogm import (
     Field,
@@ -103,15 +103,6 @@ def _load_env_file() -> None:
 _load_env_file()
 
 pytestmark = pytest.mark.live
-
-
-def _is_port_open(host: str, port: int, timeout: float = 0.3) -> bool:
-    """Fast socket probe to detect whether a container port is actively listening."""
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
 
 
 # ---------------------------------------------------------------------------

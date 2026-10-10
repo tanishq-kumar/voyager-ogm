@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import inspect
+import json
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -1061,8 +1062,6 @@ def _adapt_falkordb_value(val: Any) -> Any:
         if "__voyager_spatial__" in val:
             sp = val["__voyager_spatial__"]
             unwrapped = unwrap_spatial_param(sp) if isinstance(sp, dict) else sp
-            import json
-
             return json.dumps(unwrapped)
         return {k: _adapt_falkordb_value(v) for k, v in val.items()}
     if isinstance(val, (list, tuple)):

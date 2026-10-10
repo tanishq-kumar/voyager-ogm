@@ -16,10 +16,10 @@ from __future__ import annotations
 import datetime
 import math
 import os
-import socket
 
 import polars as pl
 import pytest
+from conftest import is_port_open
 from voyager_ogm.bridge import (
     FalkorDBBridge,
     MockBridge,
@@ -377,15 +377,6 @@ def test_falkordb_bridge_parameter_adaptation() -> None:
 # ==============================================================================
 
 
-def _is_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
-    """Fast socket probe to detect whether a container port is actively listening."""
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
 NEO4J_HOST = os.getenv("NEO4J_HOST", "127.0.0.1")
 NEO4J_PORT = int(os.getenv("NEO4J_PORT", "7687"))
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
@@ -403,9 +394,51 @@ FALKORDB_PORT = int(os.getenv("FALKORDB_PORT", "6379"))
 
 
 @pytest.mark.live
+def test_live_neo4j_bolt_time_nanoseconds_convention() -> None:
+    """Verifies that Bolt Time tag 0x54 stores local wall-clock nanoseconds (not UTC nanoseconds).
+
+    Validation:
+    Query 'RETURN time("14:30:15+02:00") AS t' against live Neo4j.
+    Neo4j official driver returns a Time object whose:
+    - hour is 14, minute is 30, second is 15
+    - ticks is 52,215,000,000,000 (i.e. (14*3600 + 30*60 + 15) * 1e9 local wall nanos)
+    - tz_offset is +7200 seconds (+02:00)
+    This confirms BoltTime.nanoseconds in PackStream tag 0x54 is local wall-clock nanoseconds since midnight,
+    and the offset is informational, verifying BoltTime.to_iso_string() renders correctly.
+    """
+    if not is_port_open(NEO4J_HOST, NEO4J_PORT):
+        pytest.skip(f"Live Neo4j container not reachable on {NEO4J_HOST}:{NEO4J_PORT}")
+
+    try:
+        import neo4j
+    except ImportError:
+        pytest.skip("neo4j driver not installed")
+
+    driver = neo4j.GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+    try:
+        with driver.session() as s:
+            res = s.run('RETURN time("14:30:15+02:00") AS t').single()
+            t = res["t"]
+            assert t.hour == 14
+            assert t.minute == 30
+            assert t.second == 15
+            # Nanoseconds (ticks) is local wall clock: 14*3600 + 30*60 + 15 = 52215 seconds
+            assert t.ticks == 52_215_000_000_000
+            assert t.utc_offset() == datetime.timedelta(hours=2)
+
+            # Hydrate via Voyager
+            hydrated = _hydrate_time(t)
+            assert isinstance(hydrated, datetime.time)
+            assert hydrated.hour == 14 and hydrated.minute == 30 and hydrated.second == 15
+            assert hydrated.tzinfo is not None
+    finally:
+        driver.close()
+
+
+@pytest.mark.live
 def test_live_neo4j_temporal_roundtrip() -> None:
     """End-to-end verification against live Neo4j: native temporal types and sub-millisecond precision."""
-    if not _is_port_open(NEO4J_HOST, NEO4J_PORT):
+    if not is_port_open(NEO4J_HOST, NEO4J_PORT):
         pytest.skip(f"Live Neo4j container not reachable on {NEO4J_HOST}:{NEO4J_PORT}")
 
     try:
@@ -455,7 +488,7 @@ def test_live_neo4j_temporal_roundtrip() -> None:
 @pytest.mark.live
 def test_live_apache_age_temporal_roundtrip() -> None:
     """End-to-end verification against live Apache AGE PostgreSQL backend."""
-    if not _is_port_open(AGE_HOST, AGE_PORT):
+    if not is_port_open(AGE_HOST, AGE_PORT):
         pytest.skip(f"Live Apache AGE container not reachable on {AGE_HOST}:{AGE_PORT}")
 
     try:
@@ -499,7 +532,7 @@ def test_live_apache_age_temporal_roundtrip() -> None:
 @pytest.mark.live
 def test_live_falkordb_temporal_roundtrip() -> None:
     """End-to-end verification against live FalkorDB graph backend."""
-    if not _is_port_open(FALKORDB_HOST, FALKORDB_PORT):
+    if not is_port_open(FALKORDB_HOST, FALKORDB_PORT):
         pytest.skip(f"Live FalkorDB container not reachable on {FALKORDB_HOST}:{FALKORDB_PORT}")
 
     try:

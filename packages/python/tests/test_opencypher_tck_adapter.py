@@ -15,6 +15,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from conftest import is_port_open as _check_port  # noqa: E402
+
 from test_data.tck.opencypher_adapter import (  # noqa: E402
     TckScenario,
     execute_scenario_topology,
@@ -109,16 +111,6 @@ def test_tck_topology_nodes_and_edges_integrity():
     assert res4.success
     assert res4.edges_found >= 1
     assert res4.nodes_found >= 2
-
-
-def _check_port(host: str, port: int) -> bool:
-    import socket
-
-    try:
-        with socket.create_connection((host, port), timeout=0.3):
-            return True
-    except OSError:
-        return False
 
 
 def test_tck_tier3_live_neo4j_execution():

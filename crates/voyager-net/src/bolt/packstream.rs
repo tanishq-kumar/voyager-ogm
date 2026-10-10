@@ -214,10 +214,18 @@ impl BoltDate {
     }
 }
 
-/// Represents a wall-clock Time with timezone offset decoded from a Bolt PackStream structure (`tag = 0x54`).
+/// Represents a Time with timezone offset decoded from a Bolt PackStream structure (`tag = 0x54`).
+///
+/// ### Bolt Specification & Engine Verification
+/// In the Bolt PackStream specification (tag `0x54` / `b"T"`), `nanoseconds` represents
+/// **local wall-clock nanoseconds since midnight** (i.e. `(hour * 3600 + min * 60 + sec) * 1e9 + nanos`),
+/// while `tz_offset_seconds` represents the timezone offset from UTC.
+/// Verified against live Neo4j 5.26 (`RETURN time("14:30:15+02:00")`) and the official `neo4j` Python driver:
+/// `hydrate_time(nanoseconds, tz)` decodes `divmod(nanoseconds, 1e9)` directly into wall-clock hour/min/sec
+/// and attaches `FixedOffset(tz // 60)` without offset shifting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BoltTime {
-    /// Nanoseconds since midnight UTC.
+    /// Local wall-clock nanoseconds since midnight.
     pub nanoseconds: i64,
     /// Timezone offset from UTC in seconds.
     pub tz_offset_seconds: i64,

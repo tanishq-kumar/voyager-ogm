@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-import socket
 
 import pytest
+from conftest import is_port_open as _is_port_open
 from neo4j import GraphDatabase
 from voyager_ogm import (
     Field,
@@ -19,15 +19,6 @@ from voyager_ogm import (
     node,
     relationship,
 )
-
-
-def _is_port_open(host: str, port: int, timeout: float = 0.3) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
 
 # ---------------------------------------------------------------------------
 # Unit Tests (No Database Required)
