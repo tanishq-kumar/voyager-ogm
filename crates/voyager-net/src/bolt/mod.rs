@@ -10,8 +10,9 @@ pub mod testkit;
 pub use connection::{BOLT_MAGIC_PREAMBLE, BOLT_PROPOSED_VERSIONS, BoltConnection, BoltVersion};
 pub use messages::{BoltRequest, BoltResponse};
 pub use packstream::{
-    BoltNode, BoltPath, BoltPoint2D, BoltPoint3D, BoltRelationship, BoltUnboundRelationship,
-    BoltValue, PackStream, srid,
+    BoltDate, BoltDateTime, BoltDateTimeZoneId, BoltDuration, BoltLocalDateTime, BoltLocalTime,
+    BoltNode, BoltPath, BoltPoint2D, BoltPoint3D, BoltRelationship, BoltTime,
+    BoltUnboundRelationship, BoltValue, PackStream, srid,
 };
 pub use stream::{
     DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE, encode_chunks, read_message_frame,

@@ -11,7 +11,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
 use super::connection::BoltConnection;
-use super::packstream::{BoltPoint2D, BoltPoint3D, BoltValue};
+use super::packstream::{
+    BoltDate, BoltDateTime, BoltDateTimeZoneId, BoltDuration, BoltLocalDateTime, BoltLocalTime,
+    BoltPoint2D, BoltPoint3D, BoltTime, BoltValue,
+};
 use crate::config::{Auth, ConnectionConfig};
 use crate::engine::AsyncConnection;
 use crate::error::Result;
@@ -100,6 +103,13 @@ impl TestkitBackend {
                 "y": p.y,
                 "z": p.z,
             }),
+            BoltValue::Date(d) => json!(d.to_iso_string()),
+            BoltValue::Time(t) => json!(t.to_iso_string()),
+            BoltValue::LocalTime(lt) => json!(lt.to_iso_string()),
+            BoltValue::DateTime(dt) => json!(dt.to_iso_string()),
+            BoltValue::LocalDateTime(ldt) => json!(ldt.to_iso_string()),
+            BoltValue::DateTimeZoneId(dtz) => json!(dtz.to_iso_string()),
+            BoltValue::Duration(dur) => json!(dur.to_iso_string()),
             _ => Value::Null,
         }
     }
@@ -303,6 +313,57 @@ impl TestkitBackend {
                     "z": json!({"name": "CypherFloat", "data": {"value": p.z}}),
                 }
             }),
+            BoltValue::Date(d) => json!({
+                "name": "CypherDate",
+                "data": {
+                    "days": json!({"name": "CypherInt", "data": {"value": d.days}}),
+                }
+            }),
+            BoltValue::Time(t) => json!({
+                "name": "CypherTime",
+                "data": {
+                    "nanoseconds": json!({"name": "CypherInt", "data": {"value": t.nanoseconds}}),
+                    "utc_offset_s": json!({"name": "CypherInt", "data": {"value": t.tz_offset_seconds}}),
+                }
+            }),
+            BoltValue::LocalTime(lt) => json!({
+                "name": "CypherLocalTime",
+                "data": {
+                    "nanoseconds": json!({"name": "CypherInt", "data": {"value": lt.nanoseconds}}),
+                }
+            }),
+            BoltValue::DateTime(dt) => json!({
+                "name": "CypherDateTime",
+                "data": {
+                    "seconds": json!({"name": "CypherInt", "data": {"value": dt.seconds}}),
+                    "nanoseconds": json!({"name": "CypherInt", "data": {"value": dt.nanoseconds}}),
+                    "utc_offset_s": json!({"name": "CypherInt", "data": {"value": dt.tz_offset_seconds}}),
+                }
+            }),
+            BoltValue::LocalDateTime(ldt) => json!({
+                "name": "CypherLocalDateTime",
+                "data": {
+                    "seconds": json!({"name": "CypherInt", "data": {"value": ldt.seconds}}),
+                    "nanoseconds": json!({"name": "CypherInt", "data": {"value": ldt.nanoseconds}}),
+                }
+            }),
+            BoltValue::DateTimeZoneId(dtz) => json!({
+                "name": "CypherDateTimeZoneId",
+                "data": {
+                    "seconds": json!({"name": "CypherInt", "data": {"value": dtz.seconds}}),
+                    "nanoseconds": json!({"name": "CypherInt", "data": {"value": dtz.nanoseconds}}),
+                    "timezone_id": json!({"name": "CypherString", "data": {"value": dtz.zone_id}}),
+                }
+            }),
+            BoltValue::Duration(dur) => json!({
+                "name": "CypherDuration",
+                "data": {
+                    "months": json!({"name": "CypherInt", "data": {"value": dur.months}}),
+                    "days": json!({"name": "CypherInt", "data": {"value": dur.days}}),
+                    "seconds": json!({"name": "CypherInt", "data": {"value": dur.seconds}}),
+                    "nanoseconds": json!({"name": "CypherInt", "data": {"value": dur.nanoseconds}}),
+                }
+            }),
             BoltValue::Structure { .. } => json!({"name": "CypherNull"}),
         }
     }
@@ -431,6 +492,124 @@ impl TestkitBackend {
                             .and_then(|v| v.as_f64())
                             .unwrap_or(0.0);
                         BoltValue::Point3D(BoltPoint3D { srid, x, y, z })
+                    }
+                    "CypherDate" => {
+                        let days = data
+                            .and_then(|d| d.get("days"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        BoltValue::Date(BoltDate::new(days))
+                    }
+                    "CypherTime" => {
+                        let nanos = data
+                            .and_then(|d| d.get("nanoseconds"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        let offset = data
+                            .and_then(|d| d.get("utc_offset_s"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        BoltValue::Time(BoltTime::new(nanos, offset))
+                    }
+                    "CypherLocalTime" => {
+                        let nanos = data
+                            .and_then(|d| d.get("nanoseconds"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        BoltValue::LocalTime(BoltLocalTime::new(nanos))
+                    }
+                    "CypherDateTime" => {
+                        let seconds = data
+                            .and_then(|d| d.get("seconds"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        let nanos = data
+                            .and_then(|d| d.get("nanoseconds"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        let offset = data
+                            .and_then(|d| d.get("utc_offset_s"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        BoltValue::DateTime(BoltDateTime::new(seconds, nanos, offset))
+                    }
+                    "CypherLocalDateTime" => {
+                        let seconds = data
+                            .and_then(|d| d.get("seconds"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        let nanos = data
+                            .and_then(|d| d.get("nanoseconds"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        BoltValue::LocalDateTime(BoltLocalDateTime::new(seconds, nanos))
+                    }
+                    "CypherDateTimeZoneId" => {
+                        let seconds = data
+                            .and_then(|d| d.get("seconds"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        let nanos = data
+                            .and_then(|d| d.get("nanoseconds"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        let zone = data
+                            .and_then(|d| d.get("timezone_id"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("UTC")
+                            .to_string();
+                        BoltValue::DateTimeZoneId(BoltDateTimeZoneId::new(seconds, nanos, zone))
+                    }
+                    "CypherDuration" => {
+                        let months = data
+                            .and_then(|d| d.get("months"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        let days = data
+                            .and_then(|d| d.get("days"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        let seconds = data
+                            .and_then(|d| d.get("seconds"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        let nanos = data
+                            .and_then(|d| d.get("nanoseconds"))
+                            .and_then(|v| v.get("data"))
+                            .and_then(|v| v.get("value"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        BoltValue::Duration(BoltDuration::new(months, days, seconds, nanos))
                     }
                     _ => BoltValue::from(val),
                 }

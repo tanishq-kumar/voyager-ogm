@@ -408,6 +408,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync> BoltConnection<S> {
                         Some(BoltValue::Integer(i)) => builder.append_value(i.to_string()),
                         Some(BoltValue::Float(f)) => builder.append_value(f.to_string()),
                         Some(BoltValue::Boolean(b)) => builder.append_value(b.to_string()),
+                        Some(BoltValue::Date(d)) => builder.append_value(d.to_iso_string()),
+                        Some(BoltValue::Time(t)) => builder.append_value(t.to_iso_string()),
+                        Some(BoltValue::LocalTime(lt)) => builder.append_value(lt.to_iso_string()),
+                        Some(BoltValue::DateTime(dt)) => builder.append_value(dt.to_iso_string()),
+                        Some(BoltValue::LocalDateTime(ldt)) => {
+                            builder.append_value(ldt.to_iso_string())
+                        }
+                        Some(BoltValue::DateTimeZoneId(dtz)) => {
+                            builder.append_value(dtz.to_iso_string())
+                        }
+                        Some(BoltValue::Duration(dur)) => builder.append_value(dur.to_iso_string()),
                         Some(BoltValue::Null) | None => builder.append_null(),
                         Some(other) => {
                             let json_str = serde_json::to_string(other)

@@ -7,7 +7,9 @@ AST expression builder integration, and PyArrow/Polars conversions.
 
 from __future__ import annotations
 
+import datetime
 import math
+import re
 from typing import TYPE_CHECKING, Any
 
 from voyager_ogm.expressions import (
@@ -689,4 +691,305 @@ def unwrap_spatial_param(val: Any) -> Any:
         return {k: unwrap_spatial_param(v) for k, v in val.items()}
     if isinstance(val, (list, tuple)):
         return [unwrap_spatial_param(x) for x in val]
+    return val
+
+
+_ISO_DURATION_REGEX = re.compile(
+    r"^(?P<sign>[+-])?P"
+    r"(?:(?P<years>\d+(?:\.\d+)?)Y)?"
+    r"(?:(?P<months>\d+(?:\.\d+)?)M)?"
+    r"(?:(?P<weeks>\d+(?:\.\d+)?)W)?"
+    r"(?:(?P<days>\d+(?:\.\d+)?)D)?"
+    r"(?:T"
+    r"(?:(?P<hours>\d+(?:\.\d+)?)H)?"
+    r"(?:(?P<minutes>\d+(?:\.\d+)?)M)?"
+    r"(?:(?P<seconds>\d+(?:\.\d+)?)S)?"
+    r")?$"
+)
+
+
+def parse_iso_duration(val: str) -> datetime.timedelta:
+    """Parses an ISO-8601 duration string into a datetime.timedelta.
+
+    Supported formats include:
+        - Full ISO: 'P1Y2M3DT4H5M6.789S'
+        - Time only: 'PT1H30M', 'PT0.5S'
+        - Date only: 'P2D', 'P1W'
+        - Zero: 'PT0S', 'P0D'
+        - Negative: '-PT5M'
+
+    Note:
+        Year and month components are approximated as 365.25 days and 30.4375 days
+        respectively when converting to a fixed-duration timedelta, which loses
+        calendar month-boundary fidelity by design (e.g. 'P1M' does not preserve
+        differing calendar month lengths on round-trip).
+    """
+    val = val.strip().upper()
+    match = _ISO_DURATION_REGEX.match(val)
+    if not match:
+        raise ValueError(f"Invalid ISO-8601 duration format: {val}")
+
+    parts = match.groupdict()
+    # ISO-8601 requires at least one component designator; bare 'P' or 'PT' is invalid
+    if not any(
+        parts[k] is not None
+        for k in ("years", "months", "weeks", "days", "hours", "minutes", "seconds")
+    ):
+        raise ValueError(
+            f"Invalid ISO-8601 duration format: {val} (must contain at least one designator)"
+        )
+
+    sign = -1 if parts["sign"] == "-" else 1
+
+    years = float(parts["years"]) if parts["years"] is not None else 0.0
+    months = float(parts["months"]) if parts["months"] is not None else 0.0
+    weeks = float(parts["weeks"]) if parts["weeks"] is not None else 0.0
+    days = float(parts["days"]) if parts["days"] is not None else 0.0
+    hours = float(parts["hours"]) if parts["hours"] is not None else 0.0
+    minutes = float(parts["minutes"]) if parts["minutes"] is not None else 0.0
+    seconds = float(parts["seconds"]) if parts["seconds"] is not None else 0.0
+
+    total_days = days + (weeks * 7.0) + (months * 30.4375) + (years * 365.25)
+    total_seconds = (hours * 3600.0) + (minutes * 60.0) + seconds
+
+    td = datetime.timedelta(days=total_days, seconds=total_seconds)
+    return td if sign == 1 else -td
+
+
+def to_iso_duration(td: datetime.timedelta) -> str:
+    """Formats a datetime.timedelta as an ISO-8601 duration string (e.g. 'P2DT3H4M5S')."""
+    total_seconds = td.total_seconds()
+    if total_seconds == 0:
+        return "PT0S"
+
+    sign = "-" if total_seconds < 0 else ""
+    abs_td = abs(td)
+
+    days = abs_td.days
+    secs = abs_td.seconds
+    micros = abs_td.microseconds
+
+    hours = secs // 3600
+    minutes = (secs % 3600) // 60
+    seconds = secs % 60
+
+    parts = [f"{sign}P"]
+    if days > 0:
+        parts.append(f"{days}D")
+
+    time_parts = []
+    if hours > 0:
+        time_parts.append(f"{hours}H")
+    if minutes > 0:
+        time_parts.append(f"{minutes}M")
+    if seconds > 0 or micros > 0:
+        if micros > 0:
+            sec_float = seconds + micros / 1_000_000.0
+            formatted = f"{sec_float:.6f}".rstrip("0").rstrip(".")
+            time_parts.append(f"{formatted}S")
+        else:
+            time_parts.append(f"{seconds}S")
+
+    if time_parts:
+        parts.append("T" + "".join(time_parts))
+    elif days == 0:
+        parts.append("T0S")
+
+    return "".join(parts)
+
+
+def _hydrate_date(val: Any) -> Any:
+    """Hydrates raw driver temporal values, ISO strings, or ordinal numbers into datetime.date."""
+    if val is None:
+        return None
+    if isinstance(val, datetime.date) and not isinstance(val, datetime.datetime):
+        return val
+    if isinstance(val, datetime.datetime):
+        return val.date()
+    if hasattr(val, "to_native"):
+        try:
+            native = val.to_native()
+            if isinstance(native, datetime.datetime):
+                return native.date()
+            if isinstance(native, datetime.date):
+                return native
+        except Exception:
+            pass
+    if hasattr(val, "year") and hasattr(val, "month") and hasattr(val, "day"):
+        try:
+            return datetime.date(val.year, val.month, val.day)
+        except Exception:
+            pass
+    if isinstance(val, bytes):
+        val = val.decode("utf-8")
+    if isinstance(val, str):
+        val = val.strip()
+        try:
+            return datetime.date.fromisoformat(val)
+        except ValueError:
+            try:
+                clean = val.replace("Z", "+00:00")
+                if "[" in clean:
+                    clean = clean.split("[", 1)[0]
+                return datetime.datetime.fromisoformat(clean).date()
+            except Exception:
+                pass
+    if isinstance(val, (int, float)):
+        try:
+            # Heuristic epoch classification:
+            # - |val| < 100,000 (~273 years): interpreted as epoch days (e.g. Neo4j Bolt Date epoch_days).
+            # - |val| >= 100,000: interpreted as Unix epoch seconds.
+            # Ambiguity window: raw Unix timestamps between 0 and 100,000 (Jan 1 to Jan 2 1970)
+            # would be treated as epoch days. Graph protocols send epoch days for dates.
+            if abs(val) < 100_000:
+                return datetime.date(1970, 1, 1) + datetime.timedelta(days=int(val))
+            return datetime.datetime.fromtimestamp(val, tz=datetime.UTC).date()
+        except Exception:
+            pass
+    return val
+
+
+def _hydrate_time(val: Any) -> Any:
+    """Hydrates raw driver temporal values or ISO strings into datetime.time."""
+    if val is None:
+        return None
+    if isinstance(val, datetime.time):
+        return val
+    if hasattr(val, "to_native"):
+        try:
+            native = val.to_native()
+            if isinstance(native, datetime.time):
+                return native
+        except Exception:
+            pass
+    if hasattr(val, "hour") and hasattr(val, "minute") and hasattr(val, "second"):
+        try:
+            nanos = getattr(val, "nanosecond", 0)
+            tzinfo = getattr(val, "tzinfo", None)
+            return datetime.time(
+                val.hour, val.minute, val.second, microsecond=nanos // 1000, tzinfo=tzinfo
+            )
+        except Exception:
+            pass
+    if isinstance(val, bytes):
+        val = val.decode("utf-8")
+    if isinstance(val, str):
+        val = val.strip()
+        try:
+            return datetime.time.fromisoformat(val)
+        except ValueError:
+            try:
+                clean = val.replace("Z", "+00:00")
+                return datetime.datetime.fromisoformat(clean).timetz()
+            except Exception:
+                pass
+    return val
+
+
+def _hydrate_datetime(val: Any) -> Any:
+    """Hydrates raw driver temporal values, ISO strings, or Unix timestamps into datetime.datetime."""
+    if val is None:
+        return None
+    if isinstance(val, datetime.datetime):
+        return val
+    if hasattr(val, "to_native"):
+        try:
+            native = val.to_native()
+            if isinstance(native, datetime.datetime):
+                return native
+        except Exception:
+            pass
+    if (
+        hasattr(val, "year")
+        and hasattr(val, "month")
+        and hasattr(val, "day")
+        and hasattr(val, "hour")
+    ):
+        try:
+            nanos = getattr(val, "nanosecond", 0)
+            tzinfo = getattr(val, "tzinfo", None)
+            return datetime.datetime(
+                val.year,
+                val.month,
+                val.day,
+                val.hour,
+                val.minute,
+                val.second,
+                microsecond=nanos // 1000,
+                tzinfo=tzinfo,
+            )
+        except Exception:
+            pass
+    if isinstance(val, datetime.date) and not isinstance(val, datetime.datetime):
+        return datetime.datetime(val.year, val.month, val.day)
+    if isinstance(val, bytes):
+        val = val.decode("utf-8")
+    if isinstance(val, str):
+        val = val.strip()
+        tz_name = None
+        clean = val
+        if "[" in clean and clean.endswith("]"):
+            clean, tz_name = clean[:-1].split("[", 1)
+        clean = clean.replace("Z", "+00:00")
+        try:
+            dt = datetime.datetime.fromisoformat(clean)
+            if tz_name:
+                try:
+                    import zoneinfo
+
+                    # If naive (e.g. wall clock parsed without offset), anchor to UTC first
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=datetime.UTC)
+                    # Convert to target named timezone, strictly preserving exact instant & .timestamp()
+                    dt = dt.astimezone(zoneinfo.ZoneInfo(tz_name))
+                except Exception:
+                    pass
+            return dt
+        except Exception:
+            pass
+    if isinstance(val, (int, float)):
+        try:
+            # Heuristic epoch timestamp classification:
+            # - |val| >= 1e11 (100 billion): interpreted as epoch milliseconds (or scaled nanos).
+            # - |val| < 1e11: interpreted as Unix epoch seconds.
+            # Ambiguity window: epoch seconds beyond the year 5138 (1e11) would be treated as milliseconds.
+            if abs(val) >= 1e11:
+                return datetime.datetime.fromtimestamp(val / 1000.0, tz=datetime.UTC)
+            return datetime.datetime.fromtimestamp(val, tz=datetime.UTC)
+        except Exception:
+            pass
+    return val
+
+
+def _hydrate_timedelta(val: Any) -> Any:
+    """Hydrates raw driver Duration objects, ISO duration strings, or seconds into datetime.timedelta."""
+    if val is None:
+        return None
+    if isinstance(val, datetime.timedelta):
+        return val
+    if (
+        hasattr(val, "months")
+        and hasattr(val, "days")
+        and hasattr(val, "seconds")
+        and hasattr(val, "nanoseconds")
+    ):
+        try:
+            days = val.days + int(val.months * 30.4375)
+            seconds = val.seconds
+            micros = val.nanoseconds // 1000
+            return datetime.timedelta(days=days, seconds=seconds, microseconds=micros)
+        except Exception:
+            pass
+    if isinstance(val, bytes):
+        val = val.decode("utf-8")
+    if isinstance(val, str):
+        try:
+            return parse_iso_duration(val)
+        except Exception:
+            pass
+    if isinstance(val, (int, float)):
+        try:
+            return datetime.timedelta(seconds=val)
+        except Exception:
+            pass
     return val

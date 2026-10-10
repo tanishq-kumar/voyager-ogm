@@ -3,6 +3,11 @@
 ## [0.4.0-alpha.6] - 2026-10-02
 
 ### Added
+- **Temporal Types Normalization, Timezone Semantics & Dialect Roundtrips (#115)**:
+  - Added Bolt wire protocol PackStream typed structures for all 7 temporal specifications (`BoltDate`, `BoltTime`, `BoltLocalTime`, `BoltDateTime`, `BoltLocalDateTime`, `BoltDateTimeZoneId`, `BoltDuration`) in `voyager-net`.
+  - Implemented Howard Hinnant Gregorian calendar algorithms without external dependencies for $O(1)$ day-to-YMD and YMD-to-day calculations.
+  - Implemented bidirectional mapping in `voyager_ogm.types` with sub-millisecond precision, RFC 9557 timezone handling, instant preservation, and ISO-8601 duration parser/formatter (`parse_iso_duration`, `to_iso_duration`).
+  - Added dialect parameter adaptation for FalkorDB and Apache AGE.
 - **Geospatial Point Types & Spatial Distance Engine (#114)**:
   - Added Bolt wire protocol PackStream encoding and decoding for `Point2D` (`0x58`) and `Point3D` (`0x59`) with standard SRIDs (`4326` WGS-84 2D, `4979` WGS-84 3D, `7203` Cartesian 2D, `9157` Cartesian 3D).
   - Added `Point` class in `voyager_ogm.types` supporting geographic and Cartesian coordinates, in-memory spherical Haversine and Euclidean distance calculations, PyArrow/Polars conversion, and `to_dict()`/`from_dict()`.

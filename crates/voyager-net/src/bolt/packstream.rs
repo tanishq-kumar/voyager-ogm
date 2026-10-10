@@ -105,6 +105,343 @@ pub struct BoltPoint3D {
     pub z: f64,
 }
 
+/// Gregorian civil calendar conversion: days since 1970-01-01 to (year, month, day).
+/// Howard Hinnant's civil day algorithm: O(1) arithmetic, zero allocations.
+pub fn days_to_ymd(days: i64) -> (i32, u32, u32) {
+    let z = days.saturating_add(719468);
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as i32, m, d)
+}
+
+/// Gregorian civil calendar conversion: (year, month, day) to days since 1970-01-01.
+pub fn ymd_to_days(year: i32, month: u32, day: u32) -> i64 {
+    let y = if month <= 2 {
+        year as i64 - 1
+    } else {
+        year as i64
+    };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u32;
+    let m = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * m + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe as i64 - 719468
+}
+
+/// Converts nanoseconds since midnight into (hours, minutes, seconds, sub-second nanoseconds).
+pub fn nanos_to_hmsn(nanos: i64) -> (u32, u32, u32, u32) {
+    let total_secs = (nanos / 1_000_000_000).rem_euclid(86400);
+    let sub_nanos = (nanos.rem_euclid(1_000_000_000)) as u32;
+    let hour = (total_secs / 3600) as u32;
+    let minute = ((total_secs % 3600) / 60) as u32;
+    let second = (total_secs % 60) as u32;
+    (hour, minute, second, sub_nanos)
+}
+
+/// Formats UTC offset in seconds to ISO-8601 offset string (e.g. "+02:00", "-05:00", "+00:00").
+pub fn format_tz_offset(offset_seconds: i64) -> String {
+    let sign = if offset_seconds >= 0 { '+' } else { '-' };
+    let abs_secs = offset_seconds.unsigned_abs();
+    let hours = abs_secs / 3600;
+    let minutes = (abs_secs % 3600) / 60;
+    let seconds = abs_secs % 60;
+    if seconds == 0 {
+        format!("{}{:02}:{:02}", sign, hours, minutes)
+    } else {
+        format!("{}{:02}:{:02}:{:02}", sign, hours, minutes, seconds)
+    }
+}
+
+fn format_time_string(h: u32, m: u32, s: u32, nanos: u32, offset: Option<&str>) -> String {
+    let base = if nanos == 0 {
+        format!("{:02}:{:02}:{:02}", h, m, s)
+    } else if nanos.is_multiple_of(1_000_000) {
+        format!("{:02}:{:02}:{:02}.{:03}", h, m, s, nanos / 1_000_000)
+    } else if nanos.is_multiple_of(1_000) {
+        format!("{:02}:{:02}:{:02}.{:06}", h, m, s, nanos / 1_000)
+    } else {
+        format!("{:02}:{:02}:{:02}.{:09}", h, m, s, nanos)
+    };
+    match offset {
+        Some(off) => format!("{}{}", base, off),
+        None => base,
+    }
+}
+
+/// Represents a calendar Date decoded from a Bolt PackStream structure (`tag = 0x44`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BoltDate {
+    /// Days since Unix epoch (1970-01-01).
+    pub days: i64,
+}
+
+impl BoltDate {
+    /// Creates a new `BoltDate` from days since epoch.
+    pub const fn new(days: i64) -> Self {
+        Self { days }
+    }
+
+    /// Creates a new `BoltDate` from Gregorian year, month, and day.
+    pub fn from_ymd(year: i32, month: u32, day: u32) -> Result<Self> {
+        if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+            return Err(NetError::ProtocolError(format!(
+                "Invalid calendar date: {:04}-{:02}-{:02}",
+                year, month, day
+            )));
+        }
+        Ok(Self {
+            days: ymd_to_days(year, month, day),
+        })
+    }
+
+    /// Converts days since epoch into (year, month, day).
+    pub fn to_ymd(&self) -> (i32, u32, u32) {
+        days_to_ymd(self.days)
+    }
+
+    /// Formats the date as an ISO-8601 string (`"YYYY-MM-DD"`).
+    pub fn to_iso_string(&self) -> String {
+        let (y, m, d) = self.to_ymd();
+        format!("{:04}-{:02}-{:02}", y, m, d)
+    }
+}
+
+/// Represents a Time with timezone offset decoded from a Bolt PackStream structure (`tag = 0x54`).
+///
+/// ### Bolt Specification & Engine Verification
+/// In the Bolt PackStream specification (tag `0x54` / `b"T"`), `nanoseconds` represents
+/// **local wall-clock nanoseconds since midnight** (i.e. `(hour * 3600 + min * 60 + sec) * 1e9 + nanos`),
+/// while `tz_offset_seconds` represents the timezone offset from UTC.
+/// Verified against live Neo4j 5.26 (`RETURN time("14:30:15+02:00")`) and the official `neo4j` Python driver:
+/// `hydrate_time(nanoseconds, tz)` decodes `divmod(nanoseconds, 1e9)` directly into wall-clock hour/min/sec
+/// and attaches `FixedOffset(tz // 60)` without offset shifting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BoltTime {
+    /// Local wall-clock nanoseconds since midnight.
+    pub nanoseconds: i64,
+    /// Timezone offset from UTC in seconds.
+    pub tz_offset_seconds: i64,
+}
+
+impl BoltTime {
+    /// Creates a new `BoltTime`.
+    pub const fn new(nanoseconds: i64, tz_offset_seconds: i64) -> Self {
+        Self {
+            nanoseconds,
+            tz_offset_seconds,
+        }
+    }
+
+    /// Formats the time as an ISO-8601 string (`"HH:MM:SS.ffffff+HH:MM"`).
+    pub fn to_iso_string(&self) -> String {
+        let (h, m, s, nanos) = nanos_to_hmsn(self.nanoseconds);
+        let offset = format_tz_offset(self.tz_offset_seconds);
+        format_time_string(h, m, s, nanos, Some(&offset))
+    }
+}
+
+/// Represents a local wall-clock Time without timezone decoded from a Bolt PackStream structure (`tag = 0x74`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BoltLocalTime {
+    /// Nanoseconds since midnight.
+    pub nanoseconds: i64,
+}
+
+impl BoltLocalTime {
+    /// Creates a new `BoltLocalTime`.
+    pub const fn new(nanoseconds: i64) -> Self {
+        Self { nanoseconds }
+    }
+
+    /// Formats the local time as an ISO-8601 string (`"HH:MM:SS.ffffff"`).
+    pub fn to_iso_string(&self) -> String {
+        let (h, m, s, nanos) = nanos_to_hmsn(self.nanoseconds);
+        format_time_string(h, m, s, nanos, None)
+    }
+}
+
+/// Represents a DateTime with timezone offset decoded from a Bolt PackStream structure (`tag = 0x49` or `0x46`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BoltDateTime {
+    /// Seconds since Unix epoch (1970-01-01T00:00:00Z).
+    pub seconds: i64,
+    /// Sub-second nanoseconds (0..999_999_999).
+    pub nanoseconds: i64,
+    /// Timezone offset from UTC in seconds.
+    pub tz_offset_seconds: i64,
+}
+
+impl BoltDateTime {
+    /// Creates a new `BoltDateTime`.
+    pub const fn new(seconds: i64, nanoseconds: i64, tz_offset_seconds: i64) -> Self {
+        Self {
+            seconds,
+            nanoseconds,
+            tz_offset_seconds,
+        }
+    }
+
+    /// Formats the datetime as an ISO-8601 string (`"YYYY-MM-DDTHH:MM:SS.ffffff+HH:MM"`).
+    pub fn to_iso_string(&self) -> String {
+        let wall_secs = self.seconds.saturating_add(self.tz_offset_seconds);
+        let days = wall_secs.div_euclid(86400);
+        let secs_of_day = wall_secs.rem_euclid(86400);
+        let (y, m, d) = days_to_ymd(days);
+        let h = (secs_of_day / 3600) as u32;
+        let min = ((secs_of_day % 3600) / 60) as u32;
+        let sec = (secs_of_day % 60) as u32;
+        let offset = format_tz_offset(self.tz_offset_seconds);
+        let time_part = format_time_string(h, min, sec, self.nanoseconds as u32, Some(&offset));
+        format!("{:04}-{:02}-{:02}T{}", y, m, d, time_part)
+    }
+}
+
+/// Represents a local DateTime without timezone decoded from a Bolt PackStream structure (`tag = 0x64`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BoltLocalDateTime {
+    /// Seconds since local epoch (1970-01-01T00:00:00).
+    pub seconds: i64,
+    /// Sub-second nanoseconds (0..999_999_999).
+    pub nanoseconds: i64,
+}
+
+impl BoltLocalDateTime {
+    /// Creates a new `BoltLocalDateTime`.
+    pub const fn new(seconds: i64, nanoseconds: i64) -> Self {
+        Self {
+            seconds,
+            nanoseconds,
+        }
+    }
+
+    /// Formats the local datetime as an ISO-8601 string (`"YYYY-MM-DDTHH:MM:SS.ffffff"`).
+    pub fn to_iso_string(&self) -> String {
+        let days = self.seconds.div_euclid(86400);
+        let secs_of_day = self.seconds.rem_euclid(86400);
+        let (y, m, d) = days_to_ymd(days);
+        let h = (secs_of_day / 3600) as u32;
+        let min = ((secs_of_day % 3600) / 60) as u32;
+        let sec = (secs_of_day % 60) as u32;
+        let time_part = format_time_string(h, min, sec, self.nanoseconds as u32, None);
+        format!("{:04}-{:02}-{:02}T{}", y, m, d, time_part)
+    }
+}
+
+/// Represents a DateTime with named IANA timezone decoded from a Bolt PackStream structure (`tag = 0x4A`, `0x66`, or `0x69`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BoltDateTimeZoneId {
+    /// Seconds since Unix epoch (1970-01-01T00:00:00Z).
+    pub seconds: i64,
+    /// Sub-second nanoseconds (0..999_999_999).
+    pub nanoseconds: i64,
+    /// IANA timezone identifier (e.g. "Europe/Berlin", "America/New_York", "UTC").
+    pub zone_id: String,
+}
+
+impl BoltDateTimeZoneId {
+    /// Creates a new `BoltDateTimeZoneId`.
+    pub fn new(seconds: i64, nanoseconds: i64, zone_id: impl Into<String>) -> Self {
+        Self {
+            seconds,
+            nanoseconds,
+            zone_id: zone_id.into(),
+        }
+    }
+
+    /// Formats the datetime as an ISO-8601 extended string with zone ID (`"YYYY-MM-DDTHH:MM:SS.ffffff[Zone/Id]"`).
+    pub fn to_iso_string(&self) -> String {
+        let days = self.seconds.div_euclid(86400);
+        let secs_of_day = self.seconds.rem_euclid(86400);
+        let (y, m, d) = days_to_ymd(days);
+        let h = (secs_of_day / 3600) as u32;
+        let min = ((secs_of_day % 3600) / 60) as u32;
+        let sec = (secs_of_day % 60) as u32;
+        let time_part = format_time_string(h, min, sec, self.nanoseconds as u32, Some("Z"));
+        format!("{:04}-{:02}-{:02}T{}[{}]", y, m, d, time_part, self.zone_id)
+    }
+}
+
+/// Represents an ISO-8601 Duration decoded from a Bolt PackStream structure (`tag = 0x45`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BoltDuration {
+    /// Number of months.
+    pub months: i64,
+    /// Number of days.
+    pub days: i64,
+    /// Number of seconds.
+    pub seconds: i64,
+    /// Sub-second nanoseconds (0..999_999_999).
+    pub nanoseconds: i64,
+}
+
+impl BoltDuration {
+    /// Creates a new `BoltDuration`.
+    pub const fn new(months: i64, days: i64, seconds: i64, nanoseconds: i64) -> Self {
+        Self {
+            months,
+            days,
+            seconds,
+            nanoseconds,
+        }
+    }
+
+    /// Formats the duration as an ISO-8601 duration string (e.g. `"P1Y2M3DT4H5M6S"`).
+    pub fn to_iso_string(&self) -> String {
+        if self.months == 0 && self.days == 0 && self.seconds == 0 && self.nanoseconds == 0 {
+            return "PT0S".to_string();
+        }
+        let mut res = String::from("P");
+        if self.months != 0 {
+            let years = self.months / 12;
+            let rem_months = self.months % 12;
+            if years != 0 {
+                res.push_str(&format!("{}Y", years));
+            }
+            if rem_months != 0 || years == 0 {
+                res.push_str(&format!("{}M", rem_months));
+            }
+        }
+        if self.days != 0 {
+            res.push_str(&format!("{}D", self.days));
+        }
+        if self.seconds != 0 || self.nanoseconds != 0 {
+            res.push('T');
+            let h = self.seconds / 3600;
+            let m = (self.seconds % 3600) / 60;
+            let s = self.seconds % 60;
+            if h != 0 {
+                res.push_str(&format!("{}H", h));
+            }
+            if m != 0 {
+                res.push_str(&format!("{}M", m));
+            }
+            if s != 0 || self.nanoseconds != 0 || (h == 0 && m == 0) {
+                if self.nanoseconds != 0 {
+                    let nanos = self.nanoseconds.unsigned_abs();
+                    if nanos.is_multiple_of(1_000_000) {
+                        res.push_str(&format!("{}.{:03}S", s, nanos / 1_000_000));
+                    } else if nanos.is_multiple_of(1_000) {
+                        res.push_str(&format!("{}.{:06}S", s, nanos / 1_000));
+                    } else {
+                        res.push_str(&format!("{}.{:09}S", s, nanos));
+                    }
+                } else {
+                    res.push_str(&format!("{}S", s));
+                }
+            }
+        }
+        res
+    }
+}
+
 /// Represents any dynamically typed value supported by Bolt PackStream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BoltValue {
@@ -141,6 +478,20 @@ pub enum BoltValue {
     Point2D(BoltPoint2D),
     /// 3D spatial point structure (`0x59`).
     Point3D(BoltPoint3D),
+    /// Calendar Date structure (`0x44`).
+    Date(BoltDate),
+    /// Time with timezone offset structure (`0x54`).
+    Time(BoltTime),
+    /// Local time without timezone structure (`0x74`).
+    LocalTime(BoltLocalTime),
+    /// DateTime with timezone offset structure (`0x49` or `0x46`).
+    DateTime(BoltDateTime),
+    /// Local DateTime without timezone structure (`0x64`).
+    LocalDateTime(BoltLocalDateTime),
+    /// DateTime with named IANA timezone ID structure (`0x4A`, `0x66`, or `0x69`).
+    DateTimeZoneId(BoltDateTimeZoneId),
+    /// ISO-8601 Duration structure (`0x45`).
+    Duration(BoltDuration),
 }
 
 impl From<bool> for BoltValue {
@@ -245,6 +596,13 @@ impl PackStream {
             BoltValue::Path(path) => Self::encode_path(path, buf),
             BoltValue::Point2D(point) => Self::encode_point2d(point, buf),
             BoltValue::Point3D(point) => Self::encode_point3d(point, buf),
+            BoltValue::Date(date) => Self::encode_date(date, buf),
+            BoltValue::Time(time) => Self::encode_time(time, buf),
+            BoltValue::LocalTime(ltime) => Self::encode_local_time(ltime, buf),
+            BoltValue::DateTime(dt) => Self::encode_datetime(dt, buf),
+            BoltValue::LocalDateTime(ldt) => Self::encode_local_datetime(ldt, buf),
+            BoltValue::DateTimeZoneId(dtz) => Self::encode_datetime_zone_id(dtz, buf),
+            BoltValue::Duration(dur) => Self::encode_duration(dur, buf),
         }
     }
 
@@ -660,6 +1018,58 @@ impl PackStream {
         Self::encode_structure(0x59, &fields, buf);
     }
 
+    fn encode_date(date: &BoltDate, buf: &mut BytesMut) {
+        Self::encode_structure(0x44, &[BoltValue::Integer(date.days)], buf);
+    }
+
+    fn encode_time(time: &BoltTime, buf: &mut BytesMut) {
+        let fields = [
+            BoltValue::Integer(time.nanoseconds),
+            BoltValue::Integer(time.tz_offset_seconds),
+        ];
+        Self::encode_structure(0x54, &fields, buf);
+    }
+
+    fn encode_local_time(ltime: &BoltLocalTime, buf: &mut BytesMut) {
+        Self::encode_structure(0x74, &[BoltValue::Integer(ltime.nanoseconds)], buf);
+    }
+
+    fn encode_datetime(dt: &BoltDateTime, buf: &mut BytesMut) {
+        let fields = [
+            BoltValue::Integer(dt.seconds),
+            BoltValue::Integer(dt.nanoseconds),
+            BoltValue::Integer(dt.tz_offset_seconds),
+        ];
+        Self::encode_structure(0x49, &fields, buf);
+    }
+
+    fn encode_local_datetime(ldt: &BoltLocalDateTime, buf: &mut BytesMut) {
+        let fields = [
+            BoltValue::Integer(ldt.seconds),
+            BoltValue::Integer(ldt.nanoseconds),
+        ];
+        Self::encode_structure(0x64, &fields, buf);
+    }
+
+    fn encode_datetime_zone_id(dtz: &BoltDateTimeZoneId, buf: &mut BytesMut) {
+        let fields = [
+            BoltValue::Integer(dtz.seconds),
+            BoltValue::Integer(dtz.nanoseconds),
+            BoltValue::String(dtz.zone_id.clone()),
+        ];
+        Self::encode_structure(0x4A, &fields, buf);
+    }
+
+    fn encode_duration(dur: &BoltDuration, buf: &mut BytesMut) {
+        let fields = [
+            BoltValue::Integer(dur.months),
+            BoltValue::Integer(dur.days),
+            BoltValue::Integer(dur.seconds),
+            BoltValue::Integer(dur.nanoseconds),
+        ];
+        Self::encode_structure(0x45, &fields, buf);
+    }
+
     // --- Decoders ---
 
     fn decode_string_payload(len: usize, buf: &mut Bytes) -> Result<BoltValue> {
@@ -766,6 +1176,13 @@ impl PackStream {
             0x50 => Self::decode_path_structure(fields),
             0x58 => Self::decode_point2d_structure(fields),
             0x59 => Self::decode_point3d_structure(fields),
+            0x44 => Self::decode_date_structure(fields),
+            0x54 => Self::decode_time_structure(fields),
+            0x74 => Self::decode_local_time_structure(fields),
+            0x49 | 0x46 => Self::decode_datetime_structure(fields, tag),
+            0x64 => Self::decode_local_datetime_structure(fields),
+            0x4A | 0x66 | 0x69 => Self::decode_datetime_zone_id_structure(fields, tag),
+            0x45 => Self::decode_duration_structure(fields),
             _ => Ok(BoltValue::Structure { tag, fields }),
         }
     }
@@ -979,6 +1396,138 @@ impl PackStream {
         };
         Ok(BoltValue::Point3D(BoltPoint3D { srid, x, y, z }))
     }
+
+    fn decode_date_structure(fields: Vec<BoltValue>) -> Result<BoltValue> {
+        if fields.is_empty() {
+            return Ok(BoltValue::Structure { tag: 0x44, fields });
+        }
+        let days = match fields.first() {
+            Some(BoltValue::Integer(d)) => *d,
+            _ => return Ok(BoltValue::Structure { tag: 0x44, fields }),
+        };
+        Ok(BoltValue::Date(BoltDate { days }))
+    }
+
+    fn decode_time_structure(fields: Vec<BoltValue>) -> Result<BoltValue> {
+        if fields.len() < 2 {
+            return Ok(BoltValue::Structure { tag: 0x54, fields });
+        }
+        let nanoseconds = match fields.first() {
+            Some(BoltValue::Integer(n)) => *n,
+            _ => return Ok(BoltValue::Structure { tag: 0x54, fields }),
+        };
+        let tz_offset_seconds = match fields.get(1) {
+            Some(BoltValue::Integer(tz)) => *tz,
+            _ => return Ok(BoltValue::Structure { tag: 0x54, fields }),
+        };
+        Ok(BoltValue::Time(BoltTime {
+            nanoseconds,
+            tz_offset_seconds,
+        }))
+    }
+
+    fn decode_local_time_structure(fields: Vec<BoltValue>) -> Result<BoltValue> {
+        if fields.is_empty() {
+            return Ok(BoltValue::Structure { tag: 0x74, fields });
+        }
+        let nanoseconds = match fields.first() {
+            Some(BoltValue::Integer(n)) => *n,
+            _ => return Ok(BoltValue::Structure { tag: 0x74, fields }),
+        };
+        Ok(BoltValue::LocalTime(BoltLocalTime { nanoseconds }))
+    }
+
+    fn decode_datetime_structure(fields: Vec<BoltValue>, tag: u8) -> Result<BoltValue> {
+        if fields.len() < 3 {
+            return Ok(BoltValue::Structure { tag, fields });
+        }
+        let seconds = match fields.first() {
+            Some(BoltValue::Integer(s)) => *s,
+            _ => return Ok(BoltValue::Structure { tag, fields }),
+        };
+        let nanoseconds = match fields.get(1) {
+            Some(BoltValue::Integer(n)) => *n,
+            _ => return Ok(BoltValue::Structure { tag, fields }),
+        };
+        let tz_offset_seconds = match fields.get(2) {
+            Some(BoltValue::Integer(tz)) => *tz,
+            _ => return Ok(BoltValue::Structure { tag, fields }),
+        };
+        Ok(BoltValue::DateTime(BoltDateTime {
+            seconds,
+            nanoseconds,
+            tz_offset_seconds,
+        }))
+    }
+
+    fn decode_local_datetime_structure(fields: Vec<BoltValue>) -> Result<BoltValue> {
+        if fields.len() < 2 {
+            return Ok(BoltValue::Structure { tag: 0x64, fields });
+        }
+        let seconds = match fields.first() {
+            Some(BoltValue::Integer(s)) => *s,
+            _ => return Ok(BoltValue::Structure { tag: 0x64, fields }),
+        };
+        let nanoseconds = match fields.get(1) {
+            Some(BoltValue::Integer(n)) => *n,
+            _ => return Ok(BoltValue::Structure { tag: 0x64, fields }),
+        };
+        Ok(BoltValue::LocalDateTime(BoltLocalDateTime {
+            seconds,
+            nanoseconds,
+        }))
+    }
+
+    fn decode_datetime_zone_id_structure(fields: Vec<BoltValue>, tag: u8) -> Result<BoltValue> {
+        if fields.len() < 3 {
+            return Ok(BoltValue::Structure { tag, fields });
+        }
+        let seconds = match fields.first() {
+            Some(BoltValue::Integer(s)) => *s,
+            _ => return Ok(BoltValue::Structure { tag, fields }),
+        };
+        let nanoseconds = match fields.get(1) {
+            Some(BoltValue::Integer(n)) => *n,
+            _ => return Ok(BoltValue::Structure { tag, fields }),
+        };
+        let zone_id = match fields.get(2) {
+            Some(BoltValue::String(z)) => z.clone(),
+            _ => return Ok(BoltValue::Structure { tag, fields }),
+        };
+        Ok(BoltValue::DateTimeZoneId(BoltDateTimeZoneId {
+            seconds,
+            nanoseconds,
+            zone_id,
+        }))
+    }
+
+    fn decode_duration_structure(fields: Vec<BoltValue>) -> Result<BoltValue> {
+        if fields.len() < 4 {
+            return Ok(BoltValue::Structure { tag: 0x45, fields });
+        }
+        let months = match fields.first() {
+            Some(BoltValue::Integer(m)) => *m,
+            _ => return Ok(BoltValue::Structure { tag: 0x45, fields }),
+        };
+        let days = match fields.get(1) {
+            Some(BoltValue::Integer(d)) => *d,
+            _ => return Ok(BoltValue::Structure { tag: 0x45, fields }),
+        };
+        let seconds = match fields.get(2) {
+            Some(BoltValue::Integer(s)) => *s,
+            _ => return Ok(BoltValue::Structure { tag: 0x45, fields }),
+        };
+        let nanoseconds = match fields.get(3) {
+            Some(BoltValue::Integer(n)) => *n,
+            _ => return Ok(BoltValue::Structure { tag: 0x45, fields }),
+        };
+        Ok(BoltValue::Duration(BoltDuration {
+            months,
+            days,
+            seconds,
+            nanoseconds,
+        }))
+    }
 }
 
 impl BoltValue {
@@ -1018,6 +1567,62 @@ impl BoltValue {
     pub fn as_list(&self) -> Option<&[BoltValue]> {
         match self {
             Self::List(l) => Some(l.as_slice()),
+            _ => None,
+        }
+    }
+
+    /// Returns the date if this is a `BoltValue::Date`.
+    pub fn as_date(&self) -> Option<&BoltDate> {
+        match self {
+            Self::Date(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// Returns the time if this is a `BoltValue::Time`.
+    pub fn as_time(&self) -> Option<&BoltTime> {
+        match self {
+            Self::Time(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Returns the local time if this is a `BoltValue::LocalTime`.
+    pub fn as_local_time(&self) -> Option<&BoltLocalTime> {
+        match self {
+            Self::LocalTime(lt) => Some(lt),
+            _ => None,
+        }
+    }
+
+    /// Returns the datetime if this is a `BoltValue::DateTime`.
+    pub fn as_datetime(&self) -> Option<&BoltDateTime> {
+        match self {
+            Self::DateTime(dt) => Some(dt),
+            _ => None,
+        }
+    }
+
+    /// Returns the local datetime if this is a `BoltValue::LocalDateTime`.
+    pub fn as_local_datetime(&self) -> Option<&BoltLocalDateTime> {
+        match self {
+            Self::LocalDateTime(ldt) => Some(ldt),
+            _ => None,
+        }
+    }
+
+    /// Returns the datetime with zone id if this is a `BoltValue::DateTimeZoneId`.
+    pub fn as_datetime_zone_id(&self) -> Option<&BoltDateTimeZoneId> {
+        match self {
+            Self::DateTimeZoneId(dtz) => Some(dtz),
+            _ => None,
+        }
+    }
+
+    /// Returns the duration if this is a `BoltValue::Duration`.
+    pub fn as_duration(&self) -> Option<&BoltDuration> {
+        match self {
+            Self::Duration(dur) => Some(dur),
             _ => None,
         }
     }
