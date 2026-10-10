@@ -3,6 +3,20 @@
 ## [0.4.0-alpha.6] - 2026-10-02
 
 ### Added
+- **Vector Index DDL, VectorProperty & Vector Search Engine (#112)**:
+  - Added declarative `VectorProperty(dimensions, similarity, index_name)` descriptor to `voyager_ogm.models` and exported in `voyager_ogm`.
+  - Implemented multi-dialect vector index DDL compilation in `voyager-core`:
+    - **Neo4j 5+**: `CREATE VECTOR INDEX {index_name} IF NOT EXISTS FOR (n:{label}) ON (n.{prop}) OPTIONS {indexConfig: {`vector.dimensions`: {dims}, `vector.similarity_function`: '{sim}'}}` and `DROP INDEX {index_name} IF EXISTS` (with deliberate degradation of `dot` to `cosine`).
+    - **Memgraph (v3.2+)**: `CREATE VECTOR INDEX {index_name} ON :{label}({prop}) WITH CONFIG {"dimension": {dims}, "capacity": 10000, "metric": "{metric}"};` and `DROP VECTOR INDEX {index_name};`.
+    - **DuckDB (vss)**: `CREATE INDEX IF NOT EXISTS {index_name} ON "{table}" USING HNSW ("{prop}") WITH (metric = '{metric}');` and `DROP INDEX IF EXISTS {index_name};`.
+    - **FalkorDB**: `CREATE VECTOR INDEX FOR (n:{label}) ON (n.{prop}) OPTIONS {dimension: {dims}, similarityFunction: '{sim}'}` (with native `ip` inner-product support) and `DROP VECTOR INDEX FOR (n:{label}) ON (n.{prop})`.
+    - **Apache AGE / PostgreSQL (pgvector)**: `CREATE INDEX IF NOT EXISTS {index_name} ON ag_catalog."{label}" USING hnsw ({prop} {opclass});` and `DROP INDEX IF EXISTS {index_name};`.
+  - Centralized canonical vector index naming authority (`canonical_vector_index_name`) shared between Rust emitters and Python `Query.vector_search` to guarantee exact identifier alignment.
+  - Centralized dialect metric resolution on `VectorSimilarity::metric_for(DdlDialect)` in `voyager-core`.
+  - Added strict dimensions validation in PyO3 raising loud `ValueError` on malformed or non-positive values.
+  - Added full schema lifecycle support via `Session.apply_schema()`, `AsyncSession.apply_schema()`, and `SchemaManager.apply_schema()` / `apply_schema_async()` with automatic model discovery from `SchemaRegistry.global_registry()` when models are omitted.
+  - Added vector search query builder `Query.vector_search(index_or_model, query_vector, k=10, yield_node="node", yield_score="score", dialect="cypher")` supporting Neo4j (`db.index.vector.queryNodes`) and live-verified 3-argument Memgraph (`vector_search.search`), plus convenience execution wrappers `Session.vector_search()` and `AsyncSession.vector_search()`.
+  - Added `parse_field_descriptor` BTree default inference when `index=True` is specified without explicit `index_type`.
 - **Temporal Types Normalization, Timezone Semantics & Dialect Roundtrips (#115)**:
   - Added Bolt wire protocol PackStream typed structures for all 7 temporal specifications (`BoltDate`, `BoltTime`, `BoltLocalTime`, `BoltDateTime`, `BoltLocalDateTime`, `BoltDateTimeZoneId`, `BoltDuration`) in `voyager-net`.
   - Implemented Howard Hinnant Gregorian calendar algorithms without external dependencies for $O(1)$ day-to-YMD and YMD-to-day calculations.

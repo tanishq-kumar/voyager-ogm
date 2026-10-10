@@ -387,6 +387,102 @@ class Query:
         return q
 
     @hybridmethod
+    def vector_search(
+        self: Any,
+        index_or_model: str | Any,
+        query_vector: list[float],
+        k: int = 10,
+        yield_node: str = "node",
+        yield_score: str = "score",
+        dialect: str = "cypher",
+    ) -> Query:
+        """Starts or appends a vector index search procedure call.
+
+        For openCypher / Neo4j 5+, emits:
+            `CALL db.index.vector.queryNodes(index_name, k, query_vector) YIELD node, score`
+
+        For Memgraph (v3.2+), emits:
+            `CALL vector_search.search(index_name, k, query_vector) YIELD node, similarity AS score`
+
+        Args:
+            index_or_model: Target vector index name (str) or a Node model class declaring a VectorProperty.
+            query_vector: Dense embedding vector to query with (list of floats).
+            k: Top-k nearest neighbors to retrieve (default: 10).
+            yield_node: Yielded variable alias for the matched entity node (default: 'node').
+            yield_score: Yielded variable alias for the similarity score (default: 'score').
+            dialect: Query dialect ('cypher', 'memgraph', etc.). Defaults to 'cypher'.
+
+        Returns:
+            The Query instance chained with the vector search procedure call and YIELD clause.
+        """
+        index_name: str
+        if isinstance(index_or_model, str):
+            from voyager_ogm.schema import SchemaRegistry, canonical_vector_index_name
+
+            reg = SchemaRegistry.global_registry()
+            node_schema = reg.get_node(index_or_model) if reg.has_node(index_or_model) else None
+            if node_schema is not None:
+                vec_field = next(
+                    (
+                        f
+                        for f in node_schema.get("fields", {}).values()
+                        if f.get("index_type") == "VECTOR" or f.get("dimensions") is not None
+                    ),
+                    None,
+                )
+                if vec_field and vec_field.get("index_name"):
+                    index_name = vec_field["index_name"]
+                elif vec_field:
+                    primary_lbl = node_schema.get("labels", [index_or_model])[0]
+                    index_name = canonical_vector_index_name(
+                        primary_lbl, vec_field["name"], dialect=dialect
+                    )
+                else:
+                    index_name = index_or_model
+            else:
+                index_name = index_or_model
+        elif hasattr(index_or_model, "_schema_fields"):
+            from voyager_ogm.schema import canonical_vector_index_name
+
+            fields = getattr(index_or_model, "_schema_fields", {})
+            vec_prop = None
+            for f in fields.values():
+                if getattr(f, "index_type", None) == "VECTOR" or hasattr(f, "dimensions"):
+                    vec_prop = f
+                    break
+            if vec_prop is not None and getattr(vec_prop, "index_name", None):
+                index_name = vec_prop.index_name
+            else:
+                label = getattr(
+                    index_or_model,
+                    "_cached_label",
+                    getattr(index_or_model, "__name__", "Node"),
+                )
+                prop_name = getattr(vec_prop, "name", "embedding") if vec_prop else "embedding"
+                index_name = canonical_vector_index_name(label, prop_name, dialect=dialect)
+        else:
+            index_name = str(index_or_model)
+
+        if isinstance(self, type):
+            q = self()
+        else:
+            q = self
+
+        node_yield = f"node AS {yield_node}" if yield_node != "node" else "node"
+        if dialect.lower() == "memgraph":
+            score_yield = (
+                f"similarity AS {yield_score}" if yield_score != "similarity" else "similarity"
+            )
+            return q.call("vector_search.search", index_name, k, query_vector).yield_(
+                node_yield, score_yield
+            )
+
+        score_yield = f"score AS {yield_score}" if yield_score != "score" else "score"
+        return q.call("db.index.vector.queryNodes", index_name, k, query_vector).yield_(
+            node_yield, score_yield
+        )
+
+    @hybridmethod
     def unwind(self: Any, batch_param: str, alias: str = "row") -> Query:
         """Starts or appends an UNWIND batch expansion clause: `UNWIND $batch_param AS alias`.
 

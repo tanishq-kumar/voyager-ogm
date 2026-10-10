@@ -161,6 +161,7 @@ class Field(Generic[_T]):
         primary_key: bool = False,
         nullable: bool = True,
         type_annotation: Any = None,
+        index_type: str | None = None,
     ) -> None:
         """Initializes a graph property Field descriptor.
 
@@ -173,6 +174,7 @@ class Field(Generic[_T]):
             primary_key: Convenience flag setting both unique=True and index=True.
             nullable: Whether the field can store null values. Defaults to True (False for primary_key).
             type_annotation: Python type annotation class.
+            index_type: Optional index type string ('BTREE', 'TEXT', 'POINT', 'VECTOR').
         """
         self.default = (
             default
@@ -185,6 +187,7 @@ class Field(Generic[_T]):
         self.unique = unique or primary_key
         self.index = index or primary_key
         self.nullable = False if primary_key else nullable
+        self.index_type = index_type or ("BTREE" if self.index else None)
         if isinstance(type_annotation, str) and type_annotation in _BUILTIN_TYPES:
             self.type_annotation = _BUILTIN_TYPES[type_annotation]
         else:
@@ -258,6 +261,81 @@ class Field(Generic[_T]):
         """
         name = self.name or ""
         return BoundField("", name).distance_to(other)
+
+
+class VectorProperty(Field):
+    """Declarative vector embedding property descriptor for Vector Search and GraphRAG.
+
+    Attributes:
+        dimensions: Dimensionality of the embedding vector (e.g. 1536, 768, 384).
+        similarity: Distance/similarity metric ('cosine', 'euclidean', 'dot').
+        index_name: Optional explicit index identifier name.
+
+    Example:
+        >>> class Article(Node):
+        ...     __labels__ = ["Article"]
+        ...     id: str = Field(primary_key=True)
+        ...     embedding: list[float] = VectorProperty(
+        ...         dimensions=1536,
+        ...         similarity="cosine",
+        ...         index_name="article_embedding_idx"
+        ...     )
+    """
+
+    def __init__(
+        self,
+        dimensions: int,
+        similarity: str = "cosine",
+        *,
+        index_name: str | None = None,
+        default: Any = ...,
+        default_factory: Any = None,
+        name: str | None = None,
+        nullable: bool = True,
+        type_annotation: Any = None,
+    ) -> None:
+        """Initializes a VectorProperty descriptor.
+
+        Args:
+            dimensions: Dimensionality of the vector (positive integer).
+            similarity: Distance/similarity function ('cosine', 'euclidean', 'dot').
+            index_name: Optional custom index name.
+            default: Default fallback value for this property.
+            default_factory: Zero-argument callable producing a default value.
+            name: Custom database property name (defaults to attribute name).
+            nullable: Whether the property can store null values. Defaults to True.
+            type_annotation: Python type annotation class (defaults to list[float]).
+
+        Raises:
+            ValueError: If dimensions is not a positive integer or similarity is invalid.
+        """
+        if not isinstance(dimensions, int) or dimensions <= 0:
+            raise ValueError(f"Vector dimensions must be a positive integer, got {dimensions!r}")
+        sim_norm = similarity.strip().lower()
+        if sim_norm not in ("cosine", "euclidean", "l2", "dot", "inner_product", "ip"):
+            raise ValueError(
+                f"Unsupported vector similarity metric '{similarity}'. "
+                "Expected 'cosine', 'euclidean' (or 'l2'), or 'dot' (or 'inner_product')."
+            )
+        canonical_sim = (
+            "euclidean"
+            if sim_norm == "l2"
+            else ("dot" if sim_norm in ("inner_product", "ip") else sim_norm)
+        )
+        self.dimensions = dimensions
+        self.similarity = canonical_sim
+        self.index_name = index_name
+        super().__init__(
+            default=default,
+            default_factory=default_factory,
+            name=name,
+            unique=False,
+            index=True,
+            primary_key=False,
+            nullable=nullable,
+            type_annotation=type_annotation or list[float],
+            index_type="VECTOR",
+        )
 
 
 class BoundField(Expression):

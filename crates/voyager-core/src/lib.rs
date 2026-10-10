@@ -48,9 +48,10 @@ pub use emitters::{
 pub use error::{Error, Result};
 pub use optimizer::{AstOptimizer, OptimizationLevel};
 pub use schema::{
-    ConformanceDiagnostic, ConformanceReport, ConstraintType, DiagnosticSeverity, FieldDescriptor,
-    FieldType, IndexType, NodeSchema, RelationshipSchema, SchemaRegistry, SchemaSnapshot,
-    global_schema_registry,
+    ConformanceDiagnostic, ConformanceReport, ConstraintType, DEFAULT_MEMGRAPH_VECTOR_CAPACITY,
+    DEFAULT_VECTOR_DIMENSIONS, DdlDialect, DiagnosticSeverity, FieldDescriptor, FieldType,
+    IndexType, NodeSchema, RelationshipSchema, SchemaRegistry, SchemaSnapshot, VectorIndexConfig,
+    VectorSimilarity, canonical_vector_index_name, global_schema_registry,
 };
 pub use topology::{GraphTopology, TopologyEdge, TopologyNode};
 pub use transaction::{

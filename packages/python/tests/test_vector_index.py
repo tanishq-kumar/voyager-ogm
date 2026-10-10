@@ -1,0 +1,489 @@
+"""Unit and integration tests for Vector Index DDL, VectorProperty, and Vector Search."""
+
+from __future__ import annotations
+
+import os
+
+import pytest
+from conftest import is_port_open
+from voyager_ogm import Field, Node, Query, SchemaManager, Session, VectorProperty
+from voyager_ogm.schema import SchemaRegistry
+from voyager_ogm.session import AsyncSession
+
+
+class TestVectorPropertyValidation:
+    """Tests parameter validation and canonicalization for VectorProperty."""
+
+    def test_dimensions_positive_integer_required(self) -> None:
+        with pytest.raises(ValueError, match="Vector dimensions must be a positive integer"):
+            VectorProperty(dimensions=0)
+
+        with pytest.raises(ValueError, match="Vector dimensions must be a positive integer"):
+            VectorProperty(dimensions=-10)
+
+        with pytest.raises(ValueError, match="Vector dimensions must be a positive integer"):
+            VectorProperty(dimensions="1536")  # type: ignore[arg-type]
+
+    def test_similarity_metric_validation_and_canonicalization(self) -> None:
+        # Valid metrics
+        vp_cos = VectorProperty(dimensions=1536, similarity="cosine")
+        assert vp_cos.similarity == "cosine"
+
+        vp_euc = VectorProperty(dimensions=1536, similarity="euclidean")
+        assert vp_euc.similarity == "euclidean"
+
+        vp_l2 = VectorProperty(dimensions=1536, similarity="l2")
+        assert vp_l2.similarity == "euclidean"
+
+        vp_dot = VectorProperty(dimensions=1536, similarity="dot")
+        assert vp_dot.similarity == "dot"
+
+        vp_ip = VectorProperty(dimensions=1536, similarity="inner_product")
+        assert vp_ip.similarity == "dot"
+
+        vp_ip2 = VectorProperty(dimensions=1536, similarity="ip")
+        assert vp_ip2.similarity == "dot"
+
+        # Invalid metrics
+        with pytest.raises(ValueError, match="Unsupported vector similarity metric 'manhattan'"):
+            VectorProperty(dimensions=1536, similarity="manhattan")
+
+    def test_default_descriptor_attributes(self) -> None:
+        vp = VectorProperty(dimensions=768, similarity="cosine", index_name="custom_idx")
+        assert vp.dimensions == 768
+        assert vp.similarity == "cosine"
+        assert vp.index_name == "custom_idx"
+        assert vp.index is True
+        assert vp.unique is False
+        assert vp.primary_key is False
+        assert vp.nullable is True
+        assert vp.index_type == "VECTOR"
+
+
+class TestVectorModelReflectionAndDDL:
+    """Tests model reflection and multi-dialect DDL generation for vector indices."""
+
+    def test_model_reflection(self) -> None:
+        class ArticleNode(Node):
+            title: str = Field(unique=True)
+            embedding: list[float] = VectorProperty(
+                dimensions=1536, similarity="cosine", index_name="article_embed_idx"
+            )
+
+        reg = SchemaRegistry.global_registry()
+        node_spec = reg.get_node("ArticleNode")
+        assert node_spec is not None
+        fields = node_spec["fields"]
+        assert "embedding" in fields
+        emb = fields["embedding"]
+        assert emb["index_type"] == "VECTOR"
+        assert emb["dimensions"] == 1536
+        assert emb["similarity"] == "cosine"
+        assert emb["index_name"] == "article_embed_idx"
+
+    def test_neo4j_cypher_ddl_generation(self) -> None:
+        class Document(Node):
+            title: str = Field(index=True)
+            vector: list[float] = VectorProperty(
+                dimensions=1536, similarity="cosine", index_name="doc_vec_idx"
+            )
+
+        # Create DDL
+        stmts = SchemaManager.generate_index_ddl(Document, dialect="cypher")
+        assert len(stmts) == 2  # secondary index + vector index
+        vec_stmt = next(s for s in stmts if "doc_vec_idx" in s)
+        assert (
+            vec_stmt
+            == "CREATE VECTOR INDEX doc_vec_idx IF NOT EXISTS FOR (n:Document) ON (n.vector) OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}"
+        )
+
+        # Drop DDL
+        drop_stmts = SchemaManager.generate_drop_index_ddl(Document, dialect="cypher")
+        assert any("DROP INDEX doc_vec_idx IF EXISTS" in s for s in drop_stmts)
+
+    def test_falkordb_ddl_generation(self) -> None:
+        class DocumentFalkor(Node):
+            text: str = Field(index=True)
+            vec: list[float] = VectorProperty(
+                dimensions=128, similarity="cosine", index_name="falkor_vec_idx"
+            )
+
+        # Create DDL
+        stmts = SchemaManager.generate_index_ddl(DocumentFalkor, dialect="falkordb")
+        vec_stmt = next(s for s in stmts if "VECTOR" in s)
+        assert (
+            vec_stmt
+            == "CREATE VECTOR INDEX FOR (n:DocumentFalkor) ON (n.vec) OPTIONS {dimension: 128, similarityFunction: 'cosine'}"
+        )
+
+        # FalkorDB natively supports inner product ('ip')
+        class DocFalkorDot(Node):
+            vec: list[float] = VectorProperty(dimensions=128, similarity="dot")
+
+        stmts_dot = SchemaManager.generate_index_ddl(DocFalkorDot, dialect="falkordb")
+        vec_stmt_dot = next(s for s in stmts_dot if "VECTOR" in s)
+        assert (
+            vec_stmt_dot
+            == "CREATE VECTOR INDEX FOR (n:DocFalkorDot) ON (n.vec) OPTIONS {dimension: 128, similarityFunction: 'ip'}"
+        )
+
+        # Neo4j openCypher deliberately degrades dot/inner_product to cosine
+        stmts_cypher_dot = SchemaManager.generate_index_ddl(DocFalkorDot, dialect="cypher")
+        vec_stmt_cypher = next(s for s in stmts_cypher_dot if "VECTOR" in s)
+        assert "`vector.similarity_function`: 'cosine'" in vec_stmt_cypher
+
+        # Drop DDL
+        drop_stmts = SchemaManager.generate_drop_index_ddl(DocumentFalkor, dialect="falkordb")
+        assert any(s == "DROP VECTOR INDEX FOR (n:DocumentFalkor) ON (n.vec)" for s in drop_stmts)
+
+    def test_apache_age_and_postgres_ddl_generation(self) -> None:
+        class ItemAge(Node):
+            title: str = Field(index=True)
+            feature: list[float] = VectorProperty(
+                dimensions=384, similarity="euclidean", index_name="item_feature_idx"
+            )
+
+        # Apache AGE DDL
+        age_stmts = SchemaManager.generate_index_ddl(ItemAge, dialect="age")
+        assert any(
+            'CREATE INDEX IF NOT EXISTS item_feature_idx ON ag_catalog."ItemAge" USING hnsw (feature vector_l2_ops);'
+            in s
+            for s in age_stmts
+        )
+
+        age_drop = SchemaManager.generate_drop_index_ddl(ItemAge, dialect="age")
+        assert any("DROP INDEX IF EXISTS item_feature_idx;" in s for s in age_drop)
+
+        # PostgreSQL DDL
+        sql_stmts = SchemaManager.generate_index_ddl(ItemAge, dialect="postgres")
+        assert any(
+            'CREATE INDEX IF NOT EXISTS item_feature_idx ON "itemage" USING hnsw ("feature" vector_l2_ops);'
+            in s
+            for s in sql_stmts
+        )
+
+    def test_memgraph_ddl_generation(self) -> None:
+        class DocumentMemgraph(Node):
+            title: str = Field(index=True)
+            embedding: list[float] = VectorProperty(
+                dimensions=1536, similarity="cosine", index_name="mg_vec_idx"
+            )
+
+        stmts = SchemaManager.generate_index_ddl(DocumentMemgraph, dialect="memgraph")
+        assert len(stmts) == 2
+        vec_stmt = next(s for s in stmts if "VECTOR" in s)
+        assert (
+            vec_stmt
+            == 'CREATE VECTOR INDEX mg_vec_idx ON :DocumentMemgraph(embedding) WITH CONFIG {"dimension": 1536, "capacity": 10000, "metric": "cos"};'
+        )
+        scalar_stmt = next(s for s in stmts if "VECTOR" not in s)
+        assert scalar_stmt == "CREATE INDEX ON :DocumentMemgraph(title);"
+
+        drop_stmts = SchemaManager.generate_drop_index_ddl(DocumentMemgraph, dialect="memgraph")
+        assert "DROP VECTOR INDEX mg_vec_idx;" in drop_stmts
+        assert "DROP INDEX ON :DocumentMemgraph(title);" in drop_stmts
+
+    def test_duckdb_ddl_generation(self) -> None:
+        class DocumentDuck(Node):
+            title: str = Field(index=True)
+            vec: list[float] = VectorProperty(
+                dimensions=256, similarity="cosine", index_name="duck_vec_idx"
+            )
+
+        stmts = SchemaManager.generate_index_ddl(DocumentDuck, dialect="duckdb")
+        assert len(stmts) == 2
+        vec_stmt = next(s for s in stmts if "HNSW" in s)
+        assert (
+            vec_stmt
+            == 'CREATE INDEX IF NOT EXISTS duck_vec_idx ON "documentduck" USING HNSW ("vec") WITH (metric = \'cosine\');'
+        )
+        scalar_stmt = next(s for s in stmts if "HNSW" not in s)
+        assert (
+            scalar_stmt
+            == 'CREATE INDEX IF NOT EXISTS idx_documentduck_title ON "documentduck" ("title");'
+        )
+
+        drop_stmts = SchemaManager.generate_drop_index_ddl(DocumentDuck, dialect="duckdb")
+        assert "DROP INDEX IF EXISTS duck_vec_idx;" in drop_stmts
+        assert "DROP INDEX IF EXISTS idx_documentduck_title;" in drop_stmts
+
+    def test_auto_generated_index_name_when_omitted(self) -> None:
+        class Chunk(Node):
+            content: str = Field()
+            embedding: list[float] = VectorProperty(dimensions=768)
+
+        stmts = SchemaManager.generate_index_ddl(Chunk, dialect="cypher")
+        vec_stmt = next(s for s in stmts if "VECTOR" in s)
+        assert (
+            vec_stmt
+            == "CREATE VECTOR INDEX index_chunk_embedding IF NOT EXISTS FOR (n:Chunk) ON (n.embedding) OPTIONS {indexConfig: {`vector.dimensions`: 768, `vector.similarity_function`: 'cosine'}}"
+        )
+
+    def test_mixed_case_canonical_index_naming(self) -> None:
+        class MyDoc(Node):
+            Embedding: list[float] = VectorProperty(dimensions=1536)
+
+        # DDL uses canonical name index_mydoc_embedding
+        stmts = SchemaManager.generate_index_ddl(MyDoc, dialect="cypher")
+        assert any("index_mydoc_embedding" in s for s in stmts)
+
+        # Query.vector_search resolves MyDoc model to index_mydoc_embedding
+        q = Query.vector_search(MyDoc, [0.1, 0.2], k=5)
+        compiled = q.compile()
+        assert compiled.parameters["p0"] == "index_mydoc_embedding"
+
+        # SchemaRegistry lookup by model name string resolves to canonical name
+        q_str = Query.vector_search("MyDoc", [0.1, 0.2], k=5)
+        compiled_str = q_str.compile()
+        assert compiled_str.parameters["p0"] == "index_mydoc_embedding"
+
+    def test_pyo3_dimensions_validation(self) -> None:
+        # SchemaManager passing raw spec dict with invalid dimensions raises ValueError loudly
+        with pytest.raises(ValueError, match="Vector dimensions must be a positive integer"):
+            SchemaManager.generate_index_ddl(
+                {"name": "BadDoc", "fields": {"vec": {"index_type": "VECTOR", "dimensions": 0}}},
+                dialect="cypher",
+            )
+
+        with pytest.raises(ValueError, match="Invalid vector dimensions"):
+            SchemaManager.generate_index_ddl(
+                {
+                    "name": "BadDocStr",
+                    "fields": {"vec": {"index_type": "VECTOR", "dimensions": "invalid"}},
+                },
+                dialect="cypher",
+            )
+
+
+class TestVectorSearchQuery:
+    """Tests Query.vector_search builder for openCypher/Neo4j 5+ and Memgraph."""
+
+    def test_vector_search_with_model(self) -> None:
+        class ArticleModel(Node):
+            headline: str = Field()
+            vec: list[float] = VectorProperty(dimensions=1536, index_name="art_vec_idx")
+
+        q = Query.vector_search(ArticleModel, [0.1, 0.2, 0.3], k=5)
+        compiled = q.compile()
+        assert (
+            compiled.statement == "CALL db.index.vector.queryNodes($p0, $p1, $p2) YIELD node, score"
+        )
+        assert compiled.parameters == {"p0": "art_vec_idx", "p1": 5, "p2": [0.1, 0.2, 0.3]}
+
+    def test_memgraph_vector_search_query(self) -> None:
+        class MgItem(Node):
+            vec: list[float] = VectorProperty(dimensions=1536, index_name="mg_item_idx")
+
+        q = Query.vector_search(MgItem, [0.1, 0.2], k=5, dialect="memgraph")
+        compiled = q.compile()
+        assert (
+            compiled.statement
+            == "CALL vector_search.search($p0, $p1, $p2) YIELD node, similarity AS score"
+        )
+        assert compiled.parameters == {"p0": "mg_item_idx", "p1": 5, "p2": [0.1, 0.2]}
+
+        # With custom yields
+        q_custom = Query.vector_search(
+            "custom_idx",
+            [0.3, 0.4],
+            k=10,
+            yield_node="matched",
+            yield_score="sim",
+            dialect="memgraph",
+        )
+        compiled_custom = q_custom.compile()
+        assert (
+            compiled_custom.statement
+            == "CALL vector_search.search($p0, $p1, $p2) YIELD node AS matched, similarity AS sim"
+        )
+
+    def test_vector_search_with_index_name(self) -> None:
+        q = Query.vector_search(
+            "custom_vector_index",
+            [0.5, 0.6],
+            k=20,
+            yield_node="matched_doc",
+            yield_score="similarity_score",
+        )
+        compiled = q.compile()
+        assert (
+            compiled.statement
+            == "CALL db.index.vector.queryNodes($p0, $p1, $p2) YIELD node AS matched_doc, score AS similarity_score"
+        )
+        assert compiled.parameters == {"p0": "custom_vector_index", "p1": 20, "p2": [0.5, 0.6]}
+
+
+class TestSessionSchemaLifecycle:
+    """Tests session.apply_schema() and session.vector_search() execution."""
+
+    def test_sync_session_apply_schema_and_vector_search(self) -> None:
+        class Blog(Node):
+            slug: str = Field(unique=True)
+            embedding: list[float] = VectorProperty(dimensions=1536, index_name="blog_idx")
+
+        session = Session()
+        applied = session.apply_schema(Blog)
+        assert len(applied) == 2
+        assert any("CREATE CONSTRAINT" in s for s in applied)
+        assert any("CREATE VECTOR INDEX blog_idx" in s for s in applied)
+
+        # Vector search execution via Session facade
+        res = session.vector_search(Blog, [0.1] * 1536, k=5)
+        assert res is not None
+
+    def test_sync_session_apply_schema_all_models(self) -> None:
+        class AutoRegistered(Node):
+            key: str = Field(unique=True)
+            embed: list[float] = VectorProperty(dimensions=512)
+
+        session = Session()
+        applied = session.apply_schema()
+        assert len(applied) >= 2
+        assert any("AutoRegistered" in s and "VECTOR" in s for s in applied)
+
+    @pytest.mark.asyncio
+    async def test_async_session_apply_schema_and_vector_search(self) -> None:
+        class AsyncBlog(Node):
+            slug: str = Field(unique=True)
+            embedding: list[float] = VectorProperty(dimensions=768, index_name="async_blog_idx")
+
+        session = AsyncSession()
+        applied = await session.apply_schema(AsyncBlog)
+        assert len(applied) == 2
+        assert any("async_blog_idx" in s for s in applied)
+
+        res = await session.vector_search(AsyncBlog, [0.1] * 768, k=3)
+        assert res is not None
+
+
+class TestLiveEngineVectorIntegration:
+    """Integration tests against live Neo4j and FalkorDB instances when reachable."""
+
+    @pytest.mark.skipif(
+        not is_port_open("127.0.0.1", 7687),
+        reason="Neo4j container not reachable on port 7687",
+    )
+    def test_live_neo4j_vector_lifecycle(self) -> None:
+        pytest.importorskip("neo4j")
+
+        neo4j_uri = os.environ.get("NEO4J_URI", "bolt://127.0.0.1:7687")
+        neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
+        neo4j_pass = os.environ.get("NEO4J_PASSWORD", "voyagerpass123")
+
+        from neo4j import GraphDatabase
+
+        driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_pass))
+        try:
+            session = Session(driver, dialect="cypher")
+
+            class LiveArticle(Node):
+                title: str = Field(index=True)
+                embedding: list[float] = VectorProperty(
+                    dimensions=4, similarity="cosine", index_name="live_art_vec_idx"
+                )
+
+            try:
+                # 1. Apply vector index
+                applied = session.apply_schema(LiveArticle)
+                assert any("live_art_vec_idx" in s for s in applied)
+
+                # 2. Insert test node with vector
+                session.execute(
+                    "MERGE (a:LiveArticle {title: 'Voyager Vector Test'}) "
+                    "SET a.embedding = [1.0, 0.0, 0.0, 0.0]"
+                )
+
+                # 3. Query via vector_search
+                results = session.vector_search(
+                    LiveArticle, [1.0, 0.0, 0.0, 0.0], k=1, yield_node="n", yield_score="score"
+                )
+                assert len(results) > 0
+                first = results[0]
+                assert "score" in first
+                assert first["score"] > 0.99  # Identical cosine similarity
+            finally:
+                # 4. Clean up
+                try:
+                    session.execute("MATCH (a:LiveArticle) DETACH DELETE a")
+                    session.drop_indexes(LiveArticle)
+                except Exception:
+                    pass
+        finally:
+            driver.close()
+
+    @pytest.mark.skipif(
+        not is_port_open("127.0.0.1", 6379),
+        reason="FalkorDB container not reachable on port 6379",
+    )
+    def test_live_falkordb_vector_lifecycle(self) -> None:
+        pytest.importorskip("falkordb")
+        from falkordb import FalkorDB
+
+        client = FalkorDB(host="127.0.0.1", port=6379)
+        g = client.select_graph("voyager_vector_test")
+        session = Session(g, dialect="falkordb")
+
+        class FalkorLiveDoc(Node):
+            title: str = Field(index=True)
+            vector: list[float] = VectorProperty(
+                dimensions=128, similarity="cosine", index_name="falkor_doc_vec_idx"
+            )
+
+        try:
+            # Apply schema creates vector index on FalkorDB
+            applied = session.create_indexes(FalkorLiveDoc)
+            assert any("CREATE VECTOR INDEX" in s for s in applied)
+        finally:
+            try:
+                session.drop_indexes(FalkorLiveDoc)
+            except Exception:
+                pass
+
+    @pytest.mark.skipif(
+        not is_port_open("127.0.0.1", 7688),
+        reason="Memgraph container not reachable on port 7688",
+    )
+    def test_live_memgraph_vector_lifecycle(self) -> None:
+        pytest.importorskip("neo4j")
+        from neo4j import GraphDatabase
+
+        uri = os.environ.get("MEMGRAPH_URI", "bolt://127.0.0.1:7688")
+        driver = GraphDatabase.driver(uri, auth=("", ""))
+        try:
+            session = Session(driver, dialect="memgraph")
+
+            class LiveMgArticle(Node):
+                title: str = Field(index=True)
+                embedding: list[float] = VectorProperty(
+                    dimensions=4, similarity="cosine", index_name="live_mg_art_vec_idx"
+                )
+
+            try:
+                # 1. Apply vector index
+                applied = session.apply_schema(LiveMgArticle)
+                assert any("live_mg_art_vec_idx" in s for s in applied)
+                assert any("CREATE VECTOR INDEX live_mg_art_vec_idx" in s for s in applied)
+
+                # 2. Insert test node with vector
+                session.execute(
+                    "CREATE (a:LiveMgArticle {title: 'Voyager Memgraph Vector', embedding: [1.0, 0.0, 0.0, 0.0]})"
+                )
+
+                # 3. Query via vector_search
+                results = session.vector_search(
+                    LiveMgArticle, [1.0, 0.0, 0.0, 0.0], k=1, yield_node="n", yield_score="score"
+                )
+                records = results.all()
+                assert len(records) > 0
+                first = records[0]
+                assert "score" in first
+                assert first["score"] > 0.99  # Identical cosine similarity
+            finally:
+                # 4. Clean up
+                try:
+                    session.execute("MATCH (a:LiveMgArticle) DETACH DELETE a")
+                    session.drop_indexes(LiveMgArticle)
+                except Exception:
+                    pass
+        finally:
+            driver.close()

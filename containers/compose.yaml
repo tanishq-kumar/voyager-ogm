@@ -27,15 +27,16 @@ services:
       retries: 10
       start_period: 10s
 
-  # Memgraph In-Memory Graph Database (Bolt Protocol)
+  # Memgraph In-Memory Graph Database (Bolt Protocol with MAGE)
   memgraph:
-    image: memgraph/memgraph:latest
+    image: memgraph/memgraph-mage:latest
     container_name: voyager-memgraph
     ports:
       - "7688:7687"
     environment:
       - --bolt-port=7687
       - --log-level=WARNING
+      - --experimental-enabled=vector-search
     volumes:
       - memgraph_data:/var/lib/memgraph
       - memgraph_logs:/var/log/memgraph

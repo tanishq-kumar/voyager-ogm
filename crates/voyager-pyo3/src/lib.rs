@@ -26,8 +26,9 @@ use voyager_core::builder::QueryBuilder;
 use voyager_core::emitters::{AgeEmitter, CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
 use voyager_core::optimizer::{AstOptimizer, OptimizationLevel};
 use voyager_core::schema::{
-    ConformanceReport, FieldDescriptor, FieldType, IndexType, NodeSchema, RelationshipSchema,
-    SchemaRegistry, global_schema_registry,
+    ConformanceReport, DEFAULT_VECTOR_DIMENSIONS, DdlDialect, FieldDescriptor, FieldType,
+    IndexType, NodeSchema, RelationshipSchema, SchemaRegistry, VectorIndexConfig, VectorSimilarity,
+    canonical_vector_index_name as core_canonical_vector_index_name, global_schema_registry,
 };
 use voyager_core::topology::GraphTopology;
 use voyager_core::visitor::{AstVisitor, CompiledQuery};
@@ -2944,9 +2945,13 @@ fn parse_field_descriptor(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<FieldD
             .and_then(|v| v.extract::<bool>().ok())
             .unwrap_or(false);
 
-        let index_type = if let Some(it) = dict.get_item("index_type")? {
+        let mut index_type = if let Some(it) = dict.get_item("index_type")? {
             if it.is_none() {
-                None
+                if indexed {
+                    Some(IndexType::BTree)
+                } else {
+                    None
+                }
             } else {
                 let it_str: String = it.extract()?;
                 indexed = true;
@@ -2984,6 +2989,53 @@ fn parse_field_descriptor(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<FieldD
             None
         };
 
+        let mut vector_config = None;
+        if index_type == Some(IndexType::Vector)
+            || dict.contains("dimensions")?
+            || dict.contains("vector_config")?
+        {
+            let dims: usize = if let Some(d) = dict.get_item("dimensions")? {
+                if d.is_none() {
+                    DEFAULT_VECTOR_DIMENSIONS
+                } else {
+                    match d.extract::<usize>() {
+                        Ok(v) if v > 0 => v,
+                        Ok(_) => {
+                            return Err(PyValueError::new_err(
+                                "Vector dimensions must be a positive integer greater than 0",
+                            ));
+                        }
+                        Err(e) => {
+                            return Err(PyValueError::new_err(format!(
+                                "Invalid vector dimensions: expected positive integer, got: {e}"
+                            )));
+                        }
+                    }
+                }
+            } else {
+                DEFAULT_VECTOR_DIMENSIONS
+            };
+            let sim_str: String = if let Some(s) = dict.get_item("similarity")? {
+                s.extract().unwrap_or_else(|_| "cosine".to_string())
+            } else {
+                "cosine".to_string()
+            };
+            let similarity =
+                VectorSimilarity::parse_str(&sim_str).unwrap_or(VectorSimilarity::Cosine);
+            let idx_name: Option<String> = if let Some(n) = dict.get_item("index_name")? {
+                if n.is_none() { None } else { n.extract().ok() }
+            } else {
+                None
+            };
+            indexed = true;
+            index_type = Some(IndexType::Vector);
+            vector_config = Some(VectorIndexConfig {
+                dimensions: dims,
+                similarity,
+                index_name: idx_name,
+            });
+        }
+
         Ok(FieldDescriptor {
             name: field_name,
             field_type,
@@ -2993,6 +3045,7 @@ fn parse_field_descriptor(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<FieldD
             indexed,
             index_type,
             default_value,
+            vector_config,
         })
     } else {
         let field_name = if obj.hasattr("name")? {
@@ -3043,10 +3096,14 @@ fn parse_field_descriptor(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<FieldD
             !primary_key
         };
 
-        let index_type = if obj.hasattr("index_type")? {
+        let mut index_type = if obj.hasattr("index_type")? {
             let it = obj.getattr("index_type")?;
             if it.is_none() {
-                None
+                if indexed {
+                    Some(IndexType::BTree)
+                } else {
+                    None
+                }
             } else {
                 let it_str: String = it.extract()?;
                 indexed = true;
@@ -3092,6 +3149,61 @@ fn parse_field_descriptor(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<FieldD
             None
         };
 
+        let mut vector_config = None;
+        if index_type == Some(IndexType::Vector)
+            || obj.hasattr("dimensions")?
+            || obj.hasattr("vector_config")?
+        {
+            let dims: usize = if obj.hasattr("dimensions")? {
+                let d = obj.getattr("dimensions")?;
+                if d.is_none() {
+                    DEFAULT_VECTOR_DIMENSIONS
+                } else {
+                    match d.extract::<usize>() {
+                        Ok(v) if v > 0 => v,
+                        Ok(_) => {
+                            return Err(PyValueError::new_err(
+                                "Vector dimensions must be a positive integer greater than 0",
+                            ));
+                        }
+                        Err(e) => {
+                            return Err(PyValueError::new_err(format!(
+                                "Invalid vector dimensions: expected positive integer, got: {e}"
+                            )));
+                        }
+                    }
+                }
+            } else {
+                DEFAULT_VECTOR_DIMENSIONS
+            };
+            let sim_str: String = if obj.hasattr("similarity")? {
+                let s = obj.getattr("similarity")?;
+                if s.is_none() {
+                    "cosine".to_string()
+                } else {
+                    s.extract::<String>()
+                        .unwrap_or_else(|_| "cosine".to_string())
+                }
+            } else {
+                "cosine".to_string()
+            };
+            let similarity =
+                VectorSimilarity::parse_str(&sim_str).unwrap_or(VectorSimilarity::Cosine);
+            let idx_name: Option<String> = if obj.hasattr("index_name")? {
+                let n = obj.getattr("index_name")?;
+                if n.is_none() { None } else { n.extract().ok() }
+            } else {
+                None
+            };
+            indexed = true;
+            index_type = Some(IndexType::Vector);
+            vector_config = Some(VectorIndexConfig {
+                dimensions: dims,
+                similarity,
+                index_name: idx_name,
+            });
+        }
+
         Ok(FieldDescriptor {
             name: field_name,
             field_type,
@@ -3101,6 +3213,7 @@ fn parse_field_descriptor(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<FieldD
             indexed,
             index_type,
             default_value,
+            vector_config,
         })
     }
 }
@@ -3125,6 +3238,15 @@ fn field_descriptor_to_py<'py>(
         dict.set_item("default_value", literal_to_py(dv, py)?)?;
     } else {
         dict.set_item("default_value", py.None())?;
+    }
+    if let Some(ref vc) = field.vector_config {
+        dict.set_item("dimensions", vc.dimensions)?;
+        dict.set_item("similarity", vc.similarity.as_str())?;
+        if let Some(ref iname) = vc.index_name {
+            dict.set_item("index_name", iname)?;
+        } else {
+            dict.set_item("index_name", py.None())?;
+        }
     }
     Ok(dict)
 }
@@ -4150,6 +4272,21 @@ fn emit_rel_drop_constraint_ddl(
         .map_err(to_py_schema_err)
 }
 
+/// Returns the canonical deterministic vector index name for a given label and property across dialects.
+///
+/// Note: Defaults to Cypher naming (`index_{label.to_lowercase()}_{prop.to_lowercase()}`)
+/// if `dialect` is omitted or unrecognized.
+#[pyfunction]
+#[pyo3(signature = (label, prop, dialect=None))]
+fn canonical_vector_index_name(label: &str, prop: &str, dialect: Option<&str>) -> PyResult<String> {
+    let ddl_dialect = if let Some(d) = dialect {
+        DdlDialect::parse_str(d).unwrap_or(DdlDialect::Cypher)
+    } else {
+        DdlDialect::Cypher
+    };
+    Ok(core_canonical_vector_index_name(label, prop, ddl_dialect))
+}
+
 /// Native Python module definition for `_voyager_rs`.
 #[pymodule]
 fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -4184,6 +4321,7 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(emit_rel_drop_index_ddl, m)?)?;
     m.add_function(wrap_pyfunction!(emit_node_drop_constraint_ddl, m)?)?;
     m.add_function(wrap_pyfunction!(emit_rel_drop_constraint_ddl, m)?)?;
+    m.add_function(wrap_pyfunction!(canonical_vector_index_name, m)?)?;
     m.add_class::<PyQueryBuilder>()?;
     m.add_class::<PyAstExpr>()?;
     m.add_class::<PyArrowStream>()?;

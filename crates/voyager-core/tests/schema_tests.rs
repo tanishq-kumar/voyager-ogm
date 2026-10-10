@@ -317,3 +317,255 @@ fn test_validate_topology_conformance() {
             .contains("defined as directed in schema, but traversed undirected")
     );
 }
+
+#[test]
+fn test_vector_index_schema_and_ddl_emission() {
+    use voyager_core::{
+        FieldDescriptor, FieldType, IndexType, NodeSchema, VectorSimilarity,
+        emit_node_drop_index_ddl, emit_node_index_ddl,
+    };
+
+    assert_eq!(
+        VectorSimilarity::parse_str("cosine"),
+        Some(VectorSimilarity::Cosine)
+    );
+    assert_eq!(
+        VectorSimilarity::parse_str("euclidean"),
+        Some(VectorSimilarity::Euclidean)
+    );
+    assert_eq!(
+        VectorSimilarity::parse_str("l2"),
+        Some(VectorSimilarity::Euclidean)
+    );
+    assert_eq!(
+        VectorSimilarity::parse_str("dot"),
+        Some(VectorSimilarity::Dot)
+    );
+    assert_eq!(
+        VectorSimilarity::parse_str("inner_product"),
+        Some(VectorSimilarity::Dot)
+    );
+    assert_eq!(
+        VectorSimilarity::parse_str("ip"),
+        Some(VectorSimilarity::Dot)
+    );
+    assert_eq!(VectorSimilarity::parse_str("unknown"), None);
+
+    let vec_field =
+        FieldDescriptor::new("embedding", FieldType::List(Box::new(FieldType::Float64)))
+            .with_vector_index(
+                1536,
+                VectorSimilarity::Cosine,
+                Some("art_vec_idx".to_string()),
+            );
+
+    assert!(vec_field.is_vector_index());
+    assert_eq!(vec_field.index_type, Some(IndexType::Vector));
+    let cfg = vec_field.vector_config.as_ref().unwrap();
+    assert_eq!(cfg.dimensions, 1536);
+    assert_eq!(cfg.similarity, VectorSimilarity::Cosine);
+    assert_eq!(cfg.index_name.as_deref(), Some("art_vec_idx"));
+
+    let schema = NodeSchema::new("Article", vec!["Article".to_string()])
+        .with_field(FieldDescriptor::new("title", FieldType::String).indexed())
+        .with_field(vec_field);
+
+    // 1. Cypher DDL (Neo4j 5+)
+    let cypher_create = emit_node_index_ddl(&schema, "cypher").unwrap();
+    assert_eq!(cypher_create.len(), 2);
+    assert!(
+        cypher_create.iter().any(|s| s.contains("CREATE VECTOR INDEX art_vec_idx IF NOT EXISTS FOR (n:Article) ON (n.embedding) OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}"))
+    );
+    let cypher_drop = emit_node_drop_index_ddl(&schema, "cypher").unwrap();
+    assert!(
+        cypher_drop
+            .iter()
+            .any(|s| s.contains("DROP INDEX art_vec_idx IF EXISTS"))
+    );
+
+    // 2. FalkorDB DDL
+    let falkor_create = emit_node_index_ddl(&schema, "falkordb").unwrap();
+    assert!(
+        falkor_create.iter().any(|s| s.contains("CREATE VECTOR INDEX FOR (n:Article) ON (n.embedding) OPTIONS {dimension: 1536, similarityFunction: 'cosine'}"))
+    );
+    let falkor_drop = emit_node_drop_index_ddl(&schema, "falkordb").unwrap();
+    assert!(
+        falkor_drop
+            .iter()
+            .any(|s| s.contains("DROP VECTOR INDEX FOR (n:Article) ON (n.embedding)"))
+    );
+
+    // 3. Apache AGE DDL
+    let age_create = emit_node_index_ddl(&schema, "age").unwrap();
+    assert!(
+        age_create.iter().any(|s| s.contains("CREATE INDEX IF NOT EXISTS art_vec_idx ON ag_catalog.\"Article\" USING hnsw (embedding vector_cosine_ops);"))
+    );
+    let age_drop = emit_node_drop_index_ddl(&schema, "age").unwrap();
+    assert!(
+        age_drop
+            .iter()
+            .any(|s| s.contains("DROP INDEX IF EXISTS art_vec_idx;"))
+    );
+
+    // 4. PostgreSQL / SQL DDL
+    let sql_create = emit_node_index_ddl(&schema, "postgres").unwrap();
+    assert!(
+        sql_create.iter().any(|s| s.contains("CREATE INDEX IF NOT EXISTS art_vec_idx ON \"article\" USING hnsw (\"embedding\" vector_cosine_ops);"))
+    );
+    let sql_drop = emit_node_drop_index_ddl(&schema, "postgres").unwrap();
+    assert!(
+        sql_drop
+            .iter()
+            .any(|s| s.contains("DROP INDEX IF EXISTS art_vec_idx;"))
+    );
+
+    // 5. Memgraph DDL
+    let memgraph_create = emit_node_index_ddl(&schema, "memgraph").unwrap();
+    assert_eq!(memgraph_create.len(), 2);
+    assert!(
+        memgraph_create.iter().any(|s| s.contains("CREATE VECTOR INDEX art_vec_idx ON :Article(embedding) WITH CONFIG {\"dimension\": 1536, \"capacity\": 10000, \"metric\": \"cos\"};"))
+    );
+    assert!(
+        memgraph_create
+            .iter()
+            .any(|s| s.contains("CREATE INDEX ON :Article(title);"))
+    );
+    let memgraph_drop = emit_node_drop_index_ddl(&schema, "memgraph").unwrap();
+    assert!(
+        memgraph_drop
+            .iter()
+            .any(|s| s.contains("DROP VECTOR INDEX art_vec_idx;"))
+    );
+    assert!(
+        memgraph_drop
+            .iter()
+            .any(|s| s.contains("DROP INDEX ON :Article(title);"))
+    );
+
+    // 6. DuckDB DDL
+    let duckdb_create = emit_node_index_ddl(&schema, "duckdb").unwrap();
+    assert_eq!(duckdb_create.len(), 2);
+    assert!(
+        duckdb_create.iter().any(|s| s.contains("CREATE INDEX IF NOT EXISTS art_vec_idx ON \"article\" USING HNSW (\"embedding\") WITH (metric = 'cosine');"))
+    );
+    assert!(duckdb_create.iter().any(|s| {
+        s.contains("CREATE INDEX IF NOT EXISTS idx_article_title ON \"article\" (\"title\");")
+    }));
+    let duckdb_drop = emit_node_drop_index_ddl(&schema, "duckdb").unwrap();
+    assert!(
+        duckdb_drop
+            .iter()
+            .any(|s| s.contains("DROP INDEX IF EXISTS art_vec_idx;"))
+    );
+    assert!(
+        duckdb_drop
+            .iter()
+            .any(|s| s.contains("DROP INDEX IF EXISTS idx_article_title;"))
+    );
+}
+
+#[test]
+fn test_vector_similarity_metric_for_and_canonical_naming() {
+    use voyager_core::{
+        DdlDialect, VectorSimilarity, canonical_vector_index_name, emit_node_index_ddl,
+    };
+
+    // 1. VectorSimilarity::metric_for consistency across dialects
+    assert_eq!(
+        VectorSimilarity::Cosine.metric_for(DdlDialect::Cypher),
+        "cosine"
+    );
+    assert_eq!(
+        VectorSimilarity::Euclidean.metric_for(DdlDialect::Cypher),
+        "euclidean"
+    );
+    assert_eq!(
+        VectorSimilarity::Dot.metric_for(DdlDialect::Cypher),
+        "cosine"
+    ); // Deliberate degradation
+
+    // FalkorDB supports 'ip' (inner product)
+    assert_eq!(
+        VectorSimilarity::Cosine.metric_for(DdlDialect::FalkorDb),
+        "cosine"
+    );
+    assert_eq!(
+        VectorSimilarity::Euclidean.metric_for(DdlDialect::FalkorDb),
+        "euclidean"
+    );
+    assert_eq!(VectorSimilarity::Dot.metric_for(DdlDialect::FalkorDb), "ip");
+
+    // Memgraph uses cos, l2, ip
+    assert_eq!(
+        VectorSimilarity::Cosine.metric_for(DdlDialect::Memgraph),
+        "cos"
+    );
+    assert_eq!(
+        VectorSimilarity::Euclidean.metric_for(DdlDialect::Memgraph),
+        "l2"
+    );
+    assert_eq!(VectorSimilarity::Dot.metric_for(DdlDialect::Memgraph), "ip");
+
+    // DuckDB vss uses cosine, l2sq, ip
+    assert_eq!(
+        VectorSimilarity::Cosine.metric_for(DdlDialect::DuckDb),
+        "cosine"
+    );
+    assert_eq!(
+        VectorSimilarity::Euclidean.metric_for(DdlDialect::DuckDb),
+        "l2sq"
+    );
+    assert_eq!(VectorSimilarity::Dot.metric_for(DdlDialect::DuckDb), "ip");
+
+    // SQL / AGE pgvector uses vector_cosine_ops, vector_l2_ops, vector_ip_ops
+    assert_eq!(
+        VectorSimilarity::Cosine.metric_for(DdlDialect::Sql),
+        "vector_cosine_ops"
+    );
+    assert_eq!(
+        VectorSimilarity::Euclidean.metric_for(DdlDialect::Sql),
+        "vector_l2_ops"
+    );
+    assert_eq!(
+        VectorSimilarity::Dot.metric_for(DdlDialect::Sql),
+        "vector_ip_ops"
+    );
+
+    // 2. canonical_vector_index_name consistency
+    assert_eq!(
+        canonical_vector_index_name("MyDoc", "Embedding", DdlDialect::Cypher),
+        "index_mydoc_embedding"
+    );
+    assert_eq!(
+        canonical_vector_index_name("MyDoc", "Embedding", DdlDialect::Memgraph),
+        "index_mydoc_embedding"
+    );
+    assert_eq!(
+        canonical_vector_index_name("MyDoc", "Embedding", DdlDialect::FalkorDb),
+        "index_mydoc_embedding"
+    );
+    assert_eq!(
+        canonical_vector_index_name("MyDoc", "Embedding", DdlDialect::DuckDb),
+        "idx_mydoc_embedding_vector"
+    );
+    assert_eq!(
+        canonical_vector_index_name("MyDoc", "Embedding", DdlDialect::Sql),
+        "idx_mydoc_embedding_vector"
+    );
+    assert_eq!(
+        canonical_vector_index_name("MyDoc", "Embedding", DdlDialect::Age),
+        "idx_mydoc_embedding_vector"
+    );
+
+    // 3. FalkorDB DDL with VectorSimilarity::Dot emits similarityFunction: 'ip'
+    let dot_schema = NodeSchema::new("MyDoc", vec!["MyDoc".to_string()]).with_field(
+        FieldDescriptor::new("vec", FieldType::List(Box::new(FieldType::Float64)))
+            .with_vector_index(256, VectorSimilarity::Dot, None),
+    );
+    let falkor_ddl = emit_node_index_ddl(&dot_schema, "falkordb").unwrap();
+    assert!(
+        falkor_ddl
+            .iter()
+            .any(|s| s.contains("similarityFunction: 'ip'"))
+    );
+}
