@@ -95,6 +95,12 @@ def _resolve_model_specs(
     """
     resolved: list[tuple[Literal["node", "rel"], Any]] = []
     reg = SchemaRegistry.global_registry()
+    if not models:
+        for ns in reg.node_schemas():
+            resolved.append(("node", ns))
+        for rs in reg.relationship_schemas():
+            resolved.append(("rel", rs))
+        return resolved
     for m in models:
         if isinstance(m, str):
             node_schema = reg.get_node(m)
@@ -476,6 +482,44 @@ class SchemaManager:
         for stmt in dropped:
             session.execute(stmt)
         return dropped
+
+    @classmethod
+    def apply_schema(
+        cls,
+        session: Session,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        include_type_constraints: bool = False,
+    ) -> list[str]:
+        """Applies declarative constraints and indexes (including vector indexes) to the session.
+
+        If no models are provided, discovers and applies schema for all models registered
+        in the global SchemaRegistry.
+
+        Args:
+            session: Active database session.
+            *models: Optional Node and Relationship model classes, schema dicts, or model names.
+            include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
+
+        Returns:
+            List of executed DDL query statement strings.
+        """
+        dialect = getattr(session, "dialect", getattr(session, "_dialect", "cypher"))
+        applied: list[str] = []
+        try:
+            c_stmts = cls.generate_constraint_ddl(
+                *models, dialect=dialect, include_type_constraints=include_type_constraints
+            )
+            for stmt in c_stmts:
+                session.execute(stmt)
+                applied.append(stmt)
+        except NotImplementedError:
+            pass
+
+        i_stmts = cls.generate_index_ddl(*models, dialect=dialect)
+        for stmt in i_stmts:
+            session.execute(stmt)
+            applied.append(stmt)
+        return applied
 
     @classmethod
     def create_all(

@@ -191,6 +191,75 @@ impl fmt::Display for IndexType {
     }
 }
 
+/// Supported vector similarity functions for Approximate Nearest Neighbor (ANN) search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum VectorSimilarity {
+    /// Cosine similarity (1 - cosine distance).
+    #[default]
+    Cosine,
+    /// Euclidean / L2 distance.
+    Euclidean,
+    /// Dot product / Inner product.
+    Dot,
+}
+
+impl VectorSimilarity {
+    /// Parses a case-insensitive similarity metric name.
+    pub fn parse_str(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "cosine" => Some(Self::Cosine),
+            "euclidean" | "l2" => Some(Self::Euclidean),
+            "dot" | "inner_product" | "ip" => Some(Self::Dot),
+            _ => None,
+        }
+    }
+
+    /// Returns the canonical similarity metric name.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Cosine => "cosine",
+            Self::Euclidean => "euclidean",
+            Self::Dot => "dot",
+        }
+    }
+}
+
+impl fmt::Display for VectorSimilarity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Configuration options for an Approximate Nearest Neighbor (ANN) vector index.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct VectorIndexConfig {
+    /// Dimensionality of the vector embeddings (e.g. 1536, 768, 384).
+    pub dimensions: usize,
+    /// Similarity distance metric (cosine, euclidean, dot).
+    pub similarity: VectorSimilarity,
+    /// Optional explicit index identifier name.
+    pub index_name: Option<String>,
+}
+
+impl VectorIndexConfig {
+    /// Creates a new vector index configuration with dimension and similarity.
+    pub fn new(dimensions: usize, similarity: VectorSimilarity) -> Self {
+        Self {
+            dimensions,
+            similarity,
+            index_name: None,
+        }
+    }
+
+    /// Sets an explicit index identifier name.
+    pub fn with_index_name(mut self, name: impl Into<String>) -> Self {
+        self.index_name = Some(name.into());
+        self
+    }
+}
+
 /// Metadata descriptor for a single entity property field.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -211,6 +280,8 @@ pub struct FieldDescriptor {
     pub index_type: Option<IndexType>,
     /// Optional default literal value.
     pub default_value: Option<LiteralValue>,
+    /// Optional configuration when backed by a vector index.
+    pub vector_config: Option<VectorIndexConfig>,
 }
 
 impl FieldDescriptor {
@@ -225,6 +296,7 @@ impl FieldDescriptor {
             indexed: false,
             index_type: None,
             default_value: None,
+            vector_config: None,
         }
     }
 
@@ -266,6 +338,28 @@ impl FieldDescriptor {
     pub fn with_default(mut self, val: LiteralValue) -> Self {
         self.default_value = Some(val);
         self
+    }
+
+    /// Marks this field as indexed with a vector index and specified dimensions and similarity.
+    pub fn with_vector_index(
+        mut self,
+        dimensions: usize,
+        similarity: VectorSimilarity,
+        index_name: Option<String>,
+    ) -> Self {
+        self.indexed = true;
+        self.index_type = Some(IndexType::Vector);
+        self.vector_config = Some(VectorIndexConfig {
+            dimensions,
+            similarity,
+            index_name,
+        });
+        self
+    }
+
+    /// Returns true if this field is indexed with a vector index.
+    pub fn is_vector_index(&self) -> bool {
+        self.indexed && self.index_type == Some(IndexType::Vector)
     }
 }
 

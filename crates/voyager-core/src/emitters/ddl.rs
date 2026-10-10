@@ -5,7 +5,9 @@
 //! directly from native `SchemaRegistry` metadata.
 
 use crate::error::{Error, Result};
-use crate::schema::{FieldDescriptor, FieldType, IndexType, NodeSchema, RelationshipSchema};
+use crate::schema::{
+    FieldDescriptor, FieldType, IndexType, NodeSchema, RelationshipSchema, VectorSimilarity,
+};
 
 /// Maps a canonical `FieldType` to the openCypher / Neo4j 5.x property type identifier.
 pub fn field_type_to_neo4j(ft: &FieldType) -> &'static str {
@@ -158,7 +160,11 @@ pub fn emit_cypher_node_ddl(node: &NodeSchema, include_type_constraints: bool) -
 
         // Secondary index (only if not already protected by unique constraint)
         if field.indexed && !field.unique && !field.primary_key {
-            let i_name = cypher_index_name(primary_label, db_name);
+            let i_name = field
+                .vector_config
+                .as_ref()
+                .and_then(|vc| vc.index_name.clone())
+                .unwrap_or_else(|| cypher_index_name(primary_label, db_name));
             match field.index_type {
                 Some(IndexType::Text) => {
                     statements.push(format!(
@@ -168,6 +174,21 @@ pub fn emit_cypher_node_ddl(node: &NodeSchema, include_type_constraints: bool) -
                 Some(IndexType::Point) => {
                     statements.push(format!(
                         "CREATE POINT INDEX {i_name} IF NOT EXISTS FOR (n:{primary_label}) ON (n.{db_name})"
+                    ));
+                }
+                Some(IndexType::Vector) => {
+                    let (dims, sim) = if let Some(ref vc) = field.vector_config {
+                        let sim_name = match vc.similarity {
+                            VectorSimilarity::Cosine => "cosine",
+                            VectorSimilarity::Euclidean => "euclidean",
+                            VectorSimilarity::Dot => "cosine",
+                        };
+                        (vc.dimensions, sim_name)
+                    } else {
+                        (1536, "cosine")
+                    };
+                    statements.push(format!(
+                        "CREATE VECTOR INDEX {i_name} IF NOT EXISTS FOR (n:{primary_label}) ON (n.{db_name}) OPTIONS {{indexConfig: {{`vector.dimensions`: {dims}, `vector.similarity_function`: '{sim}'}}}}"
                     ));
                 }
                 _ => {
@@ -243,7 +264,11 @@ pub fn emit_cypher_drop_node_ddl(node: &NodeSchema, include_type_constraints: bo
             statements.push(format!("DROP CONSTRAINT {c_name} IF EXISTS"));
         }
         if field.indexed {
-            let i_name = cypher_index_name(primary_label, db_name);
+            let i_name = field
+                .vector_config
+                .as_ref()
+                .and_then(|vc| vc.index_name.clone())
+                .unwrap_or_else(|| cypher_index_name(primary_label, db_name));
             statements.push(format!("DROP INDEX {i_name} IF EXISTS"));
         }
         if include_type_constraints {
@@ -687,12 +712,17 @@ pub enum DdlDialect {
     Sql,
     /// FalkorDB Redis Graph dialect.
     FalkorDb,
+    /// Apache AGE dialect (PostgreSQL ag_catalog tables).
+    Age,
 }
 
 /// Checks dialect compatibility for a given DDL operation, returning the dialect family.
 pub fn ensure_ddl_supported(dialect: &str, op: DdlOp) -> Result<DdlDialect> {
     let norm = dialect.to_ascii_lowercase();
     if norm == "age" || norm == "apache_age" {
+        if matches!(op, DdlOp::CreateIndex | DdlOp::DropIndex) {
+            return Ok(DdlDialect::Age);
+        }
         return Err(Error::UnsupportedDialect {
             dialect: "Apache AGE".to_string(),
             feature: format!(
@@ -738,8 +768,62 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
         DdlDialect::FalkorDb => {
             for field in node.fields.values() {
                 if is_pure_index_field(field) {
+                    if field.index_type == Some(IndexType::Vector) {
+                        let (dims, sim) = if let Some(ref vc) = field.vector_config {
+                            let s = match vc.similarity {
+                                VectorSimilarity::Cosine => "cosine",
+                                VectorSimilarity::Euclidean => "euclidean",
+                                VectorSimilarity::Dot => "cosine",
+                            };
+                            (vc.dimensions, s)
+                        } else {
+                            (1536, "cosine")
+                        };
+                        statements.push(format!(
+                            "CREATE VECTOR INDEX FOR (n:{primary_label}) ON (n.{}) OPTIONS {{dimension: {dims}, similarityFunction: '{sim}'}}",
+                            field.name
+                        ));
+                    } else {
+                        statements.push(format!(
+                            "CREATE INDEX FOR (n:{primary_label}) ON (n.{})",
+                            field.name
+                        ));
+                    }
+                }
+            }
+        }
+        DdlDialect::Age => {
+            let has_vector = node
+                .fields
+                .values()
+                .any(|f| f.index_type == Some(IndexType::Vector));
+            if !has_vector {
+                return Err(Error::UnsupportedDialect {
+                    dialect: "Apache AGE".to_string(),
+                    feature: "Cypher 'CREATE INDEX' queries. Indexes and constraints in Apache AGE must be defined directly on the underlying PostgreSQL relational tables (e.g. CREATE INDEX ON {graph}.\"Label\" USING gin (properties)).".to_string(),
+                });
+            }
+            for field in node.fields.values() {
+                if is_pure_index_field(field) && field.index_type == Some(IndexType::Vector) {
+                    let (opclass, custom_name) = if let Some(ref vc) = field.vector_config {
+                        let opc = match vc.similarity {
+                            VectorSimilarity::Cosine => "vector_cosine_ops",
+                            VectorSimilarity::Euclidean => "vector_l2_ops",
+                            VectorSimilarity::Dot => "vector_ip_ops",
+                        };
+                        (opc, vc.index_name.clone())
+                    } else {
+                        ("vector_cosine_ops", None)
+                    };
+                    let idx_name = custom_name.unwrap_or_else(|| {
+                        format!(
+                            "idx_{}_{}_vector",
+                            primary_label.to_ascii_lowercase(),
+                            field.name.to_ascii_lowercase()
+                        )
+                    });
                     statements.push(format!(
-                        "CREATE INDEX FOR (n:{primary_label}) ON (n.{})",
+                        "CREATE INDEX IF NOT EXISTS {idx_name} ON ag_catalog.\"{primary_label}\" USING hnsw ({} {opclass});",
                         field.name
                     ));
                 }
@@ -751,17 +835,39 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
             for field in node.fields.values() {
                 if is_pure_index_field(field) {
                     let q_col = escape_sql_ident(&field.name);
-                    statements.push(format!(
-                        "CREATE INDEX IF NOT EXISTS idx_{table}_{} ON {q_table} ({q_col});",
-                        field.name
-                    ));
+                    if field.index_type == Some(IndexType::Vector) {
+                        let (opclass, custom_name) = if let Some(ref vc) = field.vector_config {
+                            let opc = match vc.similarity {
+                                VectorSimilarity::Cosine => "vector_cosine_ops",
+                                VectorSimilarity::Euclidean => "vector_l2_ops",
+                                VectorSimilarity::Dot => "vector_ip_ops",
+                            };
+                            (opc, vc.index_name.clone())
+                        } else {
+                            ("vector_cosine_ops", None)
+                        };
+                        let idx_name = custom_name
+                            .unwrap_or_else(|| format!("idx_{table}_{}_vector", field.name));
+                        statements.push(format!(
+                            "CREATE INDEX IF NOT EXISTS {idx_name} ON {q_table} USING hnsw ({q_col} {opclass});"
+                        ));
+                    } else {
+                        statements.push(format!(
+                            "CREATE INDEX IF NOT EXISTS idx_{table}_{} ON {q_table} ({q_col});",
+                            field.name
+                        ));
+                    }
                 }
             }
         }
         DdlDialect::Cypher => {
             for field in node.fields.values() {
                 if is_pure_index_field(field) {
-                    let i_name = cypher_index_name(primary_label, &field.name);
+                    let i_name = field
+                        .vector_config
+                        .as_ref()
+                        .and_then(|vc| vc.index_name.clone())
+                        .unwrap_or_else(|| cypher_index_name(primary_label, &field.name));
                     match field.index_type {
                         Some(IndexType::Text) => {
                             statements.push(format!(
@@ -772,6 +878,22 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                         Some(IndexType::Point) => {
                             statements.push(format!(
                                 "CREATE POINT INDEX {i_name} IF NOT EXISTS FOR (n:{primary_label}) ON (n.{})",
+                                field.name
+                            ));
+                        }
+                        Some(IndexType::Vector) => {
+                            let (dims, sim) = if let Some(ref vc) = field.vector_config {
+                                let s = match vc.similarity {
+                                    VectorSimilarity::Cosine => "cosine",
+                                    VectorSimilarity::Euclidean => "euclidean",
+                                    VectorSimilarity::Dot => "cosine",
+                                };
+                                (vc.dimensions, s)
+                            } else {
+                                (1536, "cosine")
+                            };
+                            statements.push(format!(
+                                "CREATE VECTOR INDEX {i_name} IF NOT EXISTS FOR (n:{primary_label}) ON (n.{}) OPTIONS {{indexConfig: {{`vector.dimensions`: {dims}, `vector.similarity_function`: '{sim}'}}}}",
                                 field.name
                             ));
                         }
@@ -805,6 +927,12 @@ pub fn emit_rel_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Result<Vec
                     ));
                 }
             }
+        }
+        DdlDialect::Age => {
+            return Err(Error::UnsupportedDialect {
+                dialect: "Apache AGE".to_string(),
+                feature: "Cypher 'CREATE INDEX' queries on relationships. Indexes in Apache AGE must be defined directly on the underlying PostgreSQL relational tables.".to_string(),
+            });
         }
         DdlDialect::Sql => {
             let table = type_name.to_ascii_lowercase();
@@ -845,7 +973,7 @@ pub fn emit_node_constraint_ddl(
     let primary_label = node.primary_label();
 
     match ddl_dialect {
-        DdlDialect::FalkorDb => unreachable!(),
+        DdlDialect::FalkorDb | DdlDialect::Age => unreachable!(),
         DdlDialect::Sql => {
             let table = primary_label.to_ascii_lowercase();
             let q_table = escape_sql_ident(&table);
@@ -898,7 +1026,7 @@ pub fn emit_rel_constraint_ddl(
     let type_name = &rel.type_name;
 
     match ddl_dialect {
-        DdlDialect::FalkorDb => unreachable!(),
+        DdlDialect::FalkorDb | DdlDialect::Age => unreachable!(),
         DdlDialect::Sql => {
             let table = type_name.to_ascii_lowercase();
             let q_table = escape_sql_ident(&table);
@@ -944,10 +1072,45 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
         DdlDialect::FalkorDb => {
             for field in node.fields.values() {
                 if is_pure_index_field(field) {
-                    statements.push(format!(
-                        "DROP INDEX FOR (n:{primary_label}) ON (n.{})",
-                        field.name
-                    ));
+                    if field.index_type == Some(IndexType::Vector) {
+                        statements.push(format!(
+                            "DROP VECTOR INDEX FOR (n:{primary_label}) ON (n.{})",
+                            field.name
+                        ));
+                    } else {
+                        statements.push(format!(
+                            "DROP INDEX FOR (n:{primary_label}) ON (n.{})",
+                            field.name
+                        ));
+                    }
+                }
+            }
+        }
+        DdlDialect::Age => {
+            let has_vector = node
+                .fields
+                .values()
+                .any(|f| f.index_type == Some(IndexType::Vector));
+            if !has_vector {
+                return Err(Error::UnsupportedDialect {
+                    dialect: "Apache AGE".to_string(),
+                    feature: "Cypher 'DROP INDEX' queries. Indexes and constraints in Apache AGE must be defined directly on the underlying PostgreSQL relational tables.".to_string(),
+                });
+            }
+            for field in node.fields.values() {
+                if is_pure_index_field(field) && field.index_type == Some(IndexType::Vector) {
+                    let idx_name = field
+                        .vector_config
+                        .as_ref()
+                        .and_then(|vc| vc.index_name.clone())
+                        .unwrap_or_else(|| {
+                            format!(
+                                "idx_{}_{}_vector",
+                                primary_label.to_ascii_lowercase(),
+                                field.name.to_ascii_lowercase()
+                            )
+                        });
+                    statements.push(format!("DROP INDEX IF EXISTS {idx_name};"));
                 }
             }
         }
@@ -955,14 +1118,29 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
             let table = primary_label.to_ascii_lowercase();
             for field in node.fields.values() {
                 if is_pure_index_field(field) {
-                    statements.push(format!("DROP INDEX IF EXISTS idx_{table}_{};", field.name));
+                    let idx_name = field
+                        .vector_config
+                        .as_ref()
+                        .and_then(|vc| vc.index_name.clone())
+                        .unwrap_or_else(|| {
+                            if field.index_type == Some(IndexType::Vector) {
+                                format!("idx_{table}_{}_vector", field.name)
+                            } else {
+                                format!("idx_{table}_{}", field.name)
+                            }
+                        });
+                    statements.push(format!("DROP INDEX IF EXISTS {idx_name};"));
                 }
             }
         }
         DdlDialect::Cypher => {
             for field in node.fields.values() {
                 if is_pure_index_field(field) {
-                    let i_name = cypher_index_name(primary_label, &field.name);
+                    let i_name = field
+                        .vector_config
+                        .as_ref()
+                        .and_then(|vc| vc.index_name.clone())
+                        .unwrap_or_else(|| cypher_index_name(primary_label, &field.name));
                     statements.push(format!("DROP INDEX {i_name} IF EXISTS"));
                 }
             }
@@ -987,6 +1165,12 @@ pub fn emit_rel_drop_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Resul
                     ));
                 }
             }
+        }
+        DdlDialect::Age => {
+            return Err(Error::UnsupportedDialect {
+                dialect: "Apache AGE".to_string(),
+                feature: "Cypher 'DROP INDEX' queries on relationships. Indexes in Apache AGE must be defined directly on the underlying PostgreSQL relational tables.".to_string(),
+            });
         }
         DdlDialect::Sql => {
             let table = type_name.to_ascii_lowercase();
@@ -1019,7 +1203,7 @@ pub fn emit_node_drop_constraint_ddl(
     let primary_label = node.primary_label();
 
     match ddl_dialect {
-        DdlDialect::FalkorDb => unreachable!(),
+        DdlDialect::FalkorDb | DdlDialect::Age => unreachable!(),
         DdlDialect::Sql => {
             let table = primary_label.to_ascii_lowercase();
             let q_table = escape_sql_ident(&table);
@@ -1064,7 +1248,7 @@ pub fn emit_rel_drop_constraint_ddl(
     let type_name = &rel.type_name;
 
     match ddl_dialect {
-        DdlDialect::FalkorDb => unreachable!(),
+        DdlDialect::FalkorDb | DdlDialect::Age => unreachable!(),
         DdlDialect::Sql => {
             let table = type_name.to_ascii_lowercase();
             let q_table = escape_sql_ident(&table);

@@ -387,6 +387,64 @@ class Query:
         return q
 
     @hybridmethod
+    def vector_search(
+        self: Any,
+        index_or_model: str | Any,
+        query_vector: list[float],
+        k: int = 10,
+        yield_node: str = "node",
+        yield_score: str = "score",
+    ) -> Query:
+        """Starts or appends a vector index search procedure call.
+
+        For openCypher / Neo4j 5+, emits:
+            `CALL db.index.vector.queryNodes(index_name, k, query_vector) YIELD node, score`
+
+        Args:
+            index_or_model: Target vector index name (str) or a Node model class declaring a VectorProperty.
+            query_vector: Dense embedding vector to query with (list of floats).
+            k: Top-k nearest neighbors to retrieve (default: 10).
+            yield_node: Yielded variable alias for the matched entity node (default: 'node').
+            yield_score: Yielded variable alias for the similarity score (default: 'score').
+
+        Returns:
+            The Query instance chained with the vector search procedure call and YIELD clause.
+        """
+        index_name: str
+        if isinstance(index_or_model, str):
+            index_name = index_or_model
+        elif hasattr(index_or_model, "_schema_fields"):
+            fields = getattr(index_or_model, "_schema_fields", {})
+            vec_prop = None
+            for f in fields.values():
+                if getattr(f, "index_type", None) == "VECTOR" or hasattr(f, "dimensions"):
+                    vec_prop = f
+                    break
+            if vec_prop is not None and getattr(vec_prop, "index_name", None):
+                index_name = vec_prop.index_name
+            else:
+                label = getattr(
+                    index_or_model,
+                    "_cached_label",
+                    getattr(index_or_model, "__name__", "Node"),
+                )
+                prop_name = getattr(vec_prop, "name", "embedding") if vec_prop else "embedding"
+                index_name = f"index_{label.lower()}_{prop_name.lower()}"
+        else:
+            index_name = str(index_or_model)
+
+        if isinstance(self, type):
+            q = self()
+        else:
+            q = self
+
+        node_yield = f"node AS {yield_node}" if yield_node != "node" else "node"
+        score_yield = f"score AS {yield_score}" if yield_score != "score" else "score"
+        return q.call("db.index.vector.queryNodes", index_name, k, query_vector).yield_(
+            node_yield, score_yield
+        )
+
+    @hybridmethod
     def unwind(self: Any, batch_param: str, alias: str = "row") -> Query:
         """Starts or appends an UNWIND batch expansion clause: `UNWIND $batch_param AS alias`.
 

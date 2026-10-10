@@ -50,7 +50,7 @@ pub use optimizer::{AstOptimizer, OptimizationLevel};
 pub use schema::{
     ConformanceDiagnostic, ConformanceReport, ConstraintType, DiagnosticSeverity, FieldDescriptor,
     FieldType, IndexType, NodeSchema, RelationshipSchema, SchemaRegistry, SchemaSnapshot,
-    global_schema_registry,
+    VectorIndexConfig, VectorSimilarity, global_schema_registry,
 };
 pub use topology::{GraphTopology, TopologyEdge, TopologyNode};
 pub use transaction::{

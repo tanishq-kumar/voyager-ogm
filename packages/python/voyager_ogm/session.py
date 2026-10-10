@@ -1280,6 +1280,60 @@ class Session(_SessionBase):
             dropped.append(stmt)
         return dropped
 
+    def apply_schema(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        include_type_constraints: bool = False,
+    ) -> list[str]:
+        """Applies declarative constraints and indexes (including vector indexes) to the database session.
+
+        If no models are provided, discovers and applies schema for all models registered
+        in the global SchemaRegistry.
+
+        Args:
+            *models: Optional Node and Relationship model classes, schema dicts, or model names.
+            include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
+
+        Returns:
+            List of executed DDL query statements.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        return SchemaManager.apply_schema(
+            self, *models, include_type_constraints=include_type_constraints
+        )
+
+    def vector_search(
+        self,
+        index_or_model: type[Node] | str | Any,
+        query_vector: list[float],
+        k: int = 10,
+        yield_node: str = "node",
+        yield_score: str = "score",
+    ) -> ExecutionResult:
+        """Executes a vector search query against the database.
+
+        Calls the native/Cypher vector query procedure and yields matched nodes and scores.
+
+        Args:
+            index_or_model: Target vector index name (str) or a Node model class declaring a VectorProperty.
+            query_vector: Dense embedding vector to query with (list of floats).
+            k: Top-k nearest neighbors to retrieve (default: 10).
+            yield_node: Yielded variable alias for the matched entity node (default: 'node').
+            yield_score: Yielded variable alias for the similarity score (default: 'score').
+
+        Returns:
+            ExecutionResult containing matched records with node entities and scores.
+        """
+        query = Query.vector_search(
+            index_or_model,
+            query_vector,
+            k=k,
+            yield_node=yield_node,
+            yield_score=yield_score,
+        )
+        return self.execute(query)
+
     def transaction(self) -> Transaction:
         """Creates a fresh two-layer rollback transaction context manager.
 
@@ -1641,6 +1695,73 @@ class AsyncSession(_SessionBase):
             await self.execute(stmt)
             dropped.append(stmt)
         return dropped
+
+    async def apply_schema(
+        self,
+        *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        include_type_constraints: bool = False,
+    ) -> list[str]:
+        """Asynchronously applies declarative constraints and indexes (including vector indexes) to the database session.
+
+        If no models are provided, discovers and applies schema for all models registered
+        in the global SchemaRegistry.
+
+        Args:
+            *models: Optional Node and Relationship model classes, schema dicts, or model names.
+            include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
+
+        Returns:
+            List of executed DDL query statements.
+        """
+        from voyager_ogm.schema import SchemaManager
+
+        applied: list[str] = []
+        try:
+            c_stmts = SchemaManager.generate_constraint_ddl(
+                *models, dialect=self._dialect, include_type_constraints=include_type_constraints
+            )
+            for stmt in c_stmts:
+                await self.execute(stmt)
+                applied.append(stmt)
+        except NotImplementedError:
+            pass
+
+        i_stmts = SchemaManager.generate_index_ddl(*models, dialect=self._dialect)
+        for stmt in i_stmts:
+            await self.execute(stmt)
+            applied.append(stmt)
+        return applied
+
+    async def vector_search(
+        self,
+        index_or_model: type[Node] | str | Any,
+        query_vector: list[float],
+        k: int = 10,
+        yield_node: str = "node",
+        yield_score: str = "score",
+    ) -> ExecutionResult:
+        """Asynchronously executes a vector search query against the database.
+
+        Calls the native/Cypher vector query procedure and yields matched nodes and scores.
+
+        Args:
+            index_or_model: Target vector index name (str) or a Node model class declaring a VectorProperty.
+            query_vector: Dense embedding vector to query with (list of floats).
+            k: Top-k nearest neighbors to retrieve (default: 10).
+            yield_node: Yielded variable alias for the matched entity node (default: 'node').
+            yield_score: Yielded variable alias for the similarity score (default: 'score').
+
+        Returns:
+            ExecutionResult containing matched records with node entities and scores.
+        """
+        query = Query.vector_search(
+            index_or_model,
+            query_vector,
+            k=k,
+            yield_node=yield_node,
+            yield_score=yield_score,
+        )
+        return await self.execute(query)
 
     async def close(self) -> None:
         """Asynchronously closes the underlying database bridge and native connection pool, clearing the identity map."""
