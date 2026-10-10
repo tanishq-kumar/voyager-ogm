@@ -62,6 +62,9 @@ def canonical_vector_index_name(label: str, prop: str, dialect: str = "cypher") 
     try:
         return _native_canonical_vector_index_name(label, prop, dialect)
     except Exception:
+        # Pure-Python fallback for environments where the native Rust extension is unavailable.
+        # NOTE: Keep this fallback in exact sync with `canonical_vector_index_name`
+        # in `crates/voyager-core/src/schema.rs`.
         lbl = label.lower()
         prp = prop.lower()
         if dialect.lower() in ("duckdb", "sql", "postgres", "postgresql", "age", "apache_age"):

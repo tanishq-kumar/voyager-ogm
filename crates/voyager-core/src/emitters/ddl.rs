@@ -819,7 +819,7 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                             "CREATE INDEX IF NOT EXISTS {idx_name} ON {q_table} USING HNSW ({q_col}) WITH (metric = '{metric}');"
                         ));
                     } else {
-                        let idx_name = format!("idx_{table}_{}", field.name.to_ascii_lowercase());
+                        let idx_name = format!("idx_{table}_{}", field.name);
                         statements.push(format!(
                             "CREATE INDEX IF NOT EXISTS {idx_name} ON {q_table} ({q_col});"
                         ));
@@ -899,7 +899,7 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                             "CREATE INDEX IF NOT EXISTS {idx_name} ON {q_table} USING hnsw ({q_col} {opclass});"
                         ));
                     } else {
-                        let idx_name = format!("idx_{table}_{}", field.name.to_ascii_lowercase());
+                        let idx_name = format!("idx_{table}_{}", field.name);
                         statements.push(format!(
                             "CREATE INDEX IF NOT EXISTS {idx_name} ON {q_table} ({q_col});"
                         ));
@@ -1191,7 +1191,7 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
                             if field.index_type == Some(IndexType::Vector) {
                                 canonical_vector_index_name(primary_label, &field.name, ddl_dialect)
                             } else {
-                                format!("idx_{table}_{}", field.name.to_ascii_lowercase())
+                                format!("idx_{table}_{}", field.name)
                             }
                         });
                     statements.push(format!("DROP INDEX IF EXISTS {idx_name};"));
@@ -1251,7 +1251,7 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
                             if field.index_type == Some(IndexType::Vector) {
                                 canonical_vector_index_name(primary_label, &field.name, ddl_dialect)
                             } else {
-                                format!("idx_{table}_{}", field.name.to_ascii_lowercase())
+                                format!("idx_{table}_{}", field.name)
                             }
                         });
                     statements.push(format!("DROP INDEX IF EXISTS {idx_name};"));

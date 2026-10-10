@@ -4272,6 +4272,10 @@ fn emit_rel_drop_constraint_ddl(
         .map_err(to_py_schema_err)
 }
 
+/// Returns the canonical deterministic vector index name for a given label and property across dialects.
+///
+/// Note: Defaults to Cypher naming (`index_{label.to_lowercase()}_{prop.to_lowercase()}`)
+/// if `dialect` is omitted or unrecognized.
 #[pyfunction]
 #[pyo3(signature = (label, prop, dialect=None))]
 fn canonical_vector_index_name(label: &str, prop: &str, dialect: Option<&str>) -> PyResult<String> {

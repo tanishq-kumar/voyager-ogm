@@ -373,40 +373,42 @@ class TestLiveEngineVectorIntegration:
         from neo4j import GraphDatabase
 
         driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_pass))
-        session = Session(driver, dialect="cypher")
-
-        class LiveArticle(Node):
-            title: str = Field(index=True)
-            embedding: list[float] = VectorProperty(
-                dimensions=4, similarity="cosine", index_name="live_art_vec_idx"
-            )
-
         try:
-            # 1. Apply vector index
-            applied = session.apply_schema(LiveArticle)
-            assert any("live_art_vec_idx" in s for s in applied)
+            session = Session(driver, dialect="cypher")
 
-            # 2. Insert test node with vector
-            session.execute(
-                "MERGE (a:LiveArticle {title: 'Voyager Vector Test'}) "
-                "SET a.embedding = [1.0, 0.0, 0.0, 0.0]"
-            )
+            class LiveArticle(Node):
+                title: str = Field(index=True)
+                embedding: list[float] = VectorProperty(
+                    dimensions=4, similarity="cosine", index_name="live_art_vec_idx"
+                )
 
-            # 3. Query via vector_search
-            results = session.vector_search(
-                LiveArticle, [1.0, 0.0, 0.0, 0.0], k=1, yield_node="n", yield_score="score"
-            )
-            assert len(results) > 0
-            first = results[0]
-            assert "score" in first
-            assert first["score"] > 0.99  # Identical cosine similarity
-        finally:
-            # 4. Clean up
             try:
-                session.execute("MATCH (a:LiveArticle) DETACH DELETE a")
-                session.drop_indexes(LiveArticle)
-            except Exception:
-                pass
+                # 1. Apply vector index
+                applied = session.apply_schema(LiveArticle)
+                assert any("live_art_vec_idx" in s for s in applied)
+
+                # 2. Insert test node with vector
+                session.execute(
+                    "MERGE (a:LiveArticle {title: 'Voyager Vector Test'}) "
+                    "SET a.embedding = [1.0, 0.0, 0.0, 0.0]"
+                )
+
+                # 3. Query via vector_search
+                results = session.vector_search(
+                    LiveArticle, [1.0, 0.0, 0.0, 0.0], k=1, yield_node="n", yield_score="score"
+                )
+                assert len(results) > 0
+                first = results[0]
+                assert "score" in first
+                assert first["score"] > 0.99  # Identical cosine similarity
+            finally:
+                # 4. Clean up
+                try:
+                    session.execute("MATCH (a:LiveArticle) DETACH DELETE a")
+                    session.drop_indexes(LiveArticle)
+                except Exception:
+                    pass
+        finally:
             driver.close()
 
     @pytest.mark.skipif(
@@ -447,39 +449,41 @@ class TestLiveEngineVectorIntegration:
 
         uri = os.environ.get("MEMGRAPH_URI", "bolt://127.0.0.1:7688")
         driver = GraphDatabase.driver(uri, auth=("", ""))
-        session = Session(driver, dialect="memgraph")
-
-        class LiveMgArticle(Node):
-            title: str = Field(index=True)
-            embedding: list[float] = VectorProperty(
-                dimensions=4, similarity="cosine", index_name="live_mg_art_vec_idx"
-            )
-
         try:
-            # 1. Apply vector index
-            applied = session.apply_schema(LiveMgArticle)
-            assert any("live_mg_art_vec_idx" in s for s in applied)
-            assert any("CREATE VECTOR INDEX live_mg_art_vec_idx" in s for s in applied)
+            session = Session(driver, dialect="memgraph")
 
-            # 2. Insert test node with vector
-            session.execute(
-                "CREATE (a:LiveMgArticle {title: 'Voyager Memgraph Vector', embedding: [1.0, 0.0, 0.0, 0.0]})"
-            )
+            class LiveMgArticle(Node):
+                title: str = Field(index=True)
+                embedding: list[float] = VectorProperty(
+                    dimensions=4, similarity="cosine", index_name="live_mg_art_vec_idx"
+                )
 
-            # 3. Query via vector_search
-            results = session.vector_search(
-                LiveMgArticle, [1.0, 0.0, 0.0, 0.0], k=1, yield_node="n", yield_score="score"
-            )
-            records = results.all()
-            assert len(records) > 0
-            first = records[0]
-            assert "score" in first
-            assert first["score"] > 0.99  # Identical cosine similarity
-        finally:
-            # 4. Clean up
             try:
-                session.execute("MATCH (a:LiveMgArticle) DETACH DELETE a")
-                session.drop_indexes(LiveMgArticle)
-            except Exception:
-                pass
+                # 1. Apply vector index
+                applied = session.apply_schema(LiveMgArticle)
+                assert any("live_mg_art_vec_idx" in s for s in applied)
+                assert any("CREATE VECTOR INDEX live_mg_art_vec_idx" in s for s in applied)
+
+                # 2. Insert test node with vector
+                session.execute(
+                    "CREATE (a:LiveMgArticle {title: 'Voyager Memgraph Vector', embedding: [1.0, 0.0, 0.0, 0.0]})"
+                )
+
+                # 3. Query via vector_search
+                results = session.vector_search(
+                    LiveMgArticle, [1.0, 0.0, 0.0, 0.0], k=1, yield_node="n", yield_score="score"
+                )
+                records = results.all()
+                assert len(records) > 0
+                first = records[0]
+                assert "score" in first
+                assert first["score"] > 0.99  # Identical cosine similarity
+            finally:
+                # 4. Clean up
+                try:
+                    session.execute("MATCH (a:LiveMgArticle) DETACH DELETE a")
+                    session.drop_indexes(LiveMgArticle)
+                except Exception:
+                    pass
+        finally:
             driver.close()

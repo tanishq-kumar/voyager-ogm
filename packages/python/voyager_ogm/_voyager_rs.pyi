@@ -371,7 +371,9 @@ def emit_node_drop_constraint_ddl(
 def emit_rel_drop_constraint_ddl(
     spec: Any, dialect: str = "cypher", include_type_constraints: bool = False
 ) -> list[str]: ...
-def canonical_vector_index_name(label: str, prop: str, dialect: str | None = None) -> str: ...
+def canonical_vector_index_name(label: str, prop: str, dialect: str | None = None) -> str:
+    """Returns canonical vector index name. Defaults to Cypher if dialect is omitted or unrecognized."""
+    ...
 
 class AstExpr:
     """Native AST Expression node handle wrapping a lightweight AST arena."""
