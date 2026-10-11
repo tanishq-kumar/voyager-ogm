@@ -96,6 +96,20 @@ class TestFullTextModelReflectionAndDDL:
         assert ft_indexes[0]["name"] == "review_notes_idx"
         assert ft_indexes[0]["properties"] == ["notes"]
 
+    def test_tuple_fulltext_indexes_reflection_and_ddl(self) -> None:
+        class TupleDoc(Node):
+            __fulltext_indexes__ = (FullTextIndex(["title", "body"], name="tuple_doc_idx"),)
+            title: str = Field()
+            body: str = Field()
+
+        reg = SchemaRegistry.global_registry()
+        spec = reg.get_node("TupleDoc")
+        assert spec is not None
+        assert spec["fulltext_indexes"][0]["name"] == "tuple_doc_idx"
+
+        ddl = SchemaManager.generate_index_ddl(TupleDoc, dialect="cypher")
+        assert any("CREATE FULLTEXT INDEX tuple_doc_idx" in s for s in ddl)
+
     def test_neo4j_cypher_node_and_rel_ddl(self) -> None:
         class Article(Node):
             __fulltext_indexes__ = [
@@ -358,6 +372,45 @@ class TestFullTextSearchQuery:
         assert compiled.parameters == {
             "p0": "custom_idx",
             "p1": "term",
+        }
+
+    def test_memgraph_colon_query_field_adaptation(self) -> None:
+        class MgArticle(Node):
+            __fulltext_indexes__ = [FullTextIndex("content", name="mg_content_idx")]
+            content: str = Field()
+
+        class MgEdge(Relationship):
+            __fulltext_indexes__ = [FullTextIndex("summary", name="mg_edge_idx")]
+            summary: str = Field()
+
+        # Node colon query -> text_search.search with data. namespace adaptation
+        q_node = Query.fulltext_search(MgArticle, "title:algorithms", dialect="memgraph")
+        c_node = q_node.compile()
+        assert c_node.statement == "CALL text_search.search($p0, $p1) YIELD node, score"
+        assert c_node.parameters == {
+            "p0": "mg_content_idx",
+            "p1": "data.title:algorithms",
+        }
+
+        # Edge colon query -> text_search.search_edges with data. namespace adaptation
+        q_edge = Query.fulltext_search(MgEdge, "summary:transaction", dialect="memgraph")
+        c_edge = q_edge.compile()
+        assert (
+            c_edge.statement == "CALL text_search.search_edges($p0, $p1) YIELD edge AS node, score"
+        )
+        assert c_edge.parameters == {
+            "p0": "mg_edge_idx",
+            "p1": "data.summary:transaction",
+        }
+
+    def test_fulltext_search_custom_index_no_lossy_split(self) -> None:
+        # A custom index name starting with 'index_' like 'index_search' must not be split into 'search'
+        q = Query.fulltext_search("index_search", "query", dialect="falkordb")
+        c = q.compile()
+        assert c.statement == "CALL db.idx.fulltext.queryNodes($p0, $p1) YIELD node, score"
+        assert c.parameters == {
+            "p0": "index_search",
+            "p1": "query",
         }
 
 
@@ -627,6 +680,21 @@ class TestLiveEngineFullTextIntegration:
                     rel_results[0]["node"]["comment"]
                     == "superb in-memory real-time graph performance"
                 )
+
+                # 6. Colon field query on Node (executes text_search.search with data. namespace adaptation)
+                results_colon = session.text_search(LiveMgDoc, "title:Tantivy").all()
+                assert len(results_colon) == 1
+                assert results_colon[0]["node"]["title"] == "Tantivy Full-Text Engine"
+                assert results_colon[0]["score"] > 0
+
+                # 7. Colon field query on Relationship (executes text_search.search_edges with data. namespace adaptation)
+                results_edge_colon = session.text_search(LiveMgReviewedRel, "comment:superb").all()
+                assert len(results_edge_colon) == 1
+                assert (
+                    results_edge_colon[0]["node"]["comment"]
+                    == "superb in-memory real-time graph performance"
+                )
+                assert results_edge_colon[0]["score"] > 0
             finally:
                 try:
                     session.execute("MATCH (a:LiveMgDoc) DETACH DELETE a")

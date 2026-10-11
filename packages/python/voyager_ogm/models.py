@@ -680,6 +680,12 @@ class Node:
     ) -> Any:
         """Starts a fluent Query full-text search against this model's full-text index.
 
+        Note:
+            Model-level search methods default to ``dialect='cypher'``. When executing via an active
+            session against Memgraph or FalkorDB, prefer ``session.text_search(Model, ...)``, which
+            automatically inherits the session's active dialect, or pass ``dialect='memgraph'`` /
+            ``dialect='falkordb'`` explicitly.
+
         Args:
             query_string: Full-text search term or expression (e.g. 'search phrase').
             yield_node: Yielded variable alias for the matched entity (default: 'node').
@@ -712,6 +718,11 @@ class Node:
         dialect: str = "cypher",
     ) -> Any:
         """Starts a fluent Query vector search against this model's vector property.
+
+        Note:
+            Model-level search methods default to ``dialect='cypher'``. When executing via an active
+            session against Memgraph, prefer ``session.vector_search(Model, ...)``, which automatically
+            inherits the session's active dialect, or pass ``dialect='memgraph'`` explicitly.
 
         Args:
             query_vector: Dense embedding vector to query with (list of floats).
@@ -1046,6 +1057,12 @@ class Relationship:
         dialect: str = "cypher",
     ) -> Any:
         """Starts a fluent Query full-text search against this relationship model's full-text index.
+
+        Note:
+            Model-level search methods default to ``dialect='cypher'``. When executing via an active
+            session against Memgraph or FalkorDB, prefer ``session.text_search(RelModel, ...)``, which
+            automatically inherits the session's active dialect, or pass ``dialect='memgraph'`` /
+            ``dialect='falkordb'`` explicitly.
 
         Args:
             query_string: Full-text search term or expression (e.g. 'search phrase').

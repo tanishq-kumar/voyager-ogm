@@ -3342,8 +3342,7 @@ fn parse_fulltext_index_config(val: &Bound<'_, PyAny>) -> PyResult<FullTextIndex
     } else {
         let name: String = if val.hasattr("name")? {
             val.getattr("name")?
-                .extract::<Option<String>>()
-                .unwrap_or_default()
+                .extract::<Option<String>>()?
                 .unwrap_or_default()
         } else {
             String::new()
@@ -3371,6 +3370,20 @@ fn parse_fulltext_index_config(val: &Bound<'_, PyAny>) -> PyResult<FullTextIndex
         }
         Ok(cfg)
     }
+}
+
+fn extract_fulltext_configs(obj: &Bound<'_, PyAny>) -> PyResult<Vec<FullTextIndexConfig>> {
+    let mut out = Vec::new();
+    if let Ok(list) = obj.downcast::<PyList>() {
+        for item in list {
+            out.push(parse_fulltext_index_config(&item)?);
+        }
+    } else if let Ok(tuple) = obj.downcast::<PyTuple>() {
+        for item in tuple {
+            out.push(parse_fulltext_index_config(&item)?);
+        }
+    }
+    Ok(out)
 }
 
 fn extract_node_schema(obj: &Bound<'_, PyAny>) -> PyResult<NodeSchema> {
@@ -3414,12 +3427,9 @@ fn extract_node_schema(obj: &Bound<'_, PyAny>) -> PyResult<NodeSchema> {
             }
             node.primary_key = Some(pk_name);
         }
-        if let Some(ft_list) = dict
-            .get_item("fulltext_indexes")?
-            .and_then(|ft_obj| ft_obj.downcast::<PyList>().ok().cloned())
-        {
-            for item in &ft_list {
-                node = node.with_fulltext_index(parse_fulltext_index_config(&item)?);
+        if let Some(ft_obj) = dict.get_item("fulltext_indexes")? {
+            for cfg in extract_fulltext_configs(&ft_obj)? {
+                node = node.with_fulltext_index(cfg);
             }
         }
         Ok(node)
@@ -3462,10 +3472,8 @@ fn extract_node_schema(obj: &Bound<'_, PyAny>) -> PyResult<NodeSchema> {
         }
         if obj.hasattr("__fulltext_indexes__")? {
             let ft_obj = obj.getattr("__fulltext_indexes__")?;
-            if let Ok(ft_list) = ft_obj.downcast::<PyList>() {
-                for item in ft_list {
-                    node = node.with_fulltext_index(parse_fulltext_index_config(&item)?);
-                }
+            for cfg in extract_fulltext_configs(&ft_obj)? {
+                node = node.with_fulltext_index(cfg);
             }
         }
         Ok(node)
@@ -3524,12 +3532,9 @@ fn extract_rel_schema(obj: &Bound<'_, PyAny>) -> PyResult<RelationshipSchema> {
                 }
             }
         }
-        if let Some(ft_list) = dict
-            .get_item("fulltext_indexes")?
-            .and_then(|ft_obj| ft_obj.downcast::<PyList>().ok().cloned())
-        {
-            for item in &ft_list {
-                rel = rel.with_fulltext_index(parse_fulltext_index_config(&item)?);
+        if let Some(ft_obj) = dict.get_item("fulltext_indexes")? {
+            for cfg in extract_fulltext_configs(&ft_obj)? {
+                rel = rel.with_fulltext_index(cfg);
             }
         }
         Ok(rel)
@@ -3583,10 +3588,8 @@ fn extract_rel_schema(obj: &Bound<'_, PyAny>) -> PyResult<RelationshipSchema> {
         }
         if obj.hasattr("__fulltext_indexes__")? {
             let ft_obj = obj.getattr("__fulltext_indexes__")?;
-            if let Ok(ft_list) = ft_obj.downcast::<PyList>() {
-                for item in ft_list {
-                    rel = rel.with_fulltext_index(parse_fulltext_index_config(&item)?);
-                }
+            for cfg in extract_fulltext_configs(&ft_obj)? {
+                rel = rel.with_fulltext_index(cfg);
             }
         }
         Ok(rel)
@@ -3675,11 +3678,9 @@ impl PyNativeSchemaRegistry {
             node_schema.primary_key = Some(pk);
         }
 
-        if let Some(list) =
-            fulltext_indexes.and_then(|ft_any| ft_any.downcast::<PyList>().ok().cloned())
-        {
-            for item in &list {
-                node_schema = node_schema.with_fulltext_index(parse_fulltext_index_config(&item)?);
+        if let Some(ft_any) = fulltext_indexes {
+            for cfg in extract_fulltext_configs(ft_any)? {
+                node_schema = node_schema.with_fulltext_index(cfg);
             }
         }
 
@@ -3753,11 +3754,9 @@ impl PyNativeSchemaRegistry {
             }
         }
 
-        if let Some(list) =
-            fulltext_indexes.and_then(|ft_any| ft_any.downcast::<PyList>().ok().cloned())
-        {
-            for item in &list {
-                rel_schema = rel_schema.with_fulltext_index(parse_fulltext_index_config(&item)?);
+        if let Some(ft_any) = fulltext_indexes {
+            for cfg in extract_fulltext_configs(ft_any)? {
+                rel_schema = rel_schema.with_fulltext_index(cfg);
             }
         }
 
