@@ -1,14 +1,18 @@
 use std::sync::Arc;
 use std::thread;
 
+use voyager_core::AstVisitor;
 use voyager_core::ast::LiteralValue;
+use voyager_core::builder::QueryBuilder;
 use voyager_core::emitters::{
-    emit_node_drop_index_ddl, emit_node_index_ddl, emit_rel_drop_index_ddl, emit_rel_index_ddl,
+    CypherEmitter, emit_node_drop_index_ddl, emit_node_index_ddl, emit_rel_drop_index_ddl,
+    emit_rel_index_ddl,
 };
 use voyager_core::schema::{
     DdlDialect, FieldDescriptor, FieldType, FullTextIndexConfig, IndexType, NodeSchema,
-    RelationshipSchema, SchemaRegistry, VectorSimilarity, canonical_fulltext_index_name,
-    canonical_vector_index_name, global_schema_registry,
+    RelationshipSchema, SchemaRegistry, VectorSimilarity, adapt_tantivy_query,
+    canonical_fulltext_index_name, canonical_vector_index_name, global_schema_registry,
+    resolve_fulltext_search,
 };
 
 #[test]
@@ -747,5 +751,210 @@ fn test_fulltext_index_ddl_and_naming() {
     assert_eq!(
         emit_rel_drop_index_ddl(&rel_schema, "sql").unwrap(),
         vec!["DROP INDEX IF EXISTS rel_notes_idx;"]
+    );
+}
+
+#[test]
+fn test_tantivy_query_scanner_quote_and_escape_awareness() {
+    // Basic field prefixing
+    assert_eq!(adapt_tantivy_query("title:Graph", &[]), "data.title:Graph");
+    assert_eq!(
+        adapt_tantivy_query("title:Graph AND content:Search", &[]),
+        "data.title:Graph AND data.content:Search"
+    );
+
+    // No colons -> unmodified
+    assert_eq!(adapt_tantivy_query("Graph Database", &[]), "Graph Database");
+
+    // Quoted strings with colons are preserved intact
+    assert_eq!(
+        adapt_tantivy_query("title:\"status: timeout\"", &[]),
+        "data.title:\"status: timeout\""
+    );
+    assert_eq!(
+        adapt_tantivy_query("\"colon: inside quotes\" AND summary:valid", &[]),
+        "\"colon: inside quotes\" AND data.summary:valid"
+    );
+
+    // Escaped colons in terms or values
+    assert_eq!(
+        adapt_tantivy_query(r"url:https\:foo", &[]),
+        r"data.url:https\:foo"
+    );
+    assert_eq!(
+        adapt_tantivy_query(r"escaped\:colon", &[]),
+        r"escaped\:colon"
+    );
+
+    // Already namespaced data.field is NOT duplicated
+    assert_eq!(
+        adapt_tantivy_query("data.title:Graph", &[]),
+        "data.title:Graph"
+    );
+
+    // Property whitelist filter
+    let props = vec!["title".to_string(), "author".to_string()];
+    assert_eq!(
+        adapt_tantivy_query("title:Rust AND other:Ignore", &props),
+        "data.title:Rust AND other:Ignore"
+    );
+}
+
+#[test]
+fn test_resolve_fulltext_search_matrix() {
+    // 1. Memgraph
+    let mg_node_no_colon = resolve_fulltext_search(
+        DdlDialect::Memgraph,
+        false,
+        "article_idx",
+        "Article",
+        "query phrase",
+        &[],
+    );
+    assert_eq!(mg_node_no_colon.procedure, "text_search.search_all");
+    assert_eq!(mg_node_no_colon.target_argument, "article_idx");
+    assert_eq!(mg_node_no_colon.query_string, "query phrase");
+    assert_eq!(mg_node_no_colon.yield_entity, "node");
+
+    let mg_node_colon = resolve_fulltext_search(
+        DdlDialect::Memgraph,
+        false,
+        "article_idx",
+        "Article",
+        "title:Memgraph",
+        &[],
+    );
+    assert_eq!(mg_node_colon.procedure, "text_search.search");
+    assert_eq!(mg_node_colon.query_string, "data.title:Memgraph");
+
+    let mg_rel_no_colon = resolve_fulltext_search(
+        DdlDialect::Memgraph,
+        true,
+        "rel_idx",
+        "REVIEWED",
+        "query phrase",
+        &[],
+    );
+    assert_eq!(mg_rel_no_colon.procedure, "text_search.search_all_edges");
+    assert_eq!(mg_rel_no_colon.yield_entity, "edge");
+
+    let mg_rel_colon = resolve_fulltext_search(
+        DdlDialect::Memgraph,
+        true,
+        "rel_idx",
+        "REVIEWED",
+        "notes:approved",
+        &[],
+    );
+    assert_eq!(mg_rel_colon.procedure, "text_search.search_edges");
+    assert_eq!(mg_rel_colon.query_string, "data.notes:approved");
+    assert_eq!(mg_rel_colon.yield_entity, "edge");
+
+    // 2. FalkorDB
+    let falkor_node = resolve_fulltext_search(
+        DdlDialect::FalkorDb,
+        false,
+        "custom_idx",
+        "Article",
+        "search phrase",
+        &[],
+    );
+    assert_eq!(falkor_node.procedure, "db.idx.fulltext.queryNodes");
+    assert_eq!(falkor_node.target_argument, "Article"); // Uses label, not index name
+    assert_eq!(falkor_node.yield_entity, "node");
+
+    let falkor_rel = resolve_fulltext_search(
+        DdlDialect::FalkorDb,
+        true,
+        "custom_idx",
+        "REVIEWED",
+        "search phrase",
+        &[],
+    );
+    assert_eq!(falkor_rel.procedure, "db.idx.fulltext.queryRelationships");
+    assert_eq!(falkor_rel.target_argument, "REVIEWED");
+    assert_eq!(falkor_rel.yield_entity, "relationship");
+
+    // 3. Cypher / Neo4j
+    let cypher_node = resolve_fulltext_search(
+        DdlDialect::Cypher,
+        false,
+        "article_idx",
+        "Article",
+        "search phrase",
+        &[],
+    );
+    assert_eq!(cypher_node.procedure, "db.index.fulltext.queryNodes");
+    assert_eq!(cypher_node.target_argument, "article_idx");
+    assert_eq!(cypher_node.yield_entity, "node");
+
+    let cypher_rel = resolve_fulltext_search(
+        DdlDialect::Cypher,
+        true,
+        "rel_idx",
+        "REVIEWED",
+        "search phrase",
+        &[],
+    );
+    assert_eq!(cypher_rel.procedure, "db.index.fulltext.queryRelationships");
+    assert_eq!(cypher_rel.target_argument, "rel_idx");
+    assert_eq!(cypher_rel.yield_entity, "relationship");
+}
+
+#[test]
+fn test_query_builder_fulltext_search_ast_and_emission() {
+    let mut builder = QueryBuilder::new();
+    builder.fulltext_search(
+        DdlDialect::Cypher,
+        false,
+        "article_fulltext_idx",
+        "Article",
+        "rust graph",
+        &[],
+        Some("n"),
+        Some("score"),
+    );
+    let (arena, root) = builder.build();
+    let mut emitter = CypherEmitter::new();
+    let compiled = emitter.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        compiled.statement,
+        "CALL db.index.fulltext.queryNodes($p0, $p1) YIELD node AS n, score"
+    );
+    assert_eq!(
+        compiled.parameters.get("p0"),
+        Some(&LiteralValue::String("article_fulltext_idx".into()))
+    );
+    assert_eq!(
+        compiled.parameters.get("p1"),
+        Some(&LiteralValue::String("rust graph".into()))
+    );
+
+    // Memgraph with colon query
+    let mut mg_builder = QueryBuilder::new();
+    mg_builder.fulltext_search(
+        DdlDialect::Memgraph,
+        false,
+        "article_fulltext_idx",
+        "Article",
+        "title:rust",
+        &[],
+        Some("node"),
+        Some("rank"),
+    );
+    let (mg_arena, mg_root) = mg_builder.build();
+    let mut mg_emitter = CypherEmitter::new();
+    let mg_compiled = mg_emitter.visit_query(&mg_arena, mg_root).unwrap();
+    assert_eq!(
+        mg_compiled.statement,
+        "CALL text_search.search($p0, $p1) YIELD node, score AS rank"
+    );
+    assert_eq!(
+        mg_compiled.parameters.get("p0"),
+        Some(&LiteralValue::String("article_fulltext_idx".into()))
+    );
+    assert_eq!(
+        mg_compiled.parameters.get("p1"),
+        Some(&LiteralValue::String("data.title:rust".into()))
     );
 }

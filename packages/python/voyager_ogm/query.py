@@ -7,7 +7,6 @@ graph queries (openCypher, SQL:2023 PGQ, ISO GQL) backed by a native Rust AST en
 from __future__ import annotations
 
 import functools
-import re
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from typing import Any
@@ -622,60 +621,17 @@ class Query:
         else:
             q = self
 
-        dialect_lower = dialect.lower()
-        score_yield = f"score AS {yield_score}" if yield_score != "score" else "score"
-
-        if dialect_lower == "memgraph":
-            if ":" in query_string:
-                # Memgraph MAGE Tantivy namespaces node/edge properties under `data.<field>`.
-                # Adapt user-friendly field queries (e.g. 'title:Tantivy' -> 'data.title:Tantivy').
-                if target_props:
-                    escaped_fields = "|".join(re.escape(p) for p in target_props)
-                    field_re = rf"(?<!data\.)\b({escaped_fields}):"
-                else:
-                    field_re = r"(?<!data\.)\b([a-zA-Z_][a-zA-Z0-9_]*):"
-                adapted_query = re.sub(
-                    field_re,
-                    r"data.\1:",
-                    query_string,
-                )
-                proc = "text_search.search_edges" if is_rel else "text_search.search"
-            else:
-                adapted_query = query_string
-                proc = "text_search.search_all_edges" if is_rel else "text_search.search_all"
-
-            if is_rel:
-                edge_yield = f"edge AS {yield_node}" if yield_node != "edge" else "edge"
-                return q.call(proc, target_name, adapted_query).yield_(edge_yield, score_yield)
-            node_yield = f"node AS {yield_node}" if yield_node != "node" else "node"
-            return q.call(proc, target_name, adapted_query).yield_(node_yield, score_yield)
-
-        if dialect_lower in ("falkordb", "falkor"):
-            if is_rel:
-                rel_yield = (
-                    f"relationship AS {yield_node}"
-                    if yield_node != "relationship"
-                    else "relationship"
-                )
-                return q.call(
-                    "db.idx.fulltext.queryRelationships", falkordb_target, query_string
-                ).yield_(rel_yield, score_yield)
-            node_yield = f"node AS {yield_node}" if yield_node != "node" else "node"
-            return q.call("db.idx.fulltext.queryNodes", falkordb_target, query_string).yield_(
-                node_yield, score_yield
-            )
-
-        if is_rel:
-            rel_yield = (
-                f"relationship AS {yield_node}" if yield_node != "relationship" else "relationship"
-            )
-            return q.call("db.index.fulltext.queryRelationships", target_name, query_string).yield_(
-                rel_yield, score_yield
-            )
-        node_yield = f"node AS {yield_node}" if yield_node != "node" else "node"
-        return q.call("db.index.fulltext.queryNodes", target_name, query_string).yield_(
-            node_yield, score_yield
+        q._native.fulltext_search(
+            dialect,
+            is_rel,
+            target_name,
+            falkordb_target,
+            query_string,
+            target_props,
+            yield_node,
+            yield_score,
         )
+        return q
 
     # Ergonomic alias for fulltext_search
     text_search = fulltext_search

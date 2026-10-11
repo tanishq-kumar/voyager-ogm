@@ -95,9 +95,11 @@ from voyager_ogm.schema import (
     SchemaManager,
     SchemaRegistry,
     TextIndex,
+    adapt_tantivy_query,
     canonical_fulltext_index_name,
     canonical_vector_index_name,
     fulltext_index,
+    resolve_fulltext_search,
 )
 from voyager_ogm.session import (
     AsyncSession,
@@ -203,6 +205,7 @@ __all__ = [
     "TextIndex",
     "Transaction",
     "VoyagerConfig",
+    "adapt_tantivy_query",
     "as_cte",
     "canonical_fulltext_index_name",
     "canonical_vector_index_name",
@@ -240,6 +243,7 @@ __all__ = [
     "relationship",
     "reset_alias_counters",
     "reset_config",
+    "resolve_fulltext_search",
     "show",
     "to_arrow",
     "to_expression",

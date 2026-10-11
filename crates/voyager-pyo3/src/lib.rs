@@ -28,9 +28,10 @@ use voyager_core::optimizer::{AstOptimizer, OptimizationLevel};
 use voyager_core::schema::{
     ConformanceReport, DEFAULT_VECTOR_DIMENSIONS, DdlDialect, FieldDescriptor, FieldType,
     FullTextIndexConfig, IndexType, NodeSchema, RelationshipSchema, SchemaRegistry,
-    VectorIndexConfig, VectorSimilarity,
+    VectorIndexConfig, VectorSimilarity, adapt_tantivy_query as core_adapt_tantivy_query,
     canonical_fulltext_index_name as core_canonical_fulltext_index_name,
     canonical_vector_index_name as core_canonical_vector_index_name, global_schema_registry,
+    resolve_fulltext_search as core_resolve_fulltext_search,
 };
 use voyager_core::topology::GraphTopology;
 use voyager_core::visitor::{AstVisitor, CompiledQuery};
@@ -1849,6 +1850,33 @@ impl PyQueryBuilder {
 
     fn yield_items(&mut self, items: Vec<String>) {
         self.inner.yield_items(items);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (dialect, is_relationship, target_name, falkordb_target, query_string, properties=vec![], yield_node="node", yield_score="score"))]
+    fn fulltext_search(
+        &mut self,
+        dialect: &str,
+        is_relationship: bool,
+        target_name: &str,
+        falkordb_target: &str,
+        query_string: &str,
+        properties: Vec<String>,
+        yield_node: &str,
+        yield_score: &str,
+    ) -> PyResult<()> {
+        let d = DdlDialect::parse_str(dialect).unwrap_or(DdlDialect::Cypher);
+        self.inner.fulltext_search(
+            d,
+            is_relationship,
+            target_name,
+            falkordb_target,
+            query_string,
+            &properties,
+            Some(yield_node),
+            Some(yield_score),
+        );
+        Ok(())
     }
 
     #[pyo3(signature = (dialect="cypher", graph_name=None, optimize=false, optimization_level="standard"))]
@@ -4450,6 +4478,43 @@ fn canonical_fulltext_index_name(
     ))
 }
 
+/// Adapts a Memgraph MAGE Tantivy query using quote-aware lexical scanning.
+#[pyfunction]
+#[pyo3(signature = (query, properties=vec![]))]
+fn adapt_tantivy_query(query: &str, properties: Vec<String>) -> PyResult<String> {
+    Ok(core_adapt_tantivy_query(query, &properties))
+}
+
+/// Resolves cross-dialect full-text procedure name, target arguments, and query adaptation.
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+#[pyo3(signature = (dialect, is_relationship, target_name, falkordb_target, query_string, properties=vec![]))]
+fn resolve_fulltext_search<'py>(
+    py: Python<'py>,
+    dialect: &str,
+    is_relationship: bool,
+    target_name: &str,
+    falkordb_target: &str,
+    query_string: &str,
+    properties: Vec<String>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = DdlDialect::parse_str(dialect).unwrap_or(DdlDialect::Cypher);
+    let resolved = core_resolve_fulltext_search(
+        d,
+        is_relationship,
+        target_name,
+        falkordb_target,
+        query_string,
+        &properties,
+    );
+    let dict = PyDict::new(py);
+    dict.set_item("procedure", resolved.procedure)?;
+    dict.set_item("target_argument", resolved.target_argument)?;
+    dict.set_item("query_string", resolved.query_string)?;
+    dict.set_item("yield_entity", resolved.yield_entity)?;
+    Ok(dict)
+}
+
 /// Native Python module definition for `_voyager_rs`.
 #[pymodule]
 fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -4486,6 +4551,8 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(emit_rel_drop_constraint_ddl, m)?)?;
     m.add_function(wrap_pyfunction!(canonical_vector_index_name, m)?)?;
     m.add_function(wrap_pyfunction!(canonical_fulltext_index_name, m)?)?;
+    m.add_function(wrap_pyfunction!(adapt_tantivy_query, m)?)?;
+    m.add_function(wrap_pyfunction!(resolve_fulltext_search, m)?)?;
     m.add_class::<PyQueryBuilder>()?;
     m.add_class::<PyAstExpr>()?;
     m.add_class::<PyArrowStream>()?;

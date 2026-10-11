@@ -50,9 +50,10 @@ pub use optimizer::{AstOptimizer, OptimizationLevel};
 pub use schema::{
     ConformanceDiagnostic, ConformanceReport, ConstraintType, DEFAULT_MEMGRAPH_VECTOR_CAPACITY,
     DEFAULT_VECTOR_DIMENSIONS, DdlDialect, DiagnosticSeverity, FieldDescriptor, FieldType,
-    FullTextIndexConfig, IndexType, NodeSchema, RelationshipSchema, SchemaRegistry, SchemaSnapshot,
-    VectorIndexConfig, VectorSimilarity, canonical_fulltext_index_name,
-    canonical_vector_index_name, global_schema_registry,
+    FullTextIndexConfig, IndexType, NodeSchema, RelationshipSchema, ResolvedFullTextSearch,
+    SchemaRegistry, SchemaSnapshot, VectorIndexConfig, VectorSimilarity, adapt_tantivy_query,
+    canonical_fulltext_index_name, canonical_vector_index_name, global_schema_registry,
+    resolve_fulltext_search,
 };
 pub use topology::{GraphTopology, TopologyEdge, TopologyNode};
 pub use transaction::{

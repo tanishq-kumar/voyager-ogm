@@ -35,10 +35,16 @@ from voyager_ogm._voyager_rs import (
     emit_rel_index_ddl,
 )
 from voyager_ogm._voyager_rs import (
+    adapt_tantivy_query as _native_adapt_tantivy_query,
+)
+from voyager_ogm._voyager_rs import (
     canonical_fulltext_index_name as _native_canonical_fulltext_index_name,
 )
 from voyager_ogm._voyager_rs import (
     canonical_vector_index_name as _native_canonical_vector_index_name,
+)
+from voyager_ogm._voyager_rs import (
+    resolve_fulltext_search as _native_resolve_fulltext_search,
 )
 
 if TYPE_CHECKING:
@@ -154,6 +160,59 @@ def canonical_fulltext_index_name(
         if dialect.lower() in ("duckdb", "sql", "postgres", "postgresql", "age", "apache_age"):
             return f"idx_{lbl}_{suffix}_fts"
         return f"index_{lbl}_{suffix}"
+
+
+def adapt_tantivy_query(query: str, properties: Sequence[str] | None = None) -> str:
+    """Adapts a Memgraph MAGE Tantivy query using the native quote-aware lexical scanner.
+
+    Prefixes property field names with 'data.' while strictly preserving quoted literals,
+    escaped characters, and existing namespaces.
+
+    Args:
+        query: User full-text search term or expression (e.g. 'title:Graph AND body:Search').
+        properties: Optional sequence of property names to whitelist. If omitted or empty,
+            all un-namespaced field names preceding ':' are adapted.
+
+    Returns:
+        Adapted query string with 'data.' prefixes applied.
+    """
+    props = list(properties) if properties else []
+    try:
+        return _native_adapt_tantivy_query(query, props)
+    except Exception:
+        return query
+
+
+def resolve_fulltext_search(
+    dialect: str,
+    is_relationship: bool,
+    target_name: str,
+    falkordb_target: str,
+    query_string: str,
+    properties: Sequence[str] | None = None,
+) -> dict[str, str]:
+    """Resolves cross-dialect full-text procedure name, target arguments, and query adaptation.
+
+    Args:
+        dialect: Target graph database dialect ('cypher', 'memgraph', 'falkordb', etc.).
+        is_relationship: True if querying a Relationship entity, False if querying a Node.
+        target_name: Full-text index identifier name.
+        falkordb_target: Node label or relationship type (used by FalkorDB).
+        query_string: Search expression.
+        properties: Optional property list for Tantivy namespace adaptation.
+
+    Returns:
+        Dictionary containing 'procedure', 'target_argument', 'query_string', and 'yield_entity'.
+    """
+    props = list(properties) if properties else []
+    return _native_resolve_fulltext_search(
+        dialect,
+        is_relationship,
+        target_name,
+        falkordb_target,
+        query_string,
+        props,
+    )
 
 
 def _is_relationship_model(model: Any) -> bool:

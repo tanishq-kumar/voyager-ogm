@@ -309,6 +309,197 @@ impl FullTextIndexConfig {
     }
 }
 
+/// Quote-aware lexical adapter for Memgraph MAGE Tantivy queries.
+///
+/// Tantivy namespaces node and edge properties under `data.<property>`.
+/// This scanner adapts user-facing field queries (e.g. `title:Tantivy`) to
+/// `data.title:Tantivy` while strictly respecting:
+/// - Quoted string literals: text inside `"..."` is never modified.
+/// - Escaped characters: `\:` and `\"` are treated as literal characters.
+/// - Pre-existing namespaces: `data.title:` is not duplicated to `data.data.title:`.
+/// - Property whitelist: if `properties` is non-empty, only matching property names are prefixed.
+pub fn adapt_tantivy_query(query: &str, properties: &[String]) -> String {
+    if !query.contains(':') {
+        return query.to_string();
+    }
+
+    let mut result = String::with_capacity(query.len() + 16);
+    let chars: Vec<char> = query.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    let mut in_quote = false;
+    let mut escaped = false;
+
+    let prop_set: Option<std::collections::HashSet<String>> = if !properties.is_empty() {
+        Some(properties.iter().map(|p| p.to_ascii_lowercase()).collect())
+    } else {
+        None
+    };
+
+    while i < len {
+        let c = chars[i];
+
+        if escaped {
+            escaped = false;
+            result.push(c);
+            i += 1;
+            continue;
+        }
+
+        if c == '\\' {
+            escaped = true;
+            result.push(c);
+            i += 1;
+            continue;
+        }
+
+        if c == '"' {
+            in_quote = !in_quote;
+            result.push(c);
+            i += 1;
+            continue;
+        }
+
+        if !in_quote && (c.is_alphabetic() || c == '_') {
+            let at_boundary = i == 0 || {
+                let prev = chars[i - 1];
+                !prev.is_alphanumeric() && prev != '_' && prev != '.'
+            };
+
+            if at_boundary {
+                let start = i;
+                while i < len && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '.')
+                {
+                    i += 1;
+                }
+                let token: String = chars[start..i].iter().collect();
+
+                if i < len && chars[i] == ':' && (i + 1 >= len || chars[i + 1] != ':') {
+                    let already_namespaced = token.starts_with("data.");
+                    let should_prefix = if already_namespaced {
+                        false
+                    } else if let Some(ref set) = prop_set {
+                        set.contains(&token.to_ascii_lowercase())
+                    } else {
+                        !token.is_empty()
+                            && token.chars().all(|ch| ch.is_alphanumeric() || ch == '_')
+                    };
+
+                    if should_prefix {
+                        result.push_str("data.");
+                    }
+                    result.push_str(&token);
+                    result.push(':');
+                    i += 1;
+                    continue;
+                } else {
+                    result.push_str(&token);
+                    continue;
+                }
+            }
+        }
+
+        result.push(c);
+        i += 1;
+    }
+
+    result
+}
+
+/// Resolved procedure invocation and parameter arguments for cross-dialect full-text search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ResolvedFullTextSearch {
+    /// Target database procedure (e.g. `text_search.search`, `db.index.fulltext.queryNodes`).
+    pub procedure: String,
+    /// First argument identifier (index name for Neo4j/Memgraph, label or relationship type for FalkorDB).
+    pub target_argument: String,
+    /// Engine-adapted search expression (with Tantivy `data.` prefix if Memgraph).
+    pub query_string: String,
+    /// Default entity variable name yielded by the engine (`node`, `edge`, or `relationship`).
+    pub yield_entity: &'static str,
+}
+
+/// Resolves full-text search procedure call semantics for the target database dialect.
+pub fn resolve_fulltext_search(
+    dialect: DdlDialect,
+    is_relationship: bool,
+    target_name: &str,
+    falkordb_target: &str,
+    query_string: &str,
+    properties: &[String],
+) -> ResolvedFullTextSearch {
+    match dialect {
+        DdlDialect::Memgraph => {
+            let has_colon = query_string.contains(':');
+            let adapted = if has_colon {
+                adapt_tantivy_query(query_string, properties)
+            } else {
+                query_string.to_string()
+            };
+            if is_relationship {
+                let proc = if has_colon {
+                    "text_search.search_edges"
+                } else {
+                    "text_search.search_all_edges"
+                };
+                ResolvedFullTextSearch {
+                    procedure: proc.to_string(),
+                    target_argument: target_name.to_string(),
+                    query_string: adapted,
+                    yield_entity: "edge",
+                }
+            } else {
+                let proc = if has_colon {
+                    "text_search.search"
+                } else {
+                    "text_search.search_all"
+                };
+                ResolvedFullTextSearch {
+                    procedure: proc.to_string(),
+                    target_argument: target_name.to_string(),
+                    query_string: adapted,
+                    yield_entity: "node",
+                }
+            }
+        }
+        DdlDialect::FalkorDb => {
+            if is_relationship {
+                ResolvedFullTextSearch {
+                    procedure: "db.idx.fulltext.queryRelationships".to_string(),
+                    target_argument: falkordb_target.to_string(),
+                    query_string: query_string.to_string(),
+                    yield_entity: "relationship",
+                }
+            } else {
+                ResolvedFullTextSearch {
+                    procedure: "db.idx.fulltext.queryNodes".to_string(),
+                    target_argument: falkordb_target.to_string(),
+                    query_string: query_string.to_string(),
+                    yield_entity: "node",
+                }
+            }
+        }
+        _ => {
+            if is_relationship {
+                ResolvedFullTextSearch {
+                    procedure: "db.index.fulltext.queryRelationships".to_string(),
+                    target_argument: target_name.to_string(),
+                    query_string: query_string.to_string(),
+                    yield_entity: "relationship",
+                }
+            } else {
+                ResolvedFullTextSearch {
+                    procedure: "db.index.fulltext.queryNodes".to_string(),
+                    target_argument: target_name.to_string(),
+                    query_string: query_string.to_string(),
+                    yield_entity: "node",
+                }
+            }
+        }
+    }
+}
+
 /// Supported vector similarity functions for Approximate Nearest Neighbor (ANN) search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]

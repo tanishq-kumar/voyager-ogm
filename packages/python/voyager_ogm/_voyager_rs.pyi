@@ -66,6 +66,17 @@ class NativeQueryBuilder:
         self, procedure_name: str, args: list[Any], kwargs: dict[str, Any]
     ) -> None: ...
     def yield_items(self, items: list[str]) -> None: ...
+    def fulltext_search(
+        self,
+        dialect: str,
+        is_relationship: bool,
+        target_name: str,
+        falkordb_target: str,
+        query_string: str,
+        properties: list[str] = ...,
+        yield_node: str = "node",
+        yield_score: str = "score",
+    ) -> None: ...
     def explain(self) -> None: ...
     def profile(self) -> None: ...
     def execution_mode(self) -> str: ...
@@ -381,6 +392,21 @@ def canonical_fulltext_index_name(
     label: str, properties: list[str], dialect: str | None = None
 ) -> str:
     """Returns canonical full-text index name. Defaults to Cypher if dialect is omitted or unrecognized."""
+    ...
+
+def adapt_tantivy_query(query: str, properties: list[str] = ...) -> str:
+    """Adapts a Memgraph MAGE Tantivy query expression using quote-aware lexical scanning."""
+    ...
+
+def resolve_fulltext_search(
+    dialect: str,
+    is_relationship: bool,
+    target_name: str,
+    falkordb_target: str,
+    query_string: str,
+    properties: list[str] = ...,
+) -> dict[str, str]:
+    """Resolves cross-dialect full-text procedure name, target arguments, and query adaptation."""
     ...
 
 class AstExpr:

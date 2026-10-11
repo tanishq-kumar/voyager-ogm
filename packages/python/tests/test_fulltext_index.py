@@ -16,8 +16,10 @@ from voyager_ogm import (
     Session,
     TextIndex,
     VectorProperty,
+    adapt_tantivy_query,
     canonical_fulltext_index_name,
     fulltext_index,
+    resolve_fulltext_search,
 )
 from voyager_ogm._voyager_rs import (
     canonical_fulltext_index_name as native_canonical_fulltext_index_name,
@@ -772,3 +774,66 @@ class TestLiveEngineFullTextIntegration:
                 session.drop_indexes(LiveFalkorDoc)
             except Exception:
                 pass
+
+
+class TestRustTantivyAdapterAndNativeResolution:
+    """Tests the native Rust quote-aware Tantivy query adapter and cross-dialect resolution."""
+
+    def test_quote_aware_scanner_preserves_literals(self) -> None:
+        # Colons inside quotes are preserved
+        assert adapt_tantivy_query('title:"status: timeout"') == 'data.title:"status: timeout"'
+        assert (
+            adapt_tantivy_query('"colon: inside quotes" AND summary:valid')
+            == '"colon: inside quotes" AND data.summary:valid'
+        )
+
+        # Escaped characters
+        assert adapt_tantivy_query(r"url:https\:foo") == r"data.url:https\:foo"
+        assert adapt_tantivy_query(r"escaped\:colon") == r"escaped\:colon"
+
+        # Pre-existing data. namespace is not duplicated
+        assert adapt_tantivy_query("data.title:Graph") == "data.title:Graph"
+
+        # Property whitelist
+        assert (
+            adapt_tantivy_query("title:Rust AND other:Ignore", ["title", "author"])
+            == "data.title:Rust AND other:Ignore"
+        )
+
+    def test_native_resolve_fulltext_search(self) -> None:
+        # Memgraph node
+        mg_res = resolve_fulltext_search(
+            "memgraph",
+            is_relationship=False,
+            target_name="art_idx",
+            falkordb_target="Article",
+            query_string="title:Graph",
+        )
+        assert mg_res["procedure"] == "text_search.search"
+        assert mg_res["target_argument"] == "art_idx"
+        assert mg_res["query_string"] == "data.title:Graph"
+        assert mg_res["yield_entity"] == "node"
+
+        # FalkorDB node (uses falkordb_target as label)
+        falkor_res = resolve_fulltext_search(
+            "falkordb",
+            is_relationship=False,
+            target_name="custom_index_name",
+            falkordb_target="Article",
+            query_string="search query",
+        )
+        assert falkor_res["procedure"] == "db.idx.fulltext.queryNodes"
+        assert falkor_res["target_argument"] == "Article"
+        assert falkor_res["yield_entity"] == "node"
+
+        # Cypher relationship
+        cypher_res = resolve_fulltext_search(
+            "cypher",
+            is_relationship=True,
+            target_name="rel_idx",
+            falkordb_target="REVIEWED",
+            query_string="search query",
+        )
+        assert cypher_res["procedure"] == "db.index.fulltext.queryRelationships"
+        assert cypher_res["target_argument"] == "rel_idx"
+        assert cypher_res["yield_entity"] == "relationship"

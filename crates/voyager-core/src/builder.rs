@@ -30,6 +30,7 @@ use crate::ast::{
     AggregationFunc, AstNode, BinaryOp, Direction, ExecutionMode, LabelExpression, LiteralValue,
     NodeHandle, PathMode, ProjectionItem, QueryAstArena, UnaryOp,
 };
+use crate::schema::{DdlDialect, resolve_fulltext_search};
 
 #[derive(Debug, Clone)]
 struct PendingEdge {
@@ -332,6 +333,52 @@ impl QueryBuilder {
         {
             *yield_items = items;
         }
+        self
+    }
+
+    /// Constructs a cross-dialect full-text search procedure call and YIELD projection.
+    ///
+    /// Resolves target procedure names and query adaptations (e.g. Memgraph MAGE Tantivy
+    /// `data.` prefixing, Neo4j `db.index.fulltext...`, FalkorDB `db.idx.fulltext...`)
+    /// based on the target `dialect` and entity type.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fulltext_search(
+        &mut self,
+        dialect: DdlDialect,
+        is_relationship: bool,
+        target_name: &str,
+        falkordb_target: &str,
+        query_string: &str,
+        properties: &[String],
+        yield_node: Option<&str>,
+        yield_score: Option<&str>,
+    ) -> &mut Self {
+        let resolved = resolve_fulltext_search(
+            dialect,
+            is_relationship,
+            target_name,
+            falkordb_target,
+            query_string,
+            properties,
+        );
+        let arg0 = self.literal(resolved.target_argument);
+        let arg1 = self.literal(resolved.query_string);
+        self.call_procedure(resolved.procedure, vec![arg0, arg1]);
+
+        let y_node = yield_node.unwrap_or(resolved.yield_entity);
+        let y_score = yield_score.unwrap_or("score");
+
+        let node_item = if y_node != resolved.yield_entity {
+            format!("{} AS {}", resolved.yield_entity, y_node)
+        } else {
+            resolved.yield_entity.to_string()
+        };
+        let score_item = if y_score != "score" {
+            format!("score AS {}", y_score)
+        } else {
+            "score".to_string()
+        };
+        self.yield_items(vec![node_item, score_item]);
         self
     }
 
