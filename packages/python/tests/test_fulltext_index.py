@@ -376,7 +376,8 @@ class TestFullTextSearchQuery:
 
     def test_memgraph_colon_query_field_adaptation(self) -> None:
         class MgArticle(Node):
-            __fulltext_indexes__ = [FullTextIndex("content", name="mg_content_idx")]
+            __fulltext_indexes__ = [FullTextIndex(["title", "content"], name="mg_content_idx")]
+            title: str = Field()
             content: str = Field()
 
         class MgEdge(Relationship):
@@ -401,6 +402,21 @@ class TestFullTextSearchQuery:
         assert c_edge.parameters == {
             "p0": "mg_edge_idx",
             "p1": "data.summary:transaction",
+        }
+
+        # Property with regex metacharacters properly escaped via re.escape
+        class SpecialFieldDoc(Node):
+            __fulltext_indexes__ = [
+                FullTextIndex(["meta.title", "plain_field"], name="special_idx")
+            ]
+            plain_field: str = Field()
+
+        q_special = Query.fulltext_search(SpecialFieldDoc, "meta.title:test", dialect="memgraph")
+        c_special = q_special.compile()
+        assert c_special.statement == "CALL text_search.search($p0, $p1) YIELD node, score"
+        assert c_special.parameters == {
+            "p0": "special_idx",
+            "p1": "data.meta.title:test",
         }
 
     def test_fulltext_search_custom_index_no_lossy_split(self) -> None:

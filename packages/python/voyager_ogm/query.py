@@ -111,8 +111,8 @@ class ConformanceReport:
 def _resolve_fulltext_target(
     index_or_model: str | Any,
     dialect: str = "cypher",
-) -> tuple[bool, str, str]:
-    """Resolves full-text search target into (is_relationship, target_name, falkordb_target).
+) -> tuple[bool, str, str, list[str]]:
+    """Resolves full-text search target into (is_relationship, target_name, falkordb_target, properties).
 
     FalkorDB executes full-text procedures against node labels or relationship type names directly
     (e.g. ``CALL db.idx.fulltext.queryNodes('Label', ...)``), whereas openCypher / Neo4j
@@ -124,7 +124,7 @@ def _resolve_fulltext_target(
         so that the label or relationship type can be reliably resolved.
 
     Returns:
-        tuple[bool, str, str]: (is_rel, target_name, falkordb_target)
+        tuple[bool, str, str, list[str]]: (is_rel, target_name, falkordb_target, properties)
     """
     from voyager_ogm.schema import (
         SchemaRegistry,
@@ -142,34 +142,32 @@ def _resolve_fulltext_target(
                 else index_or_model.upper()
             )
             ft_list = rel_schema.get("fulltext_indexes", []) if rel_schema else []
+            props = [str(p) for p in ft_list[0].get("properties", [])] if ft_list else []
             if ft_list and ft_list[0].get("name"):
                 target_name = ft_list[0]["name"]
             elif ft_list:
-                target_name = canonical_fulltext_index_name(
-                    rel_type, ft_list[0].get("properties", []), dialect=dialect
-                )
+                target_name = canonical_fulltext_index_name(rel_type, props, dialect=dialect)
             else:
                 target_name = canonical_fulltext_index_name(rel_type, [], dialect=dialect)
-            return True, target_name, rel_type
+            return True, target_name, rel_type, props
         elif reg.has_node(index_or_model):
             node_schema = reg.get_node(index_or_model)
             primary_lbl = (
                 node_schema.get("labels", [index_or_model])[0] if node_schema else index_or_model
             )
             ft_list = node_schema.get("fulltext_indexes", []) if node_schema else []
+            props = [str(p) for p in ft_list[0].get("properties", [])] if ft_list else []
             if ft_list and ft_list[0].get("name"):
                 target_name = ft_list[0]["name"]
             elif ft_list:
-                target_name = canonical_fulltext_index_name(
-                    primary_lbl, ft_list[0].get("properties", []), dialect=dialect
-                )
+                target_name = canonical_fulltext_index_name(primary_lbl, props, dialect=dialect)
             else:
                 target_name = canonical_fulltext_index_name(primary_lbl, [], dialect=dialect)
-            return False, target_name, primary_lbl
+            return False, target_name, primary_lbl, props
         else:
             # Custom string index name without registered schema.
             # Avoid lossy string splitting (e.g. index_search -> search).
-            return False, index_or_model, index_or_model
+            return False, index_or_model, index_or_model, []
 
     # Model class path (Node or Relationship)
     is_rel = _is_relationship_model(index_or_model)
@@ -186,25 +184,26 @@ def _resolve_fulltext_target(
         )
 
     ft_list = getattr(index_or_model, "__fulltext_indexes__", None)
+    model_props: list[str] = []
     if ft_list:
         ft0 = ft_list[0]
+        props_raw = getattr(ft0, "properties", None) or (
+            ft0.get("properties") if isinstance(ft0, dict) else []
+        )
+        model_props = (
+            [str(p) for p in props_raw]
+            if isinstance(props_raw, (list, tuple))
+            else ([str(props_raw)] if props_raw else [])
+        )
         ft_name = getattr(ft0, "name", None) or (ft0.get("name") if isinstance(ft0, dict) else None)
         if ft_name:
             target_name = ft_name
         else:
-            props_raw = getattr(ft0, "properties", None) or (
-                ft0.get("properties") if isinstance(ft0, dict) else []
-            )
-            props = (
-                [str(p) for p in props_raw]
-                if isinstance(props_raw, (list, tuple))
-                else str(props_raw)
-            )
-            target_name = canonical_fulltext_index_name(entity_tag, props, dialect=dialect)
+            target_name = canonical_fulltext_index_name(entity_tag, model_props, dialect=dialect)
     else:
         target_name = canonical_fulltext_index_name(entity_tag, [], dialect=dialect)
 
-    return is_rel, target_name, entity_tag
+    return is_rel, target_name, entity_tag, model_props
 
 
 class Query:
@@ -614,7 +613,7 @@ class Query:
         Returns:
             The Query instance chained with the full-text search procedure call and YIELD clause.
         """
-        is_rel, target_name, falkordb_target = _resolve_fulltext_target(
+        is_rel, target_name, falkordb_target, target_props = _resolve_fulltext_target(
             index_or_model, dialect=dialect
         )
 
@@ -630,8 +629,13 @@ class Query:
             if ":" in query_string:
                 # Memgraph MAGE Tantivy namespaces node/edge properties under `data.<field>`.
                 # Adapt user-friendly field queries (e.g. 'title:Tantivy' -> 'data.title:Tantivy').
+                if target_props:
+                    escaped_fields = "|".join(re.escape(p) for p in target_props)
+                    field_re = rf"(?<!data\.)\b({escaped_fields}):"
+                else:
+                    field_re = r"(?<!data\.)\b([a-zA-Z_][a-zA-Z0-9_]*):"
                 adapted_query = re.sub(
-                    r"(?<!data\.)\b([a-zA-Z_][a-zA-Z0-9_]*):",
+                    field_re,
                     r"data.\1:",
                     query_string,
                 )
