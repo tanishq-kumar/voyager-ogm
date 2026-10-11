@@ -249,6 +249,66 @@ pub fn canonical_vector_index_name(label: &str, prop: &str, dialect: DdlDialect)
     }
 }
 
+/// Canonical default full-text index identifier across supported dialects.
+///
+/// Ensures uniform lowercase naming between DDL statement emitters and query builders:
+/// - Cypher / Memgraph / FalkorDB: `"index_{label}_{props}"`
+/// - DuckDB / SQL / Apache AGE: `"idx_{label}_{props}_fts"`
+pub fn canonical_fulltext_index_name(
+    label_or_type: &str,
+    properties: &[String],
+    dialect: DdlDialect,
+) -> String {
+    let lbl = label_or_type.to_ascii_lowercase();
+    let props = properties
+        .iter()
+        .map(|p| p.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join("_");
+    let suffix = if props.is_empty() {
+        "fulltext".to_string()
+    } else {
+        props
+    };
+    match dialect {
+        DdlDialect::Cypher | DdlDialect::Memgraph | DdlDialect::FalkorDb => {
+            format!("index_{lbl}_{suffix}")
+        }
+        DdlDialect::DuckDb | DdlDialect::Sql | DdlDialect::Age => {
+            format!("idx_{lbl}_{suffix}_fts")
+        }
+    }
+}
+
+/// Configuration for a full-text search index across one or more properties.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct FullTextIndexConfig {
+    /// Index name identifier.
+    pub name: String,
+    /// Property fields indexed by this full-text index.
+    pub properties: Vec<String>,
+    /// Language or analyzer configuration (e.g. "standard", "english", "unicode").
+    pub analyzer: Option<String>,
+}
+
+impl FullTextIndexConfig {
+    /// Creates a new full-text index configuration with a name and indexed property list.
+    pub fn new(name: impl Into<String>, properties: Vec<String>) -> Self {
+        Self {
+            name: name.into(),
+            properties,
+            analyzer: None,
+        }
+    }
+
+    /// Sets the text analyzer or language for this full-text index.
+    pub fn with_analyzer(mut self, analyzer: impl Into<String>) -> Self {
+        self.analyzer = Some(analyzer.into());
+        self
+    }
+}
+
 /// Supported vector similarity functions for Approximate Nearest Neighbor (ANN) search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -472,6 +532,9 @@ pub struct NodeSchema {
     pub fields: BTreeMap<String, FieldDescriptor>,
     /// Primary key property name if declared.
     pub primary_key: Option<String>,
+    /// Full-text search index configurations (single or multi-property).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub fulltext_indexes: Vec<FullTextIndexConfig>,
 }
 
 impl NodeSchema {
@@ -482,6 +545,7 @@ impl NodeSchema {
             labels,
             fields: BTreeMap::new(),
             primary_key: None,
+            fulltext_indexes: Vec::new(),
         }
     }
 
@@ -491,6 +555,12 @@ impl NodeSchema {
             self.primary_key = Some(field.name.clone());
         }
         self.fields.insert(field.name.clone(), field);
+        self
+    }
+
+    /// Appends a full-text search index configuration to this node schema.
+    pub fn with_fulltext_index(mut self, config: FullTextIndexConfig) -> Self {
+        self.fulltext_indexes.push(config);
         self
     }
 
@@ -540,6 +610,9 @@ pub struct RelationshipSchema {
     pub fields: BTreeMap<String, FieldDescriptor>,
     /// Whether this relationship is directed.
     pub directed: bool,
+    /// Full-text search index configurations (single or multi-property).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub fulltext_indexes: Vec<FullTextIndexConfig>,
 }
 
 impl RelationshipSchema {
@@ -552,6 +625,7 @@ impl RelationshipSchema {
             target_labels: Vec::new(),
             fields: BTreeMap::new(),
             directed: true,
+            fulltext_indexes: Vec::new(),
         }
     }
 
@@ -569,6 +643,12 @@ impl RelationshipSchema {
     /// Appends a field descriptor to this relationship schema.
     pub fn with_field(mut self, field: FieldDescriptor) -> Self {
         self.fields.insert(field.name.clone(), field);
+        self
+    }
+
+    /// Appends a full-text search index configuration to this relationship schema.
+    pub fn with_fulltext_index(mut self, config: FullTextIndexConfig) -> Self {
+        self.fulltext_indexes.push(config);
         self
     }
 

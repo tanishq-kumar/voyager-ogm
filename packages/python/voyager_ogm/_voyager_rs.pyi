@@ -122,6 +122,7 @@ class NativeSchemaRegistry:
         labels: list[str],
         fields: dict[str, Any] | list[dict[str, Any]],
         primary_key: str | None = None,
+        fulltext_indexes: list[Any] | None = None,
     ) -> None: ...
     def register_node_schema(self, schema: dict[str, Any]) -> None: ...
     def register_relationship(
@@ -132,6 +133,7 @@ class NativeSchemaRegistry:
         target_labels: list[str] | None = None,
         fields: dict[str, Any] | list[dict[str, Any]] | None = None,
         directed: bool = True,
+        fulltext_indexes: list[Any] | None = None,
     ) -> None: ...
     def register_relationship_schema(self, schema: dict[str, Any]) -> None: ...
     def get_node(self, name: str) -> dict[str, Any] | None: ...
@@ -373,6 +375,12 @@ def emit_rel_drop_constraint_ddl(
 ) -> list[str]: ...
 def canonical_vector_index_name(label: str, prop: str, dialect: str | None = None) -> str:
     """Returns canonical vector index name. Defaults to Cypher if dialect is omitted or unrecognized."""
+    ...
+
+def canonical_fulltext_index_name(
+    label: str, properties: list[str], dialect: str | None = None
+) -> str:
+    """Returns canonical full-text index name. Defaults to Cypher if dialect is omitted or unrecognized."""
     ...
 
 class AstExpr:

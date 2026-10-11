@@ -658,7 +658,13 @@ class Node:
                 if getattr(f_obj, "primary_key", False):
                     primary_key = getattr(f_obj, "name", None) or f_name
                     break
-            reg.register_node(name, labels, fields, primary_key)
+            fulltext_indexes = getattr(cls, "__fulltext_indexes__", None)
+            ft_list = None
+            if fulltext_indexes is not None:
+                ft_list = [
+                    ft.to_dict() if hasattr(ft, "to_dict") else ft for ft in fulltext_indexes
+                ]
+            reg.register_node(name, labels, fields, primary_key, ft_list)
         except Exception as e:
             logger.warning("Failed to register schema for node model %s: %s", cls.__name__, e)
             raise
@@ -942,6 +948,12 @@ class Relationship:
             fields = getattr(cls, "_schema_fields", {})
             direction = getattr(cls, "__direction__", "outgoing")
             directed = direction != "undirected"
+            fulltext_indexes = getattr(cls, "__fulltext_indexes__", None)
+            ft_list = None
+            if fulltext_indexes is not None:
+                ft_list = [
+                    ft.to_dict() if hasattr(ft, "to_dict") else ft for ft in fulltext_indexes
+                ]
             reg.register_relationship(
                 name,
                 type_name,
@@ -949,6 +961,7 @@ class Relationship:
                 target_labels if target_labels else None,
                 fields,
                 directed,
+                ft_list,
             )
         except Exception as e:
             logger.warning(

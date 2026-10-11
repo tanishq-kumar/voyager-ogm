@@ -90,7 +90,13 @@ from voyager_ogm.query import (
     profile,
     validate_query,
 )
-from voyager_ogm.schema import SchemaManager, SchemaRegistry
+from voyager_ogm.schema import (
+    FullTextIndex,
+    SchemaManager,
+    SchemaRegistry,
+    canonical_fulltext_index_name,
+    canonical_vector_index_name,
+)
 from voyager_ogm.session import (
     AsyncSession,
     ExecutionResult,
@@ -150,6 +156,7 @@ __all__ = [
     "Expression",
     "FalkorDBBridge",
     "Field",
+    "FullTextIndex",
     "FunctionExpr",
     "GraphQuery",
     "GraphRelationshipProperty",
@@ -194,6 +201,8 @@ __all__ = [
     "Transaction",
     "VoyagerConfig",
     "as_cte",
+    "canonical_fulltext_index_name",
+    "canonical_vector_index_name",
     "case",
     "chunk_dataframe",
     "chunk_records",

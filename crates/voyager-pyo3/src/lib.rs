@@ -27,7 +27,9 @@ use voyager_core::emitters::{AgeEmitter, CypherEmitter, IsoGqlEmitter, SqlPgqEmi
 use voyager_core::optimizer::{AstOptimizer, OptimizationLevel};
 use voyager_core::schema::{
     ConformanceReport, DEFAULT_VECTOR_DIMENSIONS, DdlDialect, FieldDescriptor, FieldType,
-    IndexType, NodeSchema, RelationshipSchema, SchemaRegistry, VectorIndexConfig, VectorSimilarity,
+    FullTextIndexConfig, IndexType, NodeSchema, RelationshipSchema, SchemaRegistry,
+    VectorIndexConfig, VectorSimilarity,
+    canonical_fulltext_index_name as core_canonical_fulltext_index_name,
     canonical_vector_index_name as core_canonical_vector_index_name, global_schema_registry,
 };
 use voyager_core::topology::GraphTopology;
@@ -1871,7 +1873,7 @@ impl PyQueryBuilder {
         }
 
         let compiled = match dialect.to_lowercase().as_str() {
-            "cypher" | "opencypher" | "neo4j" | "memgraph" => {
+            "cypher" | "opencypher" | "neo4j" | "memgraph" | "falkordb" | "falkor" => {
                 let mut emitter = CypherEmitter::new();
                 emitter
                     .visit_query(&arena, root)
@@ -3265,6 +3267,19 @@ fn node_schema_to_py<'py>(py: Python<'py>, node: &NodeSchema) -> PyResult<Bound<
         fields_dict.set_item(k, field_descriptor_to_py(py, v)?)?;
     }
     dict.set_item("fields", fields_dict)?;
+    let ft_list = PyList::empty(py);
+    for ft in &node.fulltext_indexes {
+        let ft_dict = PyDict::new(py);
+        ft_dict.set_item("name", &ft.name)?;
+        ft_dict.set_item("properties", &ft.properties)?;
+        if let Some(ref a) = ft.analyzer {
+            ft_dict.set_item("analyzer", a)?;
+        } else {
+            ft_dict.set_item("analyzer", py.None())?;
+        }
+        ft_list.append(ft_dict)?;
+    }
+    dict.set_item("fulltext_indexes", ft_list)?;
     Ok(dict)
 }
 
@@ -3283,7 +3298,79 @@ fn relationship_schema_to_py<'py>(
         fields_dict.set_item(k, field_descriptor_to_py(py, v)?)?;
     }
     dict.set_item("fields", fields_dict)?;
+    let ft_list = PyList::empty(py);
+    for ft in &rel.fulltext_indexes {
+        let ft_dict = PyDict::new(py);
+        ft_dict.set_item("name", &ft.name)?;
+        ft_dict.set_item("properties", &ft.properties)?;
+        if let Some(ref a) = ft.analyzer {
+            ft_dict.set_item("analyzer", a)?;
+        } else {
+            ft_dict.set_item("analyzer", py.None())?;
+        }
+        ft_list.append(ft_dict)?;
+    }
+    dict.set_item("fulltext_indexes", ft_list)?;
     Ok(dict)
+}
+
+fn parse_fulltext_index_config(val: &Bound<'_, PyAny>) -> PyResult<FullTextIndexConfig> {
+    if let Ok(dict) = val.downcast::<PyDict>() {
+        let name: String = dict
+            .get_item("name")?
+            .and_then(|v| if v.is_none() { None } else { v.extract().ok() })
+            .unwrap_or_default();
+        let properties: Vec<String> = if let Some(p) = dict.get_item("properties")? {
+            if let Ok(vec) = p.extract::<Vec<String>>() {
+                vec
+            } else if let Ok(s) = p.extract::<String>() {
+                vec![s]
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+        let analyzer: Option<String> = dict
+            .get_item("analyzer")?
+            .and_then(|v| if v.is_none() { None } else { v.extract().ok() });
+        let mut cfg = FullTextIndexConfig::new(name, properties);
+        if let Some(a) = analyzer {
+            cfg = cfg.with_analyzer(a);
+        }
+        Ok(cfg)
+    } else {
+        let name: String = if val.hasattr("name")? {
+            val.getattr("name")?
+                .extract::<Option<String>>()
+                .unwrap_or_default()
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let properties: Vec<String> = if val.hasattr("properties")? {
+            let p = val.getattr("properties")?;
+            if let Ok(vec) = p.extract::<Vec<String>>() {
+                vec
+            } else if let Ok(s) = p.extract::<String>() {
+                vec![s]
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+        let analyzer: Option<String> = if val.hasattr("analyzer")? {
+            val.getattr("analyzer")?.extract::<Option<String>>()?
+        } else {
+            None
+        };
+        let mut cfg = FullTextIndexConfig::new(name, properties);
+        if let Some(a) = analyzer {
+            cfg = cfg.with_analyzer(a);
+        }
+        Ok(cfg)
+    }
 }
 
 fn extract_node_schema(obj: &Bound<'_, PyAny>) -> PyResult<NodeSchema> {
@@ -3327,6 +3414,14 @@ fn extract_node_schema(obj: &Bound<'_, PyAny>) -> PyResult<NodeSchema> {
             }
             node.primary_key = Some(pk_name);
         }
+        if let Some(ft_list) = dict
+            .get_item("fulltext_indexes")?
+            .and_then(|ft_obj| ft_obj.downcast::<PyList>().ok().cloned())
+        {
+            for item in &ft_list {
+                node = node.with_fulltext_index(parse_fulltext_index_config(&item)?);
+            }
+        }
         Ok(node)
     } else {
         let name: String = if obj.hasattr("__name__")? {
@@ -3362,6 +3457,14 @@ fn extract_node_schema(obj: &Bound<'_, PyAny>) -> PyResult<NodeSchema> {
                     };
                     let desc = parse_field_descriptor(&field_name, &v)?;
                     node = node.with_field(desc);
+                }
+            }
+        }
+        if obj.hasattr("__fulltext_indexes__")? {
+            let ft_obj = obj.getattr("__fulltext_indexes__")?;
+            if let Ok(ft_list) = ft_obj.downcast::<PyList>() {
+                for item in ft_list {
+                    node = node.with_fulltext_index(parse_fulltext_index_config(&item)?);
                 }
             }
         }
@@ -3421,6 +3524,14 @@ fn extract_rel_schema(obj: &Bound<'_, PyAny>) -> PyResult<RelationshipSchema> {
                 }
             }
         }
+        if let Some(ft_list) = dict
+            .get_item("fulltext_indexes")?
+            .and_then(|ft_obj| ft_obj.downcast::<PyList>().ok().cloned())
+        {
+            for item in &ft_list {
+                rel = rel.with_fulltext_index(parse_fulltext_index_config(&item)?);
+            }
+        }
         Ok(rel)
     } else {
         let name: String = if obj.hasattr("__name__")? {
@@ -3467,6 +3578,14 @@ fn extract_rel_schema(obj: &Bound<'_, PyAny>) -> PyResult<RelationshipSchema> {
                     };
                     let desc = parse_field_descriptor(&field_name, &v)?;
                     rel = rel.with_field(desc);
+                }
+            }
+        }
+        if obj.hasattr("__fulltext_indexes__")? {
+            let ft_obj = obj.getattr("__fulltext_indexes__")?;
+            if let Ok(ft_list) = ft_obj.downcast::<PyList>() {
+                for item in ft_list {
+                    rel = rel.with_fulltext_index(parse_fulltext_index_config(&item)?);
                 }
             }
         }
@@ -3518,13 +3637,14 @@ impl PyNativeSchemaRegistry {
     }
 
     /// Registers a node schema with labels, fields, and optional primary key.
-    #[pyo3(signature = (name, labels, fields, primary_key=None))]
+    #[pyo3(signature = (name, labels, fields, primary_key=None, fulltext_indexes=None))]
     fn register_node(
         &self,
         name: String,
         labels: Vec<String>,
         fields: &Bound<'_, PyAny>,
         primary_key: Option<String>,
+        fulltext_indexes: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<()> {
         let mut node_schema = NodeSchema::new(name, labels);
         if let Ok(dict) = fields.downcast::<PyDict>() {
@@ -3555,6 +3675,14 @@ impl PyNativeSchemaRegistry {
             node_schema.primary_key = Some(pk);
         }
 
+        if let Some(list) =
+            fulltext_indexes.and_then(|ft_any| ft_any.downcast::<PyList>().ok().cloned())
+        {
+            for item in &list {
+                node_schema = node_schema.with_fulltext_index(parse_fulltext_index_config(&item)?);
+            }
+        }
+
         self.registry()
             .register_node(node_schema)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -3582,14 +3710,16 @@ impl PyNativeSchemaRegistry {
             } else {
                 empty_dict.into_any()
             };
-            self.register_node(name, labels, &fields_obj, pk)
+            let ft_obj = dict.get_item("fulltext_indexes")?;
+            self.register_node(name, labels, &fields_obj, pk, ft_obj.as_ref())
         } else {
             Err(PyTypeError::new_err("schema must be a dict"))
         }
     }
 
     /// Registers a relationship schema with endpoints, fields, and direction.
-    #[pyo3(signature = (name, type_name, source_labels=None, target_labels=None, fields=None, directed=true))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (name, type_name, source_labels=None, target_labels=None, fields=None, directed=true, fulltext_indexes=None))]
     fn register_relationship(
         &self,
         name: String,
@@ -3598,6 +3728,7 @@ impl PyNativeSchemaRegistry {
         target_labels: Option<Vec<String>>,
         fields: Option<&Bound<'_, PyAny>>,
         directed: bool,
+        fulltext_indexes: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<()> {
         let mut rel_schema = RelationshipSchema::new(name, type_name).directed(directed);
         if let (Some(src), Some(tgt)) = (source_labels, target_labels) {
@@ -3619,6 +3750,14 @@ impl PyNativeSchemaRegistry {
                     let desc = parse_field_descriptor("", &item)?;
                     rel_schema = rel_schema.with_field(desc);
                 }
+            }
+        }
+
+        if let Some(list) =
+            fulltext_indexes.and_then(|ft_any| ft_any.downcast::<PyList>().ok().cloned())
+        {
+            for item in &list {
+                rel_schema = rel_schema.with_fulltext_index(parse_fulltext_index_config(&item)?);
             }
         }
 
@@ -3659,6 +3798,7 @@ impl PyNativeSchemaRegistry {
                 .and_then(|v| v.extract::<bool>().ok())
                 .unwrap_or(true);
             let fields_obj = dict.get_item("fields")?;
+            let ft_obj = dict.get_item("fulltext_indexes")?;
             self.register_relationship(
                 name,
                 type_name,
@@ -3666,6 +3806,7 @@ impl PyNativeSchemaRegistry {
                 target_labels,
                 fields_obj.as_ref(),
                 directed,
+                ft_obj.as_ref(),
             )
         } else {
             Err(PyTypeError::new_err("schema must be a dict"))
@@ -4287,6 +4428,29 @@ fn canonical_vector_index_name(label: &str, prop: &str, dialect: Option<&str>) -
     Ok(core_canonical_vector_index_name(label, prop, ddl_dialect))
 }
 
+/// Returns the canonical deterministic full-text index name for a given label and properties across dialects.
+///
+/// Note: Defaults to Cypher naming (`index_{label.to_lowercase()}_{props.join("_").to_lowercase()}`)
+/// if `dialect` is omitted or unrecognized.
+#[pyfunction]
+#[pyo3(signature = (label, properties, dialect=None))]
+fn canonical_fulltext_index_name(
+    label: &str,
+    properties: Vec<String>,
+    dialect: Option<&str>,
+) -> PyResult<String> {
+    let ddl_dialect = if let Some(d) = dialect {
+        DdlDialect::parse_str(d).unwrap_or(DdlDialect::Cypher)
+    } else {
+        DdlDialect::Cypher
+    };
+    Ok(core_canonical_fulltext_index_name(
+        label,
+        &properties,
+        ddl_dialect,
+    ))
+}
+
 /// Native Python module definition for `_voyager_rs`.
 #[pymodule]
 fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -4322,6 +4486,7 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(emit_node_drop_constraint_ddl, m)?)?;
     m.add_function(wrap_pyfunction!(emit_rel_drop_constraint_ddl, m)?)?;
     m.add_function(wrap_pyfunction!(canonical_vector_index_name, m)?)?;
+    m.add_function(wrap_pyfunction!(canonical_fulltext_index_name, m)?)?;
     m.add_class::<PyQueryBuilder>()?;
     m.add_class::<PyAstExpr>()?;
     m.add_class::<PyArrowStream>()?;

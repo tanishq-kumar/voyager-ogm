@@ -7,7 +7,8 @@
 use crate::error::{Error, Result};
 use crate::schema::{
     DEFAULT_MEMGRAPH_VECTOR_CAPACITY, DEFAULT_VECTOR_DIMENSIONS, FieldDescriptor, FieldType,
-    IndexType, NodeSchema, RelationshipSchema, VectorSimilarity, canonical_vector_index_name,
+    IndexType, NodeSchema, RelationshipSchema, VectorSimilarity, canonical_fulltext_index_name,
+    canonical_vector_index_name,
 };
 
 /// Maps a canonical `FieldType` to the openCypher / Neo4j 5.x property type identifier.
@@ -214,6 +215,29 @@ pub fn emit_cypher_node_ddl(node: &NodeSchema, include_type_constraints: bool) -
         }
     }
 
+    for ft in &node.fulltext_indexes {
+        let i_name = if ft.name.is_empty() {
+            canonical_fulltext_index_name(primary_label, &ft.properties, DdlDialect::Cypher)
+        } else {
+            ft.name.clone()
+        };
+        let props_str = ft
+            .properties
+            .iter()
+            .map(|p| format!("n.{p}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if let Some(ref analyzer) = ft.analyzer {
+            statements.push(format!(
+                "CREATE FULLTEXT INDEX {i_name} IF NOT EXISTS FOR (n:{primary_label}) ON EACH [{props_str}] OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}}"
+            ));
+        } else {
+            statements.push(format!(
+                "CREATE FULLTEXT INDEX {i_name} IF NOT EXISTS FOR (n:{primary_label}) ON EACH [{props_str}]"
+            ));
+        }
+    }
+
     statements
 }
 
@@ -246,6 +270,29 @@ pub fn emit_cypher_rel_ddl(
             let t_name = cypher_rel_constraint_name(type_name, db_name, "type");
             statements.push(format!(
                 "CREATE CONSTRAINT {t_name} IF NOT EXISTS FOR ()-[r:{type_name}]-() REQUIRE r.{db_name} :: {neo4j_type}"
+            ));
+        }
+    }
+
+    for ft in &rel.fulltext_indexes {
+        let i_name = if ft.name.is_empty() {
+            canonical_fulltext_index_name(type_name, &ft.properties, DdlDialect::Cypher)
+        } else {
+            ft.name.clone()
+        };
+        let props_str = ft
+            .properties
+            .iter()
+            .map(|p| format!("r.{p}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if let Some(ref analyzer) = ft.analyzer {
+            statements.push(format!(
+                "CREATE FULLTEXT INDEX {i_name} IF NOT EXISTS FOR ()-[r:{type_name}]-() ON EACH [{props_str}] OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}}"
+            ));
+        } else {
+            statements.push(format!(
+                "CREATE FULLTEXT INDEX {i_name} IF NOT EXISTS FOR ()-[r:{type_name}]-() ON EACH [{props_str}]"
             ));
         }
     }
@@ -288,6 +335,15 @@ pub fn emit_cypher_drop_node_ddl(node: &NodeSchema, include_type_constraints: bo
         }
     }
 
+    for ft in &node.fulltext_indexes {
+        let i_name = if ft.name.is_empty() {
+            canonical_fulltext_index_name(primary_label, &ft.properties, DdlDialect::Cypher)
+        } else {
+            ft.name.clone()
+        };
+        statements.push(format!("DROP INDEX {i_name} IF EXISTS"));
+    }
+
     statements
 }
 
@@ -313,6 +369,15 @@ pub fn emit_cypher_drop_rel_ddl(
             let t_name = cypher_rel_constraint_name(type_name, db_name, "type");
             statements.push(format!("DROP CONSTRAINT {t_name} IF EXISTS"));
         }
+    }
+
+    for ft in &rel.fulltext_indexes {
+        let i_name = if ft.name.is_empty() {
+            canonical_fulltext_index_name(type_name, &ft.properties, DdlDialect::Cypher)
+        } else {
+            ft.name.clone()
+        };
+        statements.push(format!("DROP INDEX {i_name} IF EXISTS"));
     }
 
     statements
@@ -748,7 +813,10 @@ pub fn ensure_ddl_supported(dialect: &str, op: DdlOp) -> Result<DdlDialect> {
         return Ok(DdlDialect::FalkorDb);
     }
 
-    if matches!(norm.as_str(), "postgres" | "postgresql" | "sql_pgq" | "pgq") {
+    if matches!(
+        norm.as_str(),
+        "sql" | "postgres" | "postgresql" | "sql_pgq" | "pgq"
+    ) {
         return Ok(DdlDialect::Sql);
     }
 
@@ -799,6 +867,17 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                     }
                 }
             }
+            for ft in &node.fulltext_indexes {
+                let idx_name = if ft.name.is_empty() {
+                    canonical_fulltext_index_name(primary_label, &ft.properties, ddl_dialect)
+                } else {
+                    ft.name.clone()
+                };
+                let props_str = ft.properties.join(", ");
+                statements.push(format!(
+                    "CREATE TEXT INDEX {idx_name} ON :{primary_label}({props_str});"
+                ));
+            }
         }
         DdlDialect::DuckDb => {
             let table = primary_label.to_ascii_lowercase();
@@ -826,6 +905,18 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                     }
                 }
             }
+            for ft in &node.fulltext_indexes {
+                let pk = node.primary_key.as_deref().unwrap_or("id");
+                let props_str = ft
+                    .properties
+                    .iter()
+                    .map(|p| format!("'{p}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                statements.push(format!(
+                    "PRAGMA create_fts_index('{table}', '{pk}', {props_str});"
+                ));
+            }
         }
         DdlDialect::FalkorDb => {
             for field in node.fields.values() {
@@ -851,13 +942,25 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                     }
                 }
             }
+            for ft in &node.fulltext_indexes {
+                let props_str = ft
+                    .properties
+                    .iter()
+                    .map(|p| format!("'{p}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                statements.push(format!(
+                    "CALL db.idx.fulltext.createNodeIndex('{primary_label}', {props_str})"
+                ));
+            }
         }
         DdlDialect::Age => {
             let has_vector = node
                 .fields
                 .values()
                 .any(|f| f.index_type == Some(IndexType::Vector));
-            if !has_vector {
+            let has_fulltext = !node.fulltext_indexes.is_empty();
+            if !has_vector && !has_fulltext {
                 return Err(Error::UnsupportedDialect {
                     dialect: "Apache AGE".to_string(),
                     feature: "Cypher 'CREATE INDEX' queries. Indexes and constraints in Apache AGE must be defined directly on the underlying PostgreSQL relational tables (e.g. CREATE INDEX ON {graph}.\"Label\" USING gin (properties)).".to_string(),
@@ -878,6 +981,23 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                         field.name
                     ));
                 }
+            }
+            for ft in &node.fulltext_indexes {
+                let idx_name = if ft.name.is_empty() {
+                    canonical_fulltext_index_name(primary_label, &ft.properties, ddl_dialect)
+                } else {
+                    ft.name.clone()
+                };
+                let analyzer = ft.analyzer.as_deref().unwrap_or("english");
+                let expr = ft
+                    .properties
+                    .iter()
+                    .map(|p| format!("(properties->>'{p}')"))
+                    .collect::<Vec<_>>()
+                    .join(" || ' ' || ");
+                statements.push(format!(
+                    "CREATE INDEX IF NOT EXISTS {idx_name} ON ag_catalog.\"{primary_label}\" USING gin (to_tsvector('{analyzer}', {expr}));"
+                ));
             }
         }
         DdlDialect::Sql => {
@@ -905,6 +1025,23 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                         ));
                     }
                 }
+            }
+            for ft in &node.fulltext_indexes {
+                let idx_name = if ft.name.is_empty() {
+                    canonical_fulltext_index_name(primary_label, &ft.properties, ddl_dialect)
+                } else {
+                    ft.name.clone()
+                };
+                let analyzer = ft.analyzer.as_deref().unwrap_or("english");
+                let expr = ft
+                    .properties
+                    .iter()
+                    .map(|p| escape_sql_ident(p))
+                    .collect::<Vec<_>>()
+                    .join(" || ' ' || ");
+                statements.push(format!(
+                    "CREATE INDEX IF NOT EXISTS {idx_name} ON {q_table} USING gin (to_tsvector('{analyzer}', {expr}));"
+                ));
             }
         }
         DdlDialect::Cypher => {
@@ -957,6 +1094,28 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                     }
                 }
             }
+            for ft in &node.fulltext_indexes {
+                let idx_name = if ft.name.is_empty() {
+                    canonical_fulltext_index_name(primary_label, &ft.properties, ddl_dialect)
+                } else {
+                    ft.name.clone()
+                };
+                let props_str = ft
+                    .properties
+                    .iter()
+                    .map(|p| format!("n.{p}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if let Some(ref analyzer) = ft.analyzer {
+                    statements.push(format!(
+                        "CREATE FULLTEXT INDEX {idx_name} IF NOT EXISTS FOR (n:{primary_label}) ON EACH [{props_str}] OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}}"
+                    ));
+                } else {
+                    statements.push(format!(
+                        "CREATE FULLTEXT INDEX {idx_name} IF NOT EXISTS FOR (n:{primary_label}) ON EACH [{props_str}]"
+                    ));
+                }
+            }
         }
     }
     Ok(statements)
@@ -978,6 +1137,17 @@ pub fn emit_rel_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Result<Vec
                     ));
                 }
             }
+            for ft in &rel.fulltext_indexes {
+                let idx_name = if ft.name.is_empty() {
+                    canonical_fulltext_index_name(type_name, &ft.properties, ddl_dialect)
+                } else {
+                    ft.name.clone()
+                };
+                let props_str = ft.properties.join(", ");
+                statements.push(format!(
+                    "CREATE TEXT INDEX {idx_name} ON :{type_name}({props_str});"
+                ));
+            }
         }
         DdlDialect::DuckDb => {
             let table = type_name.to_ascii_lowercase();
@@ -991,8 +1161,25 @@ pub fn emit_rel_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Result<Vec
                     ));
                 }
             }
+            for ft in &rel.fulltext_indexes {
+                let props_str = ft
+                    .properties
+                    .iter()
+                    .map(|p| format!("'{p}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                statements.push(format!(
+                    "PRAGMA create_fts_index('{table}', 'id', {props_str});"
+                ));
+            }
         }
         DdlDialect::FalkorDb => {
+            if !rel.fulltext_indexes.is_empty() {
+                return Err(Error::UnsupportedDialect {
+                    dialect: "FalkorDB".to_string(),
+                    feature: "Full-text index creation on relationships. FalkorDB only supports db.idx.fulltext.createNodeIndex for nodes.".to_string(),
+                });
+            }
             for field in rel.fields.values() {
                 if is_pure_index_field(field) {
                     statements.push(format!(
@@ -1020,6 +1207,23 @@ pub fn emit_rel_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Result<Vec
                     ));
                 }
             }
+            for ft in &rel.fulltext_indexes {
+                let idx_name = if ft.name.is_empty() {
+                    canonical_fulltext_index_name(type_name, &ft.properties, ddl_dialect)
+                } else {
+                    ft.name.clone()
+                };
+                let analyzer = ft.analyzer.as_deref().unwrap_or("english");
+                let expr = ft
+                    .properties
+                    .iter()
+                    .map(|p| escape_sql_ident(p))
+                    .collect::<Vec<_>>()
+                    .join(" || ' ' || ");
+                statements.push(format!(
+                    "CREATE INDEX IF NOT EXISTS {idx_name} ON {q_table} USING gin (to_tsvector('{analyzer}', {expr}));"
+                ));
+            }
         }
         DdlDialect::Cypher => {
             for field in rel.fields.values() {
@@ -1028,6 +1232,28 @@ pub fn emit_rel_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Result<Vec
                     statements.push(format!(
                         "CREATE INDEX {i_name} IF NOT EXISTS FOR ()-[r:{type_name}]-() ON (r.{})",
                         field.name
+                    ));
+                }
+            }
+            for ft in &rel.fulltext_indexes {
+                let idx_name = if ft.name.is_empty() {
+                    canonical_fulltext_index_name(type_name, &ft.properties, ddl_dialect)
+                } else {
+                    ft.name.clone()
+                };
+                let props_str = ft
+                    .properties
+                    .iter()
+                    .map(|p| format!("r.{p}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if let Some(ref analyzer) = ft.analyzer {
+                    statements.push(format!(
+                        "CREATE FULLTEXT INDEX {idx_name} IF NOT EXISTS FOR ()-[r:{type_name}]-() ON EACH [{props_str}] OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}}"
+                    ));
+                } else {
+                    statements.push(format!(
+                        "CREATE FULLTEXT INDEX {idx_name} IF NOT EXISTS FOR ()-[r:{type_name}]-() ON EACH [{props_str}]"
                     ));
                 }
             }
@@ -1178,6 +1404,14 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
                     }
                 }
             }
+            for ft in &node.fulltext_indexes {
+                let idx_name = if ft.name.is_empty() {
+                    canonical_fulltext_index_name(primary_label, &ft.properties, ddl_dialect)
+                } else {
+                    ft.name.clone()
+                };
+                statements.push(format!("DROP TEXT INDEX {idx_name};"));
+            }
         }
         DdlDialect::DuckDb => {
             let table = primary_label.to_ascii_lowercase();
@@ -1197,6 +1431,9 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
                     statements.push(format!("DROP INDEX IF EXISTS {idx_name};"));
                 }
             }
+            for _ in &node.fulltext_indexes {
+                statements.push(format!("PRAGMA drop_fts_index('{table}');"));
+            }
         }
         DdlDialect::FalkorDb => {
             for field in node.fields.values() {
@@ -1214,13 +1451,17 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
                     }
                 }
             }
+            for _ in &node.fulltext_indexes {
+                statements.push(format!("CALL db.idx.fulltext.drop('{primary_label}')"));
+            }
         }
         DdlDialect::Age => {
             let has_vector = node
                 .fields
                 .values()
                 .any(|f| f.index_type == Some(IndexType::Vector));
-            if !has_vector {
+            let has_fulltext = !node.fulltext_indexes.is_empty();
+            if !has_vector && !has_fulltext {
                 return Err(Error::UnsupportedDialect {
                     dialect: "Apache AGE".to_string(),
                     feature: "Cypher 'DROP INDEX' queries. Indexes and constraints in Apache AGE must be defined directly on the underlying PostgreSQL relational tables.".to_string(),
@@ -1237,6 +1478,14 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
                         });
                     statements.push(format!("DROP INDEX IF EXISTS {idx_name};"));
                 }
+            }
+            for ft in &node.fulltext_indexes {
+                let idx_name = if ft.name.is_empty() {
+                    canonical_fulltext_index_name(primary_label, &ft.properties, ddl_dialect)
+                } else {
+                    ft.name.clone()
+                };
+                statements.push(format!("DROP INDEX IF EXISTS {idx_name};"));
             }
         }
         DdlDialect::Sql => {
@@ -1257,6 +1506,14 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
                     statements.push(format!("DROP INDEX IF EXISTS {idx_name};"));
                 }
             }
+            for ft in &node.fulltext_indexes {
+                let idx_name = if ft.name.is_empty() {
+                    canonical_fulltext_index_name(primary_label, &ft.properties, ddl_dialect)
+                } else {
+                    ft.name.clone()
+                };
+                statements.push(format!("DROP INDEX IF EXISTS {idx_name};"));
+            }
         }
         DdlDialect::Cypher => {
             for field in node.fields.values() {
@@ -1274,6 +1531,14 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
                         });
                     statements.push(format!("DROP INDEX {i_name} IF EXISTS"));
                 }
+            }
+            for ft in &node.fulltext_indexes {
+                let idx_name = if ft.name.is_empty() {
+                    canonical_fulltext_index_name(primary_label, &ft.properties, ddl_dialect)
+                } else {
+                    ft.name.clone()
+                };
+                statements.push(format!("DROP INDEX {idx_name} IF EXISTS"));
             }
         }
     }
@@ -1293,6 +1558,14 @@ pub fn emit_rel_drop_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Resul
                     statements.push(format!("DROP EDGE INDEX ON :{type_name}({});", field.name));
                 }
             }
+            for ft in &rel.fulltext_indexes {
+                let idx_name = if ft.name.is_empty() {
+                    canonical_fulltext_index_name(type_name, &ft.properties, ddl_dialect)
+                } else {
+                    ft.name.clone()
+                };
+                statements.push(format!("DROP TEXT INDEX {idx_name};"));
+            }
         }
         DdlDialect::DuckDb => {
             let table = type_name.to_ascii_lowercase();
@@ -1301,8 +1574,18 @@ pub fn emit_rel_drop_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Resul
                     statements.push(format!("DROP INDEX IF EXISTS idx_{table}_{};", field.name));
                 }
             }
+            for _ in &rel.fulltext_indexes {
+                statements.push(format!("PRAGMA drop_fts_index('{table}');"));
+            }
         }
         DdlDialect::FalkorDb => {
+            if !rel.fulltext_indexes.is_empty() {
+                return Err(Error::UnsupportedDialect {
+                    dialect: "FalkorDB".to_string(),
+                    feature: "Full-text indexes on relationships are not supported by FalkorDB."
+                        .to_string(),
+                });
+            }
             for field in rel.fields.values() {
                 if is_pure_index_field(field) {
                     statements.push(format!(
@@ -1325,6 +1608,14 @@ pub fn emit_rel_drop_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Resul
                     statements.push(format!("DROP INDEX IF EXISTS idx_{table}_{};", field.name));
                 }
             }
+            for ft in &rel.fulltext_indexes {
+                let idx_name = if ft.name.is_empty() {
+                    canonical_fulltext_index_name(type_name, &ft.properties, ddl_dialect)
+                } else {
+                    ft.name.clone()
+                };
+                statements.push(format!("DROP INDEX IF EXISTS {idx_name};"));
+            }
         }
         DdlDialect::Cypher => {
             for field in rel.fields.values() {
@@ -1332,6 +1623,14 @@ pub fn emit_rel_drop_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Resul
                     let i_name = cypher_rel_index_name(type_name, &field.name);
                     statements.push(format!("DROP INDEX {i_name} IF EXISTS"));
                 }
+            }
+            for ft in &rel.fulltext_indexes {
+                let idx_name = if ft.name.is_empty() {
+                    canonical_fulltext_index_name(type_name, &ft.properties, ddl_dialect)
+                } else {
+                    ft.name.clone()
+                };
+                statements.push(format!("DROP INDEX {idx_name} IF EXISTS"));
             }
         }
     }

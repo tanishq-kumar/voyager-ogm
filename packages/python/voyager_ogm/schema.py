@@ -8,6 +8,7 @@ All DDL statements are deterministically emitted via native voyager-core Rust em
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from voyager_ogm._voyager_rs import (
@@ -32,6 +33,9 @@ from voyager_ogm._voyager_rs import (
     emit_rel_drop_constraint_ddl,
     emit_rel_drop_index_ddl,
     emit_rel_index_ddl,
+)
+from voyager_ogm._voyager_rs import (
+    canonical_fulltext_index_name as _native_canonical_fulltext_index_name,
 )
 from voyager_ogm._voyager_rs import (
     canonical_vector_index_name as _native_canonical_vector_index_name,
@@ -70,6 +74,81 @@ def canonical_vector_index_name(label: str, prop: str, dialect: str = "cypher") 
         if dialect.lower() in ("duckdb", "sql", "postgres", "postgresql", "age", "apache_age"):
             return f"idx_{lbl}_{prp}_vector"
         return f"index_{lbl}_{prp}"
+
+
+@dataclass
+class FullTextIndex:
+    """Declarative configuration for a full-text search index across one or more properties.
+
+    Attributes:
+        properties: List of property names (or a single property name) to index.
+        name: Optional explicit index identifier name. If omitted, a canonical deterministic
+            name is generated.
+        analyzer: Full-text analyzer or language parser (e.g. 'standard', 'english').
+            Defaults to 'standard'.
+
+    Example:
+        >>> class Article(Node):
+        ...     __labels__ = ["Article"]
+        ...     __fulltext_indexes__ = [
+        ...         FullTextIndex(["title", "body"], name="article_fts", analyzer="english"),
+        ...     ]
+        ...     title: str
+        ...     body: str
+    """
+
+    properties: list[str] | str
+    name: str | None = None
+    analyzer: str = "standard"
+
+    def __post_init__(self) -> None:
+        if isinstance(self.properties, str):
+            self.properties = [self.properties]
+        elif not isinstance(self.properties, list):
+            self.properties = list(self.properties)
+        if not self.properties:
+            raise ValueError("FullTextIndex requires at least one property name")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Converts to dictionary representation suitable for schema serialization."""
+        return {
+            "name": self.name,
+            "properties": list(self.properties),
+            "analyzer": self.analyzer,
+        }
+
+
+def canonical_fulltext_index_name(
+    label_or_type: str,
+    properties: list[str] | str,
+    dialect: str = "cypher",
+) -> str:
+    """Returns the canonical deterministic full-text index name for a given label/type and properties across dialects.
+
+    - Cypher / Memgraph / FalkorDB: `index_{label.lower()}_{props.lower()}`
+    - DuckDB / SQL / Apache AGE: `idx_{label.lower()}_{props.lower()}_fts`
+
+    Args:
+        label_or_type: Entity node label or relationship type.
+        properties: Single property name or list of property names.
+        dialect: Target DDL dialect ('cypher', 'memgraph', 'falkordb', 'duckdb', etc.). Defaults to 'cypher'.
+
+    Returns:
+        Canonical full-text index name string.
+    """
+    props = [properties] if isinstance(properties, str) else list(properties)
+    try:
+        return _native_canonical_fulltext_index_name(label_or_type, props, dialect)
+    except Exception:
+        # Pure-Python fallback for environments where the native Rust extension is unavailable.
+        # NOTE: Keep this fallback in exact sync with `canonical_fulltext_index_name`
+        # in `crates/voyager-core/src/schema.rs`.
+        lbl = label_or_type.lower()
+        prp = "_".join(p.lower() for p in props)
+        suffix = prp if prp else "fulltext"
+        if dialect.lower() in ("duckdb", "sql", "postgres", "postgresql", "age", "apache_age"):
+            return f"idx_{lbl}_{suffix}_fts"
+        return f"index_{lbl}_{suffix}"
 
 
 def _is_relationship_model(model: Any) -> bool:
@@ -173,6 +252,15 @@ class SchemaManager:
     def canonical_vector_index_name(label: str, prop: str, dialect: str = "cypher") -> str:
         """Returns the canonical deterministic vector index name for a given label and property across dialects."""
         return canonical_vector_index_name(label, prop, dialect)
+
+    @staticmethod
+    def canonical_fulltext_index_name(
+        label_or_type: str,
+        properties: list[str] | str,
+        dialect: str = "cypher",
+    ) -> str:
+        """Returns the canonical deterministic full-text index name for a given label/type and properties across dialects."""
+        return canonical_fulltext_index_name(label_or_type, properties, dialect)
 
     @staticmethod
     def generate_cypher_ddl(
