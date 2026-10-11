@@ -710,7 +710,7 @@ fn test_fulltext_index_ddl_and_naming() {
     // Memgraph Rel DDL
     assert_eq!(
         emit_rel_index_ddl(&rel_schema, "memgraph").unwrap(),
-        vec!["CREATE TEXT INDEX rel_notes_idx ON :REVIEWED(notes);"]
+        vec!["CREATE TEXT EDGE INDEX rel_notes_idx ON :REVIEWED(notes);"]
     );
 
     // FalkorDB Rel DDL returns UnsupportedDialect error

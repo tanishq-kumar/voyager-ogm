@@ -671,6 +671,9 @@ class Query:
             node_yield, score_yield
         )
 
+    # Ergonomic alias for fulltext_search
+    text_search = fulltext_search
+
     @hybridmethod
     def unwind(self: Any, batch_param: str, alias: str = "row") -> Query:
         """Starts or appends an UNWIND batch expansion clause: `UNWIND $batch_param AS alias`.

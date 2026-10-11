@@ -94,8 +94,10 @@ from voyager_ogm.schema import (
     FullTextIndex,
     SchemaManager,
     SchemaRegistry,
+    TextIndex,
     canonical_fulltext_index_name,
     canonical_vector_index_name,
+    fulltext_index,
 )
 from voyager_ogm.session import (
     AsyncSession,
@@ -198,6 +200,7 @@ __all__ = [
     "SchemaValidationError",
     "Session",
     "SubqueryExpr",
+    "TextIndex",
     "Transaction",
     "VoyagerConfig",
     "as_cte",
@@ -217,6 +220,7 @@ __all__ = [
     "expressions",
     "extract_topology_from_query",
     "fn",
+    "fulltext_index",
     "func",
     "func_",
     "generate_synthetic_stream",

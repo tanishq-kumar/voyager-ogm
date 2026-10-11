@@ -14,7 +14,10 @@ from voyager_ogm import (
     Relationship,
     SchemaManager,
     Session,
+    TextIndex,
+    VectorProperty,
     canonical_fulltext_index_name,
+    fulltext_index,
 )
 from voyager_ogm._voyager_rs import (
     canonical_fulltext_index_name as native_canonical_fulltext_index_name,
@@ -154,7 +157,8 @@ class TestFullTextModelReflectionAndDDL:
         # Edge CREATE & DROP
         rel_create = SchemaManager.generate_index_ddl(Tagged, dialect="memgraph")
         assert any(
-            s == "CREATE TEXT INDEX tagged_context_idx ON :TAGGED(context);" for s in rel_create
+            s == "CREATE TEXT EDGE INDEX tagged_context_idx ON :TAGGED(context);"
+            for s in rel_create
         )
         rel_drop = SchemaManager.generate_drop_index_ddl(Tagged, dialect="memgraph")
         assert any(s == "DROP TEXT INDEX tagged_context_idx;" for s in rel_drop)
@@ -357,6 +361,75 @@ class TestFullTextSearchQuery:
         }
 
 
+class TestDeveloperErgonomicsAliases:
+    """Tests developer ergonomics aliases: TextIndex, text_search, and model-level entrypoints."""
+
+    def test_text_index_alias_and_model_reflection(self) -> None:
+        assert TextIndex is FullTextIndex
+        assert fulltext_index is FullTextIndex
+
+        class ArticleWithAlias(Node):
+            __fulltext_indexes__ = [TextIndex(["headline", "content"], name="article_alias_idx")]
+            headline: str = Field()
+            content: str = Field()
+
+        reg = SchemaRegistry.global_registry()
+        node_spec = reg.get_node("ArticleWithAlias")
+        assert node_spec is not None
+        assert node_spec["fulltext_indexes"][0]["name"] == "article_alias_idx"
+
+    def test_query_text_search_alias(self) -> None:
+        q1 = Query.fulltext_search("my_idx", "graph traversal")
+        q2 = Query.text_search("my_idx", "graph traversal")
+        assert q1.compile("cypher").statement == q2.compile("cypher").statement
+
+    def test_session_text_search_alias(self) -> None:
+        session = Session()
+        assert hasattr(session, "text_search")
+        assert session.text_search == session.fulltext_search
+
+    @pytest.mark.asyncio
+    async def test_async_session_text_search_alias(self) -> None:
+        session = AsyncSession()
+        assert hasattr(session, "text_search")
+        assert session.text_search == session.fulltext_search
+
+    def test_node_and_relationship_model_search_entrypoints(self) -> None:
+        class Paper(Node):
+            __fulltext_indexes__ = [TextIndex(["abstract"], name="paper_abstract_idx")]
+            abstract: str = Field()
+            embedding: list[float] = VectorProperty(dimensions=128)
+
+        class Cited(Relationship):
+            __fulltext_indexes__ = [TextIndex(["context"], name="cited_context_idx")]
+            context: str = Field()
+
+        # 1. Model text_search returns executable Query
+        q_ft = Paper.text_search("deep learning")
+        c_ft = q_ft.compile("cypher")
+        assert (
+            "paper_abstract_idx" in c_ft.statement
+            or "paper_abstract_idx" in c_ft.parameters.values()
+        )
+
+        # 2. Model fulltext_search returns executable Query
+        q_ft2 = Paper.fulltext_search("neural networks")
+        assert q_ft2.compile("cypher").statement == q_ft.compile("cypher").statement
+
+        # 3. Model vector_search returns executable Query
+        q_vec = Paper.vector_search([0.1] * 128, k=5)
+        c_vec = q_vec.compile("cypher")
+        assert "db.index.vector.queryNodes" in c_vec.statement
+
+        # 4. Relationship text_search & fulltext_search return executable Query
+        q_rel = Cited.text_search("survey paper")
+        c_rel = q_rel.compile("cypher")
+        assert (
+            "cited_context_idx" in c_rel.statement
+            or "cited_context_idx" in c_rel.parameters.values()
+        )
+
+
 class TestSessionFullTextLifecycle:
     """Tests session.apply_schema() and session.fulltext_search() execution."""
 
@@ -374,6 +447,10 @@ class TestSessionFullTextLifecycle:
         res = session.fulltext_search(ArticleBlog, "tutorial")
         assert res is not None
 
+        # Verify text_search alias
+        res_alias = session.text_search(ArticleBlog, "tutorial")
+        assert res_alias is not None
+
     @pytest.mark.asyncio
     async def test_async_session_apply_schema_and_fulltext_search(self) -> None:
         class AsyncArticle(Node):
@@ -388,6 +465,9 @@ class TestSessionFullTextLifecycle:
         res = await session.fulltext_search(AsyncArticle, "async guide")
         assert res is not None
 
+        res_alias = await session.text_search(AsyncArticle, "async guide")
+        assert res_alias is not None
+
 
 class TestLiveEngineFullTextIntegration:
     """Integration tests against live Neo4j, FalkorDB, and Memgraph instances when reachable."""
@@ -396,7 +476,7 @@ class TestLiveEngineFullTextIntegration:
         not is_port_open("127.0.0.1", 7687),
         reason="Neo4j container not reachable on port 7687",
     )
-    def test_live_neo4j_fulltext_lifecycle(self) -> None:
+    def test_live_neo4j_rich_multi_doc_and_relationship(self) -> None:
         pytest.importorskip("neo4j")
         from neo4j import GraphDatabase
 
@@ -408,34 +488,70 @@ class TestLiveEngineFullTextIntegration:
         try:
             session = Session(driver, dialect="cypher")
 
-            class LiveFtDoc(Node):
-                title: str = Field(index=True)
-                content: str = Field()
-                __fulltext_indexes__ = [
-                    FullTextIndex(["title", "content"], name="live_neo4j_ft_idx")
-                ]
+            class LiveNeoDoc(Node):
+                title: str = Field()
+                body: str = Field()
+                __fulltext_indexes__ = [TextIndex(["title", "body"], name="live_neo_doc_ft")]
+
+            class LiveReviewedRel(Relationship):
+                comment: str = Field()
+                __fulltext_indexes__ = [TextIndex(["comment"], name="live_neo_rev_ft")]
 
             try:
-                # 1. Apply schema (creates fulltext index)
-                applied = session.apply_schema(LiveFtDoc)
-                assert any("live_neo4j_ft_idx" in s for s in applied)
+                # 1. Clean up & Apply schema (creates fulltext indexes on node & rel)
+                try:
+                    session.drop_indexes(LiveNeoDoc, LiveReviewedRel)
+                except Exception:
+                    pass
+                applied = session.apply_schema(LiveNeoDoc, LiveReviewedRel)
+                assert any("live_neo_doc_ft" in s for s in applied)
+                assert any("live_neo_rev_ft" in s for s in applied)
 
-                # 2. Insert test node with text
-                session.execute(
-                    "MERGE (a:LiveFtDoc {title: 'Voyager Search', content: 'Distributed graph database search indexing'})"
+                # 2. Populate rich multi-document corpus and relationship
+                session.execute("MATCH (a:LiveNeoDoc) DETACH DELETE a")
+                session.execute("""
+                    CREATE (d1:LiveNeoDoc {
+                        title: 'Graph Databases in Practice',
+                        body: 'Neo4j and openCypher allow complex graph traversal, pattern matching, and high performance graph queries.'
+                    }),
+                    (d2:LiveNeoDoc {
+                        title: 'Vector Search and Embeddings',
+                        body: 'Dense vectors enable semantic similarity and retrieval augmented generation across documents.'
+                    }),
+                    (d3:LiveNeoDoc {
+                        title: 'Hybrid GraphRAG Systems',
+                        body: 'Combining graph traversal, vector embeddings, and fulltext search yields high precision reasoning.'
+                    }),
+                    (d1)-[:LIVEREVIEWEDREL {comment: 'stellar comprehensive graph query analysis'}]->(d3)
+                """)
+
+                # 3. Single term query with BM25 score ranking
+                results_term = session.text_search(LiveNeoDoc, "graph").all()
+                assert len(results_term) >= 2
+                assert all("score" in r and r["score"] > 0 for r in results_term)
+                # d1 has multiple occurrences of 'graph', so it ranks top
+                assert results_term[0]["node"]["title"] == "Graph Databases in Practice"
+                assert results_term[0]["score"] >= results_term[1]["score"]
+
+                # 4. Boolean AND query
+                results_bool = session.text_search(LiveNeoDoc, "vector AND retrieval").all()
+                assert len(results_bool) >= 1
+                assert results_bool[0]["node"]["title"] == "Vector Search and Embeddings"
+
+                # 5. Relationship full-text search via model entrypoint
+                query_rel = LiveReviewedRel.text_search("stellar")
+                rel_results = session.execute(query_rel).all()
+                assert len(rel_results) >= 1
+                assert "score" in rel_results[0]
+                assert rel_results[0]["score"] > 0
+                assert (
+                    rel_results[0]["node"]["comment"]
+                    == "stellar comprehensive graph query analysis"
                 )
-
-                # 3. Query via fulltext_search
-                results = session.fulltext_search(LiveFtDoc, "distributed")
-                records = results.all()
-                assert len(records) > 0
-                first = records[0]
-                assert "score" in first
-                assert first["node"]["title"] == "Voyager Search"
             finally:
                 try:
-                    session.execute("MATCH (a:LiveFtDoc) DETACH DELETE a")
-                    session.drop_indexes(LiveFtDoc)
+                    session.execute("MATCH (a:LiveNeoDoc) DETACH DELETE a")
+                    session.drop_indexes(LiveNeoDoc, LiveReviewedRel)
                 except Exception:
                     pass
         finally:
@@ -445,7 +561,7 @@ class TestLiveEngineFullTextIntegration:
         not is_port_open("127.0.0.1", 7688),
         reason="Memgraph container not reachable on port 7688",
     )
-    def test_live_memgraph_fulltext_lifecycle(self) -> None:
+    def test_live_memgraph_rich_multi_doc_and_relationship(self) -> None:
         pytest.importorskip("neo4j")
         from neo4j import GraphDatabase
 
@@ -454,32 +570,67 @@ class TestLiveEngineFullTextIntegration:
         try:
             session = Session(driver, dialect="memgraph")
 
-            class LiveMgFtDoc(Node):
+            class LiveMgDoc(Node):
                 title: str = Field()
                 summary: str = Field()
-                __fulltext_indexes__ = [FullTextIndex(["title", "summary"], name="live_mg_ft_idx")]
+                __fulltext_indexes__ = [TextIndex(["title", "summary"], name="live_mg_doc_ft")]
+
+            class LiveMgReviewedRel(Relationship):
+                comment: str = Field()
+                __fulltext_indexes__ = [TextIndex(["comment"], name="live_mg_rev_ft")]
 
             try:
-                # 1. Apply schema (creates text index)
-                applied = session.apply_schema(LiveMgFtDoc)
-                assert any("live_mg_ft_idx" in s for s in applied)
+                # 1. Clean up & Apply schema (creates Tantivy node index and edge index)
+                try:
+                    session.drop_indexes(LiveMgDoc, LiveMgReviewedRel)
+                except Exception:
+                    pass
+                applied = session.apply_schema(LiveMgDoc, LiveMgReviewedRel)
+                assert any("live_mg_doc_ft" in s for s in applied)
+                assert any("live_mg_rev_ft" in s for s in applied)
 
-                # 2. Insert test node
-                session.execute(
-                    "CREATE (a:LiveMgFtDoc {title: 'Voyager Memgraph', summary: 'Ultra-fast memory graph analytics'})"
+                # 2. Populate rich multi-document corpus and edge
+                session.execute("MATCH (a:LiveMgDoc) DETACH DELETE a")
+                session.execute("""
+                    CREATE (d1:LiveMgDoc {
+                        title: 'In-Memory Graph Analytics',
+                        summary: 'Memgraph provides high throughput MAGE algorithms and in-memory graph storage.'
+                    }),
+                    (d2:LiveMgDoc {
+                        title: 'Tantivy Full-Text Engine',
+                        summary: 'Tantivy powers lightning-fast text indexing and BM25 relevance scoring.'
+                    }),
+                    (d3:LiveMgDoc {
+                        title: 'Graph Streaming and Real-time Kafka',
+                        summary: 'Kafka streaming connects directly into Memgraph for real-time graph updates.'
+                    }),
+                    (d1)-[:LIVEMGREVIEWEDREL {comment: 'superb in-memory real-time graph performance'}]->(d3)
+                """)
+
+                # 3. Term search with score ranking
+                results_term = session.text_search(LiveMgDoc, "graph").all()
+                assert len(results_term) >= 2
+                assert all("score" in r and r["score"] > 0 for r in results_term)
+
+                # 4. Boolean AND query
+                results_bool = session.text_search(LiveMgDoc, "tantivy AND indexing").all()
+                assert len(results_bool) >= 1
+                assert results_bool[0]["node"]["title"] == "Tantivy Full-Text Engine"
+
+                # 5. Relationship full-text search via model entrypoint
+                query_rel = LiveMgReviewedRel.text_search("superb", dialect="memgraph")
+                rel_results = session.execute(query_rel).all()
+                assert len(rel_results) >= 1
+                assert "score" in rel_results[0]
+                assert rel_results[0]["score"] > 0
+                assert (
+                    rel_results[0]["node"]["comment"]
+                    == "superb in-memory real-time graph performance"
                 )
-
-                # 3. Query via fulltext_search
-                results = session.fulltext_search(LiveMgFtDoc, "analytics")
-                records = results.all()
-                assert len(records) > 0
-                first = records[0]
-                assert "score" in first
-                assert first["node"]["title"] == "Voyager Memgraph"
             finally:
                 try:
-                    session.execute("MATCH (a:LiveMgFtDoc) DETACH DELETE a")
-                    session.drop_indexes(LiveMgFtDoc)
+                    session.execute("MATCH (a:LiveMgDoc) DETACH DELETE a")
+                    session.drop_indexes(LiveMgDoc, LiveMgReviewedRel)
                 except Exception:
                     pass
         finally:
@@ -489,39 +640,51 @@ class TestLiveEngineFullTextIntegration:
         not is_port_open("127.0.0.1", 6379),
         reason="FalkorDB container not reachable on port 6379",
     )
-    def test_live_falkordb_fulltext_lifecycle(self) -> None:
+    def test_live_falkordb_rich_multi_doc(self) -> None:
         pytest.importorskip("falkordb")
         from falkordb import FalkorDB
 
         client = FalkorDB(host="127.0.0.1", port=6379)
-        g = client.select_graph("voyager_ft_test")
+        g = client.select_graph("voyager_ft_rich_test")
         session = Session(g, dialect="falkordb")
 
-        class LiveFalkorFtDoc(Node):
+        class LiveFalkorDoc(Node):
             title: str = Field()
             description: str = Field()
-            __fulltext_indexes__ = [FullTextIndex(["title", "description"])]
+            __fulltext_indexes__ = [TextIndex(["title", "description"])]
 
         try:
-            # 1. Apply schema (creates fulltext index)
-            applied = session.create_indexes(LiveFalkorFtDoc)
+            # 1. Clean up & Create indexes
+            try:
+                session.drop_indexes(LiveFalkorDoc)
+            except Exception:
+                pass
+            applied = session.create_indexes(LiveFalkorDoc)
             assert any("db.idx.fulltext.createNodeIndex" in s for s in applied)
 
-            # 2. Insert test node
-            session.execute(
-                "CREATE (a:LiveFalkorFtDoc {title: 'Voyager FalkorDB', description: 'Low latency redis graph database'})"
-            )
+            # 2. Populate multi-document corpus
+            session.execute("MATCH (a:LiveFalkorDoc) DETACH DELETE a")
+            session.execute("""
+                CREATE (:LiveFalkorDoc {title: 'Low Latency Graph Queries', description: 'FalkorDB leverages Redis data structures and RediSearch for sub-millisecond responses.'}),
+                       (:LiveFalkorDoc {title: 'RediSearch Integration', description: 'Fulltext search queries are executed directly on RediSearch index trees.'}),
+                       (:LiveFalkorDoc {title: 'Graph Algorithms and Traversal', description: 'Graph traversal matrix multiplication algorithms provide high performance.'})
+            """)
 
-            # 3. Query via fulltext_search
-            results = session.fulltext_search(LiveFalkorFtDoc, "latency")
-            records = results.all()
-            assert len(records) > 0
-            first = records[0]
-            assert "score" in first
-            assert first["node"]["title"] == "Voyager FalkorDB"
+            # 3. Query term matching multiple docs
+            res_graph = session.text_search(LiveFalkorDoc, "graph").all()
+            assert len(res_graph) == 2
+            assert all("score" in r and r["score"] > 0 for r in res_graph)
+
+            # 4. Query term matching specific doc via model entrypoint
+            res_redis = session.execute(
+                LiveFalkorDoc.text_search("redis", dialect="falkordb")
+            ).all()
+            assert len(res_redis) >= 1
+            assert res_redis[0]["node"]["title"] == "Low Latency Graph Queries"
+            assert res_redis[0]["score"] > 0
         finally:
             try:
-                session.execute("MATCH (a:LiveFalkorFtDoc) DETACH DELETE a")
-                session.drop_indexes(LiveFalkorFtDoc)
+                session.execute("MATCH (a:LiveFalkorDoc) DETACH DELETE a")
+                session.drop_indexes(LiveFalkorDoc)
             except Exception:
                 pass

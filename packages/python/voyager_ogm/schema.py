@@ -118,6 +118,11 @@ class FullTextIndex:
         }
 
 
+# Developer ergonomics aliases for FullTextIndex
+TextIndex = FullTextIndex
+fulltext_index = FullTextIndex
+
+
 def canonical_fulltext_index_name(
     label_or_type: str,
     properties: list[str] | str,

@@ -1145,7 +1145,7 @@ pub fn emit_rel_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Result<Vec
                 };
                 let props_str = ft.properties.join(", ");
                 statements.push(format!(
-                    "CREATE TEXT INDEX {idx_name} ON :{type_name}({props_str});"
+                    "CREATE TEXT EDGE INDEX {idx_name} ON :{type_name}({props_str});"
                 ));
             }
         }

@@ -398,6 +398,19 @@ def _adapt_bolt_parameters(params: dict[str, Any]) -> dict[str, Any]:
     return {k: _adapt_bolt_value(v) for k, v in params.items()}
 
 
+def _normalize_bolt_record(record: Any) -> dict[str, Any]:
+    """Extracts record dictionary from Bolt Record, ensuring relationship entities retain properties."""
+    if isinstance(record, dict):
+        return record
+    row = dict(record.data()) if hasattr(record, "data") else dict(record)
+    items_fn = getattr(record, "items", None)
+    if callable(items_fn):
+        for k, v in items_fn():
+            if hasattr(v, "start_node") and hasattr(v, "type"):
+                row[k] = dict(v)
+    return row
+
+
 class Neo4jBoltBridge:
     """Synchronous Neo4j / Memgraph Bolt protocol driver bridge."""
 
@@ -427,7 +440,7 @@ class Neo4jBoltBridge:
         session_kwargs = {"database": self.database} if self.database else {}
         with self.driver.session(**session_kwargs) as session:
             result = session.run(statement, params)
-            return [record.data() for record in result]
+            return [_normalize_bolt_record(record) for record in result]
 
     def execute_to_polars(
         self, statement: str, parameters: dict[str, Any] | None = None
@@ -537,8 +550,13 @@ class AsyncNeo4jBoltBridge:
         session_kwargs = {"database": self.database} if self.database else {}
         async with self.driver.session(**session_kwargs) as session:
             result = await session.run(statement, params)
-            records = await result.data()
-            return records
+            if hasattr(result, "__aiter__"):
+                records = []
+                async for record in result:
+                    records.append(_normalize_bolt_record(record))
+                return records
+            raw = await result.data()
+            return [_normalize_bolt_record(r) for r in raw]
 
     async def execute_to_polars(
         self, statement: str, parameters: dict[str, Any] | None = None

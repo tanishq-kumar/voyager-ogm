@@ -669,6 +669,71 @@ class Node:
             logger.warning("Failed to register schema for node model %s: %s", cls.__name__, e)
             raise
 
+    @classmethod
+    def fulltext_search(
+        cls,
+        query_string: str,
+        *,
+        yield_node: str = "node",
+        yield_score: str = "score",
+        dialect: str = "cypher",
+    ) -> Any:
+        """Starts a fluent Query full-text search against this model's full-text index.
+
+        Args:
+            query_string: Full-text search term or expression (e.g. 'search phrase').
+            yield_node: Yielded variable alias for the matched entity (default: 'node').
+            yield_score: Yielded variable alias for the relevance score (default: 'score').
+            dialect: Query dialect ('cypher', 'memgraph', 'falkordb', etc.). Defaults to 'cypher'.
+
+        Returns:
+            Fluent Query instance chained with the search procedure and yield clause.
+        """
+        from voyager_ogm.query import Query
+
+        return Query.fulltext_search(
+            cls,
+            query_string,
+            yield_node=yield_node,
+            yield_score=yield_score,
+            dialect=dialect,
+        )
+
+    text_search = fulltext_search
+
+    @classmethod
+    def vector_search(
+        cls,
+        query_vector: list[float],
+        k: int = 10,
+        *,
+        yield_node: str = "node",
+        yield_score: str = "score",
+        dialect: str = "cypher",
+    ) -> Any:
+        """Starts a fluent Query vector search against this model's vector property.
+
+        Args:
+            query_vector: Dense embedding vector to query with (list of floats).
+            k: Top-k nearest neighbors to retrieve (default: 10).
+            yield_node: Yielded variable alias for the matched entity node (default: 'node').
+            yield_score: Yielded variable alias for the similarity score (default: 'score').
+            dialect: Query dialect ('cypher', 'memgraph', etc.). Defaults to 'cypher'.
+
+        Returns:
+            Fluent Query instance chained with the vector search procedure call and yield clause.
+        """
+        from voyager_ogm.query import Query
+
+        return Query.vector_search(
+            cls,
+            query_vector,
+            k=k,
+            yield_node=yield_node,
+            yield_score=yield_score,
+            dialect=dialect,
+        )
+
     def __init__(self, alias: str | None = None, **values: Any) -> None:
         """Instantiates a Node entity with a unique query alias.
 
@@ -970,6 +1035,38 @@ class Relationship:
                 e,
             )
             raise
+
+    @classmethod
+    def fulltext_search(
+        cls,
+        query_string: str,
+        *,
+        yield_node: str = "node",
+        yield_score: str = "score",
+        dialect: str = "cypher",
+    ) -> Any:
+        """Starts a fluent Query full-text search against this relationship model's full-text index.
+
+        Args:
+            query_string: Full-text search term or expression (e.g. 'search phrase').
+            yield_node: Yielded variable alias for the matched relationship entity (default: 'node').
+            yield_score: Yielded variable alias for the relevance score (default: 'score').
+            dialect: Query dialect ('cypher', 'memgraph', 'falkordb', etc.). Defaults to 'cypher'.
+
+        Returns:
+            Fluent Query instance chained with the search procedure and yield clause.
+        """
+        from voyager_ogm.query import Query
+
+        return Query.fulltext_search(
+            cls,
+            query_string,
+            yield_node=yield_node,
+            yield_score=yield_score,
+            dialect=dialect,
+        )
+
+    text_search = fulltext_search
 
     def __init__(self, alias: str | None = None, **values: Any) -> None:
         """Instantiates a Relationship entity with a unique query alias.

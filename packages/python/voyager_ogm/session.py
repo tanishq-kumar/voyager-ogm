@@ -1364,6 +1364,9 @@ class Session(_SessionBase):
         )
         return self.execute(query)
 
+    # Ergonomic alias for fulltext_search
+    text_search = fulltext_search
+
     def transaction(self) -> Transaction:
         """Creates a fresh two-layer rollback transaction context manager.
 
@@ -1809,6 +1812,9 @@ class AsyncSession(_SessionBase):
             dialect=self._dialect,
         )
         return await self.execute(query)
+
+    # Ergonomic alias for fulltext_search
+    text_search = fulltext_search
 
     async def close(self) -> None:
         """Asynchronously closes the underlying database bridge and native connection pool, clearing the identity map."""
