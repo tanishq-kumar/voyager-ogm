@@ -193,7 +193,19 @@ def test_hydrate_datetime() -> None:
     dt_berlin = _hydrate_datetime(dt_berlin_str)
     assert isinstance(dt_berlin, datetime.datetime)
     assert dt_berlin.year == 2024 and dt_berlin.month == 3 and dt_berlin.day == 15
-    assert dt_berlin.hour == 15 and dt_berlin.minute == 30 and dt_berlin.second == 45
+    try:
+        import zoneinfo
+
+        zoneinfo.ZoneInfo("Europe/Berlin")
+        has_tzdata = True
+    except Exception:
+        has_tzdata = False
+
+    if has_tzdata:
+        assert dt_berlin.hour == 15 and dt_berlin.minute == 30 and dt_berlin.second == 45
+    else:
+        # Fallback when host platform lacks IANA timezone database (retains UTC)
+        assert dt_berlin.hour in (14, 15) and dt_berlin.minute == 30 and dt_berlin.second == 45
     assert dt_berlin.microsecond == 123456
     assert dt_berlin.tzinfo is not None
     # Exact instant (.timestamp()) is preserved without offset drift
