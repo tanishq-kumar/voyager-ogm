@@ -1759,6 +1759,7 @@ source = { editable = "." }
 dependencies = [
     { name = "polars" },
     { name = "pyarrow" },
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
 
 [package.optional-dependencies]
@@ -1780,6 +1781,7 @@ dev = [
     { name = "ruff" },
     { name = "sqlalchemy" },
     { name = "traitlets" },
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
 duckdb = [
     { name = "duckdb", marker = "python_full_version < '3.14'" },
@@ -1833,6 +1835,8 @@ requires-dist = [
     { name = "sqlalchemy", marker = "extra == 'sqlalchemy'", specifier = ">=2.0.0" },
     { name = "traitlets", marker = "extra == 'dev'", specifier = ">=5.0.0" },
     { name = "traitlets", marker = "extra == 'notebook'", specifier = ">=5.0.0" },
+    { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2024.1" },
+    { name = "tzdata", marker = "sys_platform == 'win32' and extra == 'dev'", specifier = ">=2024.1" },
 ]
 provides-extras = ["duckdb", "neo4j", "age", "sqlalchemy", "dev", "notebook"]
 
