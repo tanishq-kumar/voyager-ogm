@@ -273,8 +273,10 @@ For local build setup instructions, testing with database containers, and contri
 ---
 
 ## License
+ 
+Voyager OGM is dual-licensed under either:
 
-Dual-licensed under either:
+- **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- **MIT License** ([LICENSE](LICENSE) / [LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
+at your option.

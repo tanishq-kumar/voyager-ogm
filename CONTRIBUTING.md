@@ -166,7 +166,13 @@ Following the cleanup in `#131`, Voyager maintains a strict policy regarding API
 
 ---
 
-## 11. Need Help?
+## 11. Contribution Licensing
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in Voyager OGM by you, as defined in the Apache-2.0 license, shall be dual licensed under the MIT License and the Apache License, Version 2.0, without any additional terms or conditions.
+
+---
+
+## 12. Need Help?
 
 * **Questions or Ideas**: Start a thread in [GitHub Discussions](https://github.com/tanishq-kumar/voyager-ogm/discussions).
 * **Bugs & Requests**: Open an issue using our [Bug Report](https://github.com/tanishq-kumar/voyager-ogm/issues/new/choose) or [Feature Request](https://github.com/tanishq-kumar/voyager-ogm/issues/new/choose) templates.
