@@ -139,7 +139,17 @@ Voyager is structured as a monorepo:
 
 ---
 
-## 9. Submitting a Pull Request
+## 9. API Design & Alias Policy
+
+Following the cleanup in `#131`, Voyager maintains a strict policy regarding API aliases to prevent API surface sprawl and maintain documentation clarity:
+
+1. **Aliases Are Name Bindings Only**: Aliases must never duplicate underlying implementation logic or maintain parallel execution branches. An alias must be an exact one-line reference or binding to the canonical function, class, or method (e.g. `text_search = fulltext_search` or `TextIndex = FullTextIndex`).
+2. **Canonical Form Documented**: Documentation, guides, examples, and error diagnostics must always reference and teach the canonical name. The alias exists strictly for developer ergonomics across diverse graph communities (e.g. Memgraph's `text_search` alongside openCypher's `fulltext_search`).
+3. **Every Alias Must Be Tested**: Any introduced alias must have an explicit unit test asserting its identity or exact parity with the canonical implementation.
+
+---
+
+## 10. Submitting a Pull Request
 
 1. Create a feature branch from `main`:
    ```bash
@@ -156,7 +166,13 @@ Voyager is structured as a monorepo:
 
 ---
 
-## 10. Need Help?
+## 11. Contribution Licensing
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in Voyager OGM by you, as defined in the Apache-2.0 license, shall be dual licensed under the MIT License and the Apache License, Version 2.0, without any additional terms or conditions.
+
+---
+
+## 12. Need Help?
 
 * **Questions or Ideas**: Start a thread in [GitHub Discussions](https://github.com/tanishq-kumar/voyager-ogm/discussions).
 * **Bugs & Requests**: Open an issue using our [Bug Report](https://github.com/tanishq-kumar/voyager-ogm/issues/new/choose) or [Feature Request](https://github.com/tanishq-kumar/voyager-ogm/issues/new/choose) templates.

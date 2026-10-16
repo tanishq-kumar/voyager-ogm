@@ -1335,6 +1335,38 @@ class Session(_SessionBase):
         )
         return self.execute(query)
 
+    def fulltext_search(
+        self,
+        index_or_model: type[Node] | type[Relationship] | str | Any,
+        query_string: str,
+        yield_node: str = "node",
+        yield_score: str = "score",
+    ) -> ExecutionResult:
+        """Executes a full-text search query against the database.
+
+        Calls the engine's full-text search procedure and yields matched entities and scores.
+
+        Args:
+            index_or_model: Target full-text index name (str) or a Node/Relationship model class.
+            query_string: Full-text search search term or expression.
+            yield_node: Yielded variable alias for the matched entity (default: 'node').
+            yield_score: Yielded variable alias for the relevance score (default: 'score').
+
+        Returns:
+            ExecutionResult containing matched records with entities and scores.
+        """
+        query = Query.fulltext_search(
+            index_or_model,
+            query_string,
+            yield_node=yield_node,
+            yield_score=yield_score,
+            dialect=self._dialect,
+        )
+        return self.execute(query)
+
+    # Ergonomic alias for fulltext_search
+    text_search = fulltext_search
+
     def transaction(self) -> Transaction:
         """Creates a fresh two-layer rollback transaction context manager.
 
@@ -1751,6 +1783,38 @@ class AsyncSession(_SessionBase):
             dialect=self._dialect,
         )
         return await self.execute(query)
+
+    async def fulltext_search(
+        self,
+        index_or_model: type[Node] | type[Relationship] | str | Any,
+        query_string: str,
+        yield_node: str = "node",
+        yield_score: str = "score",
+    ) -> ExecutionResult:
+        """Asynchronously executes a full-text search query against the database.
+
+        Calls the engine's full-text search procedure and yields matched entities and scores.
+
+        Args:
+            index_or_model: Target full-text index name (str) or a Node/Relationship model class.
+            query_string: Full-text search search term or expression.
+            yield_node: Yielded variable alias for the matched entity (default: 'node').
+            yield_score: Yielded variable alias for the relevance score (default: 'score').
+
+        Returns:
+            ExecutionResult containing matched records with entities and scores.
+        """
+        query = Query.fulltext_search(
+            index_or_model,
+            query_string,
+            yield_node=yield_node,
+            yield_score=yield_score,
+            dialect=self._dialect,
+        )
+        return await self.execute(query)
+
+    # Ergonomic alias for fulltext_search
+    text_search = fulltext_search
 
     async def close(self) -> None:
         """Asynchronously closes the underlying database bridge and native connection pool, clearing the identity map."""

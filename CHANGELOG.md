@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Full-Text Index DDL Generation and Query Integration (#113)**:
+  - Added declarative `FullTextIndex(properties, name=None, analyzer="standard")` configuration to `voyager_ogm.schema` and re-exported in `voyager_ogm` (with `TextIndex` and `fulltext_index` developer ergonomics aliases).
+  - Added model metadata reflection on `Node` and `Relationship` subclasses via `__fulltext_indexes__`.
+  - Implemented multi-dialect full-text index DDL generation and drop statements in `voyager-core`:
+    - **Neo4j 5+ / openCypher**: `CREATE FULLTEXT INDEX {index_name} IF NOT EXISTS FOR (n:{label}) ON EACH [n.{p1}, ...] OPTIONS {indexConfig: {`fulltext.analyzer`: '{analyzer}'}}` (and `FOR ()-[r:{type}]-() ON EACH [r.{p1}, ...]`) with `DROP INDEX {index_name} IF EXISTS`.
+    - **Memgraph (MAGE Tantivy)**: `CREATE TEXT INDEX {index_name} ON :{label_or_type}({props});` for nodes and `CREATE TEXT EDGE INDEX ...` for relationships, with `DROP TEXT INDEX {index_name};`.
+    - **DuckDB (fts)**: `PRAGMA create_fts_index('{table}', '{pk}', '{props}');` and `PRAGMA drop_fts_index('{table}');`.
+    - **FalkorDB (RediSearch)**: `CALL db.idx.fulltext.createNodeIndex('{label}', '{props}')` and `CALL db.idx.fulltext.drop('{label}')` (with explicit `UnsupportedDialect` error for unsupported relationship full-text indexes).
+    - **Apache AGE / PostgreSQL (GIN)**: GIN index creation on `to_tsvector` over concatenated properties and `DROP INDEX IF EXISTS {index_name};` (verified via compiled DDL snapshot tests).
+  - Centralized canonical full-text index naming authority (`canonical_fulltext_index_name`) in `voyager-core`, exposed via PyO3 to Python to prevent dual bookkeeping.
+  - Added full-text search query builder `Query.fulltext_search(index_or_model, query_string, yield_node="node", yield_score="score", dialect="cypher")` (with `Query.text_search` alias):
+    - openCypher: routes to `db.index.fulltext.queryNodes` and `db.index.fulltext.queryRelationships`.
+    - Memgraph: routes to `text_search.search_all` (or `text_search.search` for field queries with automatic Tantivy `data.<field>` property mapping) and `text_search.search_all_edges` (or `text_search.search_edges`).
+    - FalkorDB: routes to `db.idx.fulltext.queryNodes` and `db.idx.fulltext.queryRelationships`.
+  - Added convenience session facades on `Session.fulltext_search()` / `Session.text_search()` and `AsyncSession.fulltext_search()` / `AsyncSession.text_search()`.
+  - Added model search entrypoints `Node.text_search()` / `fulltext_search()` and `Relationship.text_search()` / `fulltext_search()`.
+
 ## [0.4.0-alpha.6] - 2026-10-02
 
 ### Added

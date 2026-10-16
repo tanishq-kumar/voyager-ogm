@@ -107,6 +107,104 @@ class ConformanceReport:
             raise SchemaValidationError("Query topology violates schema:\n" + "\n".join(lines))
 
 
+def _resolve_fulltext_target(
+    index_or_model: str | Any,
+    dialect: str = "cypher",
+) -> tuple[bool, str, str, list[str]]:
+    """Resolves full-text search target into (is_relationship, target_name, falkordb_target, properties).
+
+    FalkorDB executes full-text procedures against node labels or relationship type names directly
+    (e.g. ``CALL db.idx.fulltext.queryNodes('Label', ...)``), whereas openCypher / Neo4j
+    and Memgraph reference the index by its created identifier name.
+
+    Note:
+        When using FalkorDB with custom index names that differ from canonical conventions,
+        pass the model class (Node or Relationship) rather than a raw index name string,
+        so that the label or relationship type can be reliably resolved.
+
+    Returns:
+        tuple[bool, str, str, list[str]]: (is_rel, target_name, falkordb_target, properties)
+    """
+    from voyager_ogm.schema import (
+        SchemaRegistry,
+        _is_relationship_model,
+        canonical_fulltext_index_name,
+    )
+
+    if isinstance(index_or_model, str):
+        reg = SchemaRegistry.global_registry()
+        if reg.has_relationship(index_or_model):
+            rel_schema = reg.get_relationship(index_or_model)
+            rel_type = (
+                rel_schema.get("type_name", index_or_model.upper())
+                if rel_schema
+                else index_or_model.upper()
+            )
+            ft_list = rel_schema.get("fulltext_indexes", []) if rel_schema else []
+            props = [str(p) for p in ft_list[0].get("properties", [])] if ft_list else []
+            if ft_list and ft_list[0].get("name"):
+                target_name = ft_list[0]["name"]
+            elif ft_list:
+                target_name = canonical_fulltext_index_name(rel_type, props, dialect=dialect)
+            else:
+                target_name = canonical_fulltext_index_name(rel_type, [], dialect=dialect)
+            return True, target_name, rel_type, props
+        elif reg.has_node(index_or_model):
+            node_schema = reg.get_node(index_or_model)
+            primary_lbl = (
+                node_schema.get("labels", [index_or_model])[0] if node_schema else index_or_model
+            )
+            ft_list = node_schema.get("fulltext_indexes", []) if node_schema else []
+            props = [str(p) for p in ft_list[0].get("properties", [])] if ft_list else []
+            if ft_list and ft_list[0].get("name"):
+                target_name = ft_list[0]["name"]
+            elif ft_list:
+                target_name = canonical_fulltext_index_name(primary_lbl, props, dialect=dialect)
+            else:
+                target_name = canonical_fulltext_index_name(primary_lbl, [], dialect=dialect)
+            return False, target_name, primary_lbl, props
+        else:
+            # Custom string index name without registered schema.
+            # Avoid lossy string splitting (e.g. index_search -> search).
+            return False, index_or_model, index_or_model, []
+
+    # Model class path (Node or Relationship)
+    is_rel = _is_relationship_model(index_or_model)
+    if is_rel:
+        entity_tag = (
+            getattr(index_or_model, "__type__", None)
+            or getattr(index_or_model, "__name__", "REL").upper()
+        )
+    else:
+        entity_tag = getattr(
+            index_or_model,
+            "_cached_label",
+            getattr(index_or_model, "__name__", "Node"),
+        )
+
+    ft_list = getattr(index_or_model, "__fulltext_indexes__", None)
+    model_props: list[str] = []
+    if ft_list:
+        ft0 = ft_list[0]
+        props_raw = getattr(ft0, "properties", None) or (
+            ft0.get("properties") if isinstance(ft0, dict) else []
+        )
+        model_props = (
+            [str(p) for p in props_raw]
+            if isinstance(props_raw, (list, tuple))
+            else ([str(props_raw)] if props_raw else [])
+        )
+        ft_name = getattr(ft0, "name", None) or (ft0.get("name") if isinstance(ft0, dict) else None)
+        if ft_name:
+            target_name = ft_name
+        else:
+            target_name = canonical_fulltext_index_name(entity_tag, model_props, dialect=dialect)
+    else:
+        target_name = canonical_fulltext_index_name(entity_tag, [], dialect=dialect)
+
+    return is_rel, target_name, entity_tag, model_props
+
+
 class Query:
     """Fluent Graph Query Builder with multi-dialect compilation.
 
@@ -481,6 +579,62 @@ class Query:
         return q.call("db.index.vector.queryNodes", index_name, k, query_vector).yield_(
             node_yield, score_yield
         )
+
+    @hybridmethod
+    def fulltext_search(
+        self: Any,
+        index_or_model: str | Any,
+        query_string: str,
+        yield_node: str = "node",
+        yield_score: str = "score",
+        dialect: str = "cypher",
+    ) -> Query:
+        """Starts or appends a full-text search procedure call.
+
+        Supports cross-dialect execution:
+        - openCypher / Neo4j 5+:
+            - Node: `CALL db.index.fulltext.queryNodes(index_name, query_string) YIELD node, score`
+            - Rel: `CALL db.index.fulltext.queryRelationships(index_name, query_string) YIELD relationship AS node, score`
+        - Memgraph (MAGE Tantivy):
+            - Node: `CALL text_search.search_all(index_name, query_string) YIELD node, score` (or `text_search.search` for field queries)
+            - Rel: `CALL text_search.search_all_edges(index_name, query_string) YIELD edge AS node, score` (or `text_search.search_edges`)
+        - FalkorDB (RediSearch):
+            - Node: `CALL db.idx.fulltext.queryNodes(label, query_string) YIELD node, score`
+            - Rel: `CALL db.idx.fulltext.queryRelationships(rel_type, query_string) YIELD relationship AS node, score`
+
+        Args:
+            index_or_model: Target index name (str) or a Node / Relationship model class.
+            query_string: Full-text search term or expression (e.g. 'search phrase').
+            yield_node: Yielded variable alias for the matched entity (default: 'node').
+            yield_score: Yielded variable alias for the relevance score (default: 'score').
+            dialect: Query dialect ('cypher', 'memgraph', 'falkordb', etc.). Defaults to 'cypher'.
+
+        Returns:
+            The Query instance chained with the full-text search procedure call and YIELD clause.
+        """
+        is_rel, target_name, falkordb_target, target_props = _resolve_fulltext_target(
+            index_or_model, dialect=dialect
+        )
+
+        if isinstance(self, type):
+            q = self()
+        else:
+            q = self
+
+        q._native.fulltext_search(
+            dialect,
+            is_rel,
+            target_name,
+            falkordb_target,
+            query_string,
+            target_props,
+            yield_node,
+            yield_score,
+        )
+        return q
+
+    # Ergonomic alias for fulltext_search
+    text_search = fulltext_search
 
     @hybridmethod
     def unwind(self: Any, batch_param: str, alias: str = "row") -> Query:
