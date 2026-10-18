@@ -391,8 +391,13 @@ async def test_postgres_async_bridge_simulation():
 def test_bridge_registry_and_uri_auto_resolution():
     """Test that create_bridge auto-detects driver types and resolves URI schemes."""
     # 1. Null / Mock fallbacks
-    assert isinstance(create_bridge(None), MockBridge)
-    assert isinstance(create_bridge(None, is_async=True), AsyncMockBridge)
+    assert isinstance(create_bridge(None, fallback="mock"), MockBridge)
+    assert isinstance(create_bridge(None, is_async=True, fallback="mock"), AsyncMockBridge)
+    with pytest.raises(ValueError, match="No database driver, connection, or URI provided"):
+        create_bridge(None)
+    with pytest.raises(ValueError, match="No database driver, connection, or URI provided"):
+        create_bridge(None, is_async=True)
+
     assert isinstance(create_bridge(MockBridge()), MockBridge)
     assert isinstance(create_bridge(AsyncMockBridge(), is_async=True), AsyncMockBridge)
     assert isinstance(create_bridge("mock://test"), MockBridge)
@@ -433,8 +438,14 @@ def test_bridge_registry_and_uri_auto_resolution():
     assert isinstance(create_bridge(neo_inst), Neo4jBoltBridge)
 
     # 5. Loud rejection of unsupported schemes and types (no silent MockBridge fallback)
-    with pytest.raises(ValueError, match="Unsupported database URI scheme 'couchbase'"):
+    with pytest.raises(
+        ValueError, match="No bridge available for URI 'couchbase://localhost:8091'"
+    ):
         create_bridge("couchbase://localhost:8091")
+
+    # Explicit fallback='mock' escape hatch
+    assert isinstance(create_bridge("couchbase://localhost:8091", fallback="mock"), MockBridge)
+    assert isinstance(create_bridge("postgress://localhost:5432", fallback="mock"), MockBridge)
 
     with pytest.raises(ValueError, match="Invalid connection URI"):
         create_bridge("not_a_uri")

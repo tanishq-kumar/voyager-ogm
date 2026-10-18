@@ -58,8 +58,10 @@ def main() -> None:
     # This JSON/dict schema represents the cross-language ABI consumed by TypeScript SDK,
     # MCP tools, and external services.
     spec = {
+        "spec_version": 1,
         "matches": [
             {
+                "spec_version": 1,
                 "optional": False,
                 "paths": [
                     [
@@ -100,8 +102,10 @@ def main() -> None:
     # 5. Mutate spec dictionary directly (e.g. as a TypeScript SDK or MCP tool would)
     print("4. Spec Mutation across ABI Boundary:")
     mutated_spec = {
+        "spec_version": 1,
         "matches": [
             {
+                "spec_version": 1,
                 "optional": False,
                 "paths": [
                     [

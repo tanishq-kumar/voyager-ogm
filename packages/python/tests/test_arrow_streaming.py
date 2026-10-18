@@ -126,6 +126,7 @@ def test_query_compilation_cache():
     assert stats_initial["len"] == 0
 
     spec = {
+        "spec_version": 1,
         "matches": [
             {
                 "paths": [[("node", "p", ["Person"], None)]],

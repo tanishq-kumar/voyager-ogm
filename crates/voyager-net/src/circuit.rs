@@ -27,6 +27,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::error::NetError;
+use voyager_core::ErrorCode;
 
 /// Operational lifecycle state of a [`CircuitRouter`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -147,38 +148,90 @@ impl std::fmt::Display for ErrorClassification {
     }
 }
 
+/// Tagged semantic pattern mapping a known query defect substring to an explicit [`ErrorCode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SemanticPattern {
+    /// Substring pattern to match against error messages (case-insensitive).
+    pub pattern: &'static str,
+    /// Explicit machine-readable error code.
+    pub code: ErrorCode,
+}
+
+/// Structured status pattern lookup table for semantic query errors.
+pub const SEMANTIC_PATTERNS: &[SemanticPattern] = &[
+    SemanticPattern {
+        pattern: "syntaxerror",
+        code: ErrorCode::InvalidClause,
+    },
+    SemanticPattern {
+        pattern: "syntax error",
+        code: ErrorCode::InvalidClause,
+    },
+    SemanticPattern {
+        pattern: "semanticerror",
+        code: ErrorCode::InvalidSpec,
+    },
+    SemanticPattern {
+        pattern: "constraintvalidationfailed",
+        code: ErrorCode::PropertyTypeMismatch,
+    },
+    SemanticPattern {
+        pattern: "parametermissing",
+        code: ErrorCode::MissingField,
+    },
+    SemanticPattern {
+        pattern: "typeerror",
+        code: ErrorCode::PropertyTypeMismatch,
+    },
+    SemanticPattern {
+        pattern: "entitynotfound",
+        code: ErrorCode::UnknownNodeLabel,
+    },
+    SemanticPattern {
+        pattern: "unknown function",
+        code: ErrorCode::UnsupportedFeature,
+    },
+    SemanticPattern {
+        pattern: "invalid input",
+        code: ErrorCode::InvalidSpec,
+    },
+    SemanticPattern {
+        pattern: "already exists",
+        code: ErrorCode::SchemaError,
+    },
+    SemanticPattern {
+        pattern: "does not exist",
+        code: ErrorCode::UnknownNodeLabel,
+    },
+    SemanticPattern {
+        pattern: "violates unique constraint",
+        code: ErrorCode::PropertyTypeMismatch,
+    },
+    SemanticPattern {
+        pattern: "violates not-null constraint",
+        code: ErrorCode::PropertyTypeMismatch,
+    },
+    SemanticPattern {
+        pattern: "violates foreign key constraint",
+        code: ErrorCode::IncompatibleEndpoints,
+    },
+];
+
+/// Finds the first matching semantic pattern in an error message.
+pub fn find_semantic_pattern(error_msg: &str) -> Option<&'static SemanticPattern> {
+    let lower = error_msg.to_lowercase();
+    SEMANTIC_PATTERNS
+        .iter()
+        .find(|sp| lower.contains(sp.pattern))
+}
+
 /// Checks if an error message represents a query syntax, semantic, or constraint error.
 ///
 /// In graph databases and web services, semantic query errors must never trip
 /// the circuit breaker or degrade the connection backend, as the failure is
 /// specific to the query text rather than the network transport.
-///
-/// NOTE: String message matching is a transitional heuristic. This will be replaced
-/// by structured protocol status code classification (e.g. Neo4j Neo.ClientError.*
-/// codes, PostgreSQL SQLSTATE 42xxx/23xxx classes, GQLSTATUS codes) as drivers
-/// propagate structured server errors directly.
 pub fn is_semantic_error(error_msg: &str) -> bool {
-    const SEMANTIC_PATTERNS: &[&str] = &[
-        "syntaxerror",
-        "syntax error",
-        "semanticerror",
-        "constraintvalidationfailed",
-        "parametermissing",
-        "typeerror",
-        "entitynotfound",
-        "unknown function",
-        "invalid input",
-        "already exists",
-        "does not exist",
-        "violates unique constraint",
-        "violates not-null constraint",
-        "violates foreign key constraint",
-    ];
-
-    let lower = error_msg.to_lowercase();
-    SEMANTIC_PATTERNS
-        .iter()
-        .any(|pattern| lower.contains(pattern))
+    find_semantic_pattern(error_msg).is_some()
 }
 
 /// Classifies an error message as either [`ErrorClassification::Semantic`] or [`ErrorClassification::Transient`].
@@ -192,10 +245,10 @@ pub fn classify_error(error_msg: &str) -> ErrorClassification {
 
 /// Classifies a [`NetError`] as either [`ErrorClassification::Semantic`] or [`ErrorClassification::Transient`].
 pub fn classify_net_error(err: &NetError) -> ErrorClassification {
-    match err {
-        NetError::ExecutionError(msg) | NetError::ProtocolError(msg) => classify_error(msg),
-        NetError::CoreError(_) | NetError::InvalidUri(_) => ErrorClassification::Semantic,
-        _ => ErrorClassification::Transient,
+    if err.code().is_semantic() {
+        ErrorClassification::Semantic
+    } else {
+        ErrorClassification::Transient
     }
 }
 

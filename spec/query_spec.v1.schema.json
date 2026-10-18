@@ -1,0 +1,464 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://voyager-ogm.org/schemas/query-spec/v1.json",
+  "title": "VoyagerQuerySpecV1",
+  "description": "Voyager OGM Cross-Language Query Specification Interchange Protocol v1 ABI Contract.",
+  "type": "object",
+  "required": ["spec_version"],
+  "properties": {
+    "spec_version": {
+      "description": "Major specification protocol version. Must be strictly 1 for this specification.",
+      "type": "integer",
+      "const": 1
+    },
+    "load_csv": {
+      "description": "Optional LOAD CSV clause tuple: [url, with_headers, alias].",
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": [
+        { "type": "string" },
+        { "type": "boolean" },
+        { "type": "string" }
+      ]
+    },
+    "unwinds": {
+      "description": "List of UNWIND parameter clauses: [[param_name, alias], ...].",
+      "type": "array",
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": [
+          { "type": "string" },
+          { "type": "string" }
+        ]
+      }
+    },
+    "matches": {
+      "description": "Ordered list of graph pattern MATCH / OPTIONAL MATCH clauses.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/MatchClause" }
+    },
+    "mutations": {
+      "description": "List of DML mutating clauses (CREATE, MERGE, SET, DELETE, REMOVE).",
+      "type": "array",
+      "items": { "$ref": "#/$defs/MutationClause" }
+    },
+    "with_clauses": {
+      "description": "List of intermediate WITH projection clauses.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/WithClause" }
+    },
+    "projections": {
+      "description": "List of RETURN projection items.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/ProjectionItem" }
+    },
+    "distinct": {
+      "description": "Whether the RETURN projection applies distinct deduplication.",
+      "type": "boolean"
+    },
+    "order_by": {
+      "description": "List of ORDER BY ordering specifications.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/OrderByItem" }
+    },
+    "skip": {
+      "description": "Pagination skip / offset count.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "offset": {
+      "description": "Alias for skip.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "limit": {
+      "description": "Pagination maximum result rows.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "execution_mode": {
+      "description": "Query plan execution mode.",
+      "type": "string",
+      "enum": ["normal", "explain", "profile", "explain_and_profile"]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "MatchClause": {
+      "type": "object",
+      "required": ["paths"],
+      "properties": {
+        "spec_version": { "type": "integer", "const": 1 },
+        "optional": { "type": "boolean", "default": false },
+        "path_mode": {
+          "type": "string",
+          "enum": ["trail", "simple", "acyclic", "walk", "none"]
+        },
+        "path_variable": { "type": "string" },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/PathStep" }
+          }
+        },
+        "where": {
+          "oneOf": [
+            { "type": "array", "items": { "$ref": "#/$defs/Expression" } },
+            { "$ref": "#/$defs/Expression" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "WithClause": {
+      "type": "object",
+      "required": ["projections"],
+      "properties": {
+        "spec_version": { "type": "integer", "const": 1 },
+        "distinct": { "type": "boolean", "default": false },
+        "projections": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ProjectionItem" }
+        },
+        "where": {
+          "oneOf": [
+            { "type": "array", "items": { "$ref": "#/$defs/Expression" } },
+            { "$ref": "#/$defs/Expression" }
+          ]
+        },
+        "order_by": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/OrderByItem" }
+        },
+        "skip": { "type": "integer", "minimum": 0 },
+        "limit": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "PathStep": {
+      "description": "A node or relationship step in a graph traversal path.",
+      "oneOf": [
+        {
+          "description": "Node pattern: ['node', variable | null, labels: string[]]",
+          "type": "array",
+          "minItems": 3,
+          "items": [
+            { "type": "string", "const": "node" },
+            { "type": ["string", "null"] },
+            { "type": "array", "items": { "type": "string" } }
+          ]
+        },
+        {
+          "description": "Edge pattern: ['edge', direction, types: string[], variable | null, min_hops | null, max_hops | null]",
+          "type": "array",
+          "minItems": 3,
+          "items": [
+            { "type": "string", "const": "edge" },
+            { "type": "string", "enum": ["outgoing", "incoming", "undirected", "out", "in", "->", "<-", "-", "--", "both"] },
+            { "type": "array", "items": { "type": "string" } },
+            { "type": ["string", "null"] },
+            { "type": ["integer", "null"] },
+            { "type": ["integer", "null"] }
+          ]
+        }
+      ]
+    },
+    "ProjectionItem": {
+      "description": "A projected column or expression in WITH / RETURN clauses.",
+      "oneOf": [
+        {
+          "description": "Direct property access: ['field', variable, property, alias | null]",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": [
+            { "type": "string", "const": "field" },
+            { "type": "string" },
+            { "type": "string" },
+            { "type": ["string", "null"] }
+          ]
+        },
+        {
+          "description": "Arbitrary expression: ['expr', expression_spec, alias | null]",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": [
+            { "type": "string", "const": "expr" },
+            { "$ref": "#/$defs/Expression" },
+            { "type": ["string", "null"] }
+          ]
+        },
+        {
+          "description": "Aggregate function: ['agg', variable, property, func, alias | null]",
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": [
+            { "type": "string", "const": "agg" },
+            { "type": "string" },
+            { "type": "string" },
+            { "type": "string", "enum": ["count", "count_distinct", "sum", "avg", "min", "max", "collect"] },
+            { "type": ["string", "null"] }
+          ]
+        }
+      ]
+    },
+    "OrderByItem": {
+      "description": "Ordering specification: [variable, property, ascending] or [expression_spec, ascending]",
+      "oneOf": [
+        {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": [
+            { "type": "string" },
+            { "type": "string" },
+            { "type": "boolean" }
+          ]
+        },
+        {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": [
+            { "$ref": "#/$defs/Expression" },
+            { "type": "boolean" }
+          ]
+        }
+      ]
+    },
+    "MutationClause": {
+      "description": "DML graph mutation command.",
+      "oneOf": [
+        {
+          "description": "CREATE mutation: ['create', paths_list]",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": [
+            { "type": "string", "const": "create" },
+            { "type": "array", "items": { "type": "array", "items": { "$ref": "#/$defs/PathStep" } } }
+          ]
+        },
+        {
+          "description": "MERGE mutation: ['merge', path_steps, on_create_sets, on_match_sets]",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": [
+            { "type": "string", "const": "merge" },
+            { "type": "array", "items": { "$ref": "#/$defs/PathStep" } },
+            { "type": "array" },
+            { "type": "array" }
+          ]
+        },
+        {
+          "description": "SET property: ['set', variable, property, value_expression]",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": [
+            { "type": "string", "const": "set" },
+            { "type": "string" },
+            { "type": "string" },
+            { "$ref": "#/$defs/Expression" }
+          ]
+        },
+        {
+          "description": "DELETE entities: ['delete', detach: boolean, targets: string[]]",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": [
+            { "type": "string", "const": "delete" },
+            { "type": "boolean" },
+            { "type": "array", "items": { "type": "string" } }
+          ]
+        },
+        {
+          "description": "REMOVE property: ['remove', variable, property]",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": [
+            { "type": "string", "const": "remove" },
+            { "type": "string" },
+            { "type": "string" }
+          ]
+        }
+      ]
+    },
+    "Expression": {
+      "description": "AST expression node descriptor recognized by the native FFI engine.",
+      "oneOf": [
+        {
+          "description": "Property access: ['prop', variable, property]",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": [
+            { "type": "string", "const": "prop" },
+            { "type": "string" },
+            { "type": "string" }
+          ]
+        },
+        {
+          "description": "Identifier: ['ident', name]",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": [
+            { "type": "string", "const": "ident" },
+            { "type": "string" }
+          ]
+        },
+        {
+          "description": "Parameter reference: ['param', name]",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": [
+            { "type": "string", "const": "param" },
+            { "type": "string" }
+          ]
+        },
+        {
+          "description": "Literal scalar: ['lit', value]",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": [
+            { "type": "string", "const": "lit" },
+            {}
+          ]
+        },
+        {
+          "description": "Binary expression: ['bin', operator, left, right]",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": [
+            { "type": "string", "const": "bin" },
+            { "type": "string" },
+            { "$ref": "#/$defs/Expression" },
+            { "$ref": "#/$defs/Expression" }
+          ]
+        },
+        {
+          "description": "Unary expression: ['unary', operator, operand]",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": [
+            { "type": "string", "const": "unary" },
+            { "type": "string" },
+            { "$ref": "#/$defs/Expression" }
+          ]
+        },
+        {
+          "description": "Function call: ['fn', name, args: Expression[]]",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": [
+            { "type": "string", "const": "fn" },
+            { "type": "string" },
+            { "type": "array", "items": { "$ref": "#/$defs/Expression" } }
+          ]
+        },
+        {
+          "description": "CASE expression: ['case', operand | null, branches, else_branch | null]",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": [
+            { "type": "string", "const": "case" },
+            {},
+            { "type": "array" },
+            {}
+          ]
+        },
+        {
+          "description": "List comprehension: ['list_comp', variable, list_expr, where_filter, map_expr]",
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": [
+            { "type": "string", "const": "list_comp" },
+            { "type": "string" },
+            { "$ref": "#/$defs/Expression" },
+            {},
+            {}
+          ]
+        },
+        {
+          "description": "Pattern comprehension: ['pattern_comp', path_spec, where_filter, proj_expr]",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": [
+            { "type": "string", "const": "pattern_comp" },
+            {},
+            {},
+            { "$ref": "#/$defs/Expression" }
+          ]
+        },
+        {
+          "description": "Existential subquery: ['exists', subquery_spec]",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": [
+            { "type": "string", "const": "exists" },
+            {}
+          ]
+        },
+        {
+          "description": "Scalar subquery: ['count', subquery_spec]",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": [
+            { "type": "string", "const": "count" },
+            {}
+          ]
+        },
+        {
+          "description": "List literal: ['list', items: Expression[]]",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": [
+            { "type": "string", "const": "list" },
+            { "type": "array", "items": { "$ref": "#/$defs/Expression" } }
+          ]
+        },
+        {
+          "description": "Aliased expression: ['alias', inner_expression, alias_string]",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": [
+            { "type": "string", "const": "alias" },
+            { "$ref": "#/$defs/Expression" },
+            { "type": "string" }
+          ]
+        },
+        {
+          "description": "Object-wrapped expression with spec_version: { spec_version: 1, expr: Expression }",
+          "type": "object",
+          "required": ["spec_version", "expr"],
+          "properties": {
+            "spec_version": { "type": "integer", "const": 1 },
+            "expr": { "$ref": "#/$defs/Expression" }
+          }
+        }
+      ]
+    }
+  }
+}

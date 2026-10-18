@@ -174,15 +174,18 @@ def test_fork_safety_runtime_pid_tracking():
 
 def test_create_bridge_auto_instantiation_from_uri():
     """create_bridge should recognize bolt:// scheme and auto-instantiate official driver if present."""
-    sync_bridge = create_bridge("bolt://localhost:7687", is_async=False)
-    async_bridge = create_bridge("bolt://localhost:7687", is_async=True)
-
     if importlib.util.find_spec("neo4j") is not None:
+        sync_bridge = create_bridge("bolt://localhost:7687", is_async=False)
+        async_bridge = create_bridge("bolt://localhost:7687", is_async=True)
         assert type(sync_bridge).__name__ == "Neo4jBoltBridge"
         assert type(async_bridge).__name__ == "AsyncNeo4jBoltBridge"
     else:
-        assert isinstance(sync_bridge, MockBridge)
-        assert isinstance(async_bridge, AsyncMockBridge)
+        with pytest.raises(ImportError, match="The 'neo4j' Python package is required"):
+            create_bridge("bolt://localhost:7687", is_async=False)
+        sync_mock = create_bridge("bolt://localhost:7687", is_async=False, fallback="mock")
+        async_mock = create_bridge("bolt://localhost:7687", is_async=True, fallback="mock")
+        assert isinstance(sync_mock, MockBridge)
+        assert isinstance(async_mock, AsyncMockBridge)
 
 
 def test_session_base_inheritance():
@@ -481,9 +484,9 @@ def test_live_tcp_circuit_failover_on_unreachable_endpoint():
 
     dead_uri = f"bolt://127.0.0.1:{dead_port}?connect_timeout=1"
     # When NativeClient tries to connect to dead_uri, the OS kernel rejects the connection
-    session = Session(bridge=dead_uri, backend="auto", circuit_cooldown_seconds=0.05)
-    # Enable explicit mock bridge fallback for testing the graceful downgrade
-    session._is_explicit_mock = True
+    session = Session(
+        bridge=dead_uri, backend="auto", circuit_cooldown_seconds=0.05, fallback="mock"
+    )
     assert session.backend == "native"
 
     # Query fails on native TCP transport and seamlessly falls back to bridge

@@ -18,6 +18,9 @@ except ImportError:
     HAS_VOYAGER_RS = False
 
 
+SPEC_VERSION: int = 1
+
+
 class Expression:
     """Base class for all Voyager OGM AST expressions."""
 
@@ -26,6 +29,13 @@ class Expression:
     def to_spec(self) -> Any:
         """Converts this expression into an AST descriptor tuple recognized by the native Rust FFI engine."""
         raise NotImplementedError
+
+    def to_spec_dict(self) -> dict[str, Any]:
+        """Converts this expression into a versioned AST spec dictionary."""
+        return {
+            "spec_version": SPEC_VERSION,
+            "expr": self.to_spec(),
+        }
 
     def as_(self, alias: str) -> AliasedExpr:
         """Assigns a projection alias name to this expression in RETURN clauses."""
