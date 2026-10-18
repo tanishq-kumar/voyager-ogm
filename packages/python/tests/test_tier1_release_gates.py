@@ -215,3 +215,96 @@ def test_session_typo_uri_fails_loudly() -> None:
 
     async_sess = AsyncSession(bridge=typo_uri, fallback="mock")
     assert async_sess.bridge.__class__.__name__ == "AsyncMockBridge"
+
+
+def test_subquery_spec_error_propagation() -> None:
+    """Errors in nested subquery specs (invalid version or malformed clause) must not be swallowed."""
+    invalid_subquery_spec = {
+        "spec_version": 1,
+        "matches": [
+            {
+                "paths": [[("node", "p", ["Person"], None)]],
+                "where": {
+                    "spec_version": 999,
+                    "matches": [{"paths": [[("node", "sub", ["Sub"], None)]]}],
+                },
+            }
+        ],
+        "projections": [("field", "p", "name", None)],
+    }
+    with pytest.raises(VoyagerError) as exc_info:
+        compile_query_from_spec(invalid_subquery_spec, "cypher")
+    assert exc_info.value.code == "INVALID_SPEC"
+
+    unversioned_subquery_spec = {
+        "spec_version": 1,
+        "matches": [
+            {
+                "paths": [[("node", "p", ["Person"], None)]],
+                "where": {
+                    "matches": [{"paths": [[("node", "sub", ["Sub"], None)]]}],
+                },
+            }
+        ],
+        "projections": [("field", "p", "name", None)],
+    }
+    with pytest.raises(VoyagerError) as exc_info:
+        compile_query_from_spec(unversioned_subquery_spec, "cypher")
+    assert exc_info.value.code == "INVALID_SPEC"
+
+
+def test_edge_direction_aliases_and_validation() -> None:
+    """Edge direction aliases must compile, and invalid directions must fail loudly."""
+    valid_dirs = ["outgoing", "incoming", "undirected", "out", "in", "->", "<-", "-", "--", "both"]
+    for valid_dir in valid_dirs:
+        spec = {
+            "spec_version": 1,
+            "matches": [
+                {
+                    "paths": [
+                        [
+                            ("node", "a", ["Person"], None),
+                            ("edge", valid_dir, ["KNOWS"], "r", None, None),
+                            ("node", "b", ["Person"], None),
+                        ]
+                    ]
+                }
+            ],
+            "projections": [("field", "a", "name", None)],
+        }
+        res = compile_query_from_spec(spec, "cypher")
+        assert "statement" in res
+
+    # Invalid direction string must raise VoyagerError with INVALID_CLAUSE
+    invalid_spec = {
+        "spec_version": 1,
+        "matches": [
+            {
+                "paths": [
+                    [
+                        ("node", "a", ["Person"], None),
+                        ("edge", "invalid_direction", ["KNOWS"], "r", None, None),
+                        ("node", "b", ["Person"], None),
+                    ]
+                ]
+            }
+        ],
+        "projections": [("field", "a", "name", None)],
+    }
+    with pytest.raises(VoyagerError) as exc_info:
+        compile_query_from_spec(invalid_spec, "cypher")
+    assert exc_info.value.code == "INVALID_CLAUSE"
+
+
+def test_session_none_bridge_zero_config_sandbox() -> None:
+    """Session(bridge=None) explicitly defaults to an in-memory MockBridge sandbox, whereas create_bridge(None) raises."""
+    with pytest.raises(ValueError, match="No database driver, connection, or URI provided"):
+        create_bridge(None)
+
+    sess = Session(bridge=None)
+    assert isinstance(sess.bridge, MockBridge)
+    assert sess._is_explicit_mock is True
+
+    async_sess = AsyncSession(bridge=None)
+    assert async_sess.bridge.__class__.__name__ == "AsyncMockBridge"
+    assert async_sess._is_explicit_mock is True

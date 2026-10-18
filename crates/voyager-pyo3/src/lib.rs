@@ -578,6 +578,7 @@ fn is_known_expr_tag(tag: &str) -> bool {
             | "unary"
             | "fn"
             | "func"
+            | "call"
             | "case"
             | "list_comp"
             | "pattern_comp"
@@ -616,23 +617,33 @@ fn py_to_node_handle_depth(
     if let Ok(dict) = val.downcast::<PyDict>() {
         if let Some(ver_item) = dict.get_item("spec_version")? {
             let ver: u32 = ver_item.extract().map_err(|_| {
-                PyValueError::new_err(
+                make_voyager_err(
+                    voyager_core::ErrorCode::InvalidSpec,
                     "Invalid 'spec_version' in expression dictionary: expected integer 1.",
                 )
             })?;
             if ver != 1 {
-                return Err(PyValueError::new_err(format!(
-                    "Unsupported expression spec_version: {ver}. Supported major versions: 1.",
-                )));
+                return Err(make_voyager_err(
+                    voyager_core::ErrorCode::InvalidSpec,
+                    format!(
+                        "Unsupported expression spec_version: {ver}. Supported major versions: 1."
+                    ),
+                ));
             }
         }
         if let Some(inner_expr) = dict.get_item("expr")? {
             return py_to_node_handle_depth(builder, &inner_expr, depth + 1);
         }
         let dict_cloned = dict.clone();
-        let sub_h = builder.subquery(move |q| {
-            let _ = build_query_from_spec_internal(q, &dict_cloned);
+        let mut subquery_err: Option<PyErr> = None;
+        let sub_h = builder.subquery(|q| {
+            if let Err(e) = build_query_from_spec_internal(q, &dict_cloned) {
+                subquery_err = Some(e);
+            }
         });
+        if let Some(e) = subquery_err {
+            return Err(e);
+        }
         return Ok(sub_h);
     }
     let tuple_opt = if let Ok(tuple) = val.downcast::<PyTuple>() {
@@ -671,7 +682,7 @@ fn py_to_node_handle_depth(
                 let name: String = tuple.get_item(1)?.extract()?;
                 Ok(builder.param(name))
             }
-            "lit" => {
+            "lit" | "literal" => {
                 let lit = py_to_literal(&tuple.get_item(1)?)?;
                 Ok(builder.literal(lit))
             }
@@ -688,7 +699,7 @@ fn py_to_node_handle_depth(
                 let operand = py_to_node_handle_depth(builder, &tuple.get_item(2)?, depth + 1)?;
                 Ok(builder.unary_expr(op, operand))
             }
-            "fn" => {
+            "fn" | "func" | "call" => {
                 let name: String = tuple.get_item(1)?.extract()?;
                 let args_py = tuple.get_item(2)?;
                 let args_list = args_py.downcast::<PyList>()?;
@@ -792,11 +803,17 @@ fn py_to_node_handle_depth(
     }
 }
 
-fn parse_direction(dir_str: &str) -> Direction {
+fn parse_direction(dir_str: &str) -> PyResult<Direction> {
     match dir_str.to_ascii_lowercase().as_str() {
-        "out" | "outgoing" | "->" => Direction::Outgoing,
-        "in" | "incoming" | "<-" => Direction::Incoming,
-        _ => Direction::Undirected,
+        "out" | "outgoing" | "->" => Ok(Direction::Outgoing),
+        "in" | "incoming" | "<-" => Ok(Direction::Incoming),
+        "undirected" | "both" | "-" | "--" => Ok(Direction::Undirected),
+        other => Err(make_voyager_err(
+            voyager_core::ErrorCode::InvalidClause,
+            format!(
+                "Invalid edge direction '{other}'. Expected 'outgoing' ('out', '->'), 'incoming' ('in', '<-'), or 'undirected' ('both', '-', '--')."
+            ),
+        )),
     }
 }
 
@@ -824,7 +841,7 @@ fn build_path_steps_into_builder(
             }
             "edge" => {
                 let dir_str: String = tuple.get_item(1)?.extract()?;
-                let dir = parse_direction(&dir_str);
+                let dir = parse_direction(&dir_str)?;
                 let edge_types: Vec<String> = tuple.get_item(2)?.extract()?;
                 let var: Option<String> = tuple.get_item(3)?.extract()?;
                 let min_hops: Option<u32> = tuple.get_item(4)?.extract()?;
@@ -865,9 +882,15 @@ fn build_path_from_py(builder: &mut QueryBuilder, spec: &Bound<'_, PyAny>) -> Py
     }
     if let Ok(list) = spec.downcast::<PyList>() {
         let list_cloned = list.clone();
-        let sub_h = builder.subquery(move |q| {
-            let _ = build_path_steps_into_builder(q, &list_cloned);
+        let mut err: Option<PyErr> = None;
+        let sub_h = builder.subquery(|q| {
+            if let Err(e) = build_path_steps_into_builder(q, &list_cloned) {
+                err = Some(e);
+            }
         });
+        if let Some(e) = err {
+            return Err(e);
+        }
         Ok(sub_h)
     } else {
         py_to_node_handle(builder, spec)
@@ -891,16 +914,28 @@ fn build_subquery_from_py(
     }
     if let Ok(dict) = spec.downcast::<PyDict>() {
         let dict_cloned = dict.clone();
-        let sub_h = builder.subquery(move |q| {
-            let _ = build_query_from_spec_internal(q, &dict_cloned);
+        let mut err: Option<PyErr> = None;
+        let sub_h = builder.subquery(|q| {
+            if let Err(e) = build_query_from_spec_internal(q, &dict_cloned) {
+                err = Some(e);
+            }
         });
+        if let Some(e) = err {
+            return Err(e);
+        }
         Ok(sub_h)
     } else if let Ok(list) = spec.downcast::<PyList>() {
         let list_cloned = list.clone();
-        let sub_h = builder.subquery(move |q| {
+        let mut err: Option<PyErr> = None;
+        let sub_h = builder.subquery(|q| {
             q.r#match();
-            let _ = build_path_steps_into_builder(q, &list_cloned);
+            if let Err(e) = build_path_steps_into_builder(q, &list_cloned) {
+                err = Some(e);
+            }
         });
+        if let Some(e) = err {
+            return Err(e);
+        }
         Ok(sub_h)
     } else {
         py_to_node_handle(builder, spec)
@@ -4771,6 +4806,8 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTransaction>()?;
     m.add_class::<PyNativeSchemaRegistry>()?;
     m.add("VoyagerError", m.py().get_type::<VoyagerError>())?;
+    // pyo3::create_exception! generates a standard PyErr type whose C-level tp_init rejects keyword arguments.
+    // We install a custom Python __init__ so callers can instantiate VoyagerError(message, code="...") ergonomics.
     m.py().run(
         c"def _init(self, message='', *args, code=None, **kwargs):\n    super(type(self), self).__init__(message, *args, **kwargs)\n    self.code = code\nVoyagerError.__init__ = _init\n",
         Some(&m.dict()),

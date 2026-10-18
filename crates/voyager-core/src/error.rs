@@ -107,7 +107,12 @@ impl ErrorCode {
         }
     }
 
-    /// Returns `true` if this error represents a semantic, syntax, or schema issue that should not trip circuit breakers.
+    /// Returns `true` if this error represents a semantic, syntax, or configuration issue that should not trip circuit breakers.
+    ///
+    /// Note: In the context of the circuit router and driver dispatch, "semantic" designates
+    /// deterministic, non-transient failures (e.g. malformed queries, invalid URIs, schema/type
+    /// mismatches, or malicious/corrupt wire framing like `ClaimedSizeExceedsBuffer`) that must
+    /// fail loudly and immediately without tripping the circuit breaker or hammering retry loops.
     pub fn is_semantic(&self) -> bool {
         matches!(
             self,

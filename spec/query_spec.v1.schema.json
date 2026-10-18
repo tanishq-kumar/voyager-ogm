@@ -158,7 +158,7 @@
           "minItems": 3,
           "items": [
             { "type": "string", "const": "edge" },
-            { "type": "string", "enum": ["outgoing", "incoming", "undirected", "out", "in", "->", "<-", "-"] },
+            { "type": "string", "enum": ["outgoing", "incoming", "undirected", "out", "in", "->", "<-", "-", "--", "both"] },
             { "type": "array", "items": { "type": "string" } },
             { "type": ["string", "null"] },
             { "type": ["integer", "null"] },
