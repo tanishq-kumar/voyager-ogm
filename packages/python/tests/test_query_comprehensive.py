@@ -284,6 +284,7 @@ def test_query_unknown_aggregation_raises():
     from voyager_ogm._voyager_rs import compile_query_from_spec
 
     spec = {
+        "spec_version": 1,
         "matches": [
             {
                 "optional": False,
@@ -332,6 +333,7 @@ def test_query_multi_clause_match_optional_match_to_spec():
 
     # Explicit spec passed to compile_query_from_spec verifying clause isolation
     spec = {
+        "spec_version": 1,
         "matches": [
             {
                 "optional": False,
@@ -343,7 +345,7 @@ def test_query_multi_clause_match_optional_match_to_spec():
                 "paths": [[("node", "c", ["Company"])]],
                 "where": [(c.name == "Acme").to_spec()],
             },
-        ]
+        ],
     }
     compiled_spec = compile_query_from_spec(spec, "cypher")
     statement = compiled_spec["statement"]
@@ -370,6 +372,7 @@ def test_query_to_spec_mutations_roundtrip():
     q_create = Query.match(p).create(c)
     assert q_create.compile("cypher").statement == "MATCH (p:Person) CREATE (c:Company)"
     spec_create = {
+        "spec_version": 1,
         "matches": [{"optional": False, "paths": [[("node", "p", ["Person"])]], "where": []}],
         "mutations": [("create", [[("node", "c", ["Company"])]])],
     }
@@ -380,6 +383,7 @@ def test_query_to_spec_mutations_roundtrip():
     q_pure_create = Query.create(p)
     assert q_pure_create.compile("cypher").statement == "CREATE (p:Person)"
     spec_pure_create = {
+        "spec_version": 1,
         "matches": [],
         "mutations": [("create", [[("node", "p", ["Person"])]])],
     }
@@ -396,6 +400,7 @@ def test_query_to_spec_mutations_roundtrip():
     assert "ON MATCH SET c.name = $p1" in res_merge_builder.statement
 
     spec_merge = {
+        "spec_version": 1,
         "matches": [{"optional": False, "paths": [[("node", "p", ["Person"])]], "where": []}],
         "mutations": [
             (
@@ -416,6 +421,7 @@ def test_query_to_spec_mutations_roundtrip():
     assert q_set_del.compile("cypher").statement == "MATCH (p:Person) SET p.score = $p0 DELETE p"
 
     spec_set_del = {
+        "spec_version": 1,
         "matches": [{"optional": False, "paths": [[("node", "p", ["Person"])]], "where": []}],
         "mutations": [("set", "p", "score", ("lit", 99)), ("delete", False, ["p"])],
     }
@@ -427,6 +433,7 @@ def test_query_to_spec_mutations_roundtrip():
     assert q_detach.compile("cypher").statement == "MATCH (p:Person) DETACH DELETE p"
 
     spec_detach = {
+        "spec_version": 1,
         "matches": [{"optional": False, "paths": [[("node", "p", ["Person"])]], "where": []}],
         "mutations": [("delete", True, ["p"])],
     }
@@ -438,6 +445,7 @@ def test_query_to_spec_mutations_roundtrip():
     assert q_remove.compile("cypher").statement == "MATCH (p:Person) REMOVE p.score"
 
     spec_remove = {
+        "spec_version": 1,
         "matches": [{"optional": False, "paths": [[("node", "p", ["Person"])]], "where": []}],
         "mutations": [("remove", "p", "score")],
     }

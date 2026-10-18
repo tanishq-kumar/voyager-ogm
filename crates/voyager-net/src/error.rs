@@ -60,3 +60,38 @@ pub enum NetError {
     #[error("Arrow serialization error: {0}")]
     ArrowError(#[from] arrow::error::ArrowError),
 }
+
+impl NetError {
+    /// Returns the machine-readable diagnostic error code for this network or protocol error.
+    pub fn code(&self) -> voyager_core::ErrorCode {
+        match self {
+            Self::ConnectionFailed(_) => voyager_core::ErrorCode::ConnectionFailed,
+            Self::AuthenticationFailed(_) => voyager_core::ErrorCode::AuthenticationFailed,
+            Self::PoolExhausted(_) => voyager_core::ErrorCode::PoolExhausted,
+            Self::Timeout(_) => voyager_core::ErrorCode::Timeout,
+            Self::ProtocolError(msg) => {
+                if msg.contains("exceeds available buffer") {
+                    voyager_core::ErrorCode::ClaimedSizeExceedsBuffer
+                } else if let Some(sp) = crate::circuit::find_semantic_pattern(msg) {
+                    sp.code
+                } else {
+                    voyager_core::ErrorCode::ProtocolError
+                }
+            }
+            Self::TlsError(_) => voyager_core::ErrorCode::TlsError,
+            Self::Closed(_) => voyager_core::ErrorCode::Closed,
+            Self::InvalidUri(_) => voyager_core::ErrorCode::InvalidUri,
+            Self::TransactionError(_) => voyager_core::ErrorCode::TransactionError,
+            Self::ExecutionError(msg) => {
+                if let Some(sp) = crate::circuit::find_semantic_pattern(msg) {
+                    sp.code
+                } else {
+                    voyager_core::ErrorCode::ExecutionError
+                }
+            }
+            Self::IoError(_) => voyager_core::ErrorCode::IoError,
+            Self::CoreError(e) => e.code(),
+            Self::ArrowError(_) => voyager_core::ErrorCode::ArrowError,
+        }
+    }
+}

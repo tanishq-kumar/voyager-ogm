@@ -1,6 +1,7 @@
 use bytes::{Bytes, BytesMut};
 use std::collections::HashMap;
 use std::io::Cursor;
+use voyager_core::ErrorCode;
 use voyager_net::bolt::packstream::{BoltValue, PackStream};
 use voyager_net::bolt::stream::{MAX_BOLT_MESSAGE_SIZE, read_message_frame_buffered};
 use voyager_net::client::connect_any;
@@ -38,30 +39,30 @@ fn test_packstream_list32_and_map32_allocation_bomb_rejected() {
     let mut list_payload = Bytes::from_static(&[0xD6, 0xFF, 0xFF, 0xFF, 0xFF]);
     let list_res = PackStream::decode(&mut list_payload);
     match list_res {
-        Err(NetError::ProtocolError(msg)) => {
+        Err(err) => {
+            assert_eq!(err.code(), ErrorCode::ClaimedSizeExceedsBuffer);
             assert!(
-                msg.contains("exceeds available buffer bytes"),
-                "Expected buffer bounds rejection, got: {}",
-                msg
+                err.to_string().contains("exceeds available buffer bytes"),
+                "Expected buffer bounds rejection message shape, got: {}",
+                err
             );
         }
         Ok(v) => panic!("Expected ProtocolError on List32 bomb, got Ok: {:?}", v),
-        Err(e) => panic!("Expected ProtocolError on List32 bomb, got: {:?}", e),
     }
 
     // PackStream marker 0xDA (Map32) with length 0xFFFFFFFF followed by 0 bytes.
     let mut map_payload = Bytes::from_static(&[0xDA, 0xFF, 0xFF, 0xFF, 0xFF]);
     let map_res = PackStream::decode(&mut map_payload);
     match map_res {
-        Err(NetError::ProtocolError(msg)) => {
+        Err(err) => {
+            assert_eq!(err.code(), ErrorCode::ClaimedSizeExceedsBuffer);
             assert!(
-                msg.contains("exceeds available buffer bytes"),
-                "Expected buffer bounds rejection, got: {}",
-                msg
+                err.to_string().contains("exceeds available buffer bytes"),
+                "Expected buffer bounds rejection message shape, got: {}",
+                err
             );
         }
         Ok(v) => panic!("Expected ProtocolError on Map32 bomb, got Ok: {:?}", v),
-        Err(e) => panic!("Expected ProtocolError on Map32 bomb, got: {:?}", e),
     }
 }
 

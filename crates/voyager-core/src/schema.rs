@@ -1413,6 +1413,20 @@ impl SchemaRegistry {
     pub fn validate_topology(&self, topology: &GraphTopology) -> ConformanceReport {
         let mut report = ConformanceReport::new();
 
+        if topology.version != 1 {
+            report.add(ConformanceDiagnostic {
+                severity: DiagnosticSeverity::Error,
+                code: "UNSUPPORTED_TOPOLOGY_VERSION".to_string(),
+                message: format!(
+                    "Unsupported topology schema version: {}. Supported major versions: 1.",
+                    topology.version
+                ),
+                entity_id: None,
+                suggestion: Some("Ensure the topology payload has version: 1".to_string()),
+            });
+            return report;
+        }
+
         let all_nodes = self.node_schemas();
         let all_rels = self.relationship_schemas();
 

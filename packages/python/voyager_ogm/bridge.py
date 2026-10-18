@@ -1347,34 +1347,59 @@ register_bridge(_is_falkordb_conn, AsyncFalkorDBBridge, is_async=True)
 
 @overload
 def create_bridge(
-    driver_or_connection: Any, is_async: Literal[False] = False
+    driver_or_connection: Any = None,
+    is_async: Literal[False] = False,
+    fallback: str | None = None,
 ) -> DatabaseBridge: ...
 
 
 @overload
-def create_bridge(driver_or_connection: Any, is_async: Literal[True]) -> AsyncDatabaseBridge: ...
+def create_bridge(
+    driver_or_connection: Any = None,
+    is_async: Literal[True] = True,
+    fallback: str | None = None,
+) -> AsyncDatabaseBridge: ...
 
 
 @overload
 def create_bridge(
-    driver_or_connection: Any, is_async: bool
+    driver_or_connection: Any = None,
+    is_async: bool = False,
+    fallback: str | None = None,
 ) -> DatabaseBridge | AsyncDatabaseBridge: ...
 
 
 def create_bridge(
-    driver_or_connection: Any, is_async: bool = False
+    driver_or_connection: Any = None,
+    is_async: bool = False,
+    fallback: str | None = None,
 ) -> DatabaseBridge | AsyncDatabaseBridge:
-    """Creates or adapts a database bridge from a user-supplied driver or connection.
+    """Creates or adapts a database bridge from a user-supplied driver, connection, or URI.
 
     Args:
         driver_or_connection: Database driver, connection instance, MockBridge, or custom bridge.
         is_async: Whether an async bridge is required.
+        fallback: Fallback strategy when driver import fails or URI scheme is unrecognized.
+            Pass ``fallback="mock"`` to explicitly opt into returning an in-memory MockBridge
+            for testing, mocking, or demonstrations.
 
     Returns:
         Configured database bridge adapter.
+
+    Raises:
+        ValueError: If no driver/URI was provided, or if the URI scheme is unrecognized and
+            fallback="mock" was not explicitly requested.
+        ImportError: If the official driver package required for the URI scheme is not installed
+            and fallback="mock" was not explicitly requested.
+        TypeError: If the driver_or_connection object type is unsupported.
     """
     if driver_or_connection is None:
-        return AsyncMockBridge() if is_async else MockBridge()
+        if fallback == "mock":
+            return AsyncMockBridge() if is_async else MockBridge()
+        raise ValueError(
+            "No database driver, connection, or URI provided. "
+            "Provide a valid driver instance, connection URI, or pass fallback='mock' (or use a 'mock://' URI) for offline testing."
+        )
 
     if isinstance(driver_or_connection, MockBridge):
         return AsyncMockBridge() if is_async else driver_or_connection
@@ -1413,6 +1438,8 @@ def create_bridge(
             return AsyncMockBridge() if is_async else MockBridge()
 
         if "://" not in driver_or_connection:
+            if fallback == "mock":
+                return AsyncMockBridge() if is_async else MockBridge()
             raise ValueError(
                 f"Invalid connection URI: '{driver_or_connection}'. Expected a valid URI scheme (e.g. 'bolt://', 'duckdb://', 'postgresql://', 'falkordb://', or 'mock://')."
             )
@@ -1432,17 +1459,41 @@ def create_bridge(
             try:
                 import neo4j
             except ImportError as e:
+                if fallback == "mock":
+                    return AsyncMockBridge() if is_async else MockBridge()
                 raise ImportError(
                     f"The 'neo4j' Python package is required to connect to URI '{driver_or_connection}'. "
-                    f"Install it with 'pip install neo4j'."
+                    f"Install it with 'pip install neo4j', or pass fallback='mock' for offline testing."
                 ) from e
+            from urllib.parse import parse_qs, urlparse, urlunparse
+
+            parsed_bolt = urlparse(driver_or_connection)
+            bolt_clean_uri = urlunparse(
+                (parsed_bolt.scheme, parsed_bolt.netloc, parsed_bolt.path, "", "", "")
+            )
+            bolt_kwargs: dict[str, Any] = {}
+            if parsed_bolt.query:
+                qs = parse_qs(parsed_bolt.query)
+                if "connect_timeout" in qs:
+                    try:
+                        bolt_kwargs["connection_timeout"] = float(qs["connect_timeout"][0])
+                    except ValueError:
+                        pass
+                if "connection_timeout" in qs:
+                    try:
+                        bolt_kwargs["connection_timeout"] = float(qs["connection_timeout"][0])
+                    except ValueError:
+                        pass
+
             if is_async and hasattr(neo4j, "AsyncGraphDatabase"):
-                async_drv = neo4j.AsyncGraphDatabase.driver(driver_or_connection)
+                async_drv = neo4j.AsyncGraphDatabase.driver(bolt_clean_uri, **bolt_kwargs)
                 return AsyncNeo4jBoltBridge(async_drv)
             elif hasattr(neo4j, "GraphDatabase"):
-                sync_drv = neo4j.GraphDatabase.driver(driver_or_connection)
+                sync_drv = neo4j.GraphDatabase.driver(bolt_clean_uri, **bolt_kwargs)
                 return Neo4jBoltBridge(sync_drv)
             else:
+                if fallback == "mock":
+                    return AsyncMockBridge() if is_async else MockBridge()
                 raise RuntimeError(
                     f"Unable to instantiate neo4j driver from '{driver_or_connection}'."
                 )
@@ -1450,9 +1501,11 @@ def create_bridge(
             try:
                 import duckdb
             except ImportError as e:
+                if fallback == "mock":
+                    return AsyncMockBridge() if is_async else MockBridge()
                 raise ImportError(
                     f"The 'duckdb' Python package is required to connect to URI '{driver_or_connection}'. "
-                    f"Install it with 'pip install duckdb'."
+                    f"Install it with 'pip install duckdb', or pass fallback='mock' for offline testing."
                 ) from e
             path = driver_or_connection.replace("duckdb://", "") or ":memory:"
             duck_conn = duckdb.connect(path)
@@ -1462,9 +1515,11 @@ def create_bridge(
             try:
                 import psycopg
             except ImportError as e:
+                if fallback == "mock":
+                    return AsyncMockBridge() if is_async else MockBridge()
                 raise ImportError(
                     f"The 'psycopg' Python package is required to connect to URI '{driver_or_connection}'. "
-                    f"Install it with 'pip install psycopg[binary]'."
+                    f"Install it with 'pip install psycopg[binary]', or pass fallback='mock' for offline testing."
                 ) from e
             pg_conn = psycopg.connect(driver_or_connection, autocommit=True)
             pg_bridge = PostgresBridge(pg_conn)
@@ -1481,9 +1536,11 @@ def create_bridge(
             try:
                 from falkordb import FalkorDB
             except ImportError as e:
+                if fallback == "mock":
+                    return AsyncMockBridge() if is_async else MockBridge()
                 raise ImportError(
                     f"The 'falkordb' Python package is required to connect to URI '{driver_or_connection}'. "
-                    f"Install it with 'pip install falkordb'."
+                    f"Install it with 'pip install falkordb', or pass fallback='mock' for offline testing."
                 ) from e
             from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
@@ -1519,11 +1576,16 @@ def create_bridge(
             f_bridge = FalkorDBBridge(parsed)
             return AsyncFalkorDBBridge(parsed) if is_async else f_bridge
         else:
+            if fallback == "mock":
+                return AsyncMockBridge() if is_async else MockBridge()
             raise ValueError(
-                f"Unsupported database URI scheme '{scheme}' in '{driver_or_connection}'. "
-                f"Supported schemes: 'bolt', 'neo4j', 'memgraph', 'duckdb', 'postgresql', 'postgres', 'age', 'falkordb', 'redis', or 'mock://'."
+                f"No bridge available for URI '{driver_or_connection}' (unrecognized scheme: '{scheme}'). "
+                f"Tried adapters: bolt, duckdb, postgres, falkordb. "
+                f"Install required driver or check the URI, or pass fallback='mock' (or use a 'mock://' URI) for offline testing."
             )
 
+    if fallback == "mock":
+        return AsyncMockBridge() if is_async else MockBridge()
     raise TypeError(
         f"Unsupported database driver or connection object of type {type(driver_or_connection).__name__}. "
         f"Expected a recognized driver connection instance, DatabaseBridge, or URI string."

@@ -60,6 +60,7 @@ def test_ast_max_depth_guard_raises_value_error():
         nested_spec = ("bin", "+", nested_spec, ("lit", 1))
 
     query_spec = {
+        "spec_version": 1,
         "matches": [
             {
                 "paths": [[("node", "n", ["Person"], None)]],
@@ -80,6 +81,7 @@ def test_ast_within_depth_limit_succeeds():
         nested_spec = ("bin", "+", nested_spec, ("lit", 1))
 
     query_spec = {
+        "spec_version": 1,
         "matches": [
             {
                 "paths": [[("node", "n", ["Person"], None)]],
@@ -91,6 +93,47 @@ def test_ast_within_depth_limit_succeeds():
     compiled = compile_query_from_spec(query_spec, "cypher")
     assert "MATCH (n:Person)" in compiled["statement"]
     assert "WHERE" in compiled["statement"]
+
+
+def test_spec_version_validation():
+    """Verify that compile_query_from_spec strictly enforces spec_version == 1."""
+    # 1. Missing spec_version
+    unversioned_spec = {
+        "matches": [
+            {
+                "paths": [[("node", "n", ["Person"], None)]],
+            }
+        ],
+    }
+    with pytest.raises(
+        ValueError, match="Missing required 'spec_version' in query spec dictionary"
+    ):
+        compile_query_from_spec(unversioned_spec, "cypher")
+
+    # 2. Unsupported spec_version
+    unsupported_spec = {
+        "spec_version": 2,
+        "matches": [
+            {
+                "paths": [[("node", "n", ["Person"], None)]],
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="Unsupported query spec_version: 2"):
+        compile_query_from_spec(unsupported_spec, "cypher")
+
+    # 3. Inner match clause with incompatible spec_version
+    invalid_inner_match = {
+        "spec_version": 1,
+        "matches": [
+            {
+                "spec_version": 99,
+                "paths": [[("node", "n", ["Person"], None)]],
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="Unsupported match clause spec_version: 99"):
+        compile_query_from_spec(invalid_inner_match, "cypher")
 
 
 # ---------------------------------------------------------------------------

@@ -172,6 +172,10 @@ impl CompiledQueryCache {
         let mut state = self.inner.lock().unwrap();
         state.map.clear();
         state.order.clear();
+        state.hits = 0;
+        state.misses = 0;
+        state.evictions = 0;
+        state.current_gen = 0;
     }
 
     /// Returns a snapshot of current cache telemetry metrics.

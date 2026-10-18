@@ -45,7 +45,7 @@ pub use emitters::{
     emit_rel_constraint_ddl, emit_rel_drop_constraint_ddl, emit_rel_drop_index_ddl,
     emit_rel_index_ddl,
 };
-pub use error::{Error, Result};
+pub use error::{Error, ErrorCode, Result};
 pub use optimizer::{AstOptimizer, OptimizationLevel};
 pub use schema::{
     ConformanceDiagnostic, ConformanceReport, ConstraintType, DEFAULT_MEMGRAPH_VECTOR_CAPACITY,

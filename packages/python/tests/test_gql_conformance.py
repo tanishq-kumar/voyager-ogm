@@ -471,6 +471,7 @@ def test_gql_path_search_modes():
     from voyager_ogm._voyager_rs import compile_query_from_spec
 
     spec_with_mode = {
+        "spec_version": 1,
         "matches": [
             {
                 "optional": False,

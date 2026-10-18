@@ -9,6 +9,7 @@ from voyager_ogm._voyager_rs import (
     NativeQueryBuilder,
     NativeQueryResult,
     NativeSchemaRegistry,
+    VoyagerError,
     compile_query_from_spec,
     extract_topology_from_query,
     generate_synthetic_stream,
@@ -79,6 +80,7 @@ from voyager_ogm.models import (
     reset_alias_counters,
 )
 from voyager_ogm.query import (
+    SPEC_VERSION,
     ColumnMeta,
     CompiledQuery,
     ConformanceDiagnostic,
@@ -201,6 +203,7 @@ __all__ = [
     "SchemaRegistry",
     "SchemaValidationError",
     "Session",
+    "SPEC_VERSION",
     "SubqueryExpr",
     "TextIndex",
     "Transaction",
@@ -254,4 +257,5 @@ __all__ = [
     "version",
     "view_graph",
     "visualize_query",
+    "VoyagerError",
 ]

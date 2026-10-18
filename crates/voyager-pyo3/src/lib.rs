@@ -10,14 +10,30 @@ use pyo3::exceptions::{
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 
+pyo3::create_exception!(
+    voyager_ogm._voyager_rs,
+    VoyagerError,
+    pyo3::exceptions::PyValueError
+);
+
+fn make_voyager_err(code: voyager_core::ErrorCode, msg: impl Into<String>) -> PyErr {
+    Python::with_gil(|py| {
+        let py_err = VoyagerError::new_err(msg.into());
+        let _ = py_err.value(py).setattr("code", code.as_str());
+        py_err
+    })
+}
+
 fn to_py_schema_err(err: voyager_core::Error) -> PyErr {
-    match err {
-        voyager_core::Error::UnsupportedDialect { .. }
-        | voyager_core::Error::UnsupportedFeature { .. } => {
-            PyNotImplementedError::new_err(err.to_string())
+    Python::with_gil(|py| match err.code() {
+        voyager_core::ErrorCode::UnsupportedDialect
+        | voyager_core::ErrorCode::UnsupportedFeature => {
+            let py_err = PyNotImplementedError::new_err(err.to_string());
+            let _ = py_err.value(py).setattr("code", err.code().as_str());
+            py_err
         }
-        _ => PyValueError::new_err(err.to_string()),
-    }
+        _ => make_voyager_err(err.code(), err.to_string()),
+    })
 }
 use voyager_core::ast::{
     AggregationFunc, BinaryOp, Direction, LiteralValue, NodeHandle, QueryAstArena, UnaryOp,
@@ -550,6 +566,28 @@ impl PyAstExpr {
 /// Maximum recursion depth allowed when converting Python expression trees to AST node handles.
 const MAX_AST_DEPTH: usize = 256;
 
+fn is_known_expr_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "prop"
+            | "ident"
+            | "param"
+            | "lit"
+            | "literal"
+            | "bin"
+            | "unary"
+            | "fn"
+            | "func"
+            | "case"
+            | "list_comp"
+            | "pattern_comp"
+            | "exists"
+            | "count"
+            | "list"
+            | "alias"
+    )
+}
+
 fn py_to_node_handle(builder: &mut QueryBuilder, val: &Bound<'_, PyAny>) -> PyResult<NodeHandle> {
     py_to_node_handle_depth(builder, val, 0)
 }
@@ -575,9 +613,48 @@ fn py_to_node_handle_depth(
         let borrowed = py_expr.borrow();
         return Ok(builder.import_subarena(borrowed.arena.clone(), borrowed.handle));
     }
-    if let Ok(tuple) = val.downcast::<PyTuple>() {
+    if let Ok(dict) = val.downcast::<PyDict>() {
+        if let Some(ver_item) = dict.get_item("spec_version")? {
+            let ver: u32 = ver_item.extract().map_err(|_| {
+                PyValueError::new_err(
+                    "Invalid 'spec_version' in expression dictionary: expected integer 1.",
+                )
+            })?;
+            if ver != 1 {
+                return Err(PyValueError::new_err(format!(
+                    "Unsupported expression spec_version: {ver}. Supported major versions: 1.",
+                )));
+            }
+        }
+        if let Some(inner_expr) = dict.get_item("expr")? {
+            return py_to_node_handle_depth(builder, &inner_expr, depth + 1);
+        }
+        let dict_cloned = dict.clone();
+        let sub_h = builder.subquery(move |q| {
+            let _ = build_query_from_spec_internal(q, &dict_cloned);
+        });
+        return Ok(sub_h);
+    }
+    let tuple_opt = if let Ok(tuple) = val.downcast::<PyTuple>() {
+        Some(tuple.clone())
+    } else if let Ok(list) = val.downcast::<PyList>() {
+        if let Ok(first) = list.get_item(0)
+            && let Ok(tag) = first.extract::<String>()
+            && is_known_expr_tag(&tag)
+        {
+            Some(list.to_tuple())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if let Some(tuple) = tuple_opt {
         if tuple.is_empty() {
-            return Err(PyValueError::new_err("Empty expression tuple"));
+            return Err(make_voyager_err(
+                voyager_core::ErrorCode::InvalidClause,
+                "Empty expression tuple",
+            ));
         }
         let tag: String = tuple.get_item(0)?.extract()?;
         match tag.as_str() {
@@ -697,17 +774,21 @@ fn py_to_node_handle_depth(
                 let inner = tuple.get_item(1)?;
                 py_to_node_handle_depth(builder, &inner, depth + 1)
             }
-            other => Err(PyValueError::new_err(format!(
-                "Unknown expression tuple tag: '{other}'"
-            ))),
+            other => Err(make_voyager_err(
+                voyager_core::ErrorCode::InvalidClause,
+                format!("Unknown expression tuple tag: '{other}'"),
+            )),
         }
     } else if let Ok(lit) = py_to_literal(val) {
         Ok(builder.literal(lit))
     } else {
-        Err(PyValueError::new_err(format!(
-            "Cannot convert Python object to AST node handle: {}",
-            val.get_type()
-        )))
+        Err(make_voyager_err(
+            voyager_core::ErrorCode::InvalidSpec,
+            format!(
+                "Cannot convert Python object to AST node handle: {}",
+                val.get_type()
+            ),
+        ))
     }
 }
 
@@ -724,7 +805,16 @@ fn build_path_steps_into_builder(
     steps: &Bound<'_, PyList>,
 ) -> PyResult<()> {
     for step in steps {
-        let tuple = step.downcast::<PyTuple>()?;
+        let tuple = if let Ok(t) = step.downcast::<PyTuple>() {
+            t.clone()
+        } else if let Ok(l) = step.downcast::<PyList>() {
+            l.to_tuple()
+        } else {
+            return Err(make_voyager_err(
+                voyager_core::ErrorCode::InvalidClause,
+                "Expected path step tuple or list",
+            ));
+        };
         let tag: String = tuple.get_item(0)?.extract()?;
         match tag.as_str() {
             "node" => {
@@ -750,7 +840,12 @@ fn build_path_steps_into_builder(
                     builder.hops(min, max);
                 }
             }
-            _ => {}
+            other => {
+                return Err(make_voyager_err(
+                    voyager_core::ErrorCode::InvalidClause,
+                    format!("Unknown path step tag: '{other}'. Expected 'node' or 'edge'."),
+                ));
+            }
         }
     }
     Ok(())
@@ -817,6 +912,31 @@ fn build_query_from_spec_internal(
     builder: &mut QueryBuilder,
     spec: &Bound<'_, PyDict>,
 ) -> PyResult<()> {
+    // Spec Versioning & Compatibility Check:
+    // Requires top-level "spec_version": 1 in accordance with the Query Spec Interchange Protocol v1.
+    match spec.get_item("spec_version")? {
+        Some(ver_item) => {
+            let ver: u32 = ver_item.extract().map_err(|_| {
+                make_voyager_err(
+                    voyager_core::ErrorCode::InvalidSpec,
+                    "Invalid 'spec_version': expected an integer major version number (e.g. 1).",
+                )
+            })?;
+            if ver != 1 {
+                return Err(make_voyager_err(
+                    voyager_core::ErrorCode::InvalidSpec,
+                    format!("Unsupported query spec_version: {ver}. Supported major versions: 1."),
+                ));
+            }
+        }
+        None => {
+            return Err(make_voyager_err(
+                voyager_core::ErrorCode::InvalidSpec,
+                "Missing required 'spec_version' in query spec dictionary. Expected 'spec_version': 1.",
+            ));
+        }
+    }
+
     if let Some(load_csv_item) = spec.get_item("load_csv")? {
         if !load_csv_item.is_none() {
             let tuple = load_csv_item.downcast::<PyTuple>()?;
@@ -842,6 +962,22 @@ fn build_query_from_spec_internal(
         if let Ok(matches_list) = matches_item.downcast::<PyList>() {
             for m in matches_list {
                 let m_dict = m.downcast::<PyDict>()?;
+                if let Some(m_ver_item) = m_dict.get_item("spec_version")? {
+                    let m_ver: u32 = m_ver_item.extract().map_err(|_| {
+                        make_voyager_err(
+                            voyager_core::ErrorCode::InvalidSpec,
+                            "Invalid 'spec_version' in match clause: expected an integer major version number.",
+                        )
+                    })?;
+                    if m_ver != 1 {
+                        return Err(make_voyager_err(
+                            voyager_core::ErrorCode::InvalidSpec,
+                            format!(
+                                "Unsupported match clause spec_version: {m_ver}. Supported major versions: 1."
+                            ),
+                        ));
+                    }
+                }
                 let is_optional: bool = m_dict
                     .get_item("optional")?
                     .map(|v| v.extract().unwrap_or(false))
@@ -903,7 +1039,16 @@ fn build_query_from_spec_internal(
     if let Some(mutations_item) = spec.get_item("mutations")? {
         if let Ok(mutations_list) = mutations_item.downcast::<PyList>() {
             for mut_item in mutations_list {
-                let tuple = mut_item.downcast::<PyTuple>()?;
+                let tuple = if let Ok(t) = mut_item.downcast::<PyTuple>() {
+                    t.clone()
+                } else if let Ok(l) = mut_item.downcast::<PyList>() {
+                    l.to_tuple()
+                } else {
+                    return Err(make_voyager_err(
+                        voyager_core::ErrorCode::InvalidClause,
+                        "Expected mutation tuple or list",
+                    ));
+                };
                 let tag: String = tuple.get_item(0)?.extract()?;
                 match tag.as_str() {
                     "create" => {
@@ -961,7 +1106,12 @@ fn build_query_from_spec_internal(
                         let prop: String = tuple.get_item(2)?.extract()?;
                         builder.remove_property(var, prop);
                     }
-                    _ => {}
+                    other => {
+                        return Err(make_voyager_err(
+                            voyager_core::ErrorCode::InvalidClause,
+                            format!("Unknown mutation tag: '{other}'"),
+                        ));
+                    }
                 }
             }
         }
@@ -971,6 +1121,22 @@ fn build_query_from_spec_internal(
         if let Ok(with_list) = with_item.downcast::<PyList>() {
             for item in with_list {
                 let with_dict = item.downcast::<PyDict>()?;
+                if let Some(w_ver_item) = with_dict.get_item("spec_version")? {
+                    let w_ver: u32 = w_ver_item.extract().map_err(|_| {
+                        make_voyager_err(
+                            voyager_core::ErrorCode::InvalidSpec,
+                            "Invalid 'spec_version' in with clause: expected an integer major version number.",
+                        )
+                    })?;
+                    if w_ver != 1 {
+                        return Err(make_voyager_err(
+                            voyager_core::ErrorCode::InvalidSpec,
+                            format!(
+                                "Unsupported with clause spec_version: {w_ver}. Supported major versions: 1."
+                            ),
+                        ));
+                    }
+                }
                 builder.r#with();
                 if let Some(distinct_item) = with_dict.get_item("distinct")? {
                     if let Ok(distinct) = distinct_item.extract::<bool>() {
@@ -982,7 +1148,16 @@ fn build_query_from_spec_internal(
                 if let Some(proj_item) = with_dict.get_item("projections")? {
                     if let Ok(proj_list) = proj_item.downcast::<PyList>() {
                         for p in proj_list {
-                            let tuple = p.downcast::<PyTuple>()?;
+                            let tuple = if let Ok(t) = p.downcast::<PyTuple>() {
+                                t.clone()
+                            } else if let Ok(l) = p.downcast::<PyList>() {
+                                l.to_tuple()
+                            } else {
+                                return Err(make_voyager_err(
+                                    voyager_core::ErrorCode::InvalidClause,
+                                    "Expected projection tuple or list",
+                                ));
+                            };
                             let tag: String = tuple.get_item(0)?.extract()?;
                             match tag.as_str() {
                                 "field" => {
@@ -1024,7 +1199,8 @@ fn build_query_from_spec_internal(
                                         "max" => AggregationFunc::Max,
                                         "collect" => AggregationFunc::Collect,
                                         other => {
-                                            return Err(pyo3::exceptions::PyValueError::new_err(
+                                            return Err(make_voyager_err(
+                                                voyager_core::ErrorCode::InvalidClause,
                                                 format!(
                                                     "Unknown aggregation function '{other}'. Expected count, count_distinct, sum, avg, min, max, collect."
                                                 ),
@@ -1038,7 +1214,14 @@ fn build_query_from_spec_internal(
                                         builder.select_property_aggregate(var, prop, agg, alias);
                                     }
                                 }
-                                _ => {}
+                                other => {
+                                    return Err(make_voyager_err(
+                                        voyager_core::ErrorCode::InvalidClause,
+                                        format!(
+                                            "Unknown projection tag '{other}'. Expected 'field', 'agg', or 'expr'."
+                                        ),
+                                    ));
+                                }
                             }
                         }
                     }
@@ -1089,7 +1272,16 @@ fn build_query_from_spec_internal(
             if !proj_list.is_empty() {
                 builder.r#return();
                 for item in proj_list {
-                    let tuple = item.downcast::<PyTuple>()?;
+                    let tuple = if let Ok(t) = item.downcast::<PyTuple>() {
+                        t.clone()
+                    } else if let Ok(l) = item.downcast::<PyList>() {
+                        l.to_tuple()
+                    } else {
+                        return Err(make_voyager_err(
+                            voyager_core::ErrorCode::InvalidClause,
+                            "Expected projection tuple or list",
+                        ));
+                    };
                     let tag: String = tuple.get_item(0)?.extract()?;
                     match tag.as_str() {
                         "field" => {
@@ -1112,9 +1304,12 @@ fn build_query_from_spec_internal(
                                 "max" => AggregationFunc::Max,
                                 "collect" => AggregationFunc::Collect,
                                 other => {
-                                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                                        "Unknown aggregation function '{other}'. Expected count, count_distinct, sum, avg, min, max, collect."
-                                    )));
+                                    return Err(make_voyager_err(
+                                        voyager_core::ErrorCode::InvalidClause,
+                                        format!(
+                                            "Unknown aggregation function '{other}'. Expected count, count_distinct, sum, avg, min, max, collect."
+                                        ),
+                                    ));
                                 }
                             };
                             if prop == "*" || prop.is_empty() {
@@ -1143,7 +1338,14 @@ fn build_query_from_spec_internal(
                             let h = py_to_node_handle(builder, &expr_spec)?;
                             builder.select_expr(h, alias);
                         }
-                        _ => {}
+                        other => {
+                            return Err(make_voyager_err(
+                                voyager_core::ErrorCode::InvalidClause,
+                                format!(
+                                    "Unknown projection tag '{other}'. Expected 'field', 'agg', or 'expr'."
+                                ),
+                            ));
+                        }
                     }
                 }
             }
@@ -1928,9 +2130,12 @@ impl PyQueryBuilder {
                     .map_err(|e| PyValueError::new_err(e.to_string()))?
             }
             other => {
-                return Err(PyValueError::new_err(format!(
-                    "Unsupported query dialect: '{other}'. Choose from 'cypher', 'sql_pgq', 'iso_gql', or 'apache_age'."
-                )));
+                return Err(make_voyager_err(
+                    voyager_core::ErrorCode::UnsupportedDialect,
+                    format!(
+                        "Unsupported query dialect: '{other}'. Choose from 'cypher', 'sql_pgq', 'iso_gql', or 'apache_age'."
+                    ),
+                ));
             }
         };
 
@@ -2153,7 +2358,7 @@ fn compile_query_from_spec<'py>(
     }
 
     let compiled = match dialect.to_lowercase().as_str() {
-        "cypher" | "opencypher" | "neo4j" | "memgraph" => {
+        "cypher" | "opencypher" | "neo4j" | "memgraph" | "falkordb" | "falkor" => {
             let mut emitter = CypherEmitter::new();
             emitter
                 .visit_query(&arena, root)
@@ -2180,9 +2385,12 @@ fn compile_query_from_spec<'py>(
                 .map_err(|e| PyValueError::new_err(e.to_string()))?
         }
         other => {
-            return Err(PyValueError::new_err(format!(
-                "Unsupported query dialect: '{other}'. Choose from 'cypher', 'sql_pgq', 'iso_gql', or 'apache_age'."
-            )));
+            return Err(make_voyager_err(
+                voyager_core::ErrorCode::UnsupportedDialect,
+                format!(
+                    "Unsupported query dialect: '{other}'. Choose from 'cypher', 'sql_pgq', 'iso_gql', or 'apache_age'."
+                ),
+            ));
         }
     };
 
@@ -4562,6 +4770,12 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyUnitOfWork>()?;
     m.add_class::<PyTransaction>()?;
     m.add_class::<PyNativeSchemaRegistry>()?;
+    m.add("VoyagerError", m.py().get_type::<VoyagerError>())?;
+    m.py().run(
+        c"def _init(self, message='', *args, code=None, **kwargs):\n    super(type(self), self).__init__(message, *args, **kwargs)\n    self.code = code\nVoyagerError.__init__ = _init\n",
+        Some(&m.dict()),
+        None,
+    )?;
     m.add("__version__", voyager_core::VERSION)?;
     Ok(())
 }

@@ -205,6 +205,9 @@ def _resolve_fulltext_target(
     return is_rel, target_name, entity_tag, model_props
 
 
+SPEC_VERSION: int = 1
+
+
 class Query:
     """Fluent Graph Query Builder with multi-dialect compilation.
 
@@ -1666,6 +1669,7 @@ __all__ = [
     "ConformanceReport",
     "Path",
     "Query",
+    "SPEC_VERSION",
     "SchemaValidationError",
     "explain",
     "hybridmethod",
