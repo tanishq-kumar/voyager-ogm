@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+import time
 import warnings
 import weakref
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from voyager_ogm.bridge import (
     AsyncDatabaseBridge,
@@ -35,6 +36,18 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
     from voyager_ogm.models import Node, Relationship
+
+
+class SessionHealth(TypedDict):
+    """Structured connectivity liveness and circuit breaker diagnostics."""
+
+    status: Literal["healthy", "degraded", "failing"]
+    backend: Literal["native", "bridge"]
+    circuit_state: Literal["closed", "open", "half_open"]
+    consecutive_failures: int
+    remaining_cooldown_ms: float | int
+    dialect: str
+    latency_ms: float
 
 
 class MappingsResult(Sequence[dict[str, Any]]):
@@ -637,7 +650,7 @@ class _SessionBase:
         return self._circuit_router
 
     @property
-    def backend(self) -> str:
+    def backend(self) -> Literal["native", "bridge"]:
         """The active query execution backend ('native' or 'bridge')."""
         if self._native_client is None or self._requested_backend == "bridge":
             return "bridge"
@@ -717,6 +730,53 @@ class _SessionBase:
         if "sql" in dialect or "age" in dialect or dialect in ("duckdb", "postgres", "postgresql"):
             return "SELECT 1"
         return "RETURN 1"
+
+    def _compute_health_status(self, is_healthy: bool, latency_ms: float) -> SessionHealth:
+        """Calculates structured health and circuit breaker diagnostic metadata.
+
+        Args:
+            is_healthy: Whether the active backend responded successfully to the liveness probe.
+            latency_ms: Measured round-trip ping latency in milliseconds.
+
+        Returns:
+            Diagnostic dictionary reporting status, active backend, circuit state,
+            consecutive failure count, remaining cooldown, dialect, and latency.
+        """
+        circuit_state: Literal["closed", "open", "half_open"]
+        raw_state = str(self.circuit_router.state)
+        if raw_state == "closed":
+            circuit_state = "closed"
+        elif raw_state == "half_open":
+            circuit_state = "half_open"
+        else:
+            circuit_state = "open"
+
+        failures = int(self.circuit_router.consecutive_failures)
+        rem_sec = self.circuit_router.remaining_cooldown()
+        remaining_cooldown_ms: float | int = (
+            round(rem_sec * 1000.0, 2) if rem_sec is not None and rem_sec > 0 else 0
+        )
+        active_backend = self.backend
+
+        status: Literal["healthy", "degraded", "failing"]
+        if not is_healthy:
+            status = "failing"
+        elif circuit_state != "closed":
+            status = "degraded"
+        elif self._requested_backend == "native" and active_backend != "native":
+            status = "degraded"
+        else:
+            status = "healthy"
+
+        return {
+            "status": status,
+            "backend": active_backend,
+            "circuit_state": circuit_state,
+            "consecutive_failures": failures,
+            "remaining_cooldown_ms": remaining_cooldown_ms,
+            "dialect": self._dialect,
+            "latency_ms": latency_ms,
+        }
 
     def register(self, node: Any, key_field: str = "id", is_clean: bool = False) -> Any:
         """Registers a node instance with this session's Identity Map."""
@@ -1139,7 +1199,10 @@ class Session(_SessionBase):
         """Pings the database connection to verify liveness and network connectivity."""
         if self.backend == "native" and self._native_client is not None:
             try:
-                return bool(self._native_client.ping_sync())
+                if hasattr(self._native_client, "ping_sync"):
+                    return bool(self._native_client.ping_sync())
+                self.execute(self._get_ping_statement())
+                return True
             except Exception:
                 return False
         ping_fn = getattr(self._bridge, "ping", None)
@@ -1153,6 +1216,27 @@ class Session(_SessionBase):
             return True
         except Exception:
             return False
+
+    def health(self) -> SessionHealth:
+        """Returns detailed connectivity and circuit breaker diagnostic metadata.
+
+        Executes a lightweight liveness probe through the active backend,
+        measures round-trip ping latency, and inspects circuit breaker state.
+
+        Returns:
+            Dictionary containing:
+            - "status": Overall health status ("healthy", "degraded", or "failing").
+            - "backend": Active execution backend ("native" or "bridge").
+            - "circuit_state": Circuit breaker state ("closed", "open", or "half_open").
+            - "consecutive_failures": Number of consecutive transient failures.
+            - "remaining_cooldown_ms": Milliseconds remaining before trial probe if open (0 if closed).
+            - "dialect": Active query dialect.
+            - "latency_ms": Measured ping round-trip latency in milliseconds.
+        """
+        t0 = time.perf_counter()
+        is_healthy = self.ping()
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        return self._compute_health_status(is_healthy, latency_ms)
 
     def run_bulk(self, plan: BulkIngestionPlan) -> BulkExecutionResult:
         """Dispatches and executes a BulkIngestionPlan across the database bridge.
@@ -1615,7 +1699,13 @@ class AsyncSession(_SessionBase):
         """Pings the database connection asynchronously to verify liveness."""
         if self.backend == "native" and self._native_client is not None:
             try:
-                return bool(await self._native_client.ping())
+                if hasattr(self._native_client, "ping"):
+                    res = self._native_client.ping()
+                    if hasattr(res, "__await__"):
+                        return bool(await res)
+                    return bool(res)
+                await self.execute(self._get_ping_statement())
+                return True
             except Exception:
                 return False
         ping_fn = getattr(self._bridge, "ping", None)
@@ -1632,6 +1722,27 @@ class AsyncSession(_SessionBase):
             return True
         except Exception:
             return False
+
+    async def health(self) -> SessionHealth:
+        """Asynchronously returns detailed connectivity and circuit breaker diagnostic metadata.
+
+        Executes an asynchronous lightweight liveness probe through the active backend,
+        measures round-trip ping latency, and inspects circuit breaker state.
+
+        Returns:
+            Dictionary containing:
+            - "status": Overall health status ("healthy", "degraded", or "failing").
+            - "backend": Active execution backend ("native" or "bridge").
+            - "circuit_state": Circuit breaker state ("closed", "open", or "half_open").
+            - "consecutive_failures": Number of consecutive transient failures.
+            - "remaining_cooldown_ms": Milliseconds remaining before trial probe if open (0 if closed).
+            - "dialect": Active query dialect.
+            - "latency_ms": Measured ping round-trip latency in milliseconds.
+        """
+        t0 = time.perf_counter()
+        is_healthy = await self.ping()
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        return self._compute_health_status(is_healthy, latency_ms)
 
     async def run_bulk(self, plan: BulkIngestionPlan) -> BulkExecutionResult:
         """Asynchronously executes a BulkIngestionPlan across the database bridge.
