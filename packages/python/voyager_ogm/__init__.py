@@ -110,6 +110,7 @@ from voyager_ogm.session import (
     Result,
     ScalarsResult,
     Session,
+    SessionHealth,
 )
 from voyager_ogm.sqlalchemy import (
     GraphRelationshipProperty,
@@ -203,6 +204,7 @@ __all__ = [
     "SchemaRegistry",
     "SchemaValidationError",
     "Session",
+    "SessionHealth",
     "SPEC_VERSION",
     "SubqueryExpr",
     "TextIndex",
