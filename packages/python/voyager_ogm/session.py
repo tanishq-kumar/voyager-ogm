@@ -8,6 +8,7 @@ import warnings
 import weakref
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from voyager_ogm.bridge import (
@@ -24,6 +25,10 @@ from voyager_ogm.ingestion import (
     create_bulk_create_plan,
     create_bulk_create_rel_plan,
     create_bulk_merge_plan,
+    create_csv_ingest_plan,
+    create_csv_rel_ingest_plan,
+    create_parquet_ingest_plan,
+    create_parquet_rel_ingest_plan,
 )
 from voyager_ogm.query import CompiledQuery, Query
 from voyager_ogm.transaction import Transaction
@@ -1249,6 +1254,180 @@ class Session(_SessionBase):
         """
         return self._bridge.execute_bulk(plan)
 
+    def ingest_parquet(
+        self,
+        source: str | Path | Sequence[str] | Sequence[Path],
+        model: type[Node],
+        mode: Literal["create", "upsert"] = "create",
+        key_field: str = "id",
+        batch_size: int = 50_000,
+        storage_options: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> BulkExecutionResult:
+        """Ingests nodes directly from local or cloud Parquet files into the graph database.
+
+        Args:
+            source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
+            model: Target Node model class.
+            mode: Ingestion mode ("create" for CREATE, "upsert" for MERGE).
+            key_field: Unique matching property for upsert mode (default: "id").
+            batch_size: Maximum records per batch transaction.
+            storage_options: Multi-cloud credentials and filesystem options passed to Polars.
+            **kwargs: Extra arguments forwarded to `pl.scan_parquet`.
+
+        Returns:
+            BulkExecutionResult containing execution metrics and timing.
+        """
+        plan = create_parquet_ingest_plan(
+            model=model,
+            source=source,
+            mode=mode,
+            key_field=key_field,
+            batch_size=batch_size,
+            dialect=self.dialect,
+            storage_options=storage_options,
+            **kwargs,
+        )
+        return self.run_bulk(plan)
+
+    def ingest_csv(
+        self,
+        source: str | Path | Sequence[str] | Sequence[Path],
+        model: type[Node],
+        mode: Literal["create", "upsert"] = "create",
+        key_field: str = "id",
+        batch_size: int = 50_000,
+        storage_options: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> BulkExecutionResult:
+        """Ingests nodes directly from local or cloud CSV files into the graph database.
+
+        Args:
+            source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
+            model: Target Node model class.
+            mode: Ingestion mode ("create" for CREATE, "upsert" for MERGE).
+            key_field: Unique matching property for upsert mode (default: "id").
+            batch_size: Maximum records per batch transaction.
+            storage_options: Multi-cloud credentials and filesystem options passed to Polars.
+            **kwargs: Extra arguments forwarded to `pl.scan_csv`.
+
+        Returns:
+            BulkExecutionResult containing execution metrics and timing.
+        """
+        plan = create_csv_ingest_plan(
+            model=model,
+            source=source,
+            mode=mode,
+            key_field=key_field,
+            batch_size=batch_size,
+            dialect=self.dialect,
+            storage_options=storage_options,
+            **kwargs,
+        )
+        return self.run_bulk(plan)
+
+    def ingest_parquet_relationships(
+        self,
+        source: str | Path | Sequence[str] | Sequence[Path],
+        rel_model: type[Relationship] | str,
+        from_label: str,
+        from_key: str,
+        to_label: str,
+        to_key: str,
+        batch_size: int = 50_000,
+        properties: list[str] | None = None,
+        from_source_field: str | None = None,
+        to_source_field: str | None = None,
+        storage_options: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> BulkExecutionResult:
+        """Ingests edges directly from local or cloud Parquet files into the graph database.
+
+        Args:
+            source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
+            rel_model: Target Relationship class or relationship type string (e.g. "KNOWS").
+            from_label: Source node label.
+            from_key: Source node matching property name (e.g. "id").
+            to_label: Target node label.
+            to_key: Target node matching property name (e.g. "id").
+            batch_size: Maximum edges per batch transaction.
+            properties: Explicit list of edge properties to set, or None to infer.
+            from_source_field: Optional column name in file to map to `from_<from_key>`.
+            to_source_field: Optional column name in file to map to `to_<to_key>`.
+            storage_options: Multi-cloud credentials and filesystem options passed to Polars.
+            **kwargs: Extra arguments forwarded to `pl.scan_parquet`.
+
+        Returns:
+            BulkExecutionResult containing execution metrics and timing.
+        """
+        plan = create_parquet_rel_ingest_plan(
+            rel_model=rel_model,
+            source=source,
+            from_label=from_label,
+            from_key=from_key,
+            to_label=to_label,
+            to_key=to_key,
+            batch_size=batch_size,
+            dialect=self.dialect,
+            properties=properties,
+            from_source_field=from_source_field,
+            to_source_field=to_source_field,
+            storage_options=storage_options,
+            **kwargs,
+        )
+        return self.run_bulk(plan)
+
+    def ingest_csv_relationships(
+        self,
+        source: str | Path | Sequence[str] | Sequence[Path],
+        rel_model: type[Relationship] | str,
+        from_label: str,
+        from_key: str,
+        to_label: str,
+        to_key: str,
+        batch_size: int = 50_000,
+        properties: list[str] | None = None,
+        from_source_field: str | None = None,
+        to_source_field: str | None = None,
+        storage_options: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> BulkExecutionResult:
+        """Ingests edges directly from local or cloud CSV files into the graph database.
+
+        Args:
+            source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
+            rel_model: Target Relationship class or relationship type string (e.g. "KNOWS").
+            from_label: Source node label.
+            from_key: Source node matching property name (e.g. "id").
+            to_label: Target node label.
+            to_key: Target node matching property name (e.g. "id").
+            batch_size: Maximum edges per batch transaction.
+            properties: Explicit list of edge properties to set, or None to infer.
+            from_source_field: Optional column name in file to map to `from_<from_key>`.
+            to_source_field: Optional column name in file to map to `to_<to_key>`.
+            storage_options: Multi-cloud credentials and filesystem options passed to Polars.
+            **kwargs: Extra arguments forwarded to `pl.scan_csv`.
+
+        Returns:
+            BulkExecutionResult containing execution metrics and timing.
+        """
+        plan = create_csv_rel_ingest_plan(
+            rel_model=rel_model,
+            source=source,
+            from_label=from_label,
+            from_key=from_key,
+            to_label=to_label,
+            to_key=to_key,
+            batch_size=batch_size,
+            dialect=self.dialect,
+            properties=properties,
+            from_source_field=from_source_field,
+            to_source_field=to_source_field,
+            storage_options=storage_options,
+            **kwargs,
+        )
+        return self.run_bulk(plan)
+
     def flush(self, key_field: str = "id") -> list[BulkExecutionResult]:
         """Flushes all dirty entities tracked in the Identity Map in a single batch per model."""
         batches = self._prepare_flush_batches(key_field=key_field)
@@ -1754,6 +1933,180 @@ class AsyncSession(_SessionBase):
             Execution metrics summary including total batches, records, and elapsed time.
         """
         return await self._bridge.execute_bulk(plan)
+
+    async def ingest_parquet(
+        self,
+        source: str | Path | Sequence[str] | Sequence[Path],
+        model: type[Node],
+        mode: Literal["create", "upsert"] = "create",
+        key_field: str = "id",
+        batch_size: int = 50_000,
+        storage_options: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> BulkExecutionResult:
+        """Asynchronously ingests nodes directly from local or cloud Parquet files into the graph database.
+
+        Args:
+            source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
+            model: Target Node model class.
+            mode: Ingestion mode ("create" for CREATE, "upsert" for MERGE).
+            key_field: Unique matching property for upsert mode (default: "id").
+            batch_size: Maximum records per batch transaction.
+            storage_options: Multi-cloud credentials and filesystem options passed to Polars.
+            **kwargs: Extra arguments forwarded to `pl.scan_parquet`.
+
+        Returns:
+            BulkExecutionResult containing execution metrics and timing.
+        """
+        plan = create_parquet_ingest_plan(
+            model=model,
+            source=source,
+            mode=mode,
+            key_field=key_field,
+            batch_size=batch_size,
+            dialect=self.dialect,
+            storage_options=storage_options,
+            **kwargs,
+        )
+        return await self.run_bulk(plan)
+
+    async def ingest_csv(
+        self,
+        source: str | Path | Sequence[str] | Sequence[Path],
+        model: type[Node],
+        mode: Literal["create", "upsert"] = "create",
+        key_field: str = "id",
+        batch_size: int = 50_000,
+        storage_options: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> BulkExecutionResult:
+        """Asynchronously ingests nodes directly from local or cloud CSV files into the graph database.
+
+        Args:
+            source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
+            model: Target Node model class.
+            mode: Ingestion mode ("create" for CREATE, "upsert" for MERGE).
+            key_field: Unique matching property for upsert mode (default: "id").
+            batch_size: Maximum records per batch transaction.
+            storage_options: Multi-cloud credentials and filesystem options passed to Polars.
+            **kwargs: Extra arguments forwarded to `pl.scan_csv`.
+
+        Returns:
+            BulkExecutionResult containing execution metrics and timing.
+        """
+        plan = create_csv_ingest_plan(
+            model=model,
+            source=source,
+            mode=mode,
+            key_field=key_field,
+            batch_size=batch_size,
+            dialect=self.dialect,
+            storage_options=storage_options,
+            **kwargs,
+        )
+        return await self.run_bulk(plan)
+
+    async def ingest_parquet_relationships(
+        self,
+        source: str | Path | Sequence[str] | Sequence[Path],
+        rel_model: type[Relationship] | str,
+        from_label: str,
+        from_key: str,
+        to_label: str,
+        to_key: str,
+        batch_size: int = 50_000,
+        properties: list[str] | None = None,
+        from_source_field: str | None = None,
+        to_source_field: str | None = None,
+        storage_options: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> BulkExecutionResult:
+        """Asynchronously ingests edges directly from local or cloud Parquet files into the graph database.
+
+        Args:
+            source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
+            rel_model: Target Relationship class or relationship type string (e.g. "KNOWS").
+            from_label: Source node label.
+            from_key: Source node matching property name (e.g. "id").
+            to_label: Target node label.
+            to_key: Target node matching property name (e.g. "id").
+            batch_size: Maximum edges per batch transaction.
+            properties: Explicit list of edge properties to set, or None to infer.
+            from_source_field: Optional column name in file to map to `from_<from_key>`.
+            to_source_field: Optional column name in file to map to `to_<to_key>`.
+            storage_options: Multi-cloud credentials and filesystem options passed to Polars.
+            **kwargs: Extra arguments forwarded to `pl.scan_parquet`.
+
+        Returns:
+            BulkExecutionResult containing execution metrics and timing.
+        """
+        plan = create_parquet_rel_ingest_plan(
+            rel_model=rel_model,
+            source=source,
+            from_label=from_label,
+            from_key=from_key,
+            to_label=to_label,
+            to_key=to_key,
+            batch_size=batch_size,
+            dialect=self.dialect,
+            properties=properties,
+            from_source_field=from_source_field,
+            to_source_field=to_source_field,
+            storage_options=storage_options,
+            **kwargs,
+        )
+        return await self.run_bulk(plan)
+
+    async def ingest_csv_relationships(
+        self,
+        source: str | Path | Sequence[str] | Sequence[Path],
+        rel_model: type[Relationship] | str,
+        from_label: str,
+        from_key: str,
+        to_label: str,
+        to_key: str,
+        batch_size: int = 50_000,
+        properties: list[str] | None = None,
+        from_source_field: str | None = None,
+        to_source_field: str | None = None,
+        storage_options: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> BulkExecutionResult:
+        """Asynchronously ingests edges directly from local or cloud CSV files into the graph database.
+
+        Args:
+            source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
+            rel_model: Target Relationship class or relationship type string (e.g. "KNOWS").
+            from_label: Source node label.
+            from_key: Source node matching property name (e.g. "id").
+            to_label: Target node label.
+            to_key: Target node matching property name (e.g. "id").
+            batch_size: Maximum edges per batch transaction.
+            properties: Explicit list of edge properties to set, or None to infer.
+            from_source_field: Optional column name in file to map to `from_<from_key>`.
+            to_source_field: Optional column name in file to map to `to_<to_key>`.
+            storage_options: Multi-cloud credentials and filesystem options passed to Polars.
+            **kwargs: Extra arguments forwarded to `pl.scan_csv`.
+
+        Returns:
+            BulkExecutionResult containing execution metrics and timing.
+        """
+        plan = create_csv_rel_ingest_plan(
+            rel_model=rel_model,
+            source=source,
+            from_label=from_label,
+            from_key=from_key,
+            to_label=to_label,
+            to_key=to_key,
+            batch_size=batch_size,
+            dialect=self.dialect,
+            properties=properties,
+            from_source_field=from_source_field,
+            to_source_field=to_source_field,
+            storage_options=storage_options,
+            **kwargs,
+        )
+        return await self.run_bulk(plan)
 
     async def flush(self, key_field: str = "id") -> list[BulkExecutionResult]:
         """Asynchronously flushes all dirty entities tracked in the Identity Map in a single batch per model."""
