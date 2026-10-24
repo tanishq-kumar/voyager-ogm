@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+import polars as pl
+
 from voyager_ogm._voyager_rs import (
     compile_bulk_create as _rs_compile_bulk_create,
 )
@@ -23,8 +25,6 @@ from voyager_ogm._voyager_rs import (
 from voyager_ogm.types import serialize_param_value
 
 if TYPE_CHECKING:
-    import polars as pl
-
     from voyager_ogm.models import Node, Relationship
 
 
@@ -353,8 +353,6 @@ def create_parquet_ingest_plan(
     Returns:
         BulkIngestionPlan containing chunked parameter batches.
     """
-    import polars as pl
-
     scan_source: Any = (
         [str(s) if isinstance(s, Path) else s for s in source]
         if isinstance(source, (list, tuple))
@@ -390,6 +388,12 @@ def create_csv_ingest_plan(
 ) -> BulkIngestionPlan:
     """Creates a bulk ingestion plan from local or cloud CSV file sources.
 
+    Note:
+        CSV schemas are inferred from a row sample (default 100 rows in Polars);
+        for production loads with string IDs (e.g. leading zeros), all-null
+        leading columns, or specific formats, pass explicit `dtypes` or
+        `infer_schema_length` (e.g. `infer_schema_length=None`) via `**kwargs`.
+
     Args:
         model: Target Node model class.
         source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
@@ -403,8 +407,6 @@ def create_csv_ingest_plan(
     Returns:
         BulkIngestionPlan containing chunked parameter batches.
     """
-    import polars as pl
-
     scan_source: Any = (
         [str(s) if isinstance(s, Path) else s for s in source]
         if isinstance(source, (list, tuple))
@@ -463,8 +465,6 @@ def create_parquet_rel_ingest_plan(
     Returns:
         BulkIngestionPlan containing chunked parameter batches.
     """
-    import polars as pl
-
     scan_source: Any = (
         [str(s) if isinstance(s, Path) else s for s in source]
         if isinstance(source, (list, tuple))
@@ -517,6 +517,12 @@ def create_csv_rel_ingest_plan(
 ) -> BulkIngestionPlan:
     """Creates a bulk relationship ingestion plan from local or cloud CSV file sources.
 
+    Note:
+        CSV schemas are inferred from a row sample (default 100 rows in Polars);
+        for production loads with string IDs (e.g. leading zeros), all-null
+        leading columns, or specific formats, pass explicit `dtypes` or
+        `infer_schema_length` (e.g. `infer_schema_length=None`) via `**kwargs`.
+
     Args:
         rel_model: Target Relationship model class or relationship type string (e.g. "KNOWS").
         source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
@@ -535,8 +541,6 @@ def create_csv_rel_ingest_plan(
     Returns:
         BulkIngestionPlan containing chunked parameter batches.
     """
-    import polars as pl
-
     scan_source: Any = (
         [str(s) if isinstance(s, Path) else s for s in source]
         if isinstance(source, (list, tuple))
@@ -582,7 +586,12 @@ def ingest_parquet(
     storage_options: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> Any:
-    """Ingests nodes directly from local or cloud Parquet files into a session."""
+    """Ingests nodes directly from local or cloud Parquet files into a session.
+
+    Note:
+        The canonical entry point is `session.ingest_parquet(...)`. This function
+        is a functional convenience wrapper matching the GQLAlchemy loader idiom.
+    """
     return session.ingest_parquet(
         source=source,
         model=model,
@@ -604,7 +613,14 @@ def ingest_csv(
     storage_options: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> Any:
-    """Ingests nodes directly from local or cloud CSV files into a session."""
+    """Ingests nodes directly from local or cloud CSV files into a session.
+
+    Note:
+        The canonical entry point is `session.ingest_csv(...)`. This function
+        is a functional convenience wrapper matching the GQLAlchemy loader idiom.
+        CSV schemas are inferred from a row sample; for production loads pass
+        explicit `dtypes` or `infer_schema_length` via `**kwargs`.
+    """
     return session.ingest_csv(
         source=source,
         model=model,
@@ -631,7 +647,12 @@ def ingest_parquet_relationships(
     storage_options: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> Any:
-    """Ingests relationships directly from local or cloud Parquet files into a session."""
+    """Ingests relationships directly from local or cloud Parquet files into a session.
+
+    Note:
+        The canonical entry point is `session.ingest_parquet_relationships(...)`.
+        This function is a functional convenience wrapper matching the GQLAlchemy loader idiom.
+    """
     return session.ingest_parquet_relationships(
         source=source,
         rel_model=rel_model,
@@ -663,7 +684,14 @@ def ingest_csv_relationships(
     storage_options: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> Any:
-    """Ingests relationships directly from local or cloud CSV files into a session."""
+    """Ingests relationships directly from local or cloud CSV files into a session.
+
+    Note:
+        The canonical entry point is `session.ingest_csv_relationships(...)`.
+        This function is a functional convenience wrapper matching the GQLAlchemy loader idiom.
+        CSV schemas are inferred from a row sample; for production loads pass
+        explicit `dtypes` or `infer_schema_length` via `**kwargs`.
+    """
     return session.ingest_csv_relationships(
         source=source,
         rel_model=rel_model,

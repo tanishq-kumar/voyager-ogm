@@ -1302,6 +1302,12 @@ class Session(_SessionBase):
     ) -> BulkExecutionResult:
         """Ingests nodes directly from local or cloud CSV files into the graph database.
 
+        Note:
+            CSV schemas are inferred from a row sample (default 100 rows in Polars);
+            for production loads with string IDs (e.g. leading zeros), all-null
+            leading columns, or specific formats, pass explicit `dtypes` or
+            `infer_schema_length` (e.g. `infer_schema_length=None`) via `**kwargs`.
+
         Args:
             source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
             model: Target Node model class.
@@ -1393,6 +1399,12 @@ class Session(_SessionBase):
         **kwargs: Any,
     ) -> BulkExecutionResult:
         """Ingests edges directly from local or cloud CSV files into the graph database.
+
+        Note:
+            CSV schemas are inferred from a row sample (default 100 rows in Polars);
+            for production loads with string IDs (e.g. leading zeros), all-null
+            leading columns, or specific formats, pass explicit `dtypes` or
+            `infer_schema_length` (e.g. `infer_schema_length=None`) via `**kwargs`.
 
         Args:
             source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
@@ -1982,6 +1994,12 @@ class AsyncSession(_SessionBase):
     ) -> BulkExecutionResult:
         """Asynchronously ingests nodes directly from local or cloud CSV files into the graph database.
 
+        Note:
+            CSV schemas are inferred from a row sample (default 100 rows in Polars);
+            for production loads with string IDs (e.g. leading zeros), all-null
+            leading columns, or specific formats, pass explicit `dtypes` or
+            `infer_schema_length` (e.g. `infer_schema_length=None`) via `**kwargs`.
+
         Args:
             source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
             model: Target Node model class.
@@ -2073,6 +2091,12 @@ class AsyncSession(_SessionBase):
         **kwargs: Any,
     ) -> BulkExecutionResult:
         """Asynchronously ingests edges directly from local or cloud CSV files into the graph database.
+
+        Note:
+            CSV schemas are inferred from a row sample (default 100 rows in Polars);
+            for production loads with string IDs (e.g. leading zeros), all-null
+            leading columns, or specific formats, pass explicit `dtypes` or
+            `infer_schema_length` (e.g. `infer_schema_length=None`) via `**kwargs`.
 
         Args:
             source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
