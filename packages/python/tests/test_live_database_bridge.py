@@ -185,6 +185,82 @@ def test_live_neo4j_bulk_ingestion_1000_records(clean_neo4j):
 
 
 @pytest.mark.skipif(not NEO4J_ONLINE, reason="Live Neo4j instance not online on localhost:7687")
+def test_live_neo4j_cloud_ingest_parquet_and_csv(clean_neo4j, tmp_path):
+    """Test ingest_parquet and ingest_csv end-to-end against live Neo4j."""
+    session = Session(bridge=clean_neo4j, dialect="cypher")
+
+    # 1. Test ingest_parquet (create mode)
+    parquet_file = tmp_path / "live_people.parquet"
+    df_parquet = pl.DataFrame(
+        {
+            "id": [100, 101, 102],
+            "name": ["ParquetUser1", "ParquetUser2", "ParquetUser3"],
+            "age": [31, 32, 33],
+        }
+    )
+    df_parquet.write_parquet(parquet_file)
+
+    res_p = session.ingest_parquet(parquet_file, LivePerson, mode="create", batch_size=2)
+    assert res_p.total_records == 3
+    assert res_p.total_batches == 2
+
+    # Verify nodes in Neo4j
+    rows = session.execute(
+        "MATCH (p:LivePerson) WHERE p.id >= 100 RETURN p.name AS name ORDER BY p.id"
+    )
+    assert [r["name"] for r in rows] == ["ParquetUser1", "ParquetUser2", "ParquetUser3"]
+
+    # 2. Test ingest_csv (upsert mode)
+    csv_file = tmp_path / "live_people.csv"
+    df_csv = pl.DataFrame(
+        {
+            "id": [100, 103],
+            "name": ["ParquetUser1_Updated", "CsvUser"],
+            "age": [35, 29],
+        }
+    )
+    df_csv.write_csv(csv_file)
+
+    res_c = session.ingest_csv(csv_file, LivePerson, mode="upsert", key_field="id")
+    assert res_c.total_records == 2
+
+    # Verify upsert applied
+    rows_after = session.execute(
+        "MATCH (p:LivePerson) WHERE p.id = 100 RETURN p.name AS name, p.age AS age"
+    )
+    assert rows_after[0]["name"] == "ParquetUser1_Updated"
+    assert rows_after[0]["age"] == 35
+
+    # 3. Test ingest_parquet_relationships
+    rel_parquet_file = tmp_path / "live_knows.parquet"
+    df_rel = pl.DataFrame(
+        {
+            "src_id": [100],
+            "dst_id": [103],
+            "since": [2024],
+        }
+    )
+    df_rel.write_parquet(rel_parquet_file)
+
+    res_rel = session.ingest_parquet_relationships(
+        rel_parquet_file,
+        rel_model=Knows,
+        from_label="LivePerson",
+        from_key="id",
+        to_label="LivePerson",
+        to_key="id",
+        from_source_field="src_id",
+        to_source_field="dst_id",
+    )
+    assert res_rel.total_records == 1
+
+    rel_check = session.execute(
+        "MATCH (a:LivePerson {id: 100})-[r:KNOWS]->(b:LivePerson {id: 103}) RETURN r.since AS since"
+    )
+    assert rel_check[0]["since"] == 2024
+
+
+@pytest.mark.skipif(not NEO4J_ONLINE, reason="Live Neo4j instance not online on localhost:7687")
 def test_live_neo4j_official_social_dataset(clean_neo4j):
     """Test loading and querying the official LDBC Social Network dataset on live Neo4j."""
     import pathlib

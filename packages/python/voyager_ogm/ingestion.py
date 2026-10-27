@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal
+
+import polars as pl
 
 from voyager_ogm._voyager_rs import (
     compile_bulk_create as _rs_compile_bulk_create,
@@ -22,8 +25,6 @@ from voyager_ogm._voyager_rs import (
 from voyager_ogm.types import serialize_param_value
 
 if TYPE_CHECKING:
-    import polars as pl
-
     from voyager_ogm.models import Node, Relationship
 
 
@@ -324,4 +325,384 @@ def create_bulk_create_rel_plan(
         batch_size=batch_size,
         dialect=dialect,
         batches_data=batches,
+    )
+
+
+def create_parquet_ingest_plan(
+    model: type[Node],
+    source: str | Path | Sequence[str] | Sequence[Path],
+    mode: Literal["create", "upsert"] = "create",
+    key_field: str = "id",
+    batch_size: int = 50_000,
+    dialect: str = "cypher",
+    storage_options: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> BulkIngestionPlan:
+    """Creates a bulk ingestion plan from local or cloud Parquet file sources.
+
+    Args:
+        model: Target Node model class.
+        source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
+        mode: Ingestion mode ("create" for CREATE, "upsert" for MERGE).
+        key_field: Unique matching property for upsert mode (default: "id").
+        batch_size: Number of records per batch transaction.
+        dialect: Target graph query dialect ('cypher', 'iso_gql').
+        storage_options: Multi-cloud credentials and filesystem options passed to Polars.
+        **kwargs: Extra arguments forwarded to `pl.scan_parquet`.
+
+    Returns:
+        BulkIngestionPlan containing chunked parameter batches.
+    """
+    scan_source: Any = (
+        [str(s) if isinstance(s, Path) else s for s in source]
+        if isinstance(source, (list, tuple))
+        else (str(source) if isinstance(source, Path) else source)
+    )
+
+    scan_kwargs = dict(kwargs)
+    if storage_options is not None:
+        scan_kwargs["storage_options"] = storage_options
+
+    lazy_df = pl.scan_parquet(scan_source, **scan_kwargs)
+    if mode == "create":
+        return create_bulk_create_plan(model, lazy_df, batch_size=batch_size, dialect=dialect)
+    elif mode == "upsert":
+        return create_bulk_merge_plan(
+            model, key_field=key_field, data=lazy_df, batch_size=batch_size, dialect=dialect
+        )
+    else:
+        raise ValueError(
+            f"Unsupported ingestion mode: '{mode}'. Supported modes are 'create' and 'upsert'."
+        )
+
+
+def create_csv_ingest_plan(
+    model: type[Node],
+    source: str | Path | Sequence[str] | Sequence[Path],
+    mode: Literal["create", "upsert"] = "create",
+    key_field: str = "id",
+    batch_size: int = 50_000,
+    dialect: str = "cypher",
+    storage_options: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> BulkIngestionPlan:
+    """Creates a bulk ingestion plan from local or cloud CSV file sources.
+
+    Note:
+        CSV schemas are inferred from a row sample (default 100 rows in Polars);
+        for production loads with string IDs (e.g. leading zeros), all-null
+        leading columns, or specific formats, pass explicit `dtypes` or
+        `infer_schema_length` (e.g. `infer_schema_length=None`) via `**kwargs`.
+
+    Args:
+        model: Target Node model class.
+        source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
+        mode: Ingestion mode ("create" for CREATE, "upsert" for MERGE).
+        key_field: Unique matching property for upsert mode (default: "id").
+        batch_size: Number of records per batch transaction.
+        dialect: Target graph query dialect ('cypher', 'iso_gql').
+        storage_options: Multi-cloud credentials and filesystem options passed to Polars.
+        **kwargs: Extra arguments forwarded to `pl.scan_csv`.
+
+    Returns:
+        BulkIngestionPlan containing chunked parameter batches.
+    """
+    scan_source: Any = (
+        [str(s) if isinstance(s, Path) else s for s in source]
+        if isinstance(source, (list, tuple))
+        else (str(source) if isinstance(source, Path) else source)
+    )
+
+    scan_kwargs = dict(kwargs)
+    if storage_options is not None:
+        scan_kwargs["storage_options"] = storage_options
+
+    lazy_df = pl.scan_csv(scan_source, **scan_kwargs)
+    if mode == "create":
+        return create_bulk_create_plan(model, lazy_df, batch_size=batch_size, dialect=dialect)
+    elif mode == "upsert":
+        return create_bulk_merge_plan(
+            model, key_field=key_field, data=lazy_df, batch_size=batch_size, dialect=dialect
+        )
+    else:
+        raise ValueError(
+            f"Unsupported ingestion mode: '{mode}'. Supported modes are 'create' and 'upsert'."
+        )
+
+
+def create_parquet_rel_ingest_plan(
+    rel_model: type[Relationship] | str,
+    source: str | Path | Sequence[str] | Sequence[Path],
+    from_label: str,
+    from_key: str,
+    to_label: str,
+    to_key: str,
+    batch_size: int = 50_000,
+    dialect: str = "cypher",
+    properties: list[str] | None = None,
+    from_source_field: str | None = None,
+    to_source_field: str | None = None,
+    storage_options: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> BulkIngestionPlan:
+    """Creates a bulk relationship ingestion plan from local or cloud Parquet file sources.
+
+    Args:
+        rel_model: Target Relationship model class or relationship type string (e.g. "KNOWS").
+        source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
+        from_label: Source node label.
+        from_key: Source node matching property name (e.g. "id").
+        to_label: Target node label.
+        to_key: Target node matching property name (e.g. "id").
+        batch_size: Number of edges per batch transaction.
+        dialect: Target graph query dialect ('cypher', 'iso_gql').
+        properties: Explicit list of edge properties to set, or None to infer.
+        from_source_field: Optional column name in file to map to `from_<from_key>`.
+        to_source_field: Optional column name in file to map to `to_<to_key>`.
+        storage_options: Multi-cloud credentials and filesystem options passed to Polars.
+        **kwargs: Extra arguments forwarded to `pl.scan_parquet`.
+
+    Returns:
+        BulkIngestionPlan containing chunked parameter batches.
+    """
+    scan_source: Any = (
+        [str(s) if isinstance(s, Path) else s for s in source]
+        if isinstance(source, (list, tuple))
+        else (str(source) if isinstance(source, Path) else source)
+    )
+
+    scan_kwargs = dict(kwargs)
+    if storage_options is not None:
+        scan_kwargs["storage_options"] = storage_options
+
+    lazy_df = pl.scan_parquet(scan_source, **scan_kwargs)
+
+    rename_map = {}
+    expected_from = f"from_{from_key}"
+    expected_to = f"to_{to_key}"
+    if from_source_field and from_source_field != expected_from:
+        rename_map[from_source_field] = expected_from
+    if to_source_field and to_source_field != expected_to:
+        rename_map[to_source_field] = expected_to
+    if rename_map:
+        lazy_df = lazy_df.rename(rename_map)
+
+    return create_bulk_create_rel_plan(
+        rel_model=rel_model,
+        data=lazy_df,
+        from_label=from_label,
+        from_key=from_key,
+        to_label=to_label,
+        to_key=to_key,
+        batch_size=batch_size,
+        dialect=dialect,
+        properties=properties,
+    )
+
+
+def create_csv_rel_ingest_plan(
+    rel_model: type[Relationship] | str,
+    source: str | Path | Sequence[str] | Sequence[Path],
+    from_label: str,
+    from_key: str,
+    to_label: str,
+    to_key: str,
+    batch_size: int = 50_000,
+    dialect: str = "cypher",
+    properties: list[str] | None = None,
+    from_source_field: str | None = None,
+    to_source_field: str | None = None,
+    storage_options: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> BulkIngestionPlan:
+    """Creates a bulk relationship ingestion plan from local or cloud CSV file sources.
+
+    Note:
+        CSV schemas are inferred from a row sample (default 100 rows in Polars);
+        for production loads with string IDs (e.g. leading zeros), all-null
+        leading columns, or specific formats, pass explicit `dtypes` or
+        `infer_schema_length` (e.g. `infer_schema_length=None`) via `**kwargs`.
+
+    Args:
+        rel_model: Target Relationship model class or relationship type string (e.g. "KNOWS").
+        source: Local file path, glob pattern, or cloud URI (s3://, az://, gs://).
+        from_label: Source node label.
+        from_key: Source node matching property name (e.g. "id").
+        to_label: Target node label.
+        to_key: Target node matching property name (e.g. "id").
+        batch_size: Number of edges per batch transaction.
+        dialect: Target graph query dialect ('cypher', 'iso_gql').
+        properties: Explicit list of edge properties to set, or None to infer.
+        from_source_field: Optional column name in file to map to `from_<from_key>`.
+        to_source_field: Optional column name in file to map to `to_<to_key>`.
+        storage_options: Multi-cloud credentials and filesystem options passed to Polars.
+        **kwargs: Extra arguments forwarded to `pl.scan_csv`.
+
+    Returns:
+        BulkIngestionPlan containing chunked parameter batches.
+    """
+    scan_source: Any = (
+        [str(s) if isinstance(s, Path) else s for s in source]
+        if isinstance(source, (list, tuple))
+        else (str(source) if isinstance(source, Path) else source)
+    )
+
+    scan_kwargs = dict(kwargs)
+    if storage_options is not None:
+        scan_kwargs["storage_options"] = storage_options
+
+    lazy_df = pl.scan_csv(scan_source, **scan_kwargs)
+
+    rename_map = {}
+    expected_from = f"from_{from_key}"
+    expected_to = f"to_{to_key}"
+    if from_source_field and from_source_field != expected_from:
+        rename_map[from_source_field] = expected_from
+    if to_source_field and to_source_field != expected_to:
+        rename_map[to_source_field] = expected_to
+    if rename_map:
+        lazy_df = lazy_df.rename(rename_map)
+
+    return create_bulk_create_rel_plan(
+        rel_model=rel_model,
+        data=lazy_df,
+        from_label=from_label,
+        from_key=from_key,
+        to_label=to_label,
+        to_key=to_key,
+        batch_size=batch_size,
+        dialect=dialect,
+        properties=properties,
+    )
+
+
+def ingest_parquet(
+    session: Any,
+    source: str | Path | Sequence[str] | Sequence[Path],
+    model: type[Node],
+    mode: Literal["create", "upsert"] = "create",
+    key_field: str = "id",
+    batch_size: int = 50_000,
+    storage_options: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Ingests nodes directly from local or cloud Parquet files into a session.
+
+    Note:
+        The canonical entry point is `session.ingest_parquet(...)`. This function
+        is a functional convenience wrapper matching the GQLAlchemy loader idiom.
+    """
+    return session.ingest_parquet(
+        source=source,
+        model=model,
+        mode=mode,
+        key_field=key_field,
+        batch_size=batch_size,
+        storage_options=storage_options,
+        **kwargs,
+    )
+
+
+def ingest_csv(
+    session: Any,
+    source: str | Path | Sequence[str] | Sequence[Path],
+    model: type[Node],
+    mode: Literal["create", "upsert"] = "create",
+    key_field: str = "id",
+    batch_size: int = 50_000,
+    storage_options: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Ingests nodes directly from local or cloud CSV files into a session.
+
+    Note:
+        The canonical entry point is `session.ingest_csv(...)`. This function
+        is a functional convenience wrapper matching the GQLAlchemy loader idiom.
+        CSV schemas are inferred from a row sample; for production loads pass
+        explicit `dtypes` or `infer_schema_length` via `**kwargs`.
+    """
+    return session.ingest_csv(
+        source=source,
+        model=model,
+        mode=mode,
+        key_field=key_field,
+        batch_size=batch_size,
+        storage_options=storage_options,
+        **kwargs,
+    )
+
+
+def ingest_parquet_relationships(
+    session: Any,
+    source: str | Path | Sequence[str] | Sequence[Path],
+    rel_model: type[Relationship] | str,
+    from_label: str,
+    from_key: str,
+    to_label: str,
+    to_key: str,
+    batch_size: int = 50_000,
+    properties: list[str] | None = None,
+    from_source_field: str | None = None,
+    to_source_field: str | None = None,
+    storage_options: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Ingests relationships directly from local or cloud Parquet files into a session.
+
+    Note:
+        The canonical entry point is `session.ingest_parquet_relationships(...)`.
+        This function is a functional convenience wrapper matching the GQLAlchemy loader idiom.
+    """
+    return session.ingest_parquet_relationships(
+        source=source,
+        rel_model=rel_model,
+        from_label=from_label,
+        from_key=from_key,
+        to_label=to_label,
+        to_key=to_key,
+        batch_size=batch_size,
+        properties=properties,
+        from_source_field=from_source_field,
+        to_source_field=to_source_field,
+        storage_options=storage_options,
+        **kwargs,
+    )
+
+
+def ingest_csv_relationships(
+    session: Any,
+    source: str | Path | Sequence[str] | Sequence[Path],
+    rel_model: type[Relationship] | str,
+    from_label: str,
+    from_key: str,
+    to_label: str,
+    to_key: str,
+    batch_size: int = 50_000,
+    properties: list[str] | None = None,
+    from_source_field: str | None = None,
+    to_source_field: str | None = None,
+    storage_options: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Ingests relationships directly from local or cloud CSV files into a session.
+
+    Note:
+        The canonical entry point is `session.ingest_csv_relationships(...)`.
+        This function is a functional convenience wrapper matching the GQLAlchemy loader idiom.
+        CSV schemas are inferred from a row sample; for production loads pass
+        explicit `dtypes` or `infer_schema_length` via `**kwargs`.
+    """
+    return session.ingest_csv_relationships(
+        source=source,
+        rel_model=rel_model,
+        from_label=from_label,
+        from_key=from_key,
+        to_label=to_label,
+        to_key=to_key,
+        batch_size=batch_size,
+        properties=properties,
+        from_source_field=from_source_field,
+        to_source_field=to_source_field,
+        storage_options=storage_options,
+        **kwargs,
     )

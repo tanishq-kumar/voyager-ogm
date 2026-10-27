@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Added
+- **File, S3, and Azure Cloud Ingestion Loaders (#110)**:
+  - Added zero-copy, lazy-scanned cloud and local file loaders directly on `Session`, `AsyncSession`, and top-level module APIs (`ingest_parquet`, `ingest_csv`, `ingest_parquet_relationships`, `ingest_csv_relationships`).
+  - Added `create_parquet_ingest_plan`, `create_csv_ingest_plan`, `create_parquet_rel_ingest_plan`, and `create_csv_rel_ingest_plan` with support for `"create"` / `"upsert"` modes, field remapping, and multi-cloud authentication via Polars `storage_options`.
 - **Full-Text Index DDL Generation and Query Integration (#113)**:
   - Added declarative `FullTextIndex(properties, name=None, analyzer="standard")` configuration to `voyager_ogm.schema` and re-exported in `voyager_ogm` (with `TextIndex` and `fulltext_index` developer ergonomics aliases).
   - Added model metadata reflection on `Node` and `Relationship` subclasses via `__fulltext_indexes__`.
