@@ -506,6 +506,11 @@ class ExecutionResult(list[dict[str, Any]]):
 
         Returns:
             A NetworkX Graph (Graph, DiGraph, MultiGraph, or MultiDiGraph).
+
+        Note:
+            Node and edge attributes may contain rich objects (such as Point).
+            Serializers like `write_graphml` or GEXF require primitive types and will
+            require filtering or converting non-primitive attributes prior to serialization.
         """
         from voyager_ogm.analytics import to_networkx
 

@@ -50,6 +50,12 @@ def to_networkx(
     Returns:
         A NetworkX Graph (`Graph`, `DiGraph`, `MultiGraph`, or `MultiDiGraph`) populated with nodes and edges.
 
+    Note:
+        Node and edge attributes can contain rich Voyager objects (such as Point or
+        Duration). While fully supported for in-memory graph algorithms, disk serializers
+        like `networkx.write_graphml` or GEXF require primitive types and will choke
+        unless non-primitive attributes are converted or filtered prior to serialization.
+
     Raises:
         ImportError: If NetworkX is not installed.
     """
