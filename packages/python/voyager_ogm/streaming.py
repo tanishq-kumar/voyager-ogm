@@ -6,6 +6,7 @@ Provides high-throughput graph result streaming via the Arrow C Data Interface
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -98,6 +99,32 @@ class QueryResult:
         self._cached_df = df
         return df
 
+    def to_networkx(
+        self,
+        directed: bool = True,
+        multigraph: bool = False,
+        node_id_attr: str = "id",
+        node_attrs: Sequence[str] | None = None,
+        edge_attrs: Sequence[str] | None = None,
+        edge_label_attr: str = "type",
+        source_col: str | None = None,
+        target_col: str | None = None,
+    ) -> Any:
+        """Exports the stream records into a NetworkX graph."""
+        from voyager_ogm.analytics import to_networkx
+
+        return to_networkx(
+            self.to_dicts(),
+            directed=directed,
+            multigraph=multigraph,
+            node_id_attr=node_id_attr,
+            node_attrs=node_attrs,
+            edge_attrs=edge_attrs,
+            edge_label_attr=edge_label_attr,
+            source_col=source_col,
+            target_col=target_col,
+        )
+
     def to_dicts(self) -> list[dict[str, Any]]:
         """Convenience method to export records as Python dictionaries.
 
@@ -144,3 +171,45 @@ def to_arrow(stream: ArrowStream) -> pa.Table:
 
     reader = pa.RecordBatchReader.from_stream(stream)
     return reader.read_all()
+
+
+def to_networkx(
+    stream: ArrowStream | Any,
+    directed: bool = True,
+    multigraph: bool = False,
+    node_id_attr: str = "id",
+    node_attrs: Sequence[str] | None = None,
+    edge_attrs: Sequence[str] | None = None,
+    edge_label_attr: str = "type",
+    source_col: str | None = None,
+    target_col: str | None = None,
+) -> Any:
+    """Converts an ArrowStream or query result directly into a NetworkX graph.
+
+    Args:
+        stream: An ArrowStream, QueryResult, or sequence of records.
+        directed: Whether to create a directed graph (DiGraph / MultiDiGraph). Default True.
+        multigraph: Whether to allow parallel edges (MultiGraph / MultiDiGraph). Default False.
+        node_id_attr: Property to match as node identifier. Default "id".
+        node_attrs: Explicit list of node properties to preserve. None preserves all.
+        edge_attrs: Explicit list of edge properties to preserve. None preserves all.
+        edge_label_attr: Attribute name for edge relationship type. Default "type".
+        source_col: Explicit source column when converting tabular records.
+        target_col: Explicit target column when converting tabular records.
+
+    Returns:
+        Populated NetworkX Graph.
+    """
+    from voyager_ogm.analytics import to_networkx as _to_nx
+
+    return _to_nx(
+        stream,
+        directed=directed,
+        multigraph=multigraph,
+        node_id_attr=node_id_attr,
+        node_attrs=node_attrs,
+        edge_attrs=edge_attrs,
+        edge_label_attr=edge_label_attr,
+        source_col=source_col,
+        target_col=target_col,
+    )

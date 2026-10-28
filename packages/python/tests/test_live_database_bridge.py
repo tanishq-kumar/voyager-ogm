@@ -261,6 +261,40 @@ def test_live_neo4j_cloud_ingest_parquet_and_csv(clean_neo4j, tmp_path):
 
 
 @pytest.mark.skipif(not NEO4J_ONLINE, reason="Live Neo4j instance not online on localhost:7687")
+def test_live_neo4j_to_networkx_graph_export(clean_neo4j):
+    """Test exporting live Neo4j query results directly into NetworkX for analytics."""
+    import networkx as nx
+
+    session = Session(bridge=clean_neo4j, dialect="cypher")
+
+    # 1. Seed nodes and edges
+    session.execute("CREATE (:LivePerson {id: 1, name: 'Alice', age: 30})")
+    session.execute("CREATE (:LivePerson {id: 2, name: 'Bob', age: 25})")
+    session.execute("CREATE (:LivePerson {id: 3, name: 'Charlie', age: 35})")
+    session.execute(
+        "MATCH (a:LivePerson {id: 1}), (b:LivePerson {id: 2}) CREATE (a)-[:KNOWS {since: 2021, weight: 1.0}]->(b)"
+    )
+    session.execute(
+        "MATCH (b:LivePerson {id: 2}), (c:LivePerson {id: 3}) CREATE (b)-[:KNOWS {since: 2022, weight: 2.0}]->(c)"
+    )
+
+    # 2. Query and export to NetworkX
+    res = session.execute(
+        "MATCH (a:LivePerson)-[r:KNOWS]->(b:LivePerson) RETURN a.id AS source, b.id AS target, r.weight AS weight"
+    )
+    graph = res.to_networkx(directed=True)
+
+    assert graph.number_of_nodes() == 3
+    assert graph.number_of_edges() == 2
+    assert graph[1][2]["weight"] == 1.0
+    assert graph[2][3]["weight"] == 2.0
+
+    # 3. Graph algorithm verification
+    path = nx.shortest_path(graph, 1, 3, weight="weight")
+    assert path == [1, 2, 3]
+
+
+@pytest.mark.skipif(not NEO4J_ONLINE, reason="Live Neo4j instance not online on localhost:7687")
 def test_live_neo4j_official_social_dataset(clean_neo4j):
     """Test loading and querying the official LDBC Social Network dataset on live Neo4j."""
     import pathlib
