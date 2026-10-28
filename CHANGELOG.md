@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- **NetworkX Graph Analytics Export Bridge (#117)**:
+  - Added direct, high-performance `.to_networkx()` graph export on `ExecutionResult`, `QueryResult`, and top-level module `voyager_ogm.to_networkx`.
+  - Added fluent `session.query(...)` and `async_session.query(...)` builders supporting direct `.where(...).to_networkx()` chaining.
+  - Supported directed (`DiGraph`, `MultiDiGraph`) and undirected (`Graph`, `MultiGraph`) graph generation with node/edge attribute filtering and relationship type preservation.
+  - Added explicit `node_only=True` escape hatch and `source_col=""` support to disable automatic tabular edge heuristic detection.
+  - Added `analytics` optional dependency extra (`pip install "voyager-ogm[analytics]"`).
 - **File, S3, and Azure Cloud Ingestion Loaders (#110)**:
   - Added zero-copy, lazy-scanned cloud and local file loaders directly on `Session`, `AsyncSession`, and top-level module APIs (`ingest_parquet`, `ingest_csv`, `ingest_parquet_relationships`, `ingest_csv_relationships`).
   - Added `create_parquet_ingest_plan`, `create_csv_ingest_plan`, `create_parquet_rel_ingest_plan`, and `create_csv_rel_ingest_plan` with support for `"create"` / `"upsert"` modes, field remapping, and multi-cloud authentication via Polars `storage_options`.

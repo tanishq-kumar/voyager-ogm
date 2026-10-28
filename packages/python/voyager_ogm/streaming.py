@@ -6,6 +6,7 @@ Provides high-throughput graph result streaming via the Arrow C Data Interface
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -13,6 +14,7 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
 from voyager_ogm._voyager_rs import ArrowStream
+from voyager_ogm.analytics import to_networkx
 
 
 class QueryResult:
@@ -98,6 +100,32 @@ class QueryResult:
         self._cached_df = df
         return df
 
+    def to_networkx(
+        self,
+        directed: bool = True,
+        multigraph: bool = False,
+        node_id_attr: str = "id",
+        node_attrs: Sequence[str] | None = None,
+        edge_attrs: Sequence[str] | None = None,
+        edge_label_attr: str = "type",
+        source_col: str | None = None,
+        target_col: str | None = None,
+        node_only: bool = False,
+    ) -> Any:
+        """Exports the stream records into a NetworkX graph."""
+        return to_networkx(
+            self.to_dicts(),
+            directed=directed,
+            multigraph=multigraph,
+            node_id_attr=node_id_attr,
+            node_attrs=node_attrs,
+            edge_attrs=edge_attrs,
+            edge_label_attr=edge_label_attr,
+            source_col=source_col,
+            target_col=target_col,
+            node_only=node_only,
+        )
+
     def to_dicts(self) -> list[dict[str, Any]]:
         """Convenience method to export records as Python dictionaries.
 
@@ -144,3 +172,11 @@ def to_arrow(stream: ArrowStream) -> pa.Table:
 
     reader = pa.RecordBatchReader.from_stream(stream)
     return reader.read_all()
+
+
+__all__ = [
+    "QueryResult",
+    "to_arrow",
+    "to_networkx",
+    "to_polars",
+]

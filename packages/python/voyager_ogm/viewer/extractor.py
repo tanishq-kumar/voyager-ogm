@@ -82,9 +82,11 @@ def extract_graph_entities_from_records(
                         {
                             pk: pv
                             for pk, pv in v.items()
-                            if pk not in ("labels", "_labels", "label", "id", "_id")
+                            if pk not in ("labels", "_labels", "label", "_id")
                         },
                     )
+                    if "id" not in props and v.get("id") is not None:
+                        props["id"] = v.get("id")
                     nodes_dict[n_id] = {
                         "id": n_id,
                         "label": lbl,

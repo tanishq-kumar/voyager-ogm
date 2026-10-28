@@ -15,6 +15,7 @@ from voyager_ogm._voyager_rs import (
     generate_synthetic_stream,
     version,
 )
+from voyager_ogm.analytics import to_networkx
 from voyager_ogm.bridge import (
     AsyncDatabaseBridge,
     AsyncDuckDbBridge,
@@ -128,7 +129,11 @@ from voyager_ogm.sqlalchemy import (
     graph_relationship,
     graph_table,
 )
-from voyager_ogm.streaming import QueryResult, to_arrow, to_polars
+from voyager_ogm.streaming import (
+    QueryResult,
+    to_arrow,
+    to_polars,
+)
 from voyager_ogm.transaction import SavepointContext, Transaction
 from voyager_ogm.types import Point, parse_iso_duration, to_iso_duration
 from voyager_ogm.viewer import GraphViewer, explore, show, view_graph, visualize_query
@@ -268,6 +273,7 @@ __all__ = [
     "show",
     "to_arrow",
     "to_expression",
+    "to_networkx",
     "to_polars",
     "types",
     "validate_query",
