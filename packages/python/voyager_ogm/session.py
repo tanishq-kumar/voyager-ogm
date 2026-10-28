@@ -9,7 +9,7 @@ import weakref
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Generic, Literal, Self, TypedDict, TypeVar
 
 from voyager_ogm.bridge import (
     AsyncDatabaseBridge,
@@ -35,6 +35,7 @@ from voyager_ogm.transaction import Transaction
 from voyager_ogm.types import serialize_param_value
 
 logger = logging.getLogger("voyager_ogm.session")
+_T_Session = TypeVar("_T_Session")
 
 if TYPE_CHECKING:
     import polars as pl
@@ -485,6 +486,7 @@ class ExecutionResult(list[dict[str, Any]]):
         edge_label_attr: str = "type",
         source_col: str | None = None,
         target_col: str | None = None,
+        node_only: bool = False,
     ) -> Any:
         """Exports the query execution result into a NetworkX graph.
 
@@ -496,7 +498,11 @@ class ExecutionResult(list[dict[str, Any]]):
             edge_attrs: Optional explicit list of edge attribute names to include. None preserves all properties.
             edge_label_attr: Attribute name under which the relationship type/label is stored on edges. Default "type".
             source_col: Explicit source node column name when converting from tabular/flat records.
+                Pass empty string ("") to disable automatic edge heuristic detection.
             target_col: Explicit target node column name when converting from tabular/flat records.
+                Pass empty string ("") to disable automatic edge heuristic detection.
+            node_only: Whether to extract only nodes, ignoring edges. Disables automatic tabular
+                edge heuristic detection when True. Default False.
 
         Returns:
             A NetworkX Graph (Graph, DiGraph, MultiGraph, or MultiDiGraph).
@@ -513,6 +519,7 @@ class ExecutionResult(list[dict[str, Any]]):
             edge_label_attr=edge_label_attr,
             source_col=source_col,
             target_col=target_col,
+            node_only=node_only,
         )
 
     def to_graph(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -1030,10 +1037,10 @@ class _SessionBase:
         )
 
 
-class BoundQuery:
-    """Fluent query builder bound to an active database session for direct execution and export."""
+class _BoundQueryBase(Generic[_T_Session]):
+    """Base query builder bound to an active database session for chaining."""
 
-    def __init__(self, session: Any, target_or_query: Any) -> None:
+    def __init__(self, session: _T_Session, target_or_query: Any) -> None:
         self._session = session
         from voyager_ogm.query import Query
 
@@ -1051,30 +1058,38 @@ class BoundQuery:
         """The underlying Query builder instance."""
         return self._query
 
-    def where(self, *predicates: Any) -> BoundQuery:
+    def _spawn(self, query: Any) -> Self:
+        """Spawns a new bound query instance of the same type."""
+        return self.__class__(self._session, query)
+
+    def where(self, *predicates: Any) -> Self:
         """Appends WHERE filter predicates to the query."""
         new_q = self._query.where(*predicates)
-        return BoundQuery(self._session, new_q)
+        return self._spawn(new_q)
 
-    def return_(self, *items: Any) -> BoundQuery:
+    def return_(self, *items: Any) -> Self:
         """Specifies projection RETURN items."""
         new_q = self._query.return_(*items)
-        return BoundQuery(self._session, new_q)
+        return self._spawn(new_q)
 
-    def limit(self, limit: int) -> BoundQuery:
+    def limit(self, limit: int) -> Self:
         """Limits the maximum number of result records."""
         new_q = self._query.limit(limit)
-        return BoundQuery(self._session, new_q)
+        return self._spawn(new_q)
 
-    def skip(self, skip: int) -> BoundQuery:
+    def skip(self, skip: int) -> Self:
         """Skips the specified number of records (OFFSET)."""
         new_q = self._query.skip(skip)
-        return BoundQuery(self._session, new_q)
+        return self._spawn(new_q)
 
-    def order_by(self, *items: Any) -> BoundQuery:
+    def order_by(self, *items: Any) -> Self:
         """Orders the result set by the specified expressions."""
         new_q = self._query.order_by(*items)
-        return BoundQuery(self._session, new_q)
+        return self._spawn(new_q)
+
+
+class BoundQuery(_BoundQueryBase["Session"]):
+    """Fluent query builder bound to an active database session for direct execution and export."""
 
     def execute(self) -> ExecutionResult:
         """Executes the query synchronously against the session."""
@@ -1104,51 +1119,8 @@ class BoundQuery:
         return iter(self.execute())
 
 
-class AsyncBoundQuery:
+class AsyncBoundQuery(_BoundQueryBase["AsyncSession"]):
     """Fluent query builder bound to an active async database session."""
-
-    def __init__(self, session: Any, target_or_query: Any) -> None:
-        self._session = session
-        from voyager_ogm.query import Query
-
-        if isinstance(target_or_query, Query):
-            self._query = target_or_query
-        elif isinstance(target_or_query, type):
-            var = target_or_query.__name__.lower()
-            inst = target_or_query(var)
-            self._query = Query.match(inst).return_(var)
-        else:
-            self._query = Query.match(target_or_query)
-
-    @property
-    def query(self) -> Any:
-        """The underlying Query builder instance."""
-        return self._query
-
-    def where(self, *predicates: Any) -> AsyncBoundQuery:
-        """Appends WHERE filter predicates to the query."""
-        new_q = self._query.where(*predicates)
-        return AsyncBoundQuery(self._session, new_q)
-
-    def return_(self, *items: Any) -> AsyncBoundQuery:
-        """Specifies projection RETURN items."""
-        new_q = self._query.return_(*items)
-        return AsyncBoundQuery(self._session, new_q)
-
-    def limit(self, limit: int) -> AsyncBoundQuery:
-        """Limits the maximum number of result records."""
-        new_q = self._query.limit(limit)
-        return AsyncBoundQuery(self._session, new_q)
-
-    def skip(self, skip: int) -> AsyncBoundQuery:
-        """Skips the specified number of records (OFFSET)."""
-        new_q = self._query.skip(skip)
-        return AsyncBoundQuery(self._session, new_q)
-
-    def order_by(self, *items: Any) -> AsyncBoundQuery:
-        """Orders the result set by the specified expressions."""
-        new_q = self._query.order_by(*items)
-        return AsyncBoundQuery(self._session, new_q)
 
     async def execute(self) -> ExecutionResult:
         """Executes the query asynchronously against the session."""

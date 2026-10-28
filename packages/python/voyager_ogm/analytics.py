@@ -25,6 +25,7 @@ def to_networkx(
     edge_label_attr: str = "type",
     source_col: str | None = None,
     target_col: str | None = None,
+    node_only: bool = False,
 ) -> nx.Graph | nx.DiGraph | nx.MultiGraph | nx.MultiDiGraph:
     """Exports Voyager query execution results, records, or tables into a NetworkX graph.
 
@@ -40,7 +41,11 @@ def to_networkx(
         edge_attrs: Optional explicit list of edge attribute names to include. None preserves all properties.
         edge_label_attr: Attribute name under which the relationship type/label is stored on edges. Default "type".
         source_col: Explicit source node column name when converting from tabular/flat records.
+            Pass empty string ("") to disable automatic edge heuristic detection.
         target_col: Explicit target node column name when converting from tabular/flat records.
+            Pass empty string ("") to disable automatic edge heuristic detection.
+        node_only: Whether to extract only nodes, ignoring edges. Disables automatic tabular
+            edge heuristic detection when True. Default False.
 
     Returns:
         A NetworkX Graph (`Graph`, `DiGraph`, `MultiGraph`, or `MultiDiGraph`) populated with nodes and edges.
@@ -103,25 +108,28 @@ def to_networkx(
 
             graph.add_node(n_id, **props)
 
-        for e in edges:
-            src_raw = e.get("source")
-            tgt_raw = e.get("target")
-            src = id_map.get(src_raw, id_map.get(str(src_raw), src_raw))
-            tgt = id_map.get(tgt_raw, id_map.get(str(tgt_raw), tgt_raw))
+        if not node_only:
+            for e in edges:
+                src_raw = e.get("source")
+                tgt_raw = e.get("target")
+                src = id_map.get(src_raw, id_map.get(str(src_raw), src_raw))
+                tgt = id_map.get(tgt_raw, id_map.get(str(tgt_raw), tgt_raw))
 
-            if src is None or tgt is None:
-                continue
+                if src is None or tgt is None:
+                    continue
 
-            props = dict(e.get("data", {}))
-            if edge_label_attr and e.get("label") and edge_label_attr not in props:
-                props[edge_label_attr] = e.get("label")
-            if "id" not in props and e.get("id"):
-                props["id"] = e.get("id")
+                props = dict(e.get("data", {}))
+                if edge_label_attr and e.get("label") and edge_label_attr not in props:
+                    props[edge_label_attr] = e.get("label")
+                if "id" not in props and e.get("id"):
+                    props["id"] = e.get("id")
 
-            if edge_attrs is not None:
-                props = {k: v for k, v in props.items() if k in edge_attrs or k == edge_label_attr}
+                if edge_attrs is not None:
+                    props = {
+                        k: v for k, v in props.items() if k in edge_attrs or k == edge_label_attr
+                    }
 
-            graph.add_edge(src, tgt, **props)
+                graph.add_edge(src, tgt, **props)
 
         return graph
 
@@ -146,18 +154,27 @@ def to_networkx(
     col_names = list(first_row.keys())
 
     # Detect source and target columns
-    src_c = source_col or next(
-        (
-            c
-            for c in ["source", "src", "from", "start", "from_id", "source_id", "u"]
-            if c in col_names
-        ),
-        None,
-    )
-    tgt_c = target_col or next(
-        (c for c in ["target", "dst", "to", "end", "to_id", "target_id", "v"] if c in col_names),
-        None,
-    )
+    # Explicit node_only=True or empty string for source_col/target_col disables edge detection
+    detect_edges = not node_only and source_col != "" and target_col != ""
+    src_c = None
+    tgt_c = None
+    if detect_edges:
+        src_c = source_col or next(
+            (
+                c
+                for c in ["source", "src", "from", "start", "from_id", "source_id", "u"]
+                if c in col_names
+            ),
+            None,
+        )
+        tgt_c = target_col or next(
+            (
+                c
+                for c in ["target", "dst", "to", "end", "to_id", "target_id", "v"]
+                if c in col_names
+            ),
+            None,
+        )
 
     if src_c and tgt_c:
         rel_c = next(
@@ -193,13 +210,12 @@ def to_networkx(
         (c for c in [node_id_attr, "id", "node_id", "name", "key"] if c in col_names),
         None,
     )
-    if id_c:
-        for r in records:
-            nid = r.get(id_c)
-            if nid is not None:
-                node_data = {k: val for k, val in r.items() if k != id_c}
-                if node_attrs is not None:
-                    node_data = {k: val for k, val in node_data.items() if k in node_attrs}
-                graph.add_node(nid, **node_data)
+    for i, r in enumerate(records):
+        nid = r.get(id_c) if id_c else i
+        if nid is not None:
+            node_data = {k: val for k, val in r.items() if k != id_c}
+            if node_attrs is not None:
+                node_data = {k: val for k, val in node_data.items() if k in node_attrs}
+            graph.add_node(nid, **node_data)
 
     return graph

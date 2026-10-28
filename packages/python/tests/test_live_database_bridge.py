@@ -263,7 +263,7 @@ def test_live_neo4j_cloud_ingest_parquet_and_csv(clean_neo4j, tmp_path):
 @pytest.mark.skipif(not NEO4J_ONLINE, reason="Live Neo4j instance not online on localhost:7687")
 def test_live_neo4j_to_networkx_graph_export(clean_neo4j):
     """Test exporting live Neo4j query results directly into NetworkX for analytics."""
-    import networkx as nx
+    nx = pytest.importorskip("networkx")
 
     session = Session(bridge=clean_neo4j, dialect="cypher")
 

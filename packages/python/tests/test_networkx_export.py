@@ -5,7 +5,6 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock
 
-import networkx as nx
 import polars as pl
 import pytest
 from voyager_ogm import (
@@ -22,6 +21,8 @@ from voyager_ogm import (
     reset_alias_counters,
     to_networkx,
 )
+
+nx = pytest.importorskip("networkx")
 
 
 @node("Person")
@@ -311,3 +312,42 @@ def test_streaming_query_result_to_networkx():
     assert graph.number_of_nodes() == 2
     assert graph.has_edge("X", "Y")
     assert graph["X"]["Y"]["type"] == "LINKS_TO"
+
+
+def test_to_networkx_node_only_escape_hatch():
+    """Verify node_only=True and source_col='' prevent edge manufacturing on ambiguous columns."""
+    records = [
+        {"id": 1, "start": "2024-01-01", "target": "100k", "value": 42},
+        {"id": 2, "start": "2024-02-01", "target": "200k", "value": 84},
+    ]
+
+    # Without node_only or source_col="", 'start' and 'target' are heuristically treated as edge endpoints
+    graph_heuristic = to_networkx(records)
+    assert graph_heuristic.number_of_edges() == 2
+
+    # With node_only=True, edge heuristic is disabled and nodes only are extracted
+    graph_node_only = to_networkx(records, node_only=True)
+    assert graph_node_only.number_of_nodes() == 2
+    assert graph_node_only.number_of_edges() == 0
+    assert graph_node_only.nodes[1]["start"] == "2024-01-01"
+    assert graph_node_only.nodes[1]["target"] == "100k"
+
+    # With source_col="", edge heuristic is also disabled
+    graph_source_col_empty = to_networkx(records, source_col="")
+    assert graph_source_col_empty.number_of_nodes() == 2
+    assert graph_source_col_empty.number_of_edges() == 0
+
+
+def test_bound_query_chaining_methods():
+    """Verify BoundQuery and AsyncBoundQuery shared base chaining preserves types and clauses."""
+    bridge = MockBridge()
+    session = Session(bridge=bridge, dialect="cypher")
+    p = Person("p")
+
+    bq = session.query(p).where(p.age > 21).limit(10).skip(5).order_by(p.id)
+    assert bq.__class__.__name__ == "BoundQuery"
+
+    async_bridge = AsyncMockBridge()
+    async_session = AsyncSession(bridge=async_bridge, dialect="cypher")
+    abq = async_session.query(p).where(p.age > 21).limit(10).skip(5).order_by(p.id)
+    assert abq.__class__.__name__ == "AsyncBoundQuery"
