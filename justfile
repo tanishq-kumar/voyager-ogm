@@ -61,7 +61,11 @@ test-snapshot:
 
 # Run Python SDK tests with pytest (skipping slow live container integration tests)
 test-python:
-    uv run pytest -m "not live"
+    uv run --no-sync pytest -m "not live"
+
+# Run Relate embedded database integration tests
+test-relate:
+    uv run --no-sync pytest packages/python/tests/test_relate_compatibility.py -v
 
 # Run TypeScript SDK tests with bun test
 test-ts:
@@ -70,22 +74,22 @@ test-ts:
 # Format code across Rust and Python
 fmt:
     cargo fmt --all
-    uv run ruff format .
+    uv run --no-sync ruff format .
 
 # Check formatting without modifying files
 fmt-check:
     cargo fmt --all -- --check
-    uv run ruff format --check .
+    uv run --no-sync ruff format --check .
 
 # Lint code across Rust and Python
 lint:
-    uv run cargo clippy --workspace --all-targets -- -D warnings
-    uv run ruff check .
+    cargo clippy --workspace --all-targets -- -D warnings
+    uv run --no-sync ruff check .
 
 # Static type checking across Python using Astral ty and Mypy (PEP 561 / PEP 681)
 typecheck:
     uvx ty check packages/python
-    uv run mypy packages/python/voyager_ogm
+    uv run --no-sync mypy packages/python/voyager_ogm
 
 # Full Continuous Integration (CI) verification suite
 ci: fmt-check lint test

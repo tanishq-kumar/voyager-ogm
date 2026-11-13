@@ -39,6 +39,9 @@ duckdb = [
 neo4j = [
     "neo4j>=5.0.0",
 ]
+relate = [
+    "relate-db>=1.0.0",
+]
 age = [
     "psycopg[binary]>=3.1.0; python_version < '3.14'",
 ]
@@ -153,6 +156,8 @@ module = [
     "neo4j.*",
     "neomodel",
     "neomodel.*",
+    "relate",
+    "relate.*",
     "networkx",
     "networkx.*",
 ]
