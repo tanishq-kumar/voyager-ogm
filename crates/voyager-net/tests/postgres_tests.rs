@@ -294,3 +294,25 @@ fn test_rows_to_arrow_record_batch() {
         &arrow_schema::DataType::Boolean
     );
 }
+
+#[test]
+fn test_clean_agtype_string_unicode_regression() {
+    assert_eq!(clean_agtype_string("é"), "é");
+    assert_eq!(clean_agtype_string("Renée"), "Renée");
+    assert_eq!(clean_agtype_string("\"Renée\""), "\"Renée\"");
+    assert_eq!(
+        clean_agtype_string("{\"name\": \"Renée\"}::vertex"),
+        "{\"name\": \"Renée\"}"
+    );
+    assert_eq!(clean_agtype_string("Renée::vertex"), "Renée");
+    assert_eq!(clean_agtype_string("\"Renée\"::vertex"), "\"Renée\"");
+    assert_eq!(clean_agtype_string("é::vertex"), "é");
+    assert_eq!(clean_agtype_string("123::numeric"), "123");
+
+    // Verify rows_to_record_batch type inference on multi-byte strings like Renée does not panic
+    let cols = vec!["name".to_string()];
+    let rows = vec![vec![Some("Renée".to_string())]];
+    let batch =
+        rows_to_record_batch(&cols, &rows).expect("Failed to infer record batch with Renée");
+    assert_eq!(batch.num_rows(), 1);
+}

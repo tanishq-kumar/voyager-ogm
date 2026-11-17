@@ -739,26 +739,20 @@ def test_opengql_official_tck_repository():
 
 
 def test_opengql_tier3_live_neo4j_execution():
-    """Tier 3: Executes official openGQL scenarios on live Neo4j Enterprise."""
+    """Tier 3: Executes official openGQL scenarios on live Neo4j."""
     neo4j_host = os.getenv("NEO4J_HOST", "127.0.0.1")
     neo4j_port = int(os.getenv("NEO4J_PORT", "7687"))
     if not _check_port(neo4j_host, neo4j_port):
-        pytest.skip(f"Neo4j Enterprise not available on {neo4j_host}:{neo4j_port}")
+        pytest.skip(f"Neo4j not available on {neo4j_host}:{neo4j_port}")
+    uri = os.getenv("NEO4J_URI", f"bolt://{neo4j_host}:{neo4j_port}")
+    neo4j_user = os.getenv("NEO4J_USER", "neo4j")
+    neo4j_pass = os.getenv("NEO4J_PASSWORD", "voyagerpass123")
 
     from neo4j import GraphDatabase
 
     from test_data.tck.opencypher_adapter import execute_scenario_topology, parse_feature_file
 
-    neo4j_user = os.getenv("NEO4J_USER", "neo4j")
-    neo4j_pass = (
-        os.getenv("NEO4J_ENTERPRISE_PASSWORD")
-        or os.getenv("NEO4J_PASSWORD")
-        or os.getenv("NEO4J_PASS", "voyex1234")
-    )
-
-    driver = GraphDatabase.driver(
-        f"bolt://{neo4j_host}:{neo4j_port}", auth=(neo4j_user, neo4j_pass)
-    )
+    driver = GraphDatabase.driver(uri, auth=(neo4j_user, neo4j_pass))
     try:
         driver.verify_connectivity()
     except Exception as e:

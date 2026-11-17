@@ -1,21 +1,32 @@
 # Voyager OGM Multi-Engine Development Stack
+# Pinned tags; override with MEMGRAPH_TAG / AGE_TAG / FALKORDB_TAG. `just up` falls back to :latest if a pin fails to pull.
+#
+# Neo4j defaults to the open-source Community edition (GPLv3, run-only). Enterprise is opt-in and
+# requires YOU to accept Neo4j's licence terms explicitly; nothing here accepts them for you:
+#   NEO4J_EDITION=enterprise NEO4J_ACCEPT_LICENSE_AGREEMENT=eval just up neo4j
+# "eval" = Neo4j's 30-day evaluation agreement (internal evaluation only); "yes" = commercial
+# agreement, only if you hold a Neo4j commercial licence. Without a value, the Enterprise image
+# refuses to start. Each edition keeps its own data volume (Enterprise store formats can't be
+# opened by Community).
 
 services:
   # Neo4j Graph Database (Bolt Protocol)
   neo4j:
-    image: neo4j:5.26-community
+    image: docker.io/library/neo4j:5.26-${NEO4J_EDITION:-community}
     container_name: voyager-neo4j
     ports:
       - "7687:7687"
     environment:
+      # Ignored by Community; Enterprise only starts if you set it yourself (see header).
+      - NEO4J_ACCEPT_LICENSE_AGREEMENT=${NEO4J_ACCEPT_LICENSE_AGREEMENT:-}
       - NEO4J_AUTH=neo4j/voyagerpass123
       - NEO4J_PLUGINS=["apoc"]
       - NEO4J_dbms_memory_pagecache_size=256M
       - NEO4J_dbms_memory_heap_initial__size=512M
       - NEO4J_dbms_memory_heap_max__size=1G
     volumes:
-      - neo4j_data:/data
-      - neo4j_logs:/logs
+      - neo4j_data_${NEO4J_EDITION:-community}:/data
+      - neo4j_logs_${NEO4J_EDITION:-community}:/logs
     healthcheck:
       test:
         [
@@ -25,30 +36,30 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-      start_period: 10s
+      start_period: 20s
 
   # Memgraph In-Memory Graph Database (Bolt Protocol with MAGE)
   memgraph:
-    image: memgraph/memgraph-mage:latest
+    image: docker.io/memgraph/memgraph-mage:${MEMGRAPH_TAG:-3.14.0}
     container_name: voyager-memgraph
     ports:
       - "7688:7687"
-    environment:
+    # Memgraph takes configuration as command-line flags, not environment variables
+    command:
       - --bolt-port=7687
       - --log-level=WARNING
-      - --experimental-enabled=vector-search
     volumes:
       - memgraph_data:/var/lib/memgraph
       - memgraph_logs:/var/log/memgraph
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "7687"]
+      test: ["CMD-SHELL", "echo 'RETURN 1;' | mgconsole || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 5
 
   # Apache AGE Multi-Model Graph Database (PostgreSQL + Cypher/GQL Extension)
   apache-age:
-    image: apache/age:latest
+    image: docker.io/apache/age:${AGE_TAG:-release_PG18_1.8.0}
     container_name: voyager-apache-age
     ports:
       - "5455:5432"
@@ -66,7 +77,7 @@ services:
 
   # FalkorDB Native Graph Engine (Low-Latency Cypher/GQL over Bolt)
   falkordb:
-    image: falkordb/falkordb:latest
+    image: docker.io/falkordb/falkordb:${FALKORDB_TAG:-6.0.4}
     container_name: voyager-falkordb
     ports:
       - "6379:6379"
@@ -74,14 +85,14 @@ services:
     volumes:
       - falkordb_data:/data
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "6379"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
 
   # PostgreSQL 19 Beta 3 (Relational & Recursive SQL Engine)
   postgres19:
-    image: postgres:19beta3-alpine
+    image: docker.io/library/postgres:19beta3-alpine
     container_name: voyager-postgres19
     ports:
       - "5456:5432"
@@ -98,8 +109,10 @@ services:
       retries: 5
 
 volumes:
-  neo4j_data:
-  neo4j_logs:
+  neo4j_data_community:
+  neo4j_logs_community:
+  neo4j_data_enterprise:
+  neo4j_logs_enterprise:
   memgraph_data:
   memgraph_logs:
   age_data:

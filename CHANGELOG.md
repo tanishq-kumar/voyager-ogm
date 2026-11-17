@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Embedded Relate Database Bridge (#157)**:
+  - Added `RelateBridge` and `AsyncRelateBridge` in `voyager_ogm.bridge`, exported from `voyager_ogm`, for in-process, zero-network execution against embedded Relate databases (`relatedb.ai`).
+  - Added auto-instantiation support in `create_bridge()` for `relate://` and `relatedb://` URI schemes and connection instance auto-detection.
+  - Added the `relate` optional dependency extra (`pip install "voyager-ogm[relate]"`, `relate-db>=1.0.0`).
+  - Added Relate-compatible parameter and result adaptation: spatial `Point` and duration conversion, nested dict/list parameter mapping, and node/relationship record normalization.
+  - Added sync and async bulk batch ingestion plus `ping()` liveness and explicit connection close on both bridges.
+  - Added a Relate compatibility test suite covering schema creation, CRUD, traversal, aggregation, and parameter round-trips.
 - **NetworkX Graph Analytics Export Bridge (#117)**:
   - Added direct, high-performance `.to_networkx()` graph export on `ExecutionResult`, `QueryResult`, and top-level module `voyager_ogm.to_networkx`.
   - Added fluent `session.query(...)` and `async_session.query(...)` builders supporting direct `.where(...).to_networkx()` chaining.
@@ -66,12 +73,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added structured `ErrorCode` enum and unified error taxonomy across Rust core and Python bindings.
   - Added explicit, loud errors on mock bridge fallback in production configurations.
 
+### Changed
+- **Runtime Panic Handling, PyO3 and Toolchain Updates (#158)**:
+  - Configured the release profile to unwind instead of abort, allowing Rust panics to surface as catchable Python `PanicException` instead of killing the interpreter.
+  - Upgraded PyO3 and `pyo3-async-runtimes` to 0.29.
+  - Raised Minimum Supported Rust Version (MSRV) to 1.87.
+
 ### Removed
 - **Legacy Query Builder & Comprehension Aliases (#131)**:
   - **Breaking:** Removed redundant `Query.add_*` aliases (`add_match`, `add_optional_match`, `add_create`, `add_merge`, `add_unwind`, `add_load_csv`) in favor of direct fluent methods (`match`, `optional_match`, `create`, `merge`, `unwind`, `load_csv`).
   - **Breaking:** Removed `Query.filter` alias on `Query` class in favor of `Query.where`.
   - **Breaking:** Updated comprehension parameter `where_filter` to `where` across `list_comprehension()` and `pattern_comprehension()`.
   - **Breaking:** Removed module-level free functions `unwind()` and `load_csv()` from `voyager_ogm` and `voyager_ogm.query`. Use `Query.unwind()` and `Query.load_csv()`.
+
+### Fixed
+- **Panic Safety on Malformed and Non-ASCII Inputs (#158)**:
+  - Eliminated panics on malformed query topologies (such as incomplete `MATCH (`, `MATCH (n)-[`, and `MATCH (n)-[r]->(`) by parsing in byte space with bounds-checked Unicode helpers.
+  - Hardened `agtype` string cleaning in `voyager-net` to be UTF-8 safe across multi-byte inputs.
+  - Replaced reachable `unreachable!()` arms in connection pool drop and handover routines with recovery and warnings.
+  - Replaced `unreachable!()` arms in DDL emitters with explicit `UnsupportedDialect` errors.
+
+### Security
+- **Dependency Advisory Patches and Supply-Chain Audits (#158)**:
+  - Upgraded `arrow`, `arrow-schema`, and `arrow-array` to 57.3, resolving advisory RUSTSEC-2026-0442.
+  - Patched `rustls` (0.23.46), `rustls-webpki` (0.103.17), `tokio` (1.54.1), and `webpki-roots` (1.0.12).
+  - Added supply-chain vulnerability and dependency hygiene audits (`cargo-deny`, `cargo-machete`, `osv-scanner`) to CI.
 
 ## [0.4.0-alpha.6] - 2026-10-02
 

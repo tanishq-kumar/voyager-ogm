@@ -3,10 +3,14 @@ name = "voyager-core"
 description = "Core AST compiler, optimizer, and multi-dialect emitters for Voyager OGM"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+
+[lints]
+workspace = true
 
 [dependencies]
 serde = { workspace = true, optional = true }
@@ -14,13 +18,11 @@ serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 arrow = { workspace = true, optional = true }
-arrow-schema = { workspace = true, optional = true }
-arrow-array = { workspace = true, optional = true }
 
 [features]
 default = ["serde", "arrow"]
 serde = ["dep:serde", "dep:serde_json"]
-arrow = ["dep:arrow", "dep:arrow-schema", "dep:arrow-array"]
+arrow = ["dep:arrow"]
 
 [dev-dependencies]
 insta = { workspace = true }

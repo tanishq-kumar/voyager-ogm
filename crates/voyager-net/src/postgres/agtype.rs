@@ -166,17 +166,20 @@ pub enum AgeValue {
 }
 
 /// Strips Apache AGE type annotations (such as `::vertex`, `::edge`, `::path`, `::numeric`) from a raw string while preserving content inside quotes.
+///
+/// Operates entirely in byte space and rebuilds the output from whole-byte runs, so
+/// multi-byte UTF-8 characters (both inside and outside quotes) are preserved exactly.
 pub fn clean_agtype_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(s.len());
     let mut in_quote = false;
     let mut escaped = false;
-    let bytes = s.as_bytes();
     let mut i = 0;
 
     while i < bytes.len() {
         let b = bytes[i];
         if in_quote {
-            out.push(b as char);
+            out.push(b);
             if escaped {
                 escaped = false;
             } else if b == b'\\' {
@@ -187,22 +190,24 @@ pub fn clean_agtype_string(s: &str) -> String {
             i += 1;
         } else if b == b'"' {
             in_quote = true;
-            out.push('"');
+            out.push(b'"');
             i += 1;
-        } else if s[i..].starts_with("::vertex") {
-            i += "::vertex".len();
-        } else if s[i..].starts_with("::edge") {
-            i += "::edge".len();
-        } else if s[i..].starts_with("::path") {
-            i += "::path".len();
-        } else if s[i..].starts_with("::numeric") {
-            i += "::numeric".len();
+        } else if bytes[i..].starts_with(b"::vertex") {
+            i += b"::vertex".len();
+        } else if bytes[i..].starts_with(b"::edge") {
+            i += b"::edge".len();
+        } else if bytes[i..].starts_with(b"::path") {
+            i += b"::path".len();
+        } else if bytes[i..].starts_with(b"::numeric") {
+            i += b"::numeric".len();
         } else {
-            out.push(b as char);
+            out.push(b);
             i += 1;
         }
     }
-    out.trim().to_string()
+    // The input is valid UTF-8 and only complete ASCII runs are skipped, so the
+    // copied bytes are always valid UTF-8; lossy conversion is a defensive no-op.
+    String::from_utf8_lossy(&out).trim().to_string()
 }
 
 /// Parses an Apache AGE `agtype` text string into an [`AgeValue`].

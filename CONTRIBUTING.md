@@ -105,6 +105,16 @@ just test-live
 just down
 ```
 
+**Neo4j edition and licensing.** `just up` starts **Neo4j Community** (open source), and every live test passes on it; tests that need Enterprise-only features (property-existence constraints) adapt automatically. Neo4j Enterprise is opt-in, and you must accept Neo4j's licence terms yourself. Nothing in this repository accepts them for you:
+
+```bash
+# "eval" = Neo4j's 30-day evaluation agreement (internal evaluation only).
+# Use "yes" only if you hold a Neo4j commercial licence. See https://neo4j.com/terms/licensing/
+NEO4J_EDITION=enterprise NEO4J_ACCEPT_LICENSE_AGREEMENT=eval just up neo4j
+```
+
+Memgraph (BSL 1.1) and FalkorDB (SSPL v1) are pulled and run locally only; this project never redistributes them.
+
 ---
 
 ## 7. Code Formatting and Linting

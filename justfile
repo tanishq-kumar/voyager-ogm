@@ -12,11 +12,26 @@ default:
     @just --list
 
 # System diagnostic check and toolchain verification
+[unix]
+doctor:
+    @echo "=== Voyager OGM Environment & Toolchain Diagnostics ==="
+    @echo "  [OK] Rust Compiler      : $(cargo --version)"
+    @echo "  [OK] Nextest Runner     : $(cargo nextest --version 2>/dev/null || echo 'not installed')"
+    @echo "  [OK] sccache            : $(sccache --version 2>/dev/null || echo 'not installed')"
+    @echo "  [OK] mold linker        : $(mold --version 2>/dev/null | cut -d' ' -f1-2 || echo 'not installed')"
+    @echo "  [OK] Python Toolchain   : $(uv --version)"
+    @echo "  [OK] TypeScript Runtime : Bun v$(bun --version)"
+    @echo ""
+    @echo "=== Auditing Dialect & Vendor TCK Suites ==="
+    @uv run python test_data/tck/verify_tck.py
+    @echo "\n[PASS] All environment checks completed successfully!"
+
+[windows]
 doctor:
     @Write-Host "=== Voyager OGM Environment & Toolchain Diagnostics ===" -ForegroundColor Cyan
     @Write-Host "  [OK] Rust Compiler      : $(cargo --version)"
     @Write-Host "  [OK] Nextest Runner     : cargo-nextest $( (cargo nextest --version)[0].Split(' ')[1] )"
-    @Write-Host "  [OK] Cargo Sweep        : $( (cargo sweep --version).Trim() )"
+    @Write-Host "  [OK] sccache            : $( (sccache --version).Trim() )"
     @Write-Host "  [OK] Python Toolchain   : $(uv --version)"
     @Write-Host "  [OK] TypeScript Runtime : Bun v$(bun --version)"
     @Write-Host ""
@@ -41,6 +56,10 @@ fetch-conformance:
 # Run official FalkorDB conformance test suite
 test-falkordb-official:
     uv run cargo test -p voyager-net --test official_falkordb_tests -- --nocapture
+
+# Fast type/borrow check of the whole workspace (no codegen, no linking)
+check:
+    cargo check --workspace --all-targets
 
 # Rebuild only the Python native extension into the venv (inner dev loop)
 dev:
@@ -68,7 +87,11 @@ test-snapshot:
 
 # Run Python SDK tests with pytest (skipping slow live container integration tests)
 test-python:
-    uv run pytest -m "not live"
+    uv run --no-sync pytest -m "not live"
+
+# Run Relate embedded database integration tests
+test-relate:
+    uv run --no-sync pytest packages/python/tests/test_relate_compatibility.py -v
 
 # Run TypeScript SDK tests with bun test
 test-ts:
@@ -77,12 +100,12 @@ test-ts:
 # Format code across Rust and Python
 fmt:
     cargo fmt --all
-    uv run ruff format .
+    uv run --no-sync ruff format .
 
 # Check formatting without modifying files
 fmt-check:
     cargo fmt --all -- --check
-    uv run ruff format --check .
+    uv run --no-sync ruff format --check .
 
 # Validate CHANGELOG.md conformance with Keep a Changelog 1.1.0
 changelog-check:
@@ -90,16 +113,38 @@ changelog-check:
 
 # Lint code across Rust and Python
 lint:
-    uv run cargo clippy --workspace --all-targets -- -D warnings
-    uv run ruff check .
+    cargo clippy --workspace --all-targets -- -D warnings
+    uv run --no-sync ruff check .
+
+# Report panic-prone code (unwrap/expect/panic/indexing) outside tests. Informational, not a gate.
+lint-strict:
+    cargo clippy --workspace --all-targets -- -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::indexing_slicing
+
+# Supply-chain checks: security advisories, licenses, banned/duplicate crates, sources (cargo install --locked cargo-deny)
+deny:
+    cargo deny check
+
+# Detect unused dependencies in Cargo.toml files (cargo install --locked cargo-machete)
+machete:
+    cargo machete
+
+# Vulnerability scan of every lockfile: Rust (Cargo.lock), Python (uv.lock), TypeScript (bun.lock).
+# Lockfiles are listed explicitly so the scan never depends on .gitignore; bun.lock is scanned only when present.
+# Accepted findings live in osv-scanner.toml.
+audit:
+    osv-scanner scan source -L Cargo.lock -L uv.lock {{ if path_exists("bun.lock") == "true" { "-L bun.lock" } else { "" } }}
+
+# Live clippy while YOU edit (bacon). Uses its own target dir so it never fights agents or `just` for the cargo build lock.
+watch job="clippy":
+    CARGO_TARGET_DIR=target/bacon bacon {{job}}
 
 # Static type checking across Python using Astral ty and Mypy (PEP 561 / PEP 681)
 typecheck:
     uvx ty check packages/python
-    uv run mypy packages/python/voyager_ogm
+    uv run --no-sync mypy packages/python/voyager_ogm
 
 # Full Continuous Integration (CI) verification suite
-ci: fmt-check lint test
+ci: fmt-check lint deny machete audit test
     @echo "[PASS] Full CI verification passed with 0 errors!"
 
 # Cut a release: verify branch & clean tree, run CI, update manifests, cut changelog, commit and tag
@@ -168,22 +213,28 @@ bench-all name="":
 bench-save name="":
     uv run python scripts/save_benchmarks.py {{name}}
 
-# Prune build artifacts older than N days (defaults to 7) without wiping dependencies
-sweep days="7":
-    cargo sweep -t {{days}}
+# Full reset of target/ (dependencies are restored cheaply from the sccache cache)
+clean:
+    cargo clean
 
-# Enforce a maximum target/ disk budget by removing oldest artifacts (defaults to 4GB)
-sweep-max size="4GB":
-    cargo sweep --maxsize {{size}}
+# Show sccache hit/miss statistics and cache size
+cache-stats:
+    sccache --show-stats
 
-# Prune stale rustc incremental sessions and test binaries while preserving dependency cache
+# Remove packaging leftovers only; keeps incremental + dependency caches (use `just clean` for a full reset)
+[unix]
 prune:
-    @if (Test-Path target/debug/incremental) { Remove-Item -Recurse -Force target/debug/incremental; Write-Host "[OK] Purged stale incremental cache in target/debug/incremental" -ForegroundColor Green }
-    @if (Test-Path target/release/incremental) { Remove-Item -Recurse -Force target/release/incremental; Write-Host "[OK] Purged stale incremental cache in target/release/incremental" -ForegroundColor Green }
-    @cargo sweep --maxsize 2GB
-    @Write-Host "[PASS] Stale debug & test artifacts pruned! Dependency cache preserved." -ForegroundColor Green
+    @rm -rf target/wheels target/tmp && echo "[OK] Removed target/wheels and target/tmp"
+    @du -sh target 2>/dev/null || true
+    @echo "[PASS] Pruned. Incremental cache kept, so the next build stays incremental."
 
-# Quick alias to prune debug incremental build clutter
+[windows]
+prune:
+    @if (Test-Path target/wheels) { Remove-Item -Recurse -Force target/wheels }
+    @if (Test-Path target/tmp) { Remove-Item -Recurse -Force target/tmp }
+    @Write-Host "[PASS] Pruned. Incremental cache kept, so the next build stays incremental." -ForegroundColor Green
+
+# Alias for prune
 prune-debug: prune
 
 
@@ -213,9 +264,24 @@ examples: examples-rust examples-python
 generate-bench-data nodes="100000" edges="500000" out="test_data/bench_100k":
     uv run python test_data/generator/generate_bench_dataset.py --nodes {{nodes}} --edges {{edges}} --output-dir {{out}}
 
-# Start local graph database containers via Podman/Docker Compose
-up:
-    podman compose -f containers/compose.yaml up -d
+# Start local graph database containers (all, or named ones: `just up neo4j`). Pinned tags fall back to :latest.
+[unix]
+up *services:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    pull_or_latest() { # VAR repo pinned
+        if podman pull -q "docker.io/$2:$3" >/dev/null 2>&1; then export "$1=$3"
+        else echo "[WARN] $2:$3 failed to pull, falling back to :latest"; export "$1=latest"; fi
+    }
+    want() { [ -z "{{services}}" ] || [[ " {{services}} " == *" $1 "* ]]; }
+    want memgraph   && pull_or_latest MEMGRAPH_TAG memgraph/memgraph-mage 3.14.0
+    want apache-age && pull_or_latest AGE_TAG apache/age release_PG18_1.8.0
+    want falkordb   && pull_or_latest FALKORDB_TAG falkordb/falkordb 6.0.4
+    podman compose -f containers/compose.yaml up -d {{services}}
+
+[windows]
+up *services:
+    podman compose -f containers/compose.yaml up -d {{services}}
 
 # Stop and tear down local graph database containers
 down:
@@ -244,3 +310,7 @@ test-age:
 # Run Multi-Engine Live Matrix integration tests (Neo4j, Memgraph, Apache AGE, DuckDB)
 test-matrix:
     uv run pytest -m live packages/python/tests/test_live_matrix.py -v
+
+# Launch Voyex Manager developer portal & orchestrator
+manager:
+    cd ../voyex-manager && uv run python launch.py

@@ -3,6 +3,7 @@ name = "voyager-net"
 description = "Native asynchronous network runtime, connection pooling, and wire protocol engine for Voyager OGM"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -15,8 +16,6 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
-futures = { workspace = true }
-futures-util = { workspace = true }
 parking_lot = { workspace = true }
 url = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -68,3 +67,7 @@ harness = false
 name = "bench_jumbo_payloads"
 harness = false
 
+
+# md-5 is imported as `md5`; neo4rs is used only by benches behind the bench-driver feature
+[package.metadata.cargo-machete]
+ignored = ["md-5", "neo4rs"]

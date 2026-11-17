@@ -1279,6 +1279,278 @@ class AsyncFalkorDBBridge:
         await asyncio.to_thread(self.sync_bridge.close)
 
 
+def _normalize_relate_value(val: Any) -> Any:
+    """Normalizes Relate native objects (Node, Relationship, Point, Duration) to standard Python dicts and types."""
+    if hasattr(val, "properties") and hasattr(val, "labels"):
+        d = dict(val.properties)
+        d.setdefault("id", val.id)
+        d.setdefault("labels", list(val.labels))
+        d.setdefault("element_id", val.element_id)
+        return d
+    elif hasattr(val, "type") and hasattr(val, "start_node"):
+        d = dict(val.properties)
+        d.setdefault("type", val.type)
+        d.setdefault("id", val.id)
+        d.setdefault("start", val.start_node)
+        d.setdefault("end", val.end_node)
+        d.setdefault("element_id", val.element_id)
+        return d
+    elif hasattr(val, "srid") and hasattr(val, "x") and hasattr(val, "y"):
+        from voyager_ogm.types import Point
+
+        return Point(
+            x=val.x,
+            y=val.y,
+            z=getattr(val, "z", None),
+            srid=val.srid,
+        )
+    elif hasattr(val, "months") and hasattr(val, "seconds") and hasattr(val, "nanoseconds"):
+        try:
+            return val.to_timedelta()
+        except Exception:
+            return str(val)
+    elif isinstance(val, dict):
+        return {k: _normalize_relate_value(v) for k, v in val.items()}
+    elif isinstance(val, (list, tuple)):
+        return [_normalize_relate_value(x) for x in val]
+    return val
+
+
+def _normalize_relate_record(record: Any) -> dict[str, Any]:
+    """Normalizes a single record returned by Relate Cursor or QueryResult."""
+    if isinstance(record, dict):
+        return {k: _normalize_relate_value(v) for k, v in record.items()}
+    if hasattr(record, "items"):
+        return {k: _normalize_relate_value(v) for k, v in record.items()}
+    return record
+
+
+def _adapt_relate_value(val: Any) -> Any:
+    """Adapts Voyager spatial types and nested structures to Relate-compatible values."""
+    from voyager_ogm.types import Point
+
+    if isinstance(val, Point):
+        try:
+            import relate
+
+            if val.is_3d:
+                z_raw = val.z if val.z is not None else val.height
+                if z_raw is not None:
+                    z_val = float(z_raw)
+                    return relate.Point(val.srid, float(val.x), float(val.y), z_val)
+            return relate.Point(val.srid, float(val.x), float(val.y))
+        except (ImportError, Exception):
+            return {"srid": val.srid, "x": float(val.x), "y": float(val.y)}
+
+    if isinstance(val, dict):
+        if "__voyager_spatial__" in val:
+            sp = val["__voyager_spatial__"]
+            if isinstance(sp, dict):
+                srid = int(sp.get("srid", 4326))
+                x_raw = sp.get("longitude")
+                if x_raw is None:
+                    x_raw = sp.get("x", 0.0)
+                y_raw = sp.get("latitude")
+                if y_raw is None:
+                    y_raw = sp.get("y", 0.0)
+                x = float(x_raw if x_raw is not None else 0.0)
+                y = float(y_raw if y_raw is not None else 0.0)
+                z = sp.get("height")
+                if z is None:
+                    z = sp.get("z")
+                try:
+                    import relate
+
+                    if z is not None:
+                        return relate.Point(srid, x, y, float(z))
+                    return relate.Point(srid, x, y)
+                except (ImportError, Exception):
+                    return {"srid": srid, "x": x, "y": y}
+        return {k: _adapt_relate_value(v) for k, v in val.items()}
+
+    if isinstance(val, (list, tuple)):
+        return [_adapt_relate_value(x) for x in val]
+
+    return val
+
+
+def _adapt_relate_parameters(params: dict[str, Any]) -> dict[str, Any]:
+    return {k: _adapt_relate_value(v) for k, v in params.items()}
+
+
+class RelateBridge:
+    """Synchronous Relate embedded graph database driver bridge (https://relatedb.ai).
+
+    Connects in-process to Relate databases (via relate-db), enabling zero-network,
+    in-memory or single-file (.rl) property graph execution with openCypher / Cypher 25
+    and zero-copy Apache Arrow / Polars streaming.
+    """
+
+    def __init__(self, connection: Any) -> None:
+        """Initializes RelateBridge.
+
+        Args:
+            connection: A relate.Connection or relate.Database instance.
+        """
+        self.con = connection
+
+    def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Executes a Cypher statement against the embedded Relate database.
+
+        Args:
+            statement: Cypher statement string.
+            parameters: Query parameters dictionary.
+
+        Returns:
+            List of normalized record dictionaries.
+        """
+        params = _adapt_relate_parameters(parameters or {})
+        res = self.con.execute(statement, params)
+        if hasattr(res, "fetchall"):
+            rows = res.fetchall()
+        elif hasattr(res, "data"):
+            rows = res.data
+        else:
+            rows = list(res)
+        return [_normalize_relate_record(row) for row in rows]
+
+    def execute_to_polars(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> pl.DataFrame:
+        """Executes a Cypher statement and streams results directly into a Polars DataFrame via zero-copy Arrow IPC.
+
+        Args:
+            statement: Cypher statement.
+            parameters: Query parameters.
+
+        Returns:
+            Polars DataFrame containing result records.
+        """
+        params = _adapt_relate_parameters(parameters or {})
+        if hasattr(self.con, "execute"):
+            res = self.con.execute(statement, params)
+            if hasattr(res, "to_arrow"):
+                try:
+                    tbl = res.to_arrow()
+                    df_out = pl.from_arrow(tbl)
+                    if isinstance(df_out, pl.DataFrame):
+                        return df_out
+                    return pl.DataFrame(df_out)
+                except Exception:
+                    pass
+            records = getattr(res, "fetchall", lambda: getattr(res, "data", []))()
+            normalized = [_normalize_relate_record(r) for r in records]
+            return pl.DataFrame(normalized) if normalized else pl.DataFrame()
+        return pl.DataFrame()
+
+    def execute_bulk(
+        self,
+        plan_or_statement: BulkIngestionPlan | str,
+        batches: Sequence[dict[str, Any]] | None = None,
+    ) -> BulkExecutionResult:
+        """Executes bulk batch ingestion against the embedded Relate engine.
+
+        Args:
+            plan_or_statement: BulkIngestionPlan or Cypher statement.
+            batches: Batch parameter sequence.
+
+        Returns:
+            BulkExecutionResult summary metrics.
+        """
+        start_time = time.perf_counter()
+        statement = ""
+        total_records = 0
+        total_batches = 0
+
+        if isinstance(plan_or_statement, str):
+            statement = plan_or_statement
+            batch_list = batches or []
+            total_batches = len(batch_list)
+            for b in batch_list:
+                batch_data = b.get("batch", [])
+                total_records += len(batch_data)
+                self.con.execute(statement, _adapt_relate_parameters(b))
+        else:
+            statement = plan_or_statement.statement
+            for batch_item in plan_or_statement:
+                total_batches += 1
+                batch_data = batch_item.parameters.get("batch", [])
+                total_records += len(batch_data)
+                self.con.execute(statement, _adapt_relate_parameters(batch_item.parameters))
+
+        return BulkExecutionResult(
+            total_batches=total_batches,
+            total_records=total_records,
+            duration_seconds=time.perf_counter() - start_time,
+            statement=statement,
+        )
+
+    def ping(self) -> bool:
+        """Pings Relate to verify liveness."""
+        try:
+            self.con.execute("RETURN 1")
+            return True
+        except Exception:
+            return False
+
+    def close(self) -> None:
+        """Closes the underlying Relate database connection."""
+        if hasattr(self.con, "close"):
+            self.con.close()
+
+
+class AsyncRelateBridge:
+    """Asynchronous Relate driver bridge.
+
+    Because embedded Relate connections are thread-affine (DB-API threadsafety = 1),
+    queries are executed cooperatively on the active event loop thread without
+    violating thread-affinity boundaries.
+    """
+
+    def __init__(self, connection: Any) -> None:
+        """Initializes AsyncRelateBridge.
+
+        Args:
+            connection: Relate connection or database instance.
+        """
+        self.sync_bridge = RelateBridge(connection)
+
+    async def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Asynchronously executes query on Relate."""
+        await asyncio.sleep(0)
+        return self.sync_bridge.execute(statement, parameters)
+
+    async def execute_to_polars(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> pl.DataFrame:
+        """Asynchronously streams query results to Polars DataFrame."""
+        await asyncio.sleep(0)
+        return self.sync_bridge.execute_to_polars(statement, parameters)
+
+    async def execute_bulk(
+        self,
+        plan_or_statement: BulkIngestionPlan | str,
+        batches: Sequence[dict[str, Any]] | None = None,
+    ) -> BulkExecutionResult:
+        """Asynchronously executes bulk ingestion plan."""
+        await asyncio.sleep(0)
+        return self.sync_bridge.execute_bulk(plan_or_statement, batches)
+
+    async def ping(self) -> bool:
+        """Pings Relate asynchronously to verify connection liveness."""
+        await asyncio.sleep(0)
+        return self.sync_bridge.ping()
+
+    async def close(self) -> None:
+        """Closes Relate connection asynchronously."""
+        await asyncio.sleep(0)
+        self.sync_bridge.close()
+
+
 _BRIDGE_REGISTRY: list[tuple[Callable[[Any], bool], type, bool]] = []
 
 
@@ -1335,6 +1607,15 @@ def _is_falkordb_conn(obj: Any) -> bool:
     return "falkordb" in type_name and (hasattr(obj, "query") or hasattr(obj, "select_graph"))
 
 
+def _is_relate_conn(obj: Any) -> bool:
+    type_name = f"{type(obj).__module__}.{type(obj).__qualname__}"
+    if "relate" in type_name and hasattr(obj, "execute"):
+        return True
+    if hasattr(obj, "execute_arrow") and hasattr(obj, "begin_transaction"):
+        return True
+    return False
+
+
 register_bridge(_is_neo4j_sync_driver, Neo4jBoltBridge, is_async=False)
 register_bridge(_is_neo4j_async_driver, AsyncNeo4jBoltBridge, is_async=True)
 register_bridge(_is_duckdb_conn, DuckDbBridge, is_async=False)
@@ -1343,6 +1624,8 @@ register_bridge(_is_postgres_conn, PostgresBridge, is_async=False)
 register_bridge(_is_postgres_conn, AsyncPostgresBridge, is_async=True)
 register_bridge(_is_falkordb_conn, FalkorDBBridge, is_async=False)
 register_bridge(_is_falkordb_conn, AsyncFalkorDBBridge, is_async=True)
+register_bridge(_is_relate_conn, RelateBridge, is_async=False)
+register_bridge(_is_relate_conn, AsyncRelateBridge, is_async=True)
 
 
 @overload
@@ -1431,6 +1714,8 @@ def create_bridge(
                     return AsyncDuckDbBridge(driver_or_connection)
                 elif isinstance(sync_inst, FalkorDBBridge):
                     return AsyncFalkorDBBridge(driver_or_connection)
+                elif isinstance(sync_inst, RelateBridge):
+                    return AsyncRelateBridge(driver_or_connection)
 
     # If a database connection URI string was provided, attempt to auto-instantiate the official driver
     if isinstance(driver_or_connection, str):
@@ -1575,12 +1860,27 @@ def create_bridge(
             parsed = FalkorDB.from_url(clean_url)
             f_bridge = FalkorDBBridge(parsed)
             return AsyncFalkorDBBridge(parsed) if is_async else f_bridge
+        elif scheme in ("relate", "relatedb"):
+            try:
+                import relate
+            except ImportError as e:
+                if fallback == "mock":
+                    return AsyncMockBridge() if is_async else MockBridge()
+                raise ImportError(
+                    f"The 'relate-db' Python package is required to connect to URI '{driver_or_connection}'. "
+                    f"Install it with 'pip install relate-db', or pass fallback='mock' for offline testing."
+                ) from e
+            path = driver_or_connection.split("://", 1)[1]
+            target_path = ":memory:" if (not path or path == ":memory:") else path
+            relate_conn = relate.connect(target_path)
+            r_bridge = RelateBridge(relate_conn)
+            return AsyncRelateBridge(relate_conn) if is_async else r_bridge
         else:
             if fallback == "mock":
                 return AsyncMockBridge() if is_async else MockBridge()
             raise ValueError(
                 f"No bridge available for URI '{driver_or_connection}' (unrecognized scheme: '{scheme}'). "
-                f"Tried adapters: bolt, duckdb, postgres, falkordb. "
+                f"Tried adapters: bolt, duckdb, postgres, falkordb, relate. "
                 f"Install required driver or check the URI, or pass fallback='mock' (or use a 'mock://' URI) for offline testing."
             )
 

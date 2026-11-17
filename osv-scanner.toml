@@ -1,0 +1,37 @@
+# osv-scanner accepted findings (`just audit`). Keep in sync with the ignore list in deny.toml.
+# Unmaintained crates pulled in only by neo4rs, an optional bench-only dependency
+# (voyager-net `bench-driver` feature). Not part of shipped builds.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0012"
+reason = "backoff: via neo4rs, bench-only"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0384"
+reason = "instant: via neo4rs/backoff, bench-only"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+reason = "paste: via neo4rs, bench-only"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0134"
+reason = "rustls-pemfile: via neo4rs, bench-only"
+
+# chrono family declared unmaintained (chronotope/chrono#1768); all versions affected, no replacement.
+# chrono comes in via arrow (shipped); chrono-tz(-build) via neo4rs (bench-only). Expires to force a re-check.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0543"
+ignoreUntil = 2027-02-17
+reason = "chrono unmaintained: via arrow, no alternative yet"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0555"
+ignoreUntil = 2027-02-17
+reason = "chrono-tz unmaintained: via neo4rs, bench-only"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0559"
+ignoreUntil = 2027-02-17
+reason = "chrono-tz-build unmaintained: build dep of chrono-tz, bench-only"
