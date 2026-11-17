@@ -123,7 +123,38 @@ jobs:
         run: uv run --all-extras mypy packages/python/voyager_ogm
 
   # =========================================================================
-  # 3. Rust Core Engine Test Matrix
+  # 3. Supply-Chain Security & Dependency Hygiene Gate
+  # =========================================================================
+  supply-chain:
+    name: Supply Chain & Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check Cargo Deny (Advisories, Bans, Licenses, Sources)
+        uses: EmbarkStudios/cargo-deny-action@70f81531115945ba6eb6b941ec9d39d063438eb9 # v2.1.2
+        with:
+          command: check
+
+      - name: Install cargo-machete
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-machete
+
+      - name: Check Unused Dependencies (cargo-machete)
+        run: cargo machete
+
+      - name: Scan Vulnerabilities (osv-scanner)
+        uses: google/osv-scanner-action/osv-scanner-action@0e457b42d0120153c352875e9b758b1e5c58c7e5 # v2.7.1
+        with:
+          scan-args: |-
+            --config=osv-scanner.toml
+            --lockfile=Cargo.lock
+            --lockfile=uv.lock
+
+  # =========================================================================
+  # 4. Rust Core Engine Test Matrix
   # =========================================================================
   test-rust:
     name: Rust Core (${{ matrix.os }})
@@ -263,7 +294,7 @@ jobs:
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [lint, changes, test-rust, test-python, sanitizer-and-fuzz]
+    needs: [lint, changes, supply-chain, test-rust, test-python, sanitizer-and-fuzz]
     runs-on: ubuntu-latest
     steps:
       - name: Verify All Matrix Jobs Passed
@@ -274,6 +305,10 @@ jobs:
           fi
           if [[ "${{ needs.lint.result }}" != "success" ]]; then
             echo "::error::Lint and code quality checks must pass."
+            exit 1
+          fi
+          if [[ "${{ needs.supply-chain.result }}" != "success" ]]; then
+            echo "::error::Supply-chain security checks must pass."
             exit 1
           fi
           echo "All CI jobs completed successfully."

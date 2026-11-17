@@ -305,3 +305,21 @@ class TestTopologyAstStringParityCorpus:
         query_str = "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name"
         topo_str = extract_topology_from_query(query_str)
         _assert_topology_parity(topo_ast, topo_str)
+
+    def test_unclosed_delimiters_and_unicode_no_panic(self):
+        """Verifies that unclosed delimiters and Unicode edge cases never panic the Python extension."""
+        cases = [
+            "MATCH (",
+            "MATCH (n)-[",
+            "MATCH (n)-[r]->(",
+            "MATCH (n)-[r",
+            "MATCH (n {",
+            "MATCH",
+            "",
+            "MATCH (e:Employee WHERE e.name = 'ﬀ')",
+            "MATCH (p:Person WHERE p.name = 'Renée')",
+            'MATCH (n) WHERE n.val = " WHERE " AND n.y = 1',
+        ]
+        for query in cases:
+            topo = extract_topology_from_query(query)
+            assert topo.get("version") == 1

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import community_compatible_ddl, neo4j_edition
 from neo4j import GraphDatabase
 from voyager_ogm import (
     Field,
@@ -151,15 +152,13 @@ def test_cypher25_composite_facets_and_empty_entities():
 @pytest.mark.live
 def test_live_neo4j_schema_ddl_creation():
     """Verifies applying constraints and indexes live to the running Neo4j database."""
+    uri = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
+    user = os.getenv("NEO4J_USER", "neo4j")
+    password = os.getenv("NEO4J_PASSWORD", "voyagerpass123")
+    database = os.getenv("NEO4J_DATABASE", "neo4j")
+
     try:
         from neo4j import GraphDatabase
-
-        uri = os.getenv("NEO4J_ENTERPRISE_URI", os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687"))
-        user = os.getenv("NEO4J_ENTERPRISE_USER", os.getenv("NEO4J_USER", "neo4j"))
-        password = os.getenv(
-            "NEO4J_ENTERPRISE_PASSWORD", os.getenv("NEO4J_PASSWORD", "voyagerpass123")
-        )
-        database = os.getenv("NEO4J_ENTERPRISE_DATABASE", "neo4j")
 
         driver = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=0.5)
         driver.verify_connectivity()
@@ -172,8 +171,14 @@ def test_live_neo4j_schema_ddl_creation():
     # Clean any leftover constraints first
     SchemaManager.drop_all(session, User)
 
-    # Create constraints & indexes (Community edition compatible)
-    created = SchemaManager.create_all(session, User, include_type_constraints=False)
+    # Create constraints & indexes. Property-existence constraints are Enterprise-only, so on
+    # the default Community container apply only the statements Community supports.
+    if neo4j_edition(driver) == "enterprise":
+        created = SchemaManager.create_all(session, User, include_type_constraints=False)
+    else:
+        created = community_compatible_ddl(SchemaManager.generate_cypher_ddl(User))
+        for stmt in created:
+            session.execute(stmt)
     assert len(created) >= 3
 
     # Verify constraints in Neo4j catalog
@@ -193,21 +198,24 @@ def test_live_neo4j_schema_ddl_creation():
 @pytest.mark.live
 def test_live_neo4j_enterprise_cypher25_graph_type():
     """Verifies applying declarative Cypher 25 Graph Types to Neo4j Enterprise live."""
-    uri = os.getenv("NEO4J_ENTERPRISE_URI")
-    if not uri:
-        pytest.skip("NEO4J_ENTERPRISE_URI not set in environment")
+    uri = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
+    user = os.getenv("NEO4J_USER", "neo4j")
+    password = os.getenv("NEO4J_PASSWORD", "voyagerpass123")
+    database = os.getenv("NEO4J_DATABASE", "neo4j")
 
     try:
         from neo4j import GraphDatabase
 
-        user = os.getenv("NEO4J_ENTERPRISE_USER", "neo4j")
-        password = os.getenv("NEO4J_ENTERPRISE_PASSWORD", "voyex1234")
-        database = os.getenv("NEO4J_ENTERPRISE_DATABASE", "neo4j")
-
         driver = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=0.5)
         driver.verify_connectivity()
     except Exception:
-        pytest.skip(f"Neo4j Enterprise not reachable on {uri}")
+        pytest.skip(f"Neo4j database not reachable on {uri}")
+
+    server_info = driver.get_server_info()
+    agent = getattr(server_info, "agent", "") or ""
+    if "5.26" in agent or agent.startswith("Neo4j/5."):
+        driver.close()
+        pytest.skip("Neo4j 5.26 enterprise does not support Cypher 25 graph type DDL syntax")
 
     bridge = Neo4jBoltBridge(driver, database=database)
     session = Session(bridge=bridge, dialect="cypher")
@@ -674,10 +682,10 @@ async def test_async_session_ddl_convenience_methods():
 def test_live_schema_ddl_multi_engine_integration():
     """Verifies live index and constraint management across live Neo4j, PostgreSQL 19, and FalkorDB engines."""
     # 1. Neo4j Live Engine (Bolt port 7687)
-    uri = os.getenv("NEO4J_ENTERPRISE_URI", "bolt://127.0.0.1:7687")
-    user = os.getenv("NEO4J_ENTERPRISE_USER", "neo4j")
-    password = os.getenv("NEO4J_ENTERPRISE_PASSWORD", "voyex1234")
-    database = os.getenv("NEO4J_ENTERPRISE_DATABASE", "neo4j")
+    uri = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
+    user = os.getenv("NEO4J_USER", "neo4j")
+    password = os.getenv("NEO4J_PASSWORD", "voyagerpass123")
+    database = os.getenv("NEO4J_DATABASE", "neo4j")
 
     try:
         neo_drv = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=1.0)

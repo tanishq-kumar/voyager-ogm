@@ -17,7 +17,7 @@ pyo3::create_exception!(
 );
 
 fn make_voyager_err(code: voyager_core::ErrorCode, msg: impl Into<String>) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let py_err = VoyagerError::new_err(msg.into());
         let _ = py_err.value(py).setattr("code", code.as_str());
         py_err
@@ -25,7 +25,7 @@ fn make_voyager_err(code: voyager_core::ErrorCode, msg: impl Into<String>) -> Py
 }
 
 fn to_py_schema_err(err: voyager_core::Error) -> PyErr {
-    Python::with_gil(|py| match err.code() {
+    Python::attach(|py| match err.code() {
         voyager_core::ErrorCode::UnsupportedDialect
         | voyager_core::ErrorCode::UnsupportedFeature => {
             let py_err = PyNotImplementedError::new_err(err.to_string());
@@ -81,30 +81,30 @@ fn compiled_query_to_py_dict<'py>(
 fn py_to_literal(val: &Bound<'_, PyAny>) -> PyResult<LiteralValue> {
     if val.is_none() {
         Ok(LiteralValue::Null)
-    } else if let Ok(b) = val.downcast::<PyBool>() {
+    } else if let Ok(b) = val.cast::<PyBool>() {
         Ok(LiteralValue::Bool(b.is_true()))
-    } else if let Ok(i) = val.downcast::<PyInt>() {
+    } else if let Ok(i) = val.cast::<PyInt>() {
         Ok(LiteralValue::Int64(i.extract()?))
-    } else if let Ok(f) = val.downcast::<PyFloat>() {
+    } else if let Ok(f) = val.cast::<PyFloat>() {
         Ok(LiteralValue::Float64(f.value()))
-    } else if let Ok(s) = val.downcast::<PyString>() {
+    } else if let Ok(s) = val.cast::<PyString>() {
         Ok(LiteralValue::String(s.to_string_lossy().into_owned()))
-    } else if let Ok(list) = val.downcast::<PyList>() {
+    } else if let Ok(list) = val.cast::<PyList>() {
         let mut items = Vec::with_capacity(list.len());
         for item in list {
             items.push(py_to_literal(&item)?);
         }
         Ok(LiteralValue::List(items))
-    } else if let Ok(tuple) = val.downcast::<PyTuple>() {
+    } else if let Ok(tuple) = val.cast::<PyTuple>() {
         let mut items = Vec::with_capacity(tuple.len());
         for item in tuple {
             items.push(py_to_literal(&item)?);
         }
         Ok(LiteralValue::List(items))
-    } else if let Ok(dict) = val.downcast::<PyDict>() {
+    } else if let Ok(dict) = val.cast::<PyDict>() {
         let mut entries = Vec::with_capacity(dict.len());
         for (k, v) in dict {
-            let key_str: String = if let Ok(s) = k.downcast::<PyString>() {
+            let key_str: String = if let Ok(s) = k.cast::<PyString>() {
                 s.to_string_lossy().into_owned()
             } else {
                 k.extract()?
@@ -179,7 +179,7 @@ fn parse_unary_op(s: &str) -> PyResult<UnaryOp> {
 }
 
 /// Native AST Expression node handle wrapping a lightweight AST arena.
-#[pyclass(name = "AstExpr")]
+#[pyclass(name = "AstExpr", from_py_object)]
 #[derive(Clone)]
 pub struct PyAstExpr {
     pub(crate) arena: QueryAstArena,
@@ -604,17 +604,17 @@ fn py_to_node_handle_depth(
         )));
     }
     // Direct Native AST Expression fast-path:
-    if let Ok(py_expr) = val.downcast::<PyAstExpr>() {
+    if let Ok(py_expr) = val.cast::<PyAstExpr>() {
         let borrowed = py_expr.borrow();
         return Ok(builder.import_subarena(borrowed.arena.clone(), borrowed.handle));
     }
     if let Ok(native_attr) = val.getattr("_native_expr")
-        && let Ok(py_expr) = native_attr.downcast::<PyAstExpr>()
+        && let Ok(py_expr) = native_attr.cast::<PyAstExpr>()
     {
         let borrowed = py_expr.borrow();
         return Ok(builder.import_subarena(borrowed.arena.clone(), borrowed.handle));
     }
-    if let Ok(dict) = val.downcast::<PyDict>() {
+    if let Ok(dict) = val.cast::<PyDict>() {
         if let Some(ver_item) = dict.get_item("spec_version")? {
             let ver: u32 = ver_item.extract().map_err(|_| {
                 make_voyager_err(
@@ -646,9 +646,9 @@ fn py_to_node_handle_depth(
         }
         return Ok(sub_h);
     }
-    let tuple_opt = if let Ok(tuple) = val.downcast::<PyTuple>() {
+    let tuple_opt = if let Ok(tuple) = val.cast::<PyTuple>() {
         Some(tuple.clone())
-    } else if let Ok(list) = val.downcast::<PyList>() {
+    } else if let Ok(list) = val.cast::<PyList>() {
         if let Ok(first) = list.get_item(0)
             && let Ok(tag) = first.extract::<String>()
             && is_known_expr_tag(&tag)
@@ -702,7 +702,7 @@ fn py_to_node_handle_depth(
             "fn" | "func" | "call" => {
                 let name: String = tuple.get_item(1)?.extract()?;
                 let args_py = tuple.get_item(2)?;
-                let args_list = args_py.downcast::<PyList>()?;
+                let args_list = args_py.cast::<PyList>()?;
                 let mut arg_handles = Vec::with_capacity(args_list.len());
                 for arg in args_list {
                     arg_handles.push(py_to_node_handle_depth(builder, &arg, depth + 1)?);
@@ -716,10 +716,10 @@ fn py_to_node_handle_depth(
                 } else {
                     Some(py_to_node_handle_depth(builder, &op_item, depth + 1)?)
                 };
-                let branches_list = tuple.get_item(2)?.downcast::<PyList>()?.clone();
+                let branches_list = tuple.get_item(2)?.cast::<PyList>()?.clone();
                 let mut branches = Vec::with_capacity(branches_list.len());
                 for item in &branches_list {
-                    let branch_tuple = item.downcast::<PyTuple>()?;
+                    let branch_tuple = item.cast::<PyTuple>()?;
                     let w =
                         py_to_node_handle_depth(builder, &branch_tuple.get_item(0)?, depth + 1)?;
                     let t =
@@ -774,7 +774,7 @@ fn py_to_node_handle_depth(
                 Ok(builder.count_subquery(sub_h))
             }
             "list" => {
-                let items_list = tuple.get_item(1)?.downcast::<PyList>()?.clone();
+                let items_list = tuple.get_item(1)?.cast::<PyList>()?.clone();
                 let mut item_handles = Vec::with_capacity(items_list.len());
                 for item in &items_list {
                     item_handles.push(py_to_node_handle_depth(builder, &item, depth + 1)?);
@@ -822,9 +822,9 @@ fn build_path_steps_into_builder(
     steps: &Bound<'_, PyList>,
 ) -> PyResult<()> {
     for step in steps {
-        let tuple = if let Ok(t) = step.downcast::<PyTuple>() {
+        let tuple = if let Ok(t) = step.cast::<PyTuple>() {
             t.clone()
-        } else if let Ok(l) = step.downcast::<PyList>() {
+        } else if let Ok(l) = step.cast::<PyList>() {
             l.to_tuple()
         } else {
             return Err(make_voyager_err(
@@ -880,7 +880,7 @@ fn build_path_from_py(builder: &mut QueryBuilder, spec: &Bound<'_, PyAny>) -> Py
         let sub_h = builder.import_subarena(sub_arena, sub_handle);
         return Ok(sub_h);
     }
-    if let Ok(list) = spec.downcast::<PyList>() {
+    if let Ok(list) = spec.cast::<PyList>() {
         let list_cloned = list.clone();
         let mut err: Option<PyErr> = None;
         let sub_h = builder.subquery(|q| {
@@ -912,7 +912,7 @@ fn build_subquery_from_py(
         let sub_h = builder.import_subarena(sub_arena, sub_handle);
         return Ok(sub_h);
     }
-    if let Ok(dict) = spec.downcast::<PyDict>() {
+    if let Ok(dict) = spec.cast::<PyDict>() {
         let dict_cloned = dict.clone();
         let mut err: Option<PyErr> = None;
         let sub_h = builder.subquery(|q| {
@@ -924,7 +924,7 @@ fn build_subquery_from_py(
             return Err(e);
         }
         Ok(sub_h)
-    } else if let Ok(list) = spec.downcast::<PyList>() {
+    } else if let Ok(list) = spec.cast::<PyList>() {
         let list_cloned = list.clone();
         let mut err: Option<PyErr> = None;
         let sub_h = builder.subquery(|q| {
@@ -974,7 +974,7 @@ fn build_query_from_spec_internal(
 
     if let Some(load_csv_item) = spec.get_item("load_csv")? {
         if !load_csv_item.is_none() {
-            let tuple = load_csv_item.downcast::<PyTuple>()?;
+            let tuple = load_csv_item.cast::<PyTuple>()?;
             let url: String = tuple.get_item(0)?.extract()?;
             let with_headers: bool = tuple.get_item(1)?.extract()?;
             let alias: String = tuple.get_item(2)?.extract()?;
@@ -983,9 +983,9 @@ fn build_query_from_spec_internal(
     }
 
     if let Some(unwinds_item) = spec.get_item("unwinds")? {
-        if let Ok(unwinds_list) = unwinds_item.downcast::<PyList>() {
+        if let Ok(unwinds_list) = unwinds_item.cast::<PyList>() {
             for item in unwinds_list {
-                let tuple = item.downcast::<PyTuple>()?;
+                let tuple = item.cast::<PyTuple>()?;
                 let param_name: String = tuple.get_item(0)?.extract()?;
                 let alias: String = tuple.get_item(1)?.extract()?;
                 builder.unwind_param(param_name, alias);
@@ -994,9 +994,9 @@ fn build_query_from_spec_internal(
     }
 
     if let Some(matches_item) = spec.get_item("matches")? {
-        if let Ok(matches_list) = matches_item.downcast::<PyList>() {
+        if let Ok(matches_list) = matches_item.cast::<PyList>() {
             for m in matches_list {
-                let m_dict = m.downcast::<PyDict>()?;
+                let m_dict = m.cast::<PyDict>()?;
                 if let Some(m_ver_item) = m_dict.get_item("spec_version")? {
                     let m_ver: u32 = m_ver_item.extract().map_err(|_| {
                         make_voyager_err(
@@ -1042,12 +1042,12 @@ fn build_query_from_spec_internal(
                 }
 
                 if let Some(paths_item) = m_dict.get_item("paths")? {
-                    if let Ok(paths_list) = paths_item.downcast::<PyList>() {
+                    if let Ok(paths_list) = paths_item.cast::<PyList>() {
                         for (p_idx, p_steps) in paths_list.iter().enumerate() {
                             if p_idx > 0 {
                                 builder.pattern();
                             }
-                            if let Ok(steps_list) = p_steps.downcast::<PyList>() {
+                            if let Ok(steps_list) = p_steps.cast::<PyList>() {
                                 build_path_steps_into_builder(builder, steps_list)?;
                             }
                         }
@@ -1056,7 +1056,7 @@ fn build_query_from_spec_internal(
 
                 if let Some(where_item) = m_dict.get_item("where")? {
                     if !where_item.is_none() {
-                        if let Ok(wh_list) = where_item.downcast::<PyList>() {
+                        if let Ok(wh_list) = where_item.cast::<PyList>() {
                             for wh in wh_list {
                                 let h = py_to_node_handle(builder, &wh)?;
                                 builder.where_expr(h);
@@ -1072,11 +1072,11 @@ fn build_query_from_spec_internal(
     }
 
     if let Some(mutations_item) = spec.get_item("mutations")? {
-        if let Ok(mutations_list) = mutations_item.downcast::<PyList>() {
+        if let Ok(mutations_list) = mutations_item.cast::<PyList>() {
             for mut_item in mutations_list {
-                let tuple = if let Ok(t) = mut_item.downcast::<PyTuple>() {
+                let tuple = if let Ok(t) = mut_item.cast::<PyTuple>() {
                     t.clone()
-                } else if let Ok(l) = mut_item.downcast::<PyList>() {
+                } else if let Ok(l) = mut_item.cast::<PyList>() {
                     l.to_tuple()
                 } else {
                     return Err(make_voyager_err(
@@ -1088,32 +1088,32 @@ fn build_query_from_spec_internal(
                 match tag.as_str() {
                     "create" => {
                         builder.create();
-                        let paths_list = tuple.get_item(1)?.downcast::<PyList>()?.clone();
+                        let paths_list = tuple.get_item(1)?.cast::<PyList>()?.clone();
                         for (p_idx, p_steps) in paths_list.iter().enumerate() {
                             if p_idx > 0 {
                                 builder.pattern();
                             }
-                            if let Ok(steps_list) = p_steps.downcast::<PyList>() {
+                            if let Ok(steps_list) = p_steps.cast::<PyList>() {
                                 build_path_steps_into_builder(builder, steps_list)?;
                             }
                         }
                     }
                     "merge" => {
                         builder.merge();
-                        let path_steps = tuple.get_item(1)?.downcast::<PyList>()?.clone();
+                        let path_steps = tuple.get_item(1)?.cast::<PyList>()?.clone();
                         build_path_steps_into_builder(builder, &path_steps)?;
-                        if let Ok(on_creates) = tuple.get_item(2)?.downcast::<PyList>() {
+                        if let Ok(on_creates) = tuple.get_item(2)?.cast::<PyList>() {
                             for item in on_creates {
-                                let s_tuple = item.downcast::<PyTuple>()?;
+                                let s_tuple = item.cast::<PyTuple>()?;
                                 let var: String = s_tuple.get_item(0)?.extract()?;
                                 let prop: String = s_tuple.get_item(1)?.extract()?;
                                 let val_h = py_to_node_handle(builder, &s_tuple.get_item(2)?)?;
                                 builder.on_create_set_expr(var, prop, val_h);
                             }
                         }
-                        if let Ok(on_matches) = tuple.get_item(3)?.downcast::<PyList>() {
+                        if let Ok(on_matches) = tuple.get_item(3)?.cast::<PyList>() {
                             for item in on_matches {
-                                let s_tuple = item.downcast::<PyTuple>()?;
+                                let s_tuple = item.cast::<PyTuple>()?;
                                 let var: String = s_tuple.get_item(0)?.extract()?;
                                 let prop: String = s_tuple.get_item(1)?.extract()?;
                                 let val_h = py_to_node_handle(builder, &s_tuple.get_item(2)?)?;
@@ -1153,9 +1153,9 @@ fn build_query_from_spec_internal(
     }
 
     if let Some(with_item) = spec.get_item("with_clauses")? {
-        if let Ok(with_list) = with_item.downcast::<PyList>() {
+        if let Ok(with_list) = with_item.cast::<PyList>() {
             for item in with_list {
-                let with_dict = item.downcast::<PyDict>()?;
+                let with_dict = item.cast::<PyDict>()?;
                 if let Some(w_ver_item) = with_dict.get_item("spec_version")? {
                     let w_ver: u32 = w_ver_item.extract().map_err(|_| {
                         make_voyager_err(
@@ -1181,11 +1181,11 @@ fn build_query_from_spec_internal(
                     }
                 }
                 if let Some(proj_item) = with_dict.get_item("projections")? {
-                    if let Ok(proj_list) = proj_item.downcast::<PyList>() {
+                    if let Ok(proj_list) = proj_item.cast::<PyList>() {
                         for p in proj_list {
-                            let tuple = if let Ok(t) = p.downcast::<PyTuple>() {
+                            let tuple = if let Ok(t) = p.cast::<PyTuple>() {
                                 t.clone()
-                            } else if let Ok(l) = p.downcast::<PyList>() {
+                            } else if let Ok(l) = p.cast::<PyList>() {
                                 l.to_tuple()
                             } else {
                                 return Err(make_voyager_err(
@@ -1205,7 +1205,7 @@ fn build_query_from_spec_internal(
                                     let expr_spec = tuple.get_item(1)?;
                                     let mut alias: Option<String> = tuple.get_item(2)?.extract()?;
                                     if alias.is_none() {
-                                        if let Ok(spec_tuple) = expr_spec.downcast::<PyTuple>() {
+                                        if let Ok(spec_tuple) = expr_spec.cast::<PyTuple>() {
                                             if !spec_tuple.is_empty()
                                                 && spec_tuple
                                                     .get_item(0)?
@@ -1262,7 +1262,7 @@ fn build_query_from_spec_internal(
                     }
                 }
                 if let Some(where_item) = with_dict.get_item("where")? {
-                    if let Ok(where_list) = where_item.downcast::<PyList>() {
+                    if let Ok(where_list) = where_item.cast::<PyList>() {
                         for wh in where_list {
                             let h = py_to_node_handle(builder, &wh)?;
                             builder.where_expr(h);
@@ -1273,9 +1273,9 @@ fn build_query_from_spec_internal(
                     }
                 }
                 if let Some(order_item) = with_dict.get_item("order_by")? {
-                    if let Ok(order_list) = order_item.downcast::<PyList>() {
+                    if let Ok(order_list) = order_item.cast::<PyList>() {
                         for item in order_list {
-                            let tuple = item.downcast::<PyTuple>()?;
+                            let tuple = item.cast::<PyTuple>()?;
                             if let Ok(var) = tuple.get_item(0)?.extract::<String>() {
                                 let prop: String = tuple.get_item(1)?.extract()?;
                                 let asc: bool = tuple.get_item(2)?.extract()?;
@@ -1303,13 +1303,13 @@ fn build_query_from_spec_internal(
     }
 
     if let Some(proj_item) = spec.get_item("projections")? {
-        if let Ok(proj_list) = proj_item.downcast::<PyList>() {
+        if let Ok(proj_list) = proj_item.cast::<PyList>() {
             if !proj_list.is_empty() {
                 builder.r#return();
                 for item in proj_list {
-                    let tuple = if let Ok(t) = item.downcast::<PyTuple>() {
+                    let tuple = if let Ok(t) = item.cast::<PyTuple>() {
                         t.clone()
-                    } else if let Ok(l) = item.downcast::<PyList>() {
+                    } else if let Ok(l) = item.cast::<PyList>() {
                         l.to_tuple()
                     } else {
                         return Err(make_voyager_err(
@@ -1358,7 +1358,7 @@ fn build_query_from_spec_internal(
                             let expr_spec = tuple.get_item(1)?;
                             let mut alias: Option<String> = tuple.get_item(2)?.extract()?;
                             if alias.is_none() {
-                                if let Ok(spec_tuple) = expr_spec.downcast::<PyTuple>() {
+                                if let Ok(spec_tuple) = expr_spec.cast::<PyTuple>() {
                                     if !spec_tuple.is_empty()
                                         && spec_tuple
                                             .get_item(0)?
@@ -1396,9 +1396,9 @@ fn build_query_from_spec_internal(
     }
 
     if let Some(order_item) = spec.get_item("order_by")? {
-        if let Ok(order_list) = order_item.downcast::<PyList>() {
+        if let Ok(order_list) = order_item.cast::<PyList>() {
             for item in order_list {
-                let tuple = item.downcast::<PyTuple>()?;
+                let tuple = item.cast::<PyTuple>()?;
                 if let Ok(var) = tuple.get_item(0)?.extract::<String>() {
                     let prop: String = tuple.get_item(1)?.extract()?;
                     let asc: bool = tuple.get_item(2)?.extract()?;
@@ -1431,9 +1431,9 @@ fn build_query_from_spec_internal(
     }
 
     if let Some(linear_item) = spec.get_item("linear_clauses")? {
-        if let Ok(linear_list) = linear_item.downcast::<PyList>() {
+        if let Ok(linear_list) = linear_item.cast::<PyList>() {
             for item in linear_list {
-                let tuple = item.downcast::<PyTuple>()?;
+                let tuple = item.cast::<PyTuple>()?;
                 let tag: String = tuple.get_item(0)?.extract()?;
                 match tag.as_str() {
                     "let" => {
@@ -1655,7 +1655,7 @@ fn validate_query_against_schema<'py>(
 }
 
 /// Native Rust Query Builder exposed to Python.
-#[pyclass(name = "NativeQueryBuilder")]
+#[pyclass(name = "NativeQueryBuilder", from_py_object)]
 #[derive(Default, Clone)]
 pub struct PyQueryBuilder {
     inner: QueryBuilder,
@@ -1814,7 +1814,7 @@ impl PyQueryBuilder {
 
     #[pyo3(signature = (expr, alias=None))]
     fn select_expr(&mut self, expr: &Bound<'_, PyAny>, alias: Option<String>) -> PyResult<()> {
-        let (h, resolved_alias) = if let Ok(tuple) = expr.downcast::<PyTuple>() {
+        let (h, resolved_alias) = if let Ok(tuple) = expr.cast::<PyTuple>() {
             if !tuple.is_empty()
                 && tuple
                     .get_item(0)?
@@ -2264,7 +2264,7 @@ fn record_batch_to_py_dicts<'py>(
 }
 
 /// Zero-copy Arrow Stream implementing the Python Arrow PyCapsule Protocol (`__arrow_c_stream__`).
-#[pyclass(name = "ArrowStream")]
+#[pyclass(name = "ArrowStream", from_py_object)]
 #[derive(Clone)]
 pub struct PyArrowStream {
     batch: arrow::record_batch::RecordBatch,
@@ -2315,8 +2315,7 @@ impl PyArrowStream {
             ));
         }
         let ffi_stream = voyager_core::arrow::export_batch_to_c_stream(self.batch.clone());
-        let name = std::ffi::CString::new("arrow_array_stream").unwrap();
-        pyo3::types::PyCapsule::new(py, ffi_stream, Some(name))
+        pyo3::types::PyCapsule::new_with_value(py, ffi_stream, c"arrow_array_stream")
     }
 
     /// Exports rows as a list of Python dictionaries.
@@ -2667,35 +2666,35 @@ fn compile_bulk_create_rel<'py>(
 fn py_any_to_json_value(val: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
     if val.is_none() {
         Ok(serde_json::Value::Null)
-    } else if let Ok(b) = val.downcast::<PyBool>() {
+    } else if let Ok(b) = val.cast::<PyBool>() {
         Ok(serde_json::Value::Bool(b.is_true()))
-    } else if let Ok(i) = val.downcast::<PyInt>() {
+    } else if let Ok(i) = val.cast::<PyInt>() {
         let val_i: i64 = i.extract()?;
         Ok(serde_json::Value::Number(val_i.into()))
-    } else if let Ok(f) = val.downcast::<PyFloat>() {
+    } else if let Ok(f) = val.cast::<PyFloat>() {
         if let Some(n) = serde_json::Number::from_f64(f.value()) {
             Ok(serde_json::Value::Number(n))
         } else {
             Ok(serde_json::Value::Null)
         }
-    } else if let Ok(s) = val.downcast::<PyString>() {
+    } else if let Ok(s) = val.cast::<PyString>() {
         Ok(serde_json::Value::String(s.to_string_lossy().into_owned()))
-    } else if let Ok(list) = val.downcast::<PyList>() {
+    } else if let Ok(list) = val.cast::<PyList>() {
         let mut items = Vec::with_capacity(list.len());
         for item in list {
             items.push(py_any_to_json_value(&item)?);
         }
         Ok(serde_json::Value::Array(items))
-    } else if let Ok(tuple) = val.downcast::<PyTuple>() {
+    } else if let Ok(tuple) = val.cast::<PyTuple>() {
         let mut items = Vec::with_capacity(tuple.len());
         for item in tuple {
             items.push(py_any_to_json_value(&item)?);
         }
         Ok(serde_json::Value::Array(items))
-    } else if let Ok(dict) = val.downcast::<PyDict>() {
+    } else if let Ok(dict) = val.cast::<PyDict>() {
         let mut map = serde_json::Map::with_capacity(dict.len());
         for (k, v) in dict {
-            let key = if let Ok(s) = k.downcast::<PyString>() {
+            let key = if let Ok(s) = k.cast::<PyString>() {
                 s.to_string_lossy().into_owned()
             } else {
                 k.extract::<String>()?
@@ -2739,7 +2738,7 @@ fn py_dict_to_json_params(
     if let Some(dict) = dict_opt {
         params.reserve(dict.len());
         for (k, v) in dict {
-            let key = if let Ok(s) = k.downcast::<PyString>() {
+            let key = if let Ok(s) = k.cast::<PyString>() {
                 s.to_string_lossy().into_owned()
             } else {
                 k.extract::<String>()?
@@ -2752,7 +2751,7 @@ fn py_dict_to_json_params(
 }
 
 /// Native query result containing columnar Apache Arrow record batch and execution summary counters.
-#[pyclass(name = "NativeQueryResult")]
+#[pyclass(name = "NativeQueryResult", from_py_object)]
 #[derive(Clone)]
 pub struct PyNativeQueryResult {
     stream: PyArrowStream,
@@ -2952,7 +2951,7 @@ impl PyNativeClient {
         let params_map = py_dict_to_json_params(params)?;
         let client = self.client.clone();
         let query_result = py
-            .allow_threads(|| {
+            .detach(|| {
                 get_tokio_runtime()
                     .block_on(async move { client.execute(&query, &params_map).await })
             })
@@ -3015,7 +3014,7 @@ impl PyNativeClient {
     /// Synchronously checks database connectivity.
     fn ping_sync(&self, py: Python<'_>) -> PyResult<bool> {
         let client = self.client.clone();
-        py.allow_threads(|| get_tokio_runtime().block_on(async move { client.ping().await }))
+        py.detach(|| get_tokio_runtime().block_on(async move { client.ping().await }))
             .map(|_| true)
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
@@ -3036,7 +3035,7 @@ impl PyNativeClient {
     /// Closes the connection pool.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         let client = self.client.clone();
-        py.allow_threads(|| get_tokio_runtime().block_on(async move { client.close().await }));
+        py.detach(|| get_tokio_runtime().block_on(async move { client.close().await }));
         Ok(())
     }
 }
@@ -3179,7 +3178,7 @@ impl PyNativeCircuitRouter {
 }
 
 fn parse_field_descriptor(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<FieldDescriptor> {
-    if let Ok(dict) = obj.downcast::<PyDict>() {
+    if let Ok(dict) = obj.cast::<PyDict>() {
         let field_name = if let Some(n) = dict.get_item("name")? {
             if n.is_none() {
                 name.to_string()
@@ -3586,7 +3585,7 @@ fn relationship_schema_to_py<'py>(
 }
 
 fn parse_fulltext_index_config(val: &Bound<'_, PyAny>) -> PyResult<FullTextIndexConfig> {
-    if let Ok(dict) = val.downcast::<PyDict>() {
+    if let Ok(dict) = val.cast::<PyDict>() {
         let name: String = dict
             .get_item("name")?
             .and_then(|v| if v.is_none() { None } else { v.extract().ok() })
@@ -3645,11 +3644,11 @@ fn parse_fulltext_index_config(val: &Bound<'_, PyAny>) -> PyResult<FullTextIndex
 
 fn extract_fulltext_configs(obj: &Bound<'_, PyAny>) -> PyResult<Vec<FullTextIndexConfig>> {
     let mut out = Vec::new();
-    if let Ok(list) = obj.downcast::<PyList>() {
+    if let Ok(list) = obj.cast::<PyList>() {
         for item in list {
             out.push(parse_fulltext_index_config(&item)?);
         }
-    } else if let Ok(tuple) = obj.downcast::<PyTuple>() {
+    } else if let Ok(tuple) = obj.cast::<PyTuple>() {
         for item in tuple {
             out.push(parse_fulltext_index_config(&item)?);
         }
@@ -3658,7 +3657,7 @@ fn extract_fulltext_configs(obj: &Bound<'_, PyAny>) -> PyResult<Vec<FullTextInde
 }
 
 fn extract_node_schema(obj: &Bound<'_, PyAny>) -> PyResult<NodeSchema> {
-    if let Ok(dict) = obj.downcast::<PyDict>() {
+    if let Ok(dict) = obj.cast::<PyDict>() {
         let name: String = dict
             .get_item("name")?
             .ok_or_else(|| PyValueError::new_err("Missing required key 'name' in node schema"))?
@@ -3673,9 +3672,9 @@ fn extract_node_schema(obj: &Bound<'_, PyAny>) -> PyResult<NodeSchema> {
             .and_then(|v| if v.is_none() { None } else { v.extract().ok() });
         let mut node = NodeSchema::new(name, labels);
         if let Some(f_obj) = dict.get_item("fields")? {
-            if let Ok(f_dict) = f_obj.downcast::<PyDict>() {
+            if let Ok(f_dict) = f_obj.cast::<PyDict>() {
                 for (k, v) in f_dict {
-                    let field_name: String = if let Ok(s) = k.downcast::<PyString>() {
+                    let field_name: String = if let Ok(s) = k.cast::<PyString>() {
                         s.to_string_lossy().into_owned()
                     } else {
                         k.extract()?
@@ -3683,7 +3682,7 @@ fn extract_node_schema(obj: &Bound<'_, PyAny>) -> PyResult<NodeSchema> {
                     let desc = parse_field_descriptor(&field_name, &v)?;
                     node = node.with_field(desc);
                 }
-            } else if let Ok(f_list) = f_obj.downcast::<PyList>() {
+            } else if let Ok(f_list) = f_obj.cast::<PyList>() {
                 for item in f_list {
                     let desc = parse_field_descriptor("", &item)?;
                     node = node.with_field(desc);
@@ -3729,9 +3728,9 @@ fn extract_node_schema(obj: &Bound<'_, PyAny>) -> PyResult<NodeSchema> {
         let mut node = NodeSchema::new(name, labels);
         if obj.hasattr("_schema_fields")? {
             let fields_any = obj.getattr("_schema_fields")?;
-            if let Ok(fields_dict) = fields_any.downcast::<PyDict>() {
+            if let Ok(fields_dict) = fields_any.cast::<PyDict>() {
                 for (k, v) in fields_dict {
-                    let field_name: String = if let Ok(s) = k.downcast::<PyString>() {
+                    let field_name: String = if let Ok(s) = k.cast::<PyString>() {
                         s.to_string_lossy().into_owned()
                     } else {
                         k.extract()?
@@ -3752,7 +3751,7 @@ fn extract_node_schema(obj: &Bound<'_, PyAny>) -> PyResult<NodeSchema> {
 }
 
 fn extract_rel_schema(obj: &Bound<'_, PyAny>) -> PyResult<RelationshipSchema> {
-    if let Ok(dict) = obj.downcast::<PyDict>() {
+    if let Ok(dict) = obj.cast::<PyDict>() {
         let name: String = dict
             .get_item("name")?
             .ok_or_else(|| {
@@ -3786,9 +3785,9 @@ fn extract_rel_schema(obj: &Bound<'_, PyAny>) -> PyResult<RelationshipSchema> {
             .with_endpoints(source_labels, target_labels)
             .directed(directed);
         if let Some(f_obj) = dict.get_item("fields")? {
-            if let Ok(f_dict) = f_obj.downcast::<PyDict>() {
+            if let Ok(f_dict) = f_obj.cast::<PyDict>() {
                 for (k, v) in f_dict {
-                    let field_name: String = if let Ok(s) = k.downcast::<PyString>() {
+                    let field_name: String = if let Ok(s) = k.cast::<PyString>() {
                         s.to_string_lossy().into_owned()
                     } else {
                         k.extract()?
@@ -3796,7 +3795,7 @@ fn extract_rel_schema(obj: &Bound<'_, PyAny>) -> PyResult<RelationshipSchema> {
                     let desc = parse_field_descriptor(&field_name, &v)?;
                     rel = rel.with_field(desc);
                 }
-            } else if let Ok(f_list) = f_obj.downcast::<PyList>() {
+            } else if let Ok(f_list) = f_obj.cast::<PyList>() {
                 for item in f_list {
                     let desc = parse_field_descriptor("", &item)?;
                     rel = rel.with_field(desc);
@@ -3845,9 +3844,9 @@ fn extract_rel_schema(obj: &Bound<'_, PyAny>) -> PyResult<RelationshipSchema> {
             RelationshipSchema::new(name, type_name).with_endpoints(source_labels, target_labels);
         if obj.hasattr("_schema_fields")? {
             let fields_any = obj.getattr("_schema_fields")?;
-            if let Ok(fields_dict) = fields_any.downcast::<PyDict>() {
+            if let Ok(fields_dict) = fields_any.cast::<PyDict>() {
                 for (k, v) in fields_dict {
-                    let field_name: String = if let Ok(s) = k.downcast::<PyString>() {
+                    let field_name: String = if let Ok(s) = k.cast::<PyString>() {
                         s.to_string_lossy().into_owned()
                     } else {
                         k.extract()?
@@ -3921,9 +3920,9 @@ impl PyNativeSchemaRegistry {
         fulltext_indexes: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<()> {
         let mut node_schema = NodeSchema::new(name, labels);
-        if let Ok(dict) = fields.downcast::<PyDict>() {
+        if let Ok(dict) = fields.cast::<PyDict>() {
             for (k, v) in dict {
-                let field_name: String = if let Ok(s) = k.downcast::<PyString>() {
+                let field_name: String = if let Ok(s) = k.cast::<PyString>() {
                     s.to_string_lossy().into_owned()
                 } else {
                     k.extract()?
@@ -3931,7 +3930,7 @@ impl PyNativeSchemaRegistry {
                 let desc = parse_field_descriptor(&field_name, &v)?;
                 node_schema = node_schema.with_field(desc);
             }
-        } else if let Ok(list) = fields.downcast::<PyList>() {
+        } else if let Ok(list) = fields.cast::<PyList>() {
             for item in list {
                 let desc = parse_field_descriptor("", &item)?;
                 node_schema = node_schema.with_field(desc);
@@ -3963,7 +3962,7 @@ impl PyNativeSchemaRegistry {
 
     /// Registers a node schema from a dictionary specification.
     fn register_node_schema(&self, schema: &Bound<'_, PyAny>) -> PyResult<()> {
-        if let Ok(dict) = schema.downcast::<PyDict>() {
+        if let Ok(dict) = schema.cast::<PyDict>() {
             let name: String = dict
                 .get_item("name")?
                 .ok_or_else(|| PyValueError::new_err("Missing required key 'name' in node schema"))?
@@ -4007,9 +4006,9 @@ impl PyNativeSchemaRegistry {
             rel_schema = rel_schema.with_endpoints(src, tgt);
         }
         if let Some(fields_any) = fields {
-            if let Ok(dict) = fields_any.downcast::<PyDict>() {
+            if let Ok(dict) = fields_any.cast::<PyDict>() {
                 for (k, v) in dict {
-                    let field_name: String = if let Ok(s) = k.downcast::<PyString>() {
+                    let field_name: String = if let Ok(s) = k.cast::<PyString>() {
                         s.to_string_lossy().into_owned()
                     } else {
                         k.extract()?
@@ -4017,7 +4016,7 @@ impl PyNativeSchemaRegistry {
                     let desc = parse_field_descriptor(&field_name, &v)?;
                     rel_schema = rel_schema.with_field(desc);
                 }
-            } else if let Ok(list) = fields_any.downcast::<PyList>() {
+            } else if let Ok(list) = fields_any.cast::<PyList>() {
                 for item in list {
                     let desc = parse_field_descriptor("", &item)?;
                     rel_schema = rel_schema.with_field(desc);
@@ -4039,7 +4038,7 @@ impl PyNativeSchemaRegistry {
 
     /// Registers a relationship schema from a dictionary specification.
     fn register_relationship_schema(&self, schema: &Bound<'_, PyAny>) -> PyResult<()> {
-        if let Ok(dict) = schema.downcast::<PyDict>() {
+        if let Ok(dict) = schema.cast::<PyDict>() {
             let name: String = dict
                 .get_item("name")?
                 .ok_or_else(|| {

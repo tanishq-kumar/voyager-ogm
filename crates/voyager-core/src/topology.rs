@@ -843,9 +843,39 @@ fn parse_simple_literal(s: &str) -> Option<LiteralValue> {
     None
 }
 
+/// ASCII-case-insensitive search for `needle` in `haystack`, starting at byte offset `from`.
+///
+/// Works entirely in byte space so that multi-byte UTF-8 content and case mappings that
+/// change byte length (e.g. `ﬀ` → `FF`, `ŉ` → `ʼN`) can never desynchronize index spaces
+/// the way `to_uppercase()` offsets applied to the original string would.
+fn find_ascii_ci(haystack: &str, needle: &str, from: usize) -> Option<usize> {
+    let hay = haystack.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    if needle_bytes.is_empty() {
+        return Some(from.min(hay.len()));
+    }
+    let max_start = hay.len().checked_sub(needle_bytes.len())?;
+    if from > max_start {
+        return None;
+    }
+    (from..=max_start).find(|&i| hay[i..i + needle_bytes.len()].eq_ignore_ascii_case(needle_bytes))
+}
+
+/// Returns `true` if `haystack` contains `needle` (ASCII-case-insensitively) starting at
+/// byte offset `at`.
+fn starts_with_ascii_ci(haystack: &str, needle: &str, at: usize) -> bool {
+    let end = match at.checked_add(needle.len()) {
+        Some(e) => e,
+        None => return false,
+    };
+    haystack
+        .as_bytes()
+        .get(at..end)
+        .is_some_and(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
 /// Extracts WHERE predicates and attaches equality filters to node properties.
 fn extract_and_apply_where_predicates(query: &str, nodes_map: &mut HashMap<String, TopologyNode>) {
-    let upper = query.to_uppercase();
     let mut search_pos = 0;
 
     let stop_keywords = [
@@ -853,10 +883,9 @@ fn extract_and_apply_where_predicates(query: &str, nodes_map: &mut HashMap<Strin
         "CREATE", "MERGE",
     ];
 
-    while let Some(where_pos) = upper[search_pos..].find("WHERE") {
-        let abs_where = search_pos + where_pos;
-        let prev_ok = abs_where == 0 || !query.as_bytes()[abs_where - 1].is_ascii_alphanumeric();
-        let next_idx = abs_where + 5;
+    while let Some(where_pos) = find_ascii_ci(query, "WHERE", search_pos) {
+        let prev_ok = where_pos == 0 || !query.as_bytes()[where_pos - 1].is_ascii_alphanumeric();
+        let next_idx = where_pos + 5;
         let next_ok =
             next_idx >= query.len() || !query.as_bytes()[next_idx].is_ascii_alphanumeric();
 
@@ -869,8 +898,7 @@ fn extract_and_apply_where_predicates(query: &str, nodes_map: &mut HashMap<Strin
         let mut stop_pos = query.len();
 
         for skw in &stop_keywords {
-            if let Some(pos) = upper[content_start..].find(skw) {
-                let abs_pos = content_start + pos;
+            if let Some(abs_pos) = find_ascii_ci(query, skw, content_start) {
                 let prev_ok =
                     abs_pos == 0 || !query.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
                 let next_idx = abs_pos + skw.len();
@@ -883,7 +911,10 @@ fn extract_and_apply_where_predicates(query: &str, nodes_map: &mut HashMap<Strin
             }
         }
 
-        let where_body = &query[content_start..stop_pos];
+        // All offsets above live in the same byte space as `query`; `get(..)` is a
+        // defensive boundary check so an out-of-range window degrades to empty output
+        // instead of panicking (this function is reachable from `from_query_str -> Self`).
+        let where_body = query.get(content_start..stop_pos).unwrap_or_default();
         parse_where_predicates_body(where_body, nodes_map);
 
         search_pos = stop_pos;
@@ -929,16 +960,21 @@ fn split_and_outside_quotes(s: &str) -> Vec<&str> {
         } else if b == b'"' && !in_single {
             in_double = !in_double;
         } else if !in_single && !in_double && i + 5 <= len {
-            let chunk = &s[i..i + 5];
-            if chunk.eq_ignore_ascii_case(" AND ") {
-                out.push(&s[last..i]);
+            // Byte-space comparison: byte slices need no char boundary, so a multi-byte
+            // character outside quotes can never panic the `i` walk.
+            if bytes[i..i + 5].eq_ignore_ascii_case(b" AND ") {
+                if let Some(chunk) = s.get(last..i) {
+                    out.push(chunk);
+                }
                 last = i + 5;
                 i += 4;
             }
         }
         i += 1;
     }
-    out.push(&s[last..]);
+    if let Some(tail) = s.get(last..) {
+        out.push(tail);
+    }
     out
 }
 
@@ -998,9 +1034,11 @@ fn extract_pattern_sections(query: &str) -> Vec<String> {
     ];
 
     let mut sections = Vec::new();
-    let upper = query.to_uppercase();
-    let chars: Vec<char> = query.chars().collect();
-    let len = chars.len();
+    // Single coordinate system: byte offsets into the original `query`. Multi-byte
+    // UTF-8 never collides with the ASCII structure characters (`(`/`)`/`[`/`]`) or
+    // the ASCII-case-insensitive keyword search below.
+    let bytes = query.as_bytes();
+    let len = bytes.len();
 
     let mut search_pos = 0;
     while search_pos < len {
@@ -1008,14 +1046,11 @@ fn extract_pattern_sections(query: &str) -> Vec<String> {
         let mut earliest_match: Option<(usize, usize)> = None; // (start_idx, keyword_len)
 
         for kw in &keywords {
-            if let Some(pos) = upper[search_pos..].find(kw) {
-                let abs_pos = search_pos + pos;
+            if let Some(abs_pos) = find_ascii_ci(query, kw, search_pos) {
                 // Verify word boundary
-                let prev_ok =
-                    abs_pos == 0 || !query.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
+                let prev_ok = abs_pos == 0 || !bytes[abs_pos - 1].is_ascii_alphanumeric();
                 let next_idx = abs_pos + kw.len();
-                let next_ok =
-                    next_idx >= query.len() || !query.as_bytes()[next_idx].is_ascii_alphanumeric();
+                let next_ok = next_idx >= len || !bytes[next_idx].is_ascii_alphanumeric();
 
                 if prev_ok && next_ok {
                     match earliest_match {
@@ -1041,43 +1076,30 @@ fn extract_pattern_sections(query: &str) -> Vec<String> {
         let mut stop_pos = len;
 
         while pos < len {
-            let ch = chars[pos];
-            if ch == '(' {
+            let b = bytes[pos];
+            if b == b'(' {
                 paren_depth += 1;
-            } else if ch == ')' {
+            } else if b == b')' {
                 paren_depth = paren_depth.saturating_sub(1);
-            } else if ch == '[' {
+            } else if b == b'[' {
                 bracket_depth += 1;
-            } else if ch == ']' {
+            } else if b == b']' {
                 bracket_depth = bracket_depth.saturating_sub(1);
             } else if paren_depth == 0 && bracket_depth == 0 {
-                let remaining = &upper[pos..];
-                let is_stop = stop_keywords.iter().any(|skw| {
-                    if remaining.starts_with(skw) {
-                        let prev_ok =
-                            pos == 0 || !query.as_bytes()[pos - 1].is_ascii_alphanumeric();
+                let is_kw_at = |skw: &str| {
+                    if starts_with_ascii_ci(query, skw, pos) {
+                        let prev_ok = pos == 0 || !bytes[pos - 1].is_ascii_alphanumeric();
                         let next_idx = pos + skw.len();
-                        let next_ok =
-                            next_idx >= len || !query.as_bytes()[next_idx].is_ascii_alphanumeric();
+                        let next_ok = next_idx >= len || !bytes[next_idx].is_ascii_alphanumeric();
                         prev_ok && next_ok
                     } else {
                         false
                     }
-                });
-                let is_start = keywords.iter().any(|skw| {
-                    if remaining.starts_with(skw) {
-                        let prev_ok =
-                            pos == 0 || !query.as_bytes()[pos - 1].is_ascii_alphanumeric();
-                        let next_idx = pos + skw.len();
-                        let next_ok =
-                            next_idx >= len || !query.as_bytes()[next_idx].is_ascii_alphanumeric();
-                        prev_ok && next_ok
-                    } else {
-                        false
-                    }
-                });
+                };
 
-                if is_stop || is_start {
+                if stop_keywords.iter().any(|&skw| is_kw_at(skw))
+                    || keywords.iter().any(|&skw| is_kw_at(skw))
+                {
                     stop_pos = pos;
                     break;
                 }
@@ -1085,7 +1107,10 @@ fn extract_pattern_sections(query: &str) -> Vec<String> {
             pos += 1;
         }
 
-        let section = query[content_start..stop_pos].trim();
+        let section = query
+            .get(content_start..stop_pos)
+            .unwrap_or_default()
+            .trim();
         if !section.is_empty() {
             sections.push(section.to_string());
         }
@@ -1099,6 +1124,25 @@ fn extract_pattern_sections(query: &str) -> Vec<String> {
     }
 
     sections
+}
+
+/// Extracts the inner content between opening and closing delimiters: `(...)`, `[...]`, `{...}`.
+/// Returns an empty string if the delimiter is unclosed, empty, or mismatched.
+fn inner(chars: &[char], start: usize, end: usize) -> String {
+    if end < start + 2 {
+        return String::new();
+    }
+    let open = chars[start];
+    let expected_close = match open {
+        '(' => ')',
+        '[' => ']',
+        '{' => '}',
+        _ => return String::new(),
+    };
+    if chars[end - 1] != expected_close {
+        return String::new();
+    }
+    chars[start + 1..end - 1].iter().collect()
 }
 
 /// Parses a path pattern string: `(node)-[edge]->(node), (isolated)`
@@ -1141,7 +1185,7 @@ fn parse_path_sequence(
                 }
                 pos += 1;
             }
-            let node_body: String = chars[start + 1..pos - 1].iter().collect();
+            let node_body = inner(&chars, start, pos);
             let parsed_node_id = parse_node_body(&node_body, nodes_map, nodes_order, node_counter);
             last_node_id = Some(parsed_node_id);
             continue;
@@ -1175,7 +1219,7 @@ fn parse_path_sequence(
                     }
                     pos += 1;
                 }
-                edge_body = chars[start + 1..pos - 1].iter().collect();
+                edge_body = inner(&chars, start, pos);
             }
 
             // Trailing quantifier before dash (e.g. `[r:TYPE]{1, 3}-`)
@@ -1192,15 +1236,17 @@ fn parse_path_sequence(
                     }
                     pos += 1;
                 }
-                let inner: String = chars[start + 1..pos - 1].iter().collect();
-                if !inner.contains(':')
-                    && (inner.contains(',') || inner.trim().chars().all(|c| c.is_ascii_digit()))
+                let inner_body = inner(&chars, start, pos);
+                if !inner_body.is_empty()
+                    && !inner_body.contains(':')
+                    && (inner_body.contains(',')
+                        || inner_body.trim().chars().all(|c| c.is_ascii_digit()))
                 {
-                    if let Some((low_s, high_s)) = inner.split_once(',') {
+                    if let Some((low_s, high_s)) = inner_body.split_once(',') {
                         let low = low_s.trim().parse::<u32>().ok();
                         let high = high_s.trim().parse::<u32>().ok();
                         gql_quantifier = Some((low, high));
-                    } else if let Ok(n) = inner.trim().parse::<u32>() {
+                    } else if let Ok(n) = inner_body.trim().parse::<u32>() {
                         gql_quantifier = Some((Some(n), Some(n)));
                     }
                 } else {
@@ -1232,15 +1278,17 @@ fn parse_path_sequence(
                     }
                     pos += 1;
                 }
-                let inner: String = chars[start + 1..pos - 1].iter().collect();
-                if !inner.contains(':')
-                    && (inner.contains(',') || inner.trim().chars().all(|c| c.is_ascii_digit()))
+                let inner_body = inner(&chars, start, pos);
+                if !inner_body.is_empty()
+                    && !inner_body.contains(':')
+                    && (inner_body.contains(',')
+                        || inner_body.trim().chars().all(|c| c.is_ascii_digit()))
                 {
-                    if let Some((low_s, high_s)) = inner.split_once(',') {
+                    if let Some((low_s, high_s)) = inner_body.split_once(',') {
                         let low = low_s.trim().parse::<u32>().ok();
                         let high = high_s.trim().parse::<u32>().ok();
                         gql_quantifier = Some((low, high));
-                    } else if let Ok(n) = inner.trim().parse::<u32>() {
+                    } else if let Ok(n) = inner_body.trim().parse::<u32>() {
                         gql_quantifier = Some((Some(n), Some(n)));
                     }
                 } else {
@@ -1280,7 +1328,7 @@ fn parse_path_sequence(
                     }
                     pos += 1;
                 }
-                let next_node_body: String = chars[start + 1..pos - 1].iter().collect();
+                let next_node_body = inner(&chars, start, pos);
                 let next_node_id =
                     parse_node_body(&next_node_body, nodes_map, nodes_order, node_counter);
 
@@ -1395,10 +1443,14 @@ fn parse_node_body(
     let trimmed = body.trim();
 
     // Check for ISO GQL inline WHERE: `e:Employee WHERE e.salary >= 100000`
+    // ASCII-case-insensitive byte search so `to_uppercase()` case mappings that change
+    // byte length (e.g. `ﬀ` → `FF`) can never shift the offsets used to slice `trimmed`.
     let (node_spec, inline_where) = {
-        let upper = trimmed.to_uppercase();
-        if let Some(w_pos) = upper.find(" WHERE ") {
-            (&trimmed[..w_pos], Some(&trimmed[w_pos + 7..]))
+        if let Some(w_pos) = find_ascii_ci(trimmed, " WHERE ", 0) {
+            (
+                trimmed.get(..w_pos).unwrap_or_default(),
+                Some(trimmed.get(w_pos + " WHERE ".len()..).unwrap_or_default()),
+            )
         } else {
             (trimmed, None)
         }
@@ -1550,10 +1602,16 @@ fn parse_edge_body(
                 i += 1;
             }
             let block: String = chars[start..i].iter().collect();
-            let inner = if block.len() >= 2 {
-                block[1..block.len() - 1].trim()
+            // Char-based slicing: byte slicing `block[1..block.len() - 1]` panics when the
+            // block ends mid-character (e.g. an unbalanced `{日本語` edge body).
+            let inner = if i >= start + 2 {
+                chars[start + 1..i - 1]
+                    .iter()
+                    .collect::<String>()
+                    .trim()
+                    .to_string()
             } else {
-                ""
+                String::new()
             };
 
             // Check if this block is a quantifier {min, max} (e.g. {1,3}, {1,}, {,3}, {2})
@@ -2023,5 +2081,164 @@ mod tests {
         assert_eq!(topo_arena.nodes.len(), 1);
         assert_eq!(topo_arena.nodes[0].id, "p");
         assert_eq!(topo_arena.nodes[0].labels, vec!["Person", "Employee"]);
+    }
+
+    #[test]
+    fn test_unicode_where_predicates_regression() {
+        // Finding 2: multibyte characters outside quotes in WHERE clause (MATCH (n) WHERE n.名前 = 'x' AND n.y = 2)
+        let query = "MATCH (n) WHERE n.名前 = 'x' AND n.y = 2";
+        let topo = GraphTopology::from_query_str(query);
+        assert_eq!(topo.nodes.len(), 1);
+        assert_eq!(topo.nodes[0].id, "n");
+        assert_eq!(
+            topo.nodes[0].properties.get("名前"),
+            Some(&LiteralValue::String("x".to_string()))
+        );
+        assert_eq!(
+            topo.nodes[0].properties.get("y"),
+            Some(&LiteralValue::Int64(2))
+        );
+    }
+
+    #[test]
+    fn test_unicode_case_length_changing_regression() {
+        // Finding 3: case mappings that change byte length (ß, ﬀ, ŉ)
+        let q1 = "MATCH (n) WHERE n.city = 'Groß' AND n.y = 1 RETURN n";
+        let topo1 = GraphTopology::from_query_str(q1);
+        assert_eq!(topo1.nodes.len(), 1);
+        assert_eq!(topo1.nodes[0].id, "n");
+        assert_eq!(
+            topo1.nodes[0].properties.get("city"),
+            Some(&LiteralValue::String("Groß".to_string()))
+        );
+
+        let q2 = "MATCH (n) WHERE n.name = 'ﬀ' AND n.y = 2 RETURN n";
+        let topo2 = GraphTopology::from_query_str(q2);
+        assert_eq!(topo2.nodes.len(), 1);
+        assert_eq!(topo2.nodes[0].id, "n");
+        assert_eq!(
+            topo2.nodes[0].properties.get("name"),
+            Some(&LiteralValue::String("ﬀ".to_string()))
+        );
+        assert_eq!(
+            topo2.nodes[0].properties.get("y"),
+            Some(&LiteralValue::Int64(2))
+        );
+
+        let q3 = "MATCH (n) WHERE n.name = 'ŉ' AND n.y = 3 RETURN n";
+        let topo3 = GraphTopology::from_query_str(q3);
+        assert_eq!(topo3.nodes.len(), 1);
+        assert_eq!(topo3.nodes[0].id, "n");
+        assert_eq!(
+            topo3.nodes[0].properties.get("name"),
+            Some(&LiteralValue::String("ŉ".to_string()))
+        );
+        assert_eq!(
+            topo3.nodes[0].properties.get("y"),
+            Some(&LiteralValue::Int64(3))
+        );
+
+        // Empty query boundary safety
+        assert!(find_ascii_ci("", "WHERE", 0).is_none());
+        assert_eq!(GraphTopology::from_query_str("").nodes.len(), 0);
+    }
+
+    #[test]
+    fn test_edge_body_unbalanced_multibyte_regression() {
+        // Finding 4: edge body with unbalanced brace ending with multibyte character
+        let query1 = "MATCH (a)-[r:REL {日本語]->(b) RETURN a, b";
+        let topo1 = GraphTopology::from_query_str(query1);
+        assert_eq!(topo1.nodes.len(), 2);
+        assert_eq!(topo1.edges.len(), 1);
+
+        let query2 = "MATCH (a)-[{日本語]->(b) RETURN a, b";
+        let topo2 = GraphTopology::from_query_str(query2);
+        assert_eq!(topo2.nodes.len(), 2);
+        assert_eq!(topo2.edges.len(), 1);
+    }
+
+    #[test]
+    fn test_iso_gql_inline_where_unicode_regression() {
+        // Finding 4: ISO GQL inline WHERE with multi-byte or length-changing Unicode
+        let query = "MATCH (e:Employee WHERE e.name = 'ﬀ')";
+        let topo = GraphTopology::from_query_str(query);
+        assert_eq!(topo.nodes.len(), 1);
+        assert_eq!(topo.nodes[0].id, "e");
+        assert_eq!(topo.nodes[0].labels, vec!["Employee"]);
+        assert_eq!(
+            topo.nodes[0].properties.get("name"),
+            Some(&LiteralValue::String("ﬀ".to_string()))
+        );
+
+        // Accented literals in WHERE clause
+        let query_accent = "MATCH (p:Person WHERE p.name = 'Renée')";
+        let topo_accent = GraphTopology::from_query_str(query_accent);
+        assert_eq!(topo_accent.nodes.len(), 1);
+        assert_eq!(topo_accent.nodes[0].id, "p");
+        assert_eq!(
+            topo_accent.nodes[0].properties.get("name"),
+            Some(&LiteralValue::String("Renée".to_string()))
+        );
+
+        let query_accent2 = "MATCH (n) WHERE n.name = 'Renée' RETURN n";
+        let topo_accent2 = GraphTopology::from_query_str(query_accent2);
+        assert_eq!(topo_accent2.nodes.len(), 1);
+        assert_eq!(topo_accent2.nodes[0].id, "n");
+        assert_eq!(
+            topo_accent2.nodes[0].properties.get("name"),
+            Some(&LiteralValue::String("Renée".to_string()))
+        );
+
+        // Quoted keywords inside string literals
+        let query_quoted_kw = r#"MATCH (n) WHERE n.val = " WHERE " AND n.y = 1"#;
+        let topo_quoted_kw = GraphTopology::from_query_str(query_quoted_kw);
+        assert_eq!(topo_quoted_kw.nodes.len(), 1);
+        assert_eq!(topo_quoted_kw.nodes[0].id, "n");
+        assert_eq!(
+            topo_quoted_kw.nodes[0].properties.get("val"),
+            Some(&LiteralValue::String(" WHERE ".to_string()))
+        );
+        assert_eq!(
+            topo_quoted_kw.nodes[0].properties.get("y"),
+            Some(&LiteralValue::Int64(1))
+        );
+    }
+
+    #[test]
+    fn test_unclosed_delimiters_regression() {
+        // Finding 1 & 4: Unclosed delimiters must degrade gracefully and never panic
+        let cases = [
+            "MATCH (",
+            "MATCH (n)-[",
+            "MATCH (n)-[r]->(",
+            "MATCH (n)-[r",
+            "MATCH (n {",
+            "MATCH",
+            "",
+        ];
+        for query in cases {
+            let topo = GraphTopology::from_query_str(query);
+            assert_eq!(topo.version, 1);
+        }
+    }
+
+    #[test]
+    fn test_query_prefix_robustness_sweep() {
+        // Sweep every character prefix of realistic queries (ASCII and Unicode)
+        let realistic_queries = [
+            "MATCH (p:Person {name: 'Renée'})-[r:KNOWS*1..2]->(f:Person) WHERE f.city = 'München' AND f.y = 2 RETURN p, f",
+            "MATCH (e:Employee WHERE e.name = 'ﬀ' AND e.salary >= 100000)-[r:WORKS_IN]->(d:Department {title: '日本語'}) RETURN e, d",
+            "MATCH (a:Account)-[t:TRANSFERRED {amount: 100}]->(b:Account)<-[c:CONNECTED]-(d:Account) WHERE a.status = 'active' RETURN a, b, d",
+            r#"MATCH (n) WHERE n.val = " WHERE " AND n.name = 'ŉ' RETURN n"#,
+        ];
+
+        for query in realistic_queries {
+            let chars: Vec<char> = query.chars().collect();
+            for i in 0..=chars.len() {
+                let prefix: String = chars[..i].iter().collect();
+                let topo = GraphTopology::from_query_str(&prefix);
+                assert_eq!(topo.version, 1);
+            }
+        }
     }
 }

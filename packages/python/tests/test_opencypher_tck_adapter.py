@@ -114,24 +114,18 @@ def test_tck_topology_nodes_and_edges_integrity():
 
 
 def test_tck_tier3_live_neo4j_execution():
-    """Tier 3: Executes official openCypher Match1 scenarios on live Neo4j Enterprise."""
+    """Tier 3: Executes official openCypher Match1 scenarios on live Neo4j."""
     neo4j_host = os.getenv("NEO4J_HOST", "127.0.0.1")
     neo4j_port = int(os.getenv("NEO4J_PORT", "7687"))
     if not _check_port(neo4j_host, neo4j_port):
-        pytest.skip(f"Neo4j Enterprise not available on {neo4j_host}:{neo4j_port}")
+        pytest.skip(f"Neo4j not available on {neo4j_host}:{neo4j_port}")
+    uri = os.getenv("NEO4J_URI", f"bolt://{neo4j_host}:{neo4j_port}")
+    neo4j_user = os.getenv("NEO4J_USER", "neo4j")
+    neo4j_pass = os.getenv("NEO4J_PASSWORD", "voyagerpass123")
 
     from neo4j import GraphDatabase
 
-    neo4j_user = os.getenv("NEO4J_USER", "neo4j")
-    neo4j_pass = (
-        os.getenv("NEO4J_ENTERPRISE_PASSWORD")
-        or os.getenv("NEO4J_PASSWORD")
-        or os.getenv("NEO4J_PASS", "voyex1234")
-    )
-
-    driver = GraphDatabase.driver(
-        f"bolt://{neo4j_host}:{neo4j_port}", auth=(neo4j_user, neo4j_pass)
-    )
+    driver = GraphDatabase.driver(uri, auth=(neo4j_user, neo4j_pass))
     try:
         driver.verify_connectivity()
     except Exception as e:
@@ -201,3 +195,46 @@ def test_tck_tier3_live_falkordb_execution():
         assert topo_res.success
 
     g.query("MATCH (n) DETACH DELETE n")
+
+
+def test_tck_scenario_outline_expansion():
+    """Verifies that Scenario Outline blocks are expanded into concrete scenarios with stable IDs."""
+    match1 = TCK_DIR / "clauses" / "match" / "Match1.feature"
+    scenarios = parse_feature_file(str(match1))
+    # Match1 has 6 plain scenarios and 5 Scenario Outlines with 11, 16, 25, 20, 8 = 80 examples -> 86 total
+    assert len(scenarios) == 86
+
+    # Verify stable IDs for outlines
+    outline_scenarios = [
+        s for s in scenarios if isinstance(s.scenario_id, str) and "-ex" in s.scenario_id
+    ]
+    assert len(outline_scenarios) == 80
+    assert any(s.scenario_id == "7-ex1" for s in outline_scenarios)
+    assert any(s.scenario_id == "7-ex11" for s in outline_scenarios)
+
+    # Verify placeholder replacement
+    s_7_ex1 = next(s for s in outline_scenarios if s.scenario_id == "7-ex1")
+    assert "<pattern>" not in s_7_ex1.test_query
+    assert "()-[r]-()" in s_7_ex1.test_query
+
+
+def test_tck_expected_error_not_asserted_counts():
+    """Verifies that scenarios declaring expected_error are tracked under EXPECTED_ERROR_NOT_ASSERTED."""
+    report = run_tck_adapter(str(TCK_DIR))
+    assert report["expected_error_not_asserted"] > 0
+    # Match dir alone has 80 outline error examples + plain error scenarios
+    assert report["category_stats"]["match"]["expected_error_not_asserted"] >= 80
+
+    # Total expected_error_not_asserted matches the sum across all categories
+    sum_cat = sum(
+        stats["expected_error_not_asserted"] for stats in report["category_stats"].values()
+    )
+    assert report["expected_error_not_asserted"] == sum_cat
+
+    # Check individual results retain result_category
+    error_results = [
+        r for r in report["results"] if r.result_category == "EXPECTED_ERROR_NOT_ASSERTED"
+    ]
+    assert len(error_results) == report["expected_error_not_asserted"]
+    for r in error_results:
+        assert r.scenario.expected_error is not None

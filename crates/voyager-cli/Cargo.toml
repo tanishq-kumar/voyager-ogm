@@ -3,6 +3,7 @@ name = "voyager-cli"
 description = "Command-line interface, benchmarking runner, and schema tools for Voyager OGM"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -12,11 +13,10 @@ readme = "README.md"
 name = "voyager"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 voyager-core = { workspace = true }
 clap = { workspace = true }
 miette = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }

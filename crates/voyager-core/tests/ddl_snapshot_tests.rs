@@ -271,3 +271,18 @@ fn test_schema_registry_ddl_methods() {
     let pgq_ddl = registry.generate_pgq_ddl("network_pgq").unwrap();
     assert!(pgq_ddl.starts_with("CREATE PROPERTY GRAPH network_pgq"));
 }
+
+#[test]
+fn test_unsupported_constraint_ddl_error() {
+    let node = create_test_node_schema();
+    let rel = create_test_rel_schema();
+
+    assert!(voyager_core::emit_node_constraint_ddl(&node, "age", false).is_err());
+    assert!(voyager_core::emit_node_constraint_ddl(&node, "falkordb", false).is_err());
+    assert!(voyager_core::emit_rel_constraint_ddl(&rel, "age", false).is_err());
+    assert!(voyager_core::emit_rel_constraint_ddl(&rel, "falkordb", false).is_err());
+    assert!(voyager_core::emit_node_drop_constraint_ddl(&node, "age", false).is_err());
+    assert!(voyager_core::emit_node_drop_constraint_ddl(&node, "falkordb", false).is_err());
+    assert!(voyager_core::emit_rel_drop_constraint_ddl(&rel, "age", false).is_err());
+    assert!(voyager_core::emit_rel_drop_constraint_ddl(&rel, "falkordb", false).is_err());
+}
