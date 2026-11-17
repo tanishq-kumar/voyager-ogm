@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import community_compatible_ddl, neo4j_edition
 from neo4j import GraphDatabase
 from voyager_ogm import (
     Field,
@@ -170,8 +171,14 @@ def test_live_neo4j_schema_ddl_creation():
     # Clean any leftover constraints first
     SchemaManager.drop_all(session, User)
 
-    # Create constraints & indexes (Community edition compatible)
-    created = SchemaManager.create_all(session, User, include_type_constraints=False)
+    # Create constraints & indexes. Property-existence constraints are Enterprise-only, so on
+    # the default Community container apply only the statements Community supports.
+    if neo4j_edition(driver) == "enterprise":
+        created = SchemaManager.create_all(session, User, include_type_constraints=False)
+    else:
+        created = community_compatible_ddl(SchemaManager.generate_cypher_ddl(User))
+        for stmt in created:
+            session.execute(stmt)
     assert len(created) >= 3
 
     # Verify constraints in Neo4j catalog

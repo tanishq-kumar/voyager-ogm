@@ -60,6 +60,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from conftest import community_compatible_ddl, neo4j_edition
 from conftest import is_port_open as _is_port_open
 from neo4j import GraphDatabase
 from voyager_ogm import (
@@ -198,8 +199,13 @@ class TestNeo4jLiveMatrix:
     def test_neo4j_live_end_to_end_lifecycle(self, neo4j_driver):
         session = Session(bridge=neo4j_driver, dialect="cypher")
 
-        # 1. Schema DDL: Create Constraints & Indexes
-        SchemaManager.create_all(session, MatrixUser)
+        # 1. Schema DDL: Create Constraints & Indexes. Property-existence constraints are
+        # Enterprise-only, so on the default Community container apply only what it supports.
+        if neo4j_edition(neo4j_driver) == "enterprise":
+            SchemaManager.create_all(session, MatrixUser)
+        else:
+            for stmt in community_compatible_ddl(SchemaManager.generate_cypher_ddl(MatrixUser)):
+                session.execute(stmt)
 
         # 2. Cleanup existing matrix nodes
         with neo4j_driver.session() as s:

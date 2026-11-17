@@ -1,23 +1,32 @@
 # Voyager OGM Multi-Engine Development Stack
 # Pinned tags; override with MEMGRAPH_TAG / AGE_TAG / FALKORDB_TAG. `just up` falls back to :latest if a pin fails to pull.
+#
+# Neo4j defaults to the open-source Community edition (GPLv3, run-only). Enterprise is opt-in and
+# requires YOU to accept Neo4j's licence terms explicitly; nothing here accepts them for you:
+#   NEO4J_EDITION=enterprise NEO4J_ACCEPT_LICENSE_AGREEMENT=eval just up neo4j
+# "eval" = Neo4j's 30-day evaluation agreement (internal evaluation only); "yes" = commercial
+# agreement, only if you hold a Neo4j commercial licence. Without a value, the Enterprise image
+# refuses to start. Each edition keeps its own data volume (Enterprise store formats can't be
+# opened by Community).
 
 services:
   # Neo4j Graph Database (Bolt Protocol)
   neo4j:
-    image: docker.io/library/neo4j:5.26-enterprise
+    image: docker.io/library/neo4j:5.26-${NEO4J_EDITION:-community}
     container_name: voyager-neo4j
     ports:
       - "7687:7687"
     environment:
-      - NEO4J_ACCEPT_LICENSE_AGREEMENT=yes
+      # Ignored by Community; Enterprise only starts if you set it yourself (see header).
+      - NEO4J_ACCEPT_LICENSE_AGREEMENT=${NEO4J_ACCEPT_LICENSE_AGREEMENT:-}
       - NEO4J_AUTH=neo4j/voyagerpass123
       - NEO4J_PLUGINS=["apoc"]
       - NEO4J_dbms_memory_pagecache_size=256M
       - NEO4J_dbms_memory_heap_initial__size=512M
       - NEO4J_dbms_memory_heap_max__size=1G
     volumes:
-      - neo4j_data:/data
-      - neo4j_logs:/logs
+      - neo4j_data_${NEO4J_EDITION:-community}:/data
+      - neo4j_logs_${NEO4J_EDITION:-community}:/logs
     healthcheck:
       test:
         [
@@ -100,8 +109,10 @@ services:
       retries: 5
 
 volumes:
-  neo4j_data:
-  neo4j_logs:
+  neo4j_data_community:
+  neo4j_logs_community:
+  neo4j_data_enterprise:
+  neo4j_logs_enterprise:
   memgraph_data:
   memgraph_logs:
   age_data:
