@@ -1,6 +1,5 @@
 # Rust
 /target
-Cargo.lock
 **/*.rs.bk
 *.pdb
 
@@ -60,8 +59,13 @@ tests/conformance/
 test_data/conformance/
 
 .env
+.env.*
+!.env.example
 
 # Benchmark raw data dumps (summary metrics live in benchmarks/latest_summary.csv)
 benchmarks/*.json
 !benchmarks/benchmark_summary.json
 
+
+# Agent context board (local scratch for AI agents)
+.context/
