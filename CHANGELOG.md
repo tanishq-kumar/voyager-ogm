@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Added
+- **Embedded Relate Database Bridge (#157)**:
+  - Added `RelateBridge` and `AsyncRelateBridge` in `voyager_ogm.bridge`, exported from `voyager_ogm`, for in-process, zero-network execution against embedded Relate databases (`relatedb.ai`).
+  - Added auto-instantiation support in `create_bridge()` for `relate://` and `relatedb://` URI schemes and connection instance auto-detection.
+  - Added the `relate` optional dependency extra (`pip install "voyager-ogm[relate]"`, `relate-db>=1.0.0`).
+  - Added Relate-compatible parameter and result adaptation: spatial `Point` and duration conversion, nested dict/list parameter mapping, and node/relationship record normalization.
+  - Added sync and async bulk batch ingestion plus `ping()` liveness and explicit connection close on both bridges.
+  - Added a Relate compatibility test suite covering schema creation, CRUD, traversal, aggregation, and parameter round-trips.
 - **NetworkX Graph Analytics Export Bridge (#117)**:
   - Added direct, high-performance `.to_networkx()` graph export on `ExecutionResult`, `QueryResult`, and top-level module `voyager_ogm.to_networkx`.
   - Added fluent `session.query(...)` and `async_session.query(...)` builders supporting direct `.where(...).to_networkx()` chaining.
