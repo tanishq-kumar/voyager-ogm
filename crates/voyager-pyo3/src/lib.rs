@@ -593,60 +593,60 @@ fn py_to_node_handle(builder: &mut QueryBuilder, val: &Bound<'_, PyAny>) -> PyRe
     py_to_node_handle_depth(builder, val, 0)
 }
 
-fn py_to_node_handle_depth(
-    builder: &mut QueryBuilder,
-    val: &Bound<'_, PyAny>,
-    depth: usize,
-) -> PyResult<NodeHandle> {
-    if depth > MAX_AST_DEPTH {
-        return Err(PyValueError::new_err(format!(
-            "Maximum AST expression recursion depth exceeded ({MAX_AST_DEPTH}). Query is too deeply nested.",
-        )));
-    }
-    // Direct Native AST Expression fast-path:
+#[inline(never)]
+fn try_import_native_ast(builder: &mut QueryBuilder, val: &Bound<'_, PyAny>) -> Option<NodeHandle> {
     if let Ok(py_expr) = val.cast::<PyAstExpr>() {
         let borrowed = py_expr.borrow();
-        return Ok(builder.import_subarena(borrowed.arena.clone(), borrowed.handle));
+        return Some(builder.import_subarena(borrowed.arena.clone(), borrowed.handle));
     }
     if let Ok(native_attr) = val.getattr("_native_expr")
         && let Ok(py_expr) = native_attr.cast::<PyAstExpr>()
     {
         let borrowed = py_expr.borrow();
-        return Ok(builder.import_subarena(borrowed.arena.clone(), borrowed.handle));
+        return Some(builder.import_subarena(borrowed.arena.clone(), borrowed.handle));
     }
-    if let Ok(dict) = val.cast::<PyDict>() {
-        if let Some(ver_item) = dict.get_item("spec_version")? {
-            let ver: u32 = ver_item.extract().map_err(|_| {
-                make_voyager_err(
-                    voyager_core::ErrorCode::InvalidSpec,
-                    "Invalid 'spec_version' in expression dictionary: expected integer 1.",
-                )
-            })?;
-            if ver != 1 {
-                return Err(make_voyager_err(
-                    voyager_core::ErrorCode::InvalidSpec,
-                    format!(
-                        "Unsupported expression spec_version: {ver}. Supported major versions: 1."
-                    ),
-                ));
-            }
+    None
+}
+
+#[inline(never)]
+fn handle_dict_expr(
+    builder: &mut QueryBuilder,
+    dict: &Bound<'_, PyDict>,
+    depth: usize,
+) -> PyResult<NodeHandle> {
+    if let Some(ver_item) = dict.get_item("spec_version")? {
+        let ver: u32 = ver_item.extract().map_err(|_| {
+            make_voyager_err(
+                voyager_core::ErrorCode::InvalidSpec,
+                "Invalid 'spec_version' in expression dictionary: expected integer 1.",
+            )
+        })?;
+        if ver != 1 {
+            return Err(make_voyager_err(
+                voyager_core::ErrorCode::InvalidSpec,
+                format!("Unsupported expression spec_version: {ver}. Supported major versions: 1."),
+            ));
         }
-        if let Some(inner_expr) = dict.get_item("expr")? {
-            return py_to_node_handle_depth(builder, &inner_expr, depth + 1);
-        }
-        let dict_cloned = dict.clone();
-        let mut subquery_err: Option<PyErr> = None;
-        let sub_h = builder.subquery(|q| {
-            if let Err(e) = build_query_from_spec_internal(q, &dict_cloned) {
-                subquery_err = Some(e);
-            }
-        });
-        if let Some(e) = subquery_err {
-            return Err(e);
-        }
-        return Ok(sub_h);
     }
-    let tuple_opt = if let Ok(tuple) = val.cast::<PyTuple>() {
+    if let Some(inner_expr) = dict.get_item("expr")? {
+        return py_to_node_handle_depth(builder, &inner_expr, depth + 1);
+    }
+    let dict_cloned = dict.clone();
+    let mut subquery_err: Option<PyErr> = None;
+    let sub_h = builder.subquery(|q| {
+        if let Err(e) = build_query_from_spec_internal(q, &dict_cloned) {
+            subquery_err = Some(e);
+        }
+    });
+    if let Some(e) = subquery_err {
+        return Err(e);
+    }
+    Ok(sub_h)
+}
+
+#[inline(never)]
+fn extract_expr_tuple<'a>(val: &Bound<'a, PyAny>) -> Option<Bound<'a, PyTuple>> {
+    if let Ok(tuple) = val.cast::<PyTuple>() {
         Some(tuple.clone())
     } else if let Ok(list) = val.cast::<PyList>() {
         if let Ok(first) = list.get_item(0)
@@ -659,8 +659,202 @@ fn py_to_node_handle_depth(
         }
     } else {
         None
+    }
+}
+
+#[inline(never)]
+fn handle_prop_tuple(
+    builder: &mut QueryBuilder,
+    tuple: &Bound<'_, PyTuple>,
+) -> PyResult<NodeHandle> {
+    let var: String = tuple.get_item(1)?.extract()?;
+    let prop: String = tuple.get_item(2)?.extract()?;
+    Ok(builder.prop(var, prop))
+}
+
+#[inline(never)]
+fn handle_ident_tuple(
+    builder: &mut QueryBuilder,
+    tuple: &Bound<'_, PyTuple>,
+) -> PyResult<NodeHandle> {
+    let name: String = tuple.get_item(1)?.extract()?;
+    Ok(builder.ident(name))
+}
+
+#[inline(never)]
+fn handle_param_tuple(
+    builder: &mut QueryBuilder,
+    tuple: &Bound<'_, PyTuple>,
+) -> PyResult<NodeHandle> {
+    let name: String = tuple.get_item(1)?.extract()?;
+    Ok(builder.param(name))
+}
+
+#[inline(never)]
+fn handle_lit_tuple(
+    builder: &mut QueryBuilder,
+    tuple: &Bound<'_, PyTuple>,
+) -> PyResult<NodeHandle> {
+    let lit = py_to_literal(&tuple.get_item(1)?)?;
+    Ok(builder.literal(lit))
+}
+
+#[inline(never)]
+fn handle_fn_tuple(
+    builder: &mut QueryBuilder,
+    tuple: &Bound<'_, PyTuple>,
+    depth: usize,
+) -> PyResult<NodeHandle> {
+    let name: String = tuple.get_item(1)?.extract()?;
+    let args_py = tuple.get_item(2)?;
+    let args_list = args_py.cast::<PyList>()?;
+    let mut arg_handles = Vec::with_capacity(args_list.len());
+    for arg in args_list {
+        arg_handles.push(py_to_node_handle_depth(builder, &arg, depth + 1)?);
+    }
+    Ok(builder.function(name, arg_handles))
+}
+
+#[inline(never)]
+fn handle_case_tuple(
+    builder: &mut QueryBuilder,
+    tuple: &Bound<'_, PyTuple>,
+    depth: usize,
+) -> PyResult<NodeHandle> {
+    let op_item = tuple.get_item(1)?;
+    let operand = if op_item.is_none() {
+        None
+    } else {
+        Some(py_to_node_handle_depth(builder, &op_item, depth + 1)?)
     };
-    if let Some(tuple) = tuple_opt {
+    let branches_list = tuple.get_item(2)?.cast::<PyList>()?.clone();
+    let mut branches = Vec::with_capacity(branches_list.len());
+    for item in &branches_list {
+        let branch_tuple = item.cast::<PyTuple>()?;
+        let w = py_to_node_handle_depth(builder, &branch_tuple.get_item(0)?, depth + 1)?;
+        let t = py_to_node_handle_depth(builder, &branch_tuple.get_item(1)?, depth + 1)?;
+        branches.push((w, t));
+    }
+    let else_item = tuple.get_item(3)?;
+    let else_branch = if else_item.is_none() {
+        None
+    } else {
+        Some(py_to_node_handle_depth(builder, &else_item, depth + 1)?)
+    };
+    Ok(builder.case_when(operand, branches, else_branch))
+}
+
+#[inline(never)]
+fn handle_list_comp_tuple(
+    builder: &mut QueryBuilder,
+    tuple: &Bound<'_, PyTuple>,
+    depth: usize,
+) -> PyResult<NodeHandle> {
+    let var: String = tuple.get_item(1)?.extract()?;
+    let list_h = py_to_node_handle_depth(builder, &tuple.get_item(2)?, depth + 1)?;
+    let wh_item = tuple.get_item(3)?;
+    let where_filter = if wh_item.is_none() {
+        None
+    } else {
+        Some(py_to_node_handle_depth(builder, &wh_item, depth + 1)?)
+    };
+    let map_item = tuple.get_item(4)?;
+    let map_expr = if map_item.is_none() {
+        None
+    } else {
+        Some(py_to_node_handle_depth(builder, &map_item, depth + 1)?)
+    };
+    Ok(builder.list_comprehension(var, list_h, where_filter, map_expr))
+}
+
+#[inline(never)]
+fn handle_pattern_comp_tuple(
+    builder: &mut QueryBuilder,
+    tuple: &Bound<'_, PyTuple>,
+    depth: usize,
+) -> PyResult<NodeHandle> {
+    let path_spec = tuple.get_item(1)?;
+    let path_h = build_path_from_py(builder, &path_spec)?;
+    let wh_item = tuple.get_item(2)?;
+    let where_filter = if wh_item.is_none() {
+        None
+    } else {
+        Some(py_to_node_handle_depth(builder, &wh_item, depth + 1)?)
+    };
+    let proj_h = py_to_node_handle_depth(builder, &tuple.get_item(3)?, depth + 1)?;
+    Ok(builder.pattern_comprehension(path_h, where_filter, proj_h))
+}
+
+#[inline(never)]
+fn handle_exists_tuple(
+    builder: &mut QueryBuilder,
+    tuple: &Bound<'_, PyTuple>,
+) -> PyResult<NodeHandle> {
+    let sub_spec = tuple.get_item(1)?;
+    let sub_h = build_subquery_from_py(builder, &sub_spec)?;
+    Ok(builder.exists_subquery(sub_h))
+}
+
+#[inline(never)]
+fn handle_count_tuple(
+    builder: &mut QueryBuilder,
+    tuple: &Bound<'_, PyTuple>,
+) -> PyResult<NodeHandle> {
+    let sub_spec = tuple.get_item(1)?;
+    let sub_h = build_subquery_from_py(builder, &sub_spec)?;
+    Ok(builder.count_subquery(sub_h))
+}
+
+#[inline(never)]
+fn handle_list_literal_tuple(
+    builder: &mut QueryBuilder,
+    tuple: &Bound<'_, PyTuple>,
+    depth: usize,
+) -> PyResult<NodeHandle> {
+    let items_list = tuple.get_item(1)?.cast::<PyList>()?.clone();
+    let mut item_handles = Vec::with_capacity(items_list.len());
+    for item in &items_list {
+        item_handles.push(py_to_node_handle_depth(builder, &item, depth + 1)?);
+    }
+    Ok(builder.list_literal(item_handles))
+}
+
+#[inline(never)]
+fn handle_literal_fallback(
+    builder: &mut QueryBuilder,
+    val: &Bound<'_, PyAny>,
+) -> PyResult<NodeHandle> {
+    if let Ok(lit) = py_to_literal(val) {
+        Ok(builder.literal(lit))
+    } else {
+        Err(make_voyager_err(
+            voyager_core::ErrorCode::InvalidSpec,
+            format!(
+                "Cannot convert Python object to AST node handle: {}",
+                val.get_type()
+            ),
+        ))
+    }
+}
+
+fn py_to_node_handle_depth(
+    builder: &mut QueryBuilder,
+    val: &Bound<'_, PyAny>,
+    depth: usize,
+) -> PyResult<NodeHandle> {
+    if depth > MAX_AST_DEPTH {
+        return Err(PyValueError::new_err(format!(
+            "Maximum AST expression recursion depth exceeded ({MAX_AST_DEPTH}). Query is too deeply nested.",
+        )));
+    }
+    // Direct Native AST Expression fast-path:
+    if let Some(h) = try_import_native_ast(builder, val) {
+        return Ok(h);
+    }
+    if let Ok(dict) = val.cast::<PyDict>() {
+        return handle_dict_expr(builder, dict, depth);
+    }
+    if let Some(tuple) = extract_expr_tuple(val) {
         if tuple.is_empty() {
             return Err(make_voyager_err(
                 voyager_core::ErrorCode::InvalidClause,
@@ -669,23 +863,10 @@ fn py_to_node_handle_depth(
         }
         let tag: String = tuple.get_item(0)?.extract()?;
         match tag.as_str() {
-            "prop" => {
-                let var: String = tuple.get_item(1)?.extract()?;
-                let prop: String = tuple.get_item(2)?.extract()?;
-                Ok(builder.prop(var, prop))
-            }
-            "ident" => {
-                let name: String = tuple.get_item(1)?.extract()?;
-                Ok(builder.ident(name))
-            }
-            "param" => {
-                let name: String = tuple.get_item(1)?.extract()?;
-                Ok(builder.param(name))
-            }
-            "lit" | "literal" => {
-                let lit = py_to_literal(&tuple.get_item(1)?)?;
-                Ok(builder.literal(lit))
-            }
+            "prop" => handle_prop_tuple(builder, &tuple),
+            "ident" => handle_ident_tuple(builder, &tuple),
+            "param" => handle_param_tuple(builder, &tuple),
+            "lit" | "literal" => handle_lit_tuple(builder, &tuple),
             "bin" => {
                 let op_str: String = tuple.get_item(1)?.extract()?;
                 let op = parse_binary_op(&op_str)?;
@@ -699,88 +880,13 @@ fn py_to_node_handle_depth(
                 let operand = py_to_node_handle_depth(builder, &tuple.get_item(2)?, depth + 1)?;
                 Ok(builder.unary_expr(op, operand))
             }
-            "fn" | "func" | "call" => {
-                let name: String = tuple.get_item(1)?.extract()?;
-                let args_py = tuple.get_item(2)?;
-                let args_list = args_py.cast::<PyList>()?;
-                let mut arg_handles = Vec::with_capacity(args_list.len());
-                for arg in args_list {
-                    arg_handles.push(py_to_node_handle_depth(builder, &arg, depth + 1)?);
-                }
-                Ok(builder.function(name, arg_handles))
-            }
-            "case" => {
-                let op_item = tuple.get_item(1)?;
-                let operand = if op_item.is_none() {
-                    None
-                } else {
-                    Some(py_to_node_handle_depth(builder, &op_item, depth + 1)?)
-                };
-                let branches_list = tuple.get_item(2)?.cast::<PyList>()?.clone();
-                let mut branches = Vec::with_capacity(branches_list.len());
-                for item in &branches_list {
-                    let branch_tuple = item.cast::<PyTuple>()?;
-                    let w =
-                        py_to_node_handle_depth(builder, &branch_tuple.get_item(0)?, depth + 1)?;
-                    let t =
-                        py_to_node_handle_depth(builder, &branch_tuple.get_item(1)?, depth + 1)?;
-                    branches.push((w, t));
-                }
-                let else_item = tuple.get_item(3)?;
-                let else_branch = if else_item.is_none() {
-                    None
-                } else {
-                    Some(py_to_node_handle_depth(builder, &else_item, depth + 1)?)
-                };
-                Ok(builder.case_when(operand, branches, else_branch))
-            }
-            "list_comp" => {
-                let var: String = tuple.get_item(1)?.extract()?;
-                let list_h = py_to_node_handle_depth(builder, &tuple.get_item(2)?, depth + 1)?;
-                let wh_item = tuple.get_item(3)?;
-                let where_filter = if wh_item.is_none() {
-                    None
-                } else {
-                    Some(py_to_node_handle_depth(builder, &wh_item, depth + 1)?)
-                };
-                let map_item = tuple.get_item(4)?;
-                let map_expr = if map_item.is_none() {
-                    None
-                } else {
-                    Some(py_to_node_handle_depth(builder, &map_item, depth + 1)?)
-                };
-                Ok(builder.list_comprehension(var, list_h, where_filter, map_expr))
-            }
-            "pattern_comp" => {
-                let path_spec = tuple.get_item(1)?;
-                let path_h = build_path_from_py(builder, &path_spec)?;
-                let wh_item = tuple.get_item(2)?;
-                let where_filter = if wh_item.is_none() {
-                    None
-                } else {
-                    Some(py_to_node_handle_depth(builder, &wh_item, depth + 1)?)
-                };
-                let proj_h = py_to_node_handle_depth(builder, &tuple.get_item(3)?, depth + 1)?;
-                Ok(builder.pattern_comprehension(path_h, where_filter, proj_h))
-            }
-            "exists" => {
-                let sub_spec = tuple.get_item(1)?;
-                let sub_h = build_subquery_from_py(builder, &sub_spec)?;
-                Ok(builder.exists_subquery(sub_h))
-            }
-            "count" => {
-                let sub_spec = tuple.get_item(1)?;
-                let sub_h = build_subquery_from_py(builder, &sub_spec)?;
-                Ok(builder.count_subquery(sub_h))
-            }
-            "list" => {
-                let items_list = tuple.get_item(1)?.cast::<PyList>()?.clone();
-                let mut item_handles = Vec::with_capacity(items_list.len());
-                for item in &items_list {
-                    item_handles.push(py_to_node_handle_depth(builder, &item, depth + 1)?);
-                }
-                Ok(builder.list_literal(item_handles))
-            }
+            "fn" | "func" | "call" => handle_fn_tuple(builder, &tuple, depth),
+            "case" => handle_case_tuple(builder, &tuple, depth),
+            "list_comp" => handle_list_comp_tuple(builder, &tuple, depth),
+            "pattern_comp" => handle_pattern_comp_tuple(builder, &tuple, depth),
+            "exists" => handle_exists_tuple(builder, &tuple),
+            "count" => handle_count_tuple(builder, &tuple),
+            "list" => handle_list_literal_tuple(builder, &tuple, depth),
             "alias" => {
                 let inner = tuple.get_item(1)?;
                 py_to_node_handle_depth(builder, &inner, depth + 1)
@@ -790,16 +896,8 @@ fn py_to_node_handle_depth(
                 format!("Unknown expression tuple tag: '{other}'"),
             )),
         }
-    } else if let Ok(lit) = py_to_literal(val) {
-        Ok(builder.literal(lit))
     } else {
-        Err(make_voyager_err(
-            voyager_core::ErrorCode::InvalidSpec,
-            format!(
-                "Cannot convert Python object to AST node handle: {}",
-                val.get_type()
-            ),
-        ))
+        handle_literal_fallback(builder, val)
     }
 }
 

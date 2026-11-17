@@ -87,6 +87,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Breaking:** Removed module-level free functions `unwind()` and `load_csv()` from `voyager_ogm` and `voyager_ogm.query`. Use `Query.unwind()` and `Query.load_csv()`.
 
 ### Fixed
+- **Stack Overflow in Recursion Depth Guards on Windows and macOS (#166)**:
+  - Shrank the per-level stack frames of the RESP parser (`parse_resp_slice`) and the Python AST converter (`py_to_node_handle_depth`) by moving match arms into small helpers, so depth guards trigger before the stack is exhausted on 1 MB (Windows) and 2 MiB (macOS) stacks.
+  - Lowered `MAX_RESP_DEPTH` from 128 to 64, matching `MAX_PACKSTREAM_DEPTH`.
+  - Enabled `opt-level = 1` in the dev profile for `voyager-net` and `voyager-pyo3`.
+  - Depth-guard tests now run on an explicit 1 MB stack on every platform.
 - **Panic Safety on Malformed and Non-ASCII Inputs (#158)**:
   - Eliminated panics on malformed query topologies (such as incomplete `MATCH (`, `MATCH (n)-[`, and `MATCH (n)-[r]->(`) by parsing in byte space with bounds-checked Unicode helpers.
   - Hardened `agtype` string cleaning in `voyager-net` to be UTF-8 safe across multi-byte inputs.

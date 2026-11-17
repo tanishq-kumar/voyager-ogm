@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import threading
 import uuid
 from decimal import Decimal
 
@@ -53,6 +54,31 @@ NEO4J_ONLINE = _is_neo4j_online()
 # ---------------------------------------------------------------------------
 
 
+def _run_with_1mb_stack(target):
+    """Run target callable inside a thread with 1 MB stack size (proving Windows thread condition)."""
+    result = None
+    exception = None
+
+    def worker():
+        nonlocal result, exception
+        try:
+            result = target()
+        except BaseException as exc:
+            exception = exc
+
+    old_stack = threading.stack_size(1024 * 1024)
+    try:
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+    finally:
+        threading.stack_size(old_stack)
+
+    if exception is not None:
+        raise exception
+    return result
+
+
 def test_ast_max_depth_guard_raises_value_error():
     """Verify that deeply nested AST expressions (>256) trigger a controlled PyValueError."""
     nested_spec: tuple = ("lit", 1)
@@ -71,7 +97,7 @@ def test_ast_max_depth_guard_raises_value_error():
     }
 
     with pytest.raises(ValueError, match="Maximum AST expression recursion depth exceeded"):
-        compile_query_from_spec(query_spec, "cypher")
+        _run_with_1mb_stack(lambda: compile_query_from_spec(query_spec, "cypher"))
 
 
 def test_ast_within_depth_limit_succeeds():
@@ -90,7 +116,7 @@ def test_ast_within_depth_limit_succeeds():
         ],
     }
 
-    compiled = compile_query_from_spec(query_spec, "cypher")
+    compiled = _run_with_1mb_stack(lambda: compile_query_from_spec(query_spec, "cypher"))
     assert "MATCH (n:Person)" in compiled["statement"]
     assert "WHERE" in compiled["statement"]
 

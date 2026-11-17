@@ -308,9 +308,9 @@ fn test_resp_allocation_bomb_defense() {
 
 #[test]
 fn test_resp_recursion_depth_limit() {
-    // Construct an array nested 140 levels deep (> MAX_RESP_DEPTH of 128)
+    // Construct an array nested 70 levels deep (> MAX_RESP_DEPTH of 64)
     let mut nested = String::new();
-    for _ in 0..140 {
+    for _ in 0..70 {
         nested.push_str("*1\r\n");
     }
     nested.push_str(":1\r\n");
@@ -324,4 +324,31 @@ fn test_resp_recursion_depth_limit() {
         "Expected nesting depth error, got: {}",
         err_msg
     );
+}
+
+#[test]
+fn test_resp_recursion_depth_limit_on_1mb_stack() {
+    let builder = std::thread::Builder::new().stack_size(1024 * 1024);
+    let handler = builder
+        .spawn(|| {
+            // Construct an array nested 70 levels deep (> MAX_RESP_DEPTH of 64)
+            let mut nested = String::new();
+            for _ in 0..70 {
+                nested.push_str("*1\r\n");
+            }
+            nested.push_str(":1\r\n");
+
+            let mut buf = BytesMut::from(nested.as_bytes());
+            let result = RespValue::parse(&mut buf);
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("maximum nesting depth"),
+                "Expected nesting depth error, got: {}",
+                err_msg
+            );
+        })
+        .expect("failed to spawn thread with 1MB stack");
+
+    handler.join().expect("thread panicked or overflowed stack");
 }
