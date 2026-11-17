@@ -103,7 +103,15 @@ impl<C: AsyncConnection + 'static> PoolInner<C> {
                         current_conn = c;
                         current_permit = p;
                     }
-                    _ => unreachable!(),
+                    Err(Handover::Permit(p)) => {
+                        // `oneshot::Sender::send` returns the value it was given, so this
+                        // arm is unreachable today; recover instead of panicking, since this
+                        // runs on the `Drop for PooledConnection` path where a panic can abort.
+                        warn!(
+                            "Handover invariant violated: permit returned while handing over connection; dropping stray permit"
+                        );
+                        drop(p);
+                    }
                 }
             }
         }
@@ -132,7 +140,27 @@ impl<C: AsyncConnection + 'static> PoolInner<C> {
                         Err(Handover::Permit(ret_p)) => {
                             current_permit = ret_p;
                         }
-                        _ => unreachable!(),
+                        Err(Handover::Connection(returned_pooled)) => {
+                            // `oneshot::Sender::send` returns the value it was given, so
+                            // this arm is unreachable today; recover instead of panicking
+                            // by recycling the connection to the idle queue (same recovery
+                            // as `return_connection`), since this runs on Drop paths.
+                            warn!(
+                                "Handover invariant violated: connection returned while handing over permit; recycling connection to idle queue"
+                            );
+                            let created_at = returned_pooled.created_at;
+                            let (conn, pooled_permit) = returned_pooled.into_parts();
+                            if let Some(conn) = conn {
+                                let now = Instant::now();
+                                self.idle_queue.lock().push_back(IdleEntry {
+                                    conn,
+                                    created_at,
+                                    last_used_at: now,
+                                });
+                            }
+                            drop(pooled_permit);
+                            return;
+                        }
                     }
                 }
             }

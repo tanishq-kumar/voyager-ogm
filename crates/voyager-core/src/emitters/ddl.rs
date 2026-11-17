@@ -1273,7 +1273,15 @@ pub fn emit_node_constraint_ddl(
     let primary_label = node.primary_label();
 
     match ddl_dialect {
-        DdlDialect::FalkorDb | DdlDialect::Age => unreachable!(),
+        DdlDialect::FalkorDb | DdlDialect::Age => {
+            // Defensive: `ensure_ddl_supported` rejects FalkorDB/Apache AGE for
+            // constraint operations before this match runs; return an error instead of
+            // panicking in case that cross-function invariant is ever relaxed.
+            return Err(Error::UnsupportedDialect {
+                dialect: dialect.to_string(),
+                feature: "constraint DDL queries".to_string(),
+            });
+        }
         DdlDialect::Memgraph => {
             for field in node.fields.values() {
                 let db_name = &field.name;
@@ -1341,7 +1349,15 @@ pub fn emit_rel_constraint_ddl(
     let type_name = &rel.type_name;
 
     match ddl_dialect {
-        DdlDialect::FalkorDb | DdlDialect::Age => unreachable!(),
+        DdlDialect::FalkorDb | DdlDialect::Age => {
+            // Defensive: `ensure_ddl_supported` rejects FalkorDB/Apache AGE for
+            // constraint operations before this match runs; return an error instead of
+            // panicking in case that cross-function invariant is ever relaxed.
+            return Err(Error::UnsupportedDialect {
+                dialect: dialect.to_string(),
+                feature: "constraint DDL queries".to_string(),
+            });
+        }
         DdlDialect::Memgraph => {
             // Memgraph does not support edge constraints; no-op.
         }
@@ -1648,7 +1664,15 @@ pub fn emit_node_drop_constraint_ddl(
     let primary_label = node.primary_label();
 
     match ddl_dialect {
-        DdlDialect::FalkorDb | DdlDialect::Age => unreachable!(),
+        DdlDialect::FalkorDb | DdlDialect::Age => {
+            // Defensive: `ensure_ddl_supported` rejects FalkorDB/Apache AGE for
+            // constraint operations before this match runs; return an error instead of
+            // panicking in case that cross-function invariant is ever relaxed.
+            return Err(Error::UnsupportedDialect {
+                dialect: dialect.to_string(),
+                feature: "constraint DDL queries".to_string(),
+            });
+        }
         DdlDialect::Memgraph => {
             for field in node.fields.values() {
                 let db_name = &field.name;
@@ -1708,7 +1732,15 @@ pub fn emit_rel_drop_constraint_ddl(
     let type_name = &rel.type_name;
 
     match ddl_dialect {
-        DdlDialect::FalkorDb | DdlDialect::Age => unreachable!(),
+        DdlDialect::FalkorDb | DdlDialect::Age => {
+            // Defensive: `ensure_ddl_supported` rejects FalkorDB/Apache AGE for
+            // constraint operations before this match runs; return an error instead of
+            // panicking in case that cross-function invariant is ever relaxed.
+            return Err(Error::UnsupportedDialect {
+                dialect: dialect.to_string(),
+                feature: "constraint DDL queries".to_string(),
+            });
+        }
         DdlDialect::Memgraph => {
             // Memgraph does not support edge constraints; no-op.
         }
