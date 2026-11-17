@@ -28,7 +28,7 @@ class TckScenario:
 
     category: str
     file_name: str
-    scenario_id: int
+    scenario_id: int | str
     name: str
     setup_queries: list[str] = field(default_factory=list)
     test_query: str = ""
@@ -48,6 +48,7 @@ class ScenarioResult:
     columns_found: list[str] = field(default_factory=list)
     error: str | None = None
     failure_category: str | None = None
+    result_category: str = "PASS"
 
 
 def parse_feature_file(file_path: str) -> list[TckScenario]:
@@ -59,14 +60,15 @@ def parse_feature_file(file_path: str) -> list[TckScenario]:
     with open(file_path, encoding="utf-8") as f:
         content = f.read()
 
-    # Split into individual scenarios: "Scenario: [id] Name"
-    scenario_chunks = re.split(r"\n\s*Scenario:\s*\[(\d+)\]\s*", content)
-    if len(scenario_chunks) < 2:
+    # Split into individual scenarios: "Scenario: [id] Name" or "Scenario Outline: [id] Name"
+    scenario_chunks = re.split(r"\n\s*(Scenario(?:\s+Outline)?):\s*\[(\d+)\]\s*", content)
+    if len(scenario_chunks) < 4:
         return scenarios
 
-    for i in range(1, len(scenario_chunks), 2):
-        s_id = int(scenario_chunks[i])
-        s_body = scenario_chunks[i + 1]
+    for i in range(1, len(scenario_chunks), 3):
+        kw = scenario_chunks[i]
+        s_id = int(scenario_chunks[i + 1])
+        s_body = scenario_chunks[i + 2]
 
         lines = s_body.strip().split("\n")
         name = lines[0].strip() if lines else f"Scenario {s_id}"
@@ -90,11 +92,14 @@ def parse_feature_file(file_path: str) -> list[TckScenario]:
         if q_match:
             test_query = q_match.group(1).strip()
 
-        # Extract expected errors: e.g. "Then a SyntaxError should be raised"
+        # Extract expected errors: e.g. "Then a SyntaxError should be raised" or "Then an exception condition should be raised: 42000"
         expected_error = None
-        err_match = re.search(r"Then a (\w+Error) should be raised", s_body)
+        err_match = re.search(
+            r"Then (?:a (\w+Error) should be raised|an exception condition should be raised:\s*([0-9A-Za-z]+))",
+            s_body,
+        )
         if err_match:
-            expected_error = err_match.group(1)
+            expected_error = err_match.group(1) or err_match.group(2)
 
         # Extract expected tabular results:
         expected_columns: list[str] = []
@@ -113,7 +118,44 @@ def parse_feature_file(file_path: str) -> list[TckScenario]:
                     row_vals = [val.strip() for val in data_line.strip("|").split("|")]
                     expected_rows.append(row_vals)
 
-        if test_query:
+        if "Outline" in kw:
+            # Expand Scenario Outline: Examples rows
+            examples_match = re.search(r"Examples:\s*\n((?:\s*\|[^\n]+\|\s*\n?)+)", s_body)
+            if examples_match and test_query:
+                ex_text = examples_match.group(1).strip()
+                ex_lines = [ln.strip() for ln in ex_text.split("\n") if ln.strip()]
+                if len(ex_lines) >= 2:
+                    ex_headers = [h.strip() for h in ex_lines[0].strip("|").split("|")]
+                    for k, ex_line in enumerate(ex_lines[1:], 1):
+                        ex_vals = [v.strip() for v in ex_line.strip("|").split("|")]
+                        row_map = dict(zip(ex_headers, ex_vals, strict=False))
+
+                        sub_test_query = test_query
+                        for col, val in row_map.items():
+                            sub_test_query = sub_test_query.replace(f"<{col}>", val)
+
+                        sub_setups = []
+                        for sq in setup_queries:
+                            sub_sq = sq
+                            for col, val in row_map.items():
+                                sub_sq = sub_sq.replace(f"<{col}>", val)
+                            sub_setups.append(sub_sq)
+
+                        sub_name = f"{name} (ex {k})"
+                        scenarios.append(
+                            TckScenario(
+                                category=category,
+                                file_name=file_name,
+                                scenario_id=f"{s_id}-ex{k}",
+                                name=sub_name,
+                                setup_queries=sub_setups,
+                                test_query=sub_test_query,
+                                expected_columns=expected_columns,
+                                expected_rows=expected_rows,
+                                expected_error=expected_error,
+                            )
+                        )
+        elif test_query:
             scenarios.append(
                 TckScenario(
                     category=category,
@@ -216,12 +258,15 @@ def execute_scenario_topology(scenario: TckScenario) -> ScenarioResult:
                 edges_found=len(edges),
                 error="; ".join(violations),
                 failure_category="INVARIANT_VIOLATION",
+                result_category="INVARIANT_VIOLATION",
             )
+        res_cat = "EXPECTED_ERROR_NOT_ASSERTED" if scenario.expected_error is not None else "PASS"
         return ScenarioResult(
             scenario=scenario,
             success=True,
             nodes_found=len(nodes),
             edges_found=len(edges),
+            result_category=res_cat,
         )
     except Exception as e:
         err_str = str(e)
@@ -231,6 +276,7 @@ def execute_scenario_topology(scenario: TckScenario) -> ScenarioResult:
             success=False,
             error=err_str,
             failure_category=cat,
+            result_category=cat,
         )
 
 
@@ -246,6 +292,7 @@ def run_tck_adapter(tck_root: str) -> dict[str, Any]:
     results: list[ScenarioResult] = []
     category_stats: dict[str, dict[str, int]] = {}
     failure_reasons: dict[str, list[tuple[str, str, str]]] = {}
+    expected_error_not_asserted = 0
 
     for s in all_scenarios:
         res = execute_scenario_topology(s)
@@ -253,8 +300,17 @@ def run_tck_adapter(tck_root: str) -> dict[str, Any]:
 
         cat = s.category
         if cat not in category_stats:
-            category_stats[cat] = {"total": 0, "passed": 0, "failed": 0}
+            category_stats[cat] = {
+                "total": 0,
+                "passed": 0,
+                "failed": 0,
+                "expected_error_not_asserted": 0,
+            }
         category_stats[cat]["total"] += 1
+
+        if res.result_category == "EXPECTED_ERROR_NOT_ASSERTED":
+            expected_error_not_asserted += 1
+            category_stats[cat]["expected_error_not_asserted"] += 1
 
         if res.success:
             category_stats[cat]["passed"] += 1
@@ -275,6 +331,7 @@ def run_tck_adapter(tck_root: str) -> dict[str, Any]:
         "passed": passed,
         "failed": failed,
         "pass_rate": pass_rate,
+        "expected_error_not_asserted": expected_error_not_asserted,
         "category_stats": category_stats,
         "failure_reasons": failure_reasons,
         "results": results,
@@ -296,15 +353,23 @@ def main() -> None:
     report = run_tck_adapter(opencypher_dir)
 
     print("\nOverall Topology Invariant Extraction:")
-    print(f"  Total Scenarios Evaluated : {report['total']}")
-    print(f"  Passed                    : {report['passed']} ({report['pass_rate']:.1f}%)")
-    print(f"  Failed                    : {report['failed']} ({100 - report['pass_rate']:.1f}%)")
+    print(f"  Total Scenarios Evaluated       : {report['total']}")
+    print(f"  Passed                          : {report['passed']} ({report['pass_rate']:.1f}%)")
+    print(f"  Expected Error Not Asserted     : {report['expected_error_not_asserted']}")
+    print(
+        f"  Failed                          : {report['failed']} ({100 - report['pass_rate']:.1f}%)"
+    )
 
     print("\nCategory Breakdown:")
-    print(f"  {'Category':<22} | {'Total':<8} | {'Passed':<8} | {'Failed':<8} | {'Pass Rate':<10}")
-    print("  " + "-" * 64)
+    print(
+        f"  {'Category':<22} | {'Total':<8} | {'Passed':<8} | {'ExpErrNA':<8} | {'Failed':<8} | {'Pass Rate':<10}"
+    )
+    print("  " + "-" * 75)
     for cat, stats in sorted(report["category_stats"].items()):
         rate = (stats["passed"] / stats["total"] * 100) if stats["total"] > 0 else 0.0
+        print(
+            f"  {cat:<22} | {stats['total']:<8} | {stats['passed']:<8} | {stats['expected_error_not_asserted']:<8} | {stats['failed']:<8} | {rate:>6.1f}%"
+        )
         print(
             f"  {cat:<22} | {stats['total']:<8} | {stats['passed']:<8} | {stats['failed']:<8} | {rate:>6.1f}%"
         )

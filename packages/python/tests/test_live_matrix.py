@@ -60,6 +60,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from conftest import community_compatible_ddl, neo4j_edition
 from conftest import is_port_open as _is_port_open
 from neo4j import GraphDatabase
 from voyager_ogm import (
@@ -170,42 +171,41 @@ class TestNeo4jLiveMatrix:
     def neo4j_driver(self):
         if not _is_port_open("127.0.0.1", 7687):
             pytest.skip("Neo4j container not available on port 7687")
-        uri = os.getenv("NEO4J_ENTERPRISE_URI", "bolt://127.0.0.1:7687")
-        user = os.getenv("NEO4J_ENTERPRISE_USER", "neo4j")
-        configured_password = os.getenv("NEO4J_ENTERPRISE_PASSWORD") or os.getenv("NEO4J_PASSWORD")
-        passwords = (
-            [configured_password] if configured_password else ["voyex1234", "voyagerpass123"]
-        )
-        driver = None
-        last_err = None
-        for pwd in passwords:
-            auth = (user, pwd)
-            try:
-                from voyager_ogm import NativeClient
+        uri = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
+        user = os.getenv("NEO4J_USER", "neo4j")
+        password = os.getenv("NEO4J_PASSWORD", "voyagerpass123")
+        auth = (user, password)
+        try:
+            from urllib.parse import urlparse
 
-                c = NativeClient(
-                    f"bolt://{auth[0]}:{auth[1]}@127.0.0.1:7687?connect_timeout=2",
-                    min_idle=1,
-                    max_size=2,
-                )
-                c.ping_sync()
-                c.close()
-                d = GraphDatabase.driver(uri, auth=auth, connection_timeout=2.0)
-                d.verify_connectivity()
-                driver = d
-                break
-            except Exception as e:
-                last_err = e
-        if driver is None:
-            pytest.skip(f"Neo4j container not available on port 7687: {last_err}")
+            from voyager_ogm import NativeClient
+
+            parsed = urlparse(uri)
+            netloc = parsed.netloc or "127.0.0.1:7687"
+            c = NativeClient(
+                f"bolt://{auth[0]}:{auth[1]}@{netloc}?connect_timeout=2",
+                min_idle=1,
+                max_size=2,
+            )
+            c.ping_sync()
+            c.close()
+            driver = GraphDatabase.driver(uri, auth=auth, connection_timeout=2.0)
+            driver.verify_connectivity()
+        except Exception as e:
+            pytest.skip(f"Neo4j container not available on port 7687: {e}")
         yield driver
         driver.close()
 
     def test_neo4j_live_end_to_end_lifecycle(self, neo4j_driver):
         session = Session(bridge=neo4j_driver, dialect="cypher")
 
-        # 1. Schema DDL: Create Constraints & Indexes
-        SchemaManager.create_all(session, MatrixUser)
+        # 1. Schema DDL: Create Constraints & Indexes. Property-existence constraints are
+        # Enterprise-only, so on the default Community container apply only what it supports.
+        if neo4j_edition(neo4j_driver) == "enterprise":
+            SchemaManager.create_all(session, MatrixUser)
+        else:
+            for stmt in community_compatible_ddl(SchemaManager.generate_cypher_ddl(MatrixUser)):
+                session.execute(stmt)
 
         # 2. Cleanup existing matrix nodes
         with neo4j_driver.session() as s:

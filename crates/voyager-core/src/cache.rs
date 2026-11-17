@@ -231,4 +231,46 @@ mod tests {
         assert_eq!(m.evictions, 1);
         assert!(m.hit_ratio() > 0.7);
     }
+
+    #[test]
+    fn test_query_cache_clear_and_metrics() {
+        let cache = CompiledQueryCache::new(2);
+        let q = CompiledQuery::new("MATCH (n) RETURN n".into(), HashMap::new());
+        cache.put("k1".into(), q.clone());
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get("k1"), Some(q));
+        assert!(cache.get("k2").is_none());
+
+        cache.clear();
+        assert_eq!(cache.len(), 0);
+        assert!(cache.is_empty());
+        let m = cache.metrics();
+        assert_eq!(m.hits, 0);
+        assert_eq!(m.misses, 0);
+        assert_eq!(m.evictions, 0);
+        assert_eq!(m.len, 0);
+    }
+
+    #[test]
+    fn test_query_cache_periodic_maintenance() {
+        let cache = CompiledQueryCache::new(2);
+        let q = CompiledQuery::new("MATCH (n) RETURN n".into(), HashMap::new());
+        cache.put("k1".into(), q.clone());
+        cache.put("k2".into(), q.clone());
+
+        // Repeatedly hit k1 and k2 to generate duplicate queue entries (> capacity * 4 = 8)
+        for _ in 0..10 {
+            assert!(cache.get("k1").is_some());
+            assert!(cache.get("k2").is_some());
+        }
+
+        // Trigger maintenance via put
+        let q3 = CompiledQuery::new("MATCH (m) RETURN m".into(), HashMap::new());
+        cache.put("k3".into(), q3.clone());
+
+        assert_eq!(cache.len(), 2);
+        assert!(cache.get("k3").is_some());
+        assert!(cache.get("k2").is_some());
+        assert!(cache.get("k1").is_none()); // k1 was LRU before k2 accesses
+    }
 }
