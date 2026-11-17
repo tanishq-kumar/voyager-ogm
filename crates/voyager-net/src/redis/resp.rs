@@ -13,7 +13,7 @@ use std::fmt;
 use crate::error::{NetError, Result};
 
 /// Maximum recursion depth allowed when parsing nested aggregate structures (Arrays, Maps, Sets).
-pub const MAX_RESP_DEPTH: usize = 128;
+pub const MAX_RESP_DEPTH: usize = 64;
 
 /// Maximum allowed collection length for Arrays, Maps, Sets, and Pushes to prevent allocation bombs.
 pub const MAX_RESP_COLLECTION_LEN: usize = 1_000_000;
@@ -350,6 +350,449 @@ fn parse_line(src: &[u8]) -> Option<(&[u8], usize)> {
     Some((line, crlf_idx + 2))
 }
 
+#[inline(never)]
+fn parse_simple_string_slice(rest: &[u8]) -> Result<Option<(RespValue, usize)>> {
+    match parse_line(rest) {
+        Some((line, consumed)) => {
+            let s = std::str::from_utf8(line).map_err(|e| {
+                NetError::ProtocolError(format!("Invalid UTF-8 simple string: {}", e))
+            })?;
+            Ok(Some((RespValue::SimpleString(s.to_string()), consumed + 1)))
+        }
+        None => Ok(None),
+    }
+}
+
+#[inline(never)]
+fn parse_error_slice(rest: &[u8]) -> Result<Option<(RespValue, usize)>> {
+    match parse_line(rest) {
+        Some((line, consumed)) => {
+            let s = std::str::from_utf8(line).map_err(|e| {
+                NetError::ProtocolError(format!("Invalid UTF-8 error string: {}", e))
+            })?;
+            Ok(Some((RespValue::Error(s.to_string()), consumed + 1)))
+        }
+        None => Ok(None),
+    }
+}
+
+#[inline(never)]
+fn parse_integer_slice(rest: &[u8]) -> Result<Option<(RespValue, usize)>> {
+    match parse_line(rest) {
+        Some((line, consumed)) => {
+            let line_str = std::str::from_utf8(line).map_err(|e| {
+                NetError::ProtocolError(format!("Invalid UTF-8 integer string: {}", e))
+            })?;
+            let num = line_str.parse::<i64>().map_err(|e| {
+                NetError::ProtocolError(format!("Malformed RESP integer '{}': {}", line_str, e))
+            })?;
+            Ok(Some((RespValue::Integer(num), consumed + 1)))
+        }
+        None => Ok(None),
+    }
+}
+
+#[inline(never)]
+fn parse_bulk_string_slice(rest: &[u8]) -> Result<Option<(RespValue, usize)>> {
+    match parse_line(rest) {
+        Some((len_line, hdr_consumed)) => {
+            let len_str = std::str::from_utf8(len_line).map_err(|e| {
+                NetError::ProtocolError(format!("Invalid bulk string length: {}", e))
+            })?;
+            let len = len_str.parse::<i64>().map_err(|e| {
+                NetError::ProtocolError(format!(
+                    "Malformed bulk string length '{}': {}",
+                    len_str, e
+                ))
+            })?;
+
+            if len < -1 {
+                return Err(NetError::ProtocolError(format!(
+                    "Negative bulk string length: {}",
+                    len
+                )));
+            }
+
+            if len == -1 {
+                // Null bulk string ($-1\r\n)
+                return Ok(Some((RespValue::BulkString(None), hdr_consumed + 1)));
+            }
+
+            let byte_len = len as usize;
+            let payload_start = hdr_consumed;
+            let payload_end = payload_start + byte_len;
+            let total_consumed = payload_end + 2; // +2 for trailing \r\n
+
+            if rest.len() < total_consumed {
+                // Incomplete payload
+                return Ok(None);
+            }
+
+            // Verify trailing \r\n
+            if rest.get(payload_end) != Some(&b'\r') || rest.get(payload_end + 1) != Some(&b'\n') {
+                return Err(NetError::ProtocolError(
+                    "Bulk string payload missing trailing CRLF".to_string(),
+                ));
+            }
+
+            let payload = rest.get(payload_start..payload_end).ok_or_else(|| {
+                NetError::ProtocolError("Incomplete bulk string payload".to_string())
+            })?;
+            let bytes = payload.to_vec();
+            Ok(Some((
+                RespValue::BulkString(Some(bytes)),
+                total_consumed + 1,
+            )))
+        }
+        None => Ok(None),
+    }
+}
+
+#[inline(never)]
+fn parse_null_slice(rest: &[u8]) -> Result<Option<(RespValue, usize)>> {
+    if rest.len() < 2 {
+        return Ok(None);
+    }
+    if rest.starts_with(b"\r\n") {
+        Ok(Some((RespValue::Null, 3)))
+    } else {
+        Err(NetError::ProtocolError(
+            "Malformed RESP3 Null: expected CRLF after '_'".to_string(),
+        ))
+    }
+}
+
+#[inline(never)]
+fn parse_double_slice(rest: &[u8]) -> Result<Option<(RespValue, usize)>> {
+    match parse_line(rest) {
+        Some((line, consumed)) => {
+            let s = std::str::from_utf8(line)
+                .map_err(|e| NetError::ProtocolError(format!("Invalid double string: {}", e)))?;
+            let val = match s {
+                "inf" | "+inf" => f64::INFINITY,
+                "-inf" => f64::NEG_INFINITY,
+                "nan" => f64::NAN,
+                other => other.parse::<f64>().map_err(|e| {
+                    NetError::ProtocolError(format!("Malformed RESP3 double '{}': {}", other, e))
+                })?,
+            };
+            Ok(Some((RespValue::Double(val), consumed + 1)))
+        }
+        None => Ok(None),
+    }
+}
+
+#[inline(never)]
+fn parse_boolean_slice(rest: &[u8]) -> Result<Option<(RespValue, usize)>> {
+    if rest.len() < 3 {
+        return Ok(None);
+    }
+    if rest.get(1..3) == Some(b"\r\n") {
+        let b = match rest.first() {
+            Some(b't') => true,
+            Some(b'f') => false,
+            Some(&other) => {
+                return Err(NetError::ProtocolError(format!(
+                    "Invalid RESP3 boolean character: '{}'",
+                    other as char
+                )));
+            }
+            None => return Ok(None),
+        };
+        Ok(Some((RespValue::Boolean(b), 4)))
+    } else {
+        Err(NetError::ProtocolError(
+            "Malformed RESP3 boolean missing CRLF".to_string(),
+        ))
+    }
+}
+
+#[inline(never)]
+fn parse_blob_error_slice(rest: &[u8]) -> Result<Option<(RespValue, usize)>> {
+    match parse_line(rest) {
+        Some((len_line, hdr_consumed)) => {
+            let len_str = std::str::from_utf8(len_line).map_err(|e| {
+                NetError::ProtocolError(format!("Invalid blob error length: {}", e))
+            })?;
+            let len = len_str.parse::<usize>().map_err(|e| {
+                NetError::ProtocolError(format!("Malformed blob error length '{}': {}", len_str, e))
+            })?;
+
+            let payload_start = hdr_consumed;
+            let payload_end = payload_start + len;
+            let total_consumed = payload_end + 2;
+
+            if rest.len() < total_consumed {
+                return Ok(None);
+            }
+
+            if rest.get(payload_end) != Some(&b'\r') || rest.get(payload_end + 1) != Some(&b'\n') {
+                return Err(NetError::ProtocolError(
+                    "Blob error payload missing trailing CRLF".to_string(),
+                ));
+            }
+
+            let payload = rest.get(payload_start..payload_end).ok_or_else(|| {
+                NetError::ProtocolError("Incomplete blob error payload".to_string())
+            })?;
+            let bytes = payload.to_vec();
+            Ok(Some((RespValue::BlobError(bytes), total_consumed + 1)))
+        }
+        None => Ok(None),
+    }
+}
+
+#[inline(never)]
+fn parse_verbatim_string_slice(rest: &[u8]) -> Result<Option<(RespValue, usize)>> {
+    match parse_line(rest) {
+        Some((len_line, hdr_consumed)) => {
+            let len_str = std::str::from_utf8(len_line)
+                .map_err(|e| NetError::ProtocolError(format!("Invalid verbatim length: {}", e)))?;
+            let len = len_str.parse::<usize>().map_err(|e| {
+                NetError::ProtocolError(format!("Malformed verbatim length '{}': {}", len_str, e))
+            })?;
+
+            if len < 4 {
+                return Err(NetError::ProtocolError(
+                    "Verbatim string length must be at least 4 bytes (format + ':')".to_string(),
+                ));
+            }
+
+            let payload_start = hdr_consumed;
+            let payload_end = payload_start + len;
+            let total_consumed = payload_end + 2;
+
+            if rest.len() < total_consumed {
+                return Ok(None);
+            }
+
+            if rest.get(payload_end) != Some(&b'\r') || rest.get(payload_end + 1) != Some(&b'\n') {
+                return Err(NetError::ProtocolError(
+                    "Verbatim string payload missing trailing CRLF".to_string(),
+                ));
+            }
+
+            let raw = rest.get(payload_start..payload_end).ok_or_else(|| {
+                NetError::ProtocolError("Incomplete verbatim string payload".to_string())
+            })?;
+            if raw.get(3) != Some(&b':') {
+                return Err(NetError::ProtocolError(
+                    "Verbatim string missing ':' after 3-byte format".to_string(),
+                ));
+            }
+
+            let fmt_slice = raw
+                .get(0..3)
+                .ok_or_else(|| NetError::ProtocolError("Incomplete verbatim format".to_string()))?;
+            let mut fmt_bytes = [0u8; 3];
+            fmt_bytes.copy_from_slice(fmt_slice);
+            let text = raw.get(4..).unwrap_or_default().to_vec();
+
+            Ok(Some((
+                RespValue::VerbatimString {
+                    format: fmt_bytes,
+                    text,
+                },
+                total_consumed + 1,
+            )))
+        }
+        None => Ok(None),
+    }
+}
+
+#[inline(never)]
+fn parse_big_number_slice(rest: &[u8]) -> Result<Option<(RespValue, usize)>> {
+    match parse_line(rest) {
+        Some((line, consumed)) => {
+            let s = std::str::from_utf8(line).map_err(|e| {
+                NetError::ProtocolError(format!("Invalid big number string: {}", e))
+            })?;
+            Ok(Some((RespValue::BigNumber(s.to_string()), consumed + 1)))
+        }
+        None => Ok(None),
+    }
+}
+
+#[inline(never)]
+fn parse_array_slice(rest: &[u8], depth: usize) -> Result<Option<(RespValue, usize)>> {
+    match parse_line(rest) {
+        Some((len_line, hdr_consumed)) => {
+            let len_str = std::str::from_utf8(len_line)
+                .map_err(|e| NetError::ProtocolError(format!("Invalid array length: {}", e)))?;
+            let len = len_str.parse::<i64>().map_err(|e| {
+                NetError::ProtocolError(format!("Malformed array length '{}': {}", len_str, e))
+            })?;
+
+            if len < -1 {
+                return Err(NetError::ProtocolError(format!(
+                    "Negative array length: {}",
+                    len
+                )));
+            }
+
+            if len == -1 {
+                // Null array (*-1\r\n)
+                return Ok(Some((RespValue::Array(None), hdr_consumed + 1)));
+            }
+
+            let num_elements = len as usize;
+            if num_elements > MAX_RESP_COLLECTION_LEN {
+                return Err(NetError::ProtocolError(format!(
+                    "Array length {} exceeds maximum permitted collection size of {}",
+                    num_elements, MAX_RESP_COLLECTION_LEN
+                )));
+            }
+            let mut elements = Vec::with_capacity(num_elements.min(1024));
+            let mut offset = hdr_consumed;
+
+            for _ in 0..num_elements {
+                let Some(remaining) = rest.get(offset..) else {
+                    return Ok(None);
+                };
+                match parse_resp_slice(remaining, depth + 1)? {
+                    Some((item, item_consumed)) => {
+                        elements.push(item);
+                        offset += item_consumed;
+                    }
+                    None => return Ok(None),
+                }
+            }
+
+            Ok(Some((RespValue::Array(Some(elements)), offset + 1)))
+        }
+        None => Ok(None),
+    }
+}
+
+#[inline(never)]
+fn parse_map_slice(rest: &[u8], depth: usize) -> Result<Option<(RespValue, usize)>> {
+    match parse_line(rest) {
+        Some((len_line, hdr_consumed)) => {
+            let len_str = std::str::from_utf8(len_line)
+                .map_err(|e| NetError::ProtocolError(format!("Invalid map length: {}", e)))?;
+            let num_pairs = len_str.parse::<usize>().map_err(|e| {
+                NetError::ProtocolError(format!("Malformed map length '{}': {}", len_str, e))
+            })?;
+            if num_pairs > MAX_RESP_COLLECTION_LEN {
+                return Err(NetError::ProtocolError(format!(
+                    "Map length {} exceeds maximum permitted collection size of {}",
+                    num_pairs, MAX_RESP_COLLECTION_LEN
+                )));
+            }
+
+            let mut pairs = Vec::with_capacity(num_pairs.min(1024));
+            let mut offset = hdr_consumed;
+
+            for _ in 0..num_pairs {
+                // Key
+                let Some(rem_key) = rest.get(offset..) else {
+                    return Ok(None);
+                };
+                let key = match parse_resp_slice(rem_key, depth + 1)? {
+                    Some((k, k_consumed)) => {
+                        offset += k_consumed;
+                        k
+                    }
+                    None => return Ok(None),
+                };
+
+                // Value
+                let Some(rem_val) = rest.get(offset..) else {
+                    return Ok(None);
+                };
+                let val = match parse_resp_slice(rem_val, depth + 1)? {
+                    Some((v, v_consumed)) => {
+                        offset += v_consumed;
+                        v
+                    }
+                    None => return Ok(None),
+                };
+
+                pairs.push((key, val));
+            }
+
+            Ok(Some((RespValue::Map(pairs), offset + 1)))
+        }
+        None => Ok(None),
+    }
+}
+
+#[inline(never)]
+fn parse_set_slice(rest: &[u8], depth: usize) -> Result<Option<(RespValue, usize)>> {
+    match parse_line(rest) {
+        Some((len_line, hdr_consumed)) => {
+            let len_str = std::str::from_utf8(len_line)
+                .map_err(|e| NetError::ProtocolError(format!("Invalid set length: {}", e)))?;
+            let num_items = len_str.parse::<usize>().map_err(|e| {
+                NetError::ProtocolError(format!("Malformed set length '{}': {}", len_str, e))
+            })?;
+            if num_items > MAX_RESP_COLLECTION_LEN {
+                return Err(NetError::ProtocolError(format!(
+                    "Set length {} exceeds maximum permitted collection size of {}",
+                    num_items, MAX_RESP_COLLECTION_LEN
+                )));
+            }
+
+            let mut items = Vec::with_capacity(num_items.min(1024));
+            let mut offset = hdr_consumed;
+
+            for _ in 0..num_items {
+                let Some(remaining) = rest.get(offset..) else {
+                    return Ok(None);
+                };
+                match parse_resp_slice(remaining, depth + 1)? {
+                    Some((item, item_consumed)) => {
+                        items.push(item);
+                        offset += item_consumed;
+                    }
+                    None => return Ok(None),
+                }
+            }
+
+            Ok(Some((RespValue::Set(items), offset + 1)))
+        }
+        None => Ok(None),
+    }
+}
+
+#[inline(never)]
+fn parse_push_slice(rest: &[u8], depth: usize) -> Result<Option<(RespValue, usize)>> {
+    match parse_line(rest) {
+        Some((len_line, hdr_consumed)) => {
+            let len_str = std::str::from_utf8(len_line)
+                .map_err(|e| NetError::ProtocolError(format!("Invalid push length: {}", e)))?;
+            let num_items = len_str.parse::<usize>().map_err(|e| {
+                NetError::ProtocolError(format!("Malformed push length '{}': {}", len_str, e))
+            })?;
+            if num_items > MAX_RESP_COLLECTION_LEN {
+                return Err(NetError::ProtocolError(format!(
+                    "Push length {} exceeds maximum permitted collection size of {}",
+                    num_items, MAX_RESP_COLLECTION_LEN
+                )));
+            }
+
+            let mut items = Vec::with_capacity(num_items.min(1024));
+            let mut offset = hdr_consumed;
+
+            for _ in 0..num_items {
+                let Some(remaining) = rest.get(offset..) else {
+                    return Ok(None);
+                };
+                match parse_resp_slice(remaining, depth + 1)? {
+                    Some((item, item_consumed)) => {
+                        items.push(item);
+                        offset += item_consumed;
+                    }
+                    None => return Ok(None),
+                }
+            }
+
+            Ok(Some((RespValue::Push(items), offset + 1)))
+        }
+        None => Ok(None),
+    }
+}
+
 /// Internal slice-based parser returning `Ok(Some((value, total_bytes_consumed)))`.
 fn parse_resp_slice(src: &[u8], depth: usize) -> Result<Option<(RespValue, usize)>> {
     if depth > MAX_RESP_DEPTH {
@@ -363,443 +806,20 @@ fn parse_resp_slice(src: &[u8], depth: usize) -> Result<Option<(RespValue, usize
     };
 
     match type_marker {
-        // Simple String: +<str>\r\n
-        b'+' => match parse_line(rest) {
-            Some((line, consumed)) => {
-                let s = std::str::from_utf8(line).map_err(|e| {
-                    NetError::ProtocolError(format!("Invalid UTF-8 simple string: {}", e))
-                })?;
-                Ok(Some((RespValue::SimpleString(s.to_string()), consumed + 1)))
-            }
-            None => Ok(None),
-        },
-
-        // Simple Error: -<str>\r\n
-        b'-' => match parse_line(rest) {
-            Some((line, consumed)) => {
-                let s = std::str::from_utf8(line).map_err(|e| {
-                    NetError::ProtocolError(format!("Invalid UTF-8 error string: {}", e))
-                })?;
-                Ok(Some((RespValue::Error(s.to_string()), consumed + 1)))
-            }
-            None => Ok(None),
-        },
-
-        // Integer: :<num>\r\n
-        b':' => match parse_line(rest) {
-            Some((line, consumed)) => {
-                let line_str = std::str::from_utf8(line).map_err(|e| {
-                    NetError::ProtocolError(format!("Invalid UTF-8 integer string: {}", e))
-                })?;
-                let num = line_str.parse::<i64>().map_err(|e| {
-                    NetError::ProtocolError(format!("Malformed RESP integer '{}': {}", line_str, e))
-                })?;
-                Ok(Some((RespValue::Integer(num), consumed + 1)))
-            }
-            None => Ok(None),
-        },
-
-        // Bulk String: $<len>\r\n<bytes>\r\n
-        b'$' => match parse_line(rest) {
-            Some((len_line, hdr_consumed)) => {
-                let len_str = std::str::from_utf8(len_line).map_err(|e| {
-                    NetError::ProtocolError(format!("Invalid bulk string length: {}", e))
-                })?;
-                let len = len_str.parse::<i64>().map_err(|e| {
-                    NetError::ProtocolError(format!(
-                        "Malformed bulk string length '{}': {}",
-                        len_str, e
-                    ))
-                })?;
-
-                if len < -1 {
-                    return Err(NetError::ProtocolError(format!(
-                        "Negative bulk string length: {}",
-                        len
-                    )));
-                }
-
-                if len == -1 {
-                    // Null bulk string ($-1\r\n)
-                    return Ok(Some((RespValue::BulkString(None), hdr_consumed + 1)));
-                }
-
-                let byte_len = len as usize;
-                let payload_start = hdr_consumed;
-                let payload_end = payload_start + byte_len;
-                let total_consumed = payload_end + 2; // +2 for trailing \r\n
-
-                if rest.len() < total_consumed {
-                    // Incomplete payload
-                    return Ok(None);
-                }
-
-                // Verify trailing \r\n
-                if rest.get(payload_end) != Some(&b'\r')
-                    || rest.get(payload_end + 1) != Some(&b'\n')
-                {
-                    return Err(NetError::ProtocolError(
-                        "Bulk string payload missing trailing CRLF".to_string(),
-                    ));
-                }
-
-                let payload = rest.get(payload_start..payload_end).ok_or_else(|| {
-                    NetError::ProtocolError("Incomplete bulk string payload".to_string())
-                })?;
-                let bytes = payload.to_vec();
-                Ok(Some((
-                    RespValue::BulkString(Some(bytes)),
-                    total_consumed + 1,
-                )))
-            }
-            None => Ok(None),
-        },
-
-        // Array: *<len>\r\n...
-        b'*' => match parse_line(rest) {
-            Some((len_line, hdr_consumed)) => {
-                let len_str = std::str::from_utf8(len_line)
-                    .map_err(|e| NetError::ProtocolError(format!("Invalid array length: {}", e)))?;
-                let len = len_str.parse::<i64>().map_err(|e| {
-                    NetError::ProtocolError(format!("Malformed array length '{}': {}", len_str, e))
-                })?;
-
-                if len < -1 {
-                    return Err(NetError::ProtocolError(format!(
-                        "Negative array length: {}",
-                        len
-                    )));
-                }
-
-                if len == -1 {
-                    // Null array (*-1\r\n)
-                    return Ok(Some((RespValue::Array(None), hdr_consumed + 1)));
-                }
-
-                let num_elements = len as usize;
-                if num_elements > MAX_RESP_COLLECTION_LEN {
-                    return Err(NetError::ProtocolError(format!(
-                        "Array length {} exceeds maximum permitted collection size of {}",
-                        num_elements, MAX_RESP_COLLECTION_LEN
-                    )));
-                }
-                let mut elements = Vec::with_capacity(num_elements.min(1024));
-                let mut offset = hdr_consumed;
-
-                for _ in 0..num_elements {
-                    let Some(remaining) = rest.get(offset..) else {
-                        return Ok(None);
-                    };
-                    match parse_resp_slice(remaining, depth + 1)? {
-                        Some((item, item_consumed)) => {
-                            elements.push(item);
-                            offset += item_consumed;
-                        }
-                        None => return Ok(None),
-                    }
-                }
-
-                Ok(Some((RespValue::Array(Some(elements)), offset + 1)))
-            }
-            None => Ok(None),
-        },
-
-        // RESP3 Null: _\r\n
-        b'_' => {
-            if rest.len() < 2 {
-                return Ok(None);
-            }
-            if rest.starts_with(b"\r\n") {
-                Ok(Some((RespValue::Null, 3)))
-            } else {
-                Err(NetError::ProtocolError(
-                    "Malformed RESP3 Null: expected CRLF after '_'".to_string(),
-                ))
-            }
-        }
-
-        // RESP3 Double: ,<float>\r\n
-        b',' => match parse_line(rest) {
-            Some((line, consumed)) => {
-                let s = std::str::from_utf8(line).map_err(|e| {
-                    NetError::ProtocolError(format!("Invalid double string: {}", e))
-                })?;
-                let val = match s {
-                    "inf" | "+inf" => f64::INFINITY,
-                    "-inf" => f64::NEG_INFINITY,
-                    "nan" => f64::NAN,
-                    other => other.parse::<f64>().map_err(|e| {
-                        NetError::ProtocolError(format!(
-                            "Malformed RESP3 double '{}': {}",
-                            other, e
-                        ))
-                    })?,
-                };
-                Ok(Some((RespValue::Double(val), consumed + 1)))
-            }
-            None => Ok(None),
-        },
-
-        // RESP3 Boolean: #t\r\n or #f\r\n
-        b'#' => {
-            if rest.len() < 3 {
-                return Ok(None);
-            }
-            if rest.get(1..3) == Some(b"\r\n") {
-                let b = match rest.first() {
-                    Some(b't') => true,
-                    Some(b'f') => false,
-                    Some(&other) => {
-                        return Err(NetError::ProtocolError(format!(
-                            "Invalid RESP3 boolean character: '{}'",
-                            other as char
-                        )));
-                    }
-                    None => return Ok(None),
-                };
-                Ok(Some((RespValue::Boolean(b), 4)))
-            } else {
-                Err(NetError::ProtocolError(
-                    "Malformed RESP3 boolean missing CRLF".to_string(),
-                ))
-            }
-        }
-
-        // RESP3 Blob Error: !<len>\r\n<bytes>\r\n
-        b'!' => match parse_line(rest) {
-            Some((len_line, hdr_consumed)) => {
-                let len_str = std::str::from_utf8(len_line).map_err(|e| {
-                    NetError::ProtocolError(format!("Invalid blob error length: {}", e))
-                })?;
-                let len = len_str.parse::<usize>().map_err(|e| {
-                    NetError::ProtocolError(format!(
-                        "Malformed blob error length '{}': {}",
-                        len_str, e
-                    ))
-                })?;
-
-                let payload_start = hdr_consumed;
-                let payload_end = payload_start + len;
-                let total_consumed = payload_end + 2;
-
-                if rest.len() < total_consumed {
-                    return Ok(None);
-                }
-
-                if rest.get(payload_end) != Some(&b'\r')
-                    || rest.get(payload_end + 1) != Some(&b'\n')
-                {
-                    return Err(NetError::ProtocolError(
-                        "Blob error payload missing trailing CRLF".to_string(),
-                    ));
-                }
-
-                let payload = rest.get(payload_start..payload_end).ok_or_else(|| {
-                    NetError::ProtocolError("Incomplete blob error payload".to_string())
-                })?;
-                let bytes = payload.to_vec();
-                Ok(Some((RespValue::BlobError(bytes), total_consumed + 1)))
-            }
-            None => Ok(None),
-        },
-
-        // RESP3 Verbatim String: =<len>\r\n<fmt>:<bytes>\r\n
-        b'=' => match parse_line(rest) {
-            Some((len_line, hdr_consumed)) => {
-                let len_str = std::str::from_utf8(len_line).map_err(|e| {
-                    NetError::ProtocolError(format!("Invalid verbatim length: {}", e))
-                })?;
-                let len = len_str.parse::<usize>().map_err(|e| {
-                    NetError::ProtocolError(format!(
-                        "Malformed verbatim length '{}': {}",
-                        len_str, e
-                    ))
-                })?;
-
-                if len < 4 {
-                    return Err(NetError::ProtocolError(
-                        "Verbatim string length must be at least 4 bytes (format + ':')"
-                            .to_string(),
-                    ));
-                }
-
-                let payload_start = hdr_consumed;
-                let payload_end = payload_start + len;
-                let total_consumed = payload_end + 2;
-
-                if rest.len() < total_consumed {
-                    return Ok(None);
-                }
-
-                if rest.get(payload_end) != Some(&b'\r')
-                    || rest.get(payload_end + 1) != Some(&b'\n')
-                {
-                    return Err(NetError::ProtocolError(
-                        "Verbatim string payload missing trailing CRLF".to_string(),
-                    ));
-                }
-
-                let raw = rest.get(payload_start..payload_end).ok_or_else(|| {
-                    NetError::ProtocolError("Incomplete verbatim string payload".to_string())
-                })?;
-                if raw.get(3) != Some(&b':') {
-                    return Err(NetError::ProtocolError(
-                        "Verbatim string missing ':' after 3-byte format".to_string(),
-                    ));
-                }
-
-                let fmt_slice = raw.get(0..3).ok_or_else(|| {
-                    NetError::ProtocolError("Incomplete verbatim format".to_string())
-                })?;
-                let mut fmt_bytes = [0u8; 3];
-                fmt_bytes.copy_from_slice(fmt_slice);
-                let text = raw.get(4..).unwrap_or_default().to_vec();
-
-                Ok(Some((
-                    RespValue::VerbatimString {
-                        format: fmt_bytes,
-                        text,
-                    },
-                    total_consumed + 1,
-                )))
-            }
-            None => Ok(None),
-        },
-
-        // RESP3 Big Number: (<num>\r\n
-        b'(' => match parse_line(rest) {
-            Some((line, consumed)) => {
-                let s = std::str::from_utf8(line).map_err(|e| {
-                    NetError::ProtocolError(format!("Invalid big number string: {}", e))
-                })?;
-                Ok(Some((RespValue::BigNumber(s.to_string()), consumed + 1)))
-            }
-            None => Ok(None),
-        },
-
-        // RESP3 Map: %<len>\r\n... (each pair has key and value)
-        b'%' => match parse_line(rest) {
-            Some((len_line, hdr_consumed)) => {
-                let len_str = std::str::from_utf8(len_line)
-                    .map_err(|e| NetError::ProtocolError(format!("Invalid map length: {}", e)))?;
-                let num_pairs = len_str.parse::<usize>().map_err(|e| {
-                    NetError::ProtocolError(format!("Malformed map length '{}': {}", len_str, e))
-                })?;
-                if num_pairs > MAX_RESP_COLLECTION_LEN {
-                    return Err(NetError::ProtocolError(format!(
-                        "Map length {} exceeds maximum permitted collection size of {}",
-                        num_pairs, MAX_RESP_COLLECTION_LEN
-                    )));
-                }
-
-                let mut pairs = Vec::with_capacity(num_pairs.min(1024));
-                let mut offset = hdr_consumed;
-
-                for _ in 0..num_pairs {
-                    // Key
-                    let Some(rem_key) = rest.get(offset..) else {
-                        return Ok(None);
-                    };
-                    let key = match parse_resp_slice(rem_key, depth + 1)? {
-                        Some((k, k_consumed)) => {
-                            offset += k_consumed;
-                            k
-                        }
-                        None => return Ok(None),
-                    };
-
-                    // Value
-                    let Some(rem_val) = rest.get(offset..) else {
-                        return Ok(None);
-                    };
-                    let val = match parse_resp_slice(rem_val, depth + 1)? {
-                        Some((v, v_consumed)) => {
-                            offset += v_consumed;
-                            v
-                        }
-                        None => return Ok(None),
-                    };
-
-                    pairs.push((key, val));
-                }
-
-                Ok(Some((RespValue::Map(pairs), offset + 1)))
-            }
-            None => Ok(None),
-        },
-
-        // RESP3 Set: ~<len>\r\n...
-        b'~' => match parse_line(rest) {
-            Some((len_line, hdr_consumed)) => {
-                let len_str = std::str::from_utf8(len_line)
-                    .map_err(|e| NetError::ProtocolError(format!("Invalid set length: {}", e)))?;
-                let num_items = len_str.parse::<usize>().map_err(|e| {
-                    NetError::ProtocolError(format!("Malformed set length '{}': {}", len_str, e))
-                })?;
-                if num_items > MAX_RESP_COLLECTION_LEN {
-                    return Err(NetError::ProtocolError(format!(
-                        "Set length {} exceeds maximum permitted collection size of {}",
-                        num_items, MAX_RESP_COLLECTION_LEN
-                    )));
-                }
-
-                let mut items = Vec::with_capacity(num_items.min(1024));
-                let mut offset = hdr_consumed;
-
-                for _ in 0..num_items {
-                    let Some(remaining) = rest.get(offset..) else {
-                        return Ok(None);
-                    };
-                    match parse_resp_slice(remaining, depth + 1)? {
-                        Some((item, item_consumed)) => {
-                            items.push(item);
-                            offset += item_consumed;
-                        }
-                        None => return Ok(None),
-                    }
-                }
-
-                Ok(Some((RespValue::Set(items), offset + 1)))
-            }
-            None => Ok(None),
-        },
-
-        // RESP3 Push: ><len>\r\n...
-        b'>' => match parse_line(rest) {
-            Some((len_line, hdr_consumed)) => {
-                let len_str = std::str::from_utf8(len_line)
-                    .map_err(|e| NetError::ProtocolError(format!("Invalid push length: {}", e)))?;
-                let num_items = len_str.parse::<usize>().map_err(|e| {
-                    NetError::ProtocolError(format!("Malformed push length '{}': {}", len_str, e))
-                })?;
-                if num_items > MAX_RESP_COLLECTION_LEN {
-                    return Err(NetError::ProtocolError(format!(
-                        "Push length {} exceeds maximum permitted collection size of {}",
-                        num_items, MAX_RESP_COLLECTION_LEN
-                    )));
-                }
-
-                let mut items = Vec::with_capacity(num_items.min(1024));
-                let mut offset = hdr_consumed;
-
-                for _ in 0..num_items {
-                    let Some(remaining) = rest.get(offset..) else {
-                        return Ok(None);
-                    };
-                    match parse_resp_slice(remaining, depth + 1)? {
-                        Some((item, item_consumed)) => {
-                            items.push(item);
-                            offset += item_consumed;
-                        }
-                        None => return Ok(None),
-                    }
-                }
-
-                Ok(Some((RespValue::Push(items), offset + 1)))
-            }
-            None => Ok(None),
-        },
-
+        b'+' => parse_simple_string_slice(rest),
+        b'-' => parse_error_slice(rest),
+        b':' => parse_integer_slice(rest),
+        b'$' => parse_bulk_string_slice(rest),
+        b'*' => parse_array_slice(rest, depth),
+        b'_' => parse_null_slice(rest),
+        b',' => parse_double_slice(rest),
+        b'#' => parse_boolean_slice(rest),
+        b'!' => parse_blob_error_slice(rest),
+        b'=' => parse_verbatim_string_slice(rest),
+        b'(' => parse_big_number_slice(rest),
+        b'%' => parse_map_slice(rest, depth),
+        b'~' => parse_set_slice(rest, depth),
+        b'>' => parse_push_slice(rest, depth),
         other => Err(NetError::ProtocolError(format!(
             "Unrecognized RESP protocol type marker: '{}' (0x{:02x})",
             other as char, other
