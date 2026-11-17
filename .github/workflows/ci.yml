@@ -85,7 +85,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         continue-on-error: true
         with:
           workspaces: |
@@ -93,7 +93,7 @@ jobs:
             crates/*
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           version: "latest"
@@ -138,7 +138,7 @@ jobs:
           command: check
 
       - name: Install cargo-machete
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: cargo-machete
 
@@ -146,7 +146,7 @@ jobs:
         run: cargo machete
 
       - name: Scan Vulnerabilities (osv-scanner)
-        uses: google/osv-scanner-action/osv-scanner-action@0e457b42d0120153c352875e9b758b1e5c58c7e5 # v2.7.1
+        uses: google/osv-scanner-action/osv-scanner-action@d3c1414ded37de590f207572e37a7d180f1d0ef7 # v2.7.1
         with:
           scan-args: |-
             --config=osv-scanner.toml
@@ -176,7 +176,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         continue-on-error: true
         with:
           workspaces: |
@@ -184,7 +184,7 @@ jobs:
             crates/*
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: nextest
 
@@ -215,7 +215,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         continue-on-error: true
         with:
           workspaces: |
@@ -223,7 +223,7 @@ jobs:
             crates/*
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           version: "latest"
@@ -263,7 +263,7 @@ jobs:
           components: rust-src
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         continue-on-error: true
         with:
           workspaces: |
@@ -272,7 +272,7 @@ jobs:
             fuzz
 
       - name: Install cargo-fuzz
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: cargo-fuzz
 
