@@ -29,6 +29,25 @@
   - Added convenience session facades on `Session.fulltext_search()` / `Session.text_search()` and `AsyncSession.fulltext_search()` / `AsyncSession.text_search()`.
   - Added model search entrypoints `Node.text_search()` / `fulltext_search()` and `Relationship.text_search()` / `fulltext_search()`.
 
+### Changed
+- **Runtime Panic Handling, PyO3 and Toolchain Updates (#158)**:
+  - Configured the release profile to unwind instead of abort, allowing Rust panics to surface as catchable Python `PanicException` instead of killing the interpreter.
+  - Upgraded PyO3 and `pyo3-async-runtimes` to 0.29.
+  - Raised Minimum Supported Rust Version (MSRV) to 1.87.
+
+### Fixed
+- **Panic Safety on Malformed and Non-ASCII Inputs (#158)**:
+  - Eliminated panics on malformed query topologies (such as incomplete `MATCH (`, `MATCH (n)-[`, and `MATCH (n)-[r]->(`) by parsing in byte space with bounds-checked Unicode helpers.
+  - Hardened `agtype` string cleaning in `voyager-net` to be UTF-8 safe across multi-byte inputs.
+  - Replaced reachable `unreachable!()` arms in connection pool drop and handover routines with recovery and warnings.
+  - Replaced `unreachable!()` arms in DDL emitters with explicit `UnsupportedDialect` errors.
+
+### Security
+- **Dependency Advisory Patches and Supply-Chain Audits (#158)**:
+  - Upgraded `arrow`, `arrow-schema`, and `arrow-array` to 57.3, resolving advisory RUSTSEC-2026-0442.
+  - Patched `rustls` (0.23.46), `rustls-webpki` (0.103.17), `tokio` (1.54.1), and `webpki-roots` (1.0.12).
+  - Added supply-chain vulnerability and dependency hygiene audits (`cargo-deny`, `cargo-machete`, `osv-scanner`) to CI.
+
 ## [0.4.0-alpha.6] - 2026-10-02
 
 ### Added
