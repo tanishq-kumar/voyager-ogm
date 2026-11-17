@@ -1,5 +1,10 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
 ## [Unreleased]
 
 ### Added
@@ -12,6 +17,9 @@
 - **File, S3, and Azure Cloud Ingestion Loaders (#110)**:
   - Added zero-copy, lazy-scanned cloud and local file loaders directly on `Session`, `AsyncSession`, and top-level module APIs (`ingest_parquet`, `ingest_csv`, `ingest_parquet_relationships`, `ingest_csv_relationships`).
   - Added `create_parquet_ingest_plan`, `create_csv_ingest_plan`, `create_parquet_rel_ingest_plan`, and `create_csv_rel_ingest_plan` with support for `"create"` / `"upsert"` modes, field remapping, and multi-cloud authentication via Polars `storage_options`.
+- **Session Liveness Probes and Health Monitoring (#118)**:
+  - Added `Session.ping()`, `AsyncSession.ping()`, `Session.health()`, and `AsyncSession.health()` for fast backend liveness verification and diagnostics.
+  - Added `SessionHealth` diagnostic dataclass capturing roundtrip latency, backend mode, and circuit breaker status.
 - **Full-Text Index DDL Generation and Query Integration (#113)**:
   - Added declarative `FullTextIndex(properties, name=None, analyzer="standard")` configuration to `voyager_ogm.schema` and re-exported in `voyager_ogm` (with `TextIndex` and `fulltext_index` developer ergonomics aliases).
   - Added model metadata reflection on `Node` and `Relationship` subclasses via `__fulltext_indexes__`.
@@ -28,10 +36,6 @@
     - FalkorDB: routes to `db.idx.fulltext.queryNodes` and `db.idx.fulltext.queryRelationships`.
   - Added convenience session facades on `Session.fulltext_search()` / `Session.text_search()` and `AsyncSession.fulltext_search()` / `AsyncSession.text_search()`.
   - Added model search entrypoints `Node.text_search()` / `fulltext_search()` and `Relationship.text_search()` / `fulltext_search()`.
-
-## [0.4.0-alpha.6] - 2026-10-02
-
-### Added
 - **Vector Index DDL, VectorProperty & Vector Search Engine (#112)**:
   - Added declarative `VectorProperty(dimensions, similarity, index_name)` descriptor to `voyager_ogm.models` and exported in `voyager_ogm`.
   - Implemented multi-dialect vector index DDL compilation in `voyager-core`:
@@ -57,15 +61,34 @@
   - Added spatial query expressions `Point.distance_to()`, `BoundField.distance_to()`, `Field.distance_to()`, `fn.point()`, `fn.point.distance()`, and `fn.distance()`.
   - Added cross-dialect spatial function compilation: normalized to `point.distance()` for openCypher and ISO GQL, and `ST_Distance()` for SQL/PGQ.
   - Added automatic model hydration for `Point` fields on `Node` and `Relationship` entities.
+- **Query Spec Interchange Protocol & Structured Error Taxonomy (#143)**:
+  - Added `spec_version` field and JSON Schema specification (`spec/query_spec.v1.schema.json`) for cross-language query interchange validation.
+  - Added structured `ErrorCode` enum and unified error taxonomy across Rust core and Python bindings.
+  - Added explicit, loud errors on mock bridge fallback in production configurations.
 
-### Removed (Breaking Changes)
+### Removed
 - **Legacy Query Builder & Comprehension Aliases (#131)**:
-  - Removed redundant `Query.add_*` aliases (`add_match`, `add_optional_match`, `add_create`, `add_merge`, `add_unwind`, `add_load_csv`) in favor of direct fluent methods (`match`, `optional_match`, `create`, `merge`, `unwind`, `load_csv`).
-  - Removed `Query.filter` alias on `Query` class in favor of `Query.where`.
-  - Updated comprehension parameter `where_filter` to `where` across `list_comprehension()` and `pattern_comprehension()`.
-  - Removed module-level free functions `unwind()` and `load_csv()` from `voyager_ogm` and `voyager_ogm.query`. Use `Query.unwind()` and `Query.load_csv()`.
+  - **Breaking:** Removed redundant `Query.add_*` aliases (`add_match`, `add_optional_match`, `add_create`, `add_merge`, `add_unwind`, `add_load_csv`) in favor of direct fluent methods (`match`, `optional_match`, `create`, `merge`, `unwind`, `load_csv`).
+  - **Breaking:** Removed `Query.filter` alias on `Query` class in favor of `Query.where`.
+  - **Breaking:** Updated comprehension parameter `where_filter` to `where` across `list_comprehension()` and `pattern_comprehension()`.
+  - **Breaking:** Removed module-level free functions `unwind()` and `load_csv()` from `voyager_ogm` and `voyager_ogm.query`. Use `Query.unwind()` and `Query.load_csv()`.
 
----
+## [0.4.0-alpha.6] - 2026-10-02
+
+### Added
+- **AST Topology Extraction & TCK Conformance Engine (#101)**:
+  - Added AST topology parsing, pattern shape extraction, and AST analysis in `voyager-core`.
+  - Added openCypher, openGQL, and SQL/PGQ TCK conformance test suites with Scenario Outline evaluation.
+- **Native Wire Protocols & Connection Pool (`voyager-net`)**:
+  - Added native asynchronous Bolt wire protocol implementation with PackStream serialization and zero-allocation frame encoding.
+  - Added native PostgreSQL Frontend/Backend Protocol v3.0 codec with MD5 and SCRAM-SHA-256 authentication and Apache AGE `agtype` composite projection.
+  - Added native Redis RESP2/RESP3 pipeline client for FalkorDB with automated protocol negotiation.
+- **Multi-Dialect DDL Migration Emitters & Schema Registry (#92, #93, #94, #95)**:
+  - Added multi-dialect schema DDL emission across openCypher, ISO GQL, and SQL:2023 PGQ.
+  - Added native schema registry and model metadata storage with `@node`, `@relationship`, and `Field[T]` descriptors.
+- **ISO GQL Fluent Query Builder & Query Profiling (#54, #56)**:
+  - Extended fluent query builder to support ISO/IEC 39075:2024 GQL syntax and clause compositions.
+  - Added execution plan inspection and profiling via `.explain()` and `.profile()`.
 
 ## [0.4.0-alpha.5] - 2026-09-07
 
@@ -81,8 +104,6 @@
   - Implemented predicate pushdown pass into inline pattern constraints (`(p:Person {city: $p0})`), dead variable pruning, and constant folding.
 - **Multi-Database Batch Identity Map & Active Record Data Mapper**:
   - Added unit of work identity map with weakref lifecycle management (`Session.flush()`, `Node.save()`).
-
----
 
 ## [0.3.0-alpha.1] - 2026-09-03
 
@@ -106,8 +127,6 @@
 - **openCypher & openGQL Standard TCK Harness (Task 3.1)**:
   - Integrated official openCypher and openGQL TCK specifications across all 18 standard query categories and 5 query authoring styles.
   - 100% test pass rate across Rust `cargo-nextest` and Python `pytest` suites.
-
----
 
 ## [0.2.0-alpha.1] - 2026-09-01
 
@@ -144,8 +163,6 @@
   - Pinned GitHub Actions in CI workflow to exact 40-character commit SHAs.
   - Added Python 3.14 to test matrix and automated Dependabot configuration.
 
----
-
 ## [0.1.0-alpha.1] - 2026-08-25
 
 ### Added
@@ -163,3 +180,10 @@
   - PyO3 C-extensions bridging Rust core with Python 3.11+.
   - Typed entity models: `@node`, `@relationship`, `Node`, `Relationship`, and `Field[T]` descriptors.
   - Constructor auto-aliasing (`p = Person()` -> `_person_0`) and fluent query compiler.
+
+[Unreleased]: https://github.com/tanishq-kumar/voyager-ogm/compare/v0.4.0-alpha.6...HEAD
+[0.4.0-alpha.6]: https://github.com/tanishq-kumar/voyager-ogm/compare/v0.4.0-alpha.5...v0.4.0-alpha.6
+[0.4.0-alpha.5]: https://github.com/tanishq-kumar/voyager-ogm/compare/v0.3.0-alpha.1...v0.4.0-alpha.5
+[0.3.0-alpha.1]: https://github.com/tanishq-kumar/voyager-ogm/compare/v0.2.0-alpha.1...v0.3.0-alpha.1
+[0.2.0-alpha.1]: https://github.com/tanishq-kumar/voyager-ogm/compare/v0.1.0-alpha.1...v0.2.0-alpha.1
+[0.1.0-alpha.1]: https://github.com/tanishq-kumar/voyager-ogm/releases/tag/v0.1.0-alpha.1

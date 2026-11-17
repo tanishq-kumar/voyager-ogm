@@ -2,7 +2,10 @@
 # Voyager OGM: Automation Justfile
 # ============================================================
 
-set shell := ["powershell", "-NoProfile", "-Command"]
+set windows-shell := ["powershell", "-NoProfile", "-Command"]
+
+export UV_PYTHON_INSTALL_DIR := env_var_or_default("UV_PYTHON_INSTALL_DIR", home_directory() / ".cargo/uv-python")
+export RUSTC_WRAPPER := env_var_or_default("RUSTC_WRAPPER", "")
 
 # Default: List available recipes
 default:
@@ -38,6 +41,10 @@ fetch-conformance:
 # Run official FalkorDB conformance test suite
 test-falkordb-official:
     uv run cargo test -p voyager-net --test official_falkordb_tests -- --nocapture
+
+# Rebuild only the Python native extension into the venv (inner dev loop)
+dev:
+    uv run maturin develop
 
 # Build all Rust workspace members and Python native extension
 build:
@@ -77,6 +84,10 @@ fmt-check:
     cargo fmt --all -- --check
     uv run ruff format --check .
 
+# Validate CHANGELOG.md conformance with Keep a Changelog 1.1.0
+changelog-check:
+    uv run python scripts/check_changelog.py --format
+
 # Lint code across Rust and Python
 lint:
     uv run cargo clippy --workspace --all-targets -- -D warnings
@@ -90,6 +101,38 @@ typecheck:
 # Full Continuous Integration (CI) verification suite
 ci: fmt-check lint test
     @echo "[PASS] Full CI verification passed with 0 errors!"
+
+# Cut a release: verify branch & clean tree, run CI, update manifests, cut changelog, commit and tag
+[unix]
+release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    branch=$(git rev-parse --abbrev-ref HEAD)
+    if [[ "$branch" != "main" ]]; then
+        echo "Error: Releases must be cut from the 'main' branch (currently on '$branch')." >&2
+        exit 1
+    fi
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo "Error: Working directory is not clean. Commit or stash changes before releasing." >&2
+        exit 1
+    fi
+    echo "=== Running Full CI Suite ==="
+    just ci
+    echo "=== Updating Version to {{version}} in Cargo.toml ==="
+    python3 -c "import re, pathlib; p = pathlib.Path('Cargo.toml'); content = p.read_text(encoding='utf-8'); new_content = re.sub(r'version = \"[^\"]+\"', 'version = \"{{version}}\"', content, count=1); p.write_text(new_content, encoding='utf-8')"
+    echo "=== Updating Lockfiles ==="
+    cargo update -w
+    uv lock
+    echo "=== Cutting CHANGELOG.md Section ==="
+    python3 scripts/check_changelog.py --release "{{version}}" "$(date +%Y-%m-%d)"
+    echo "=== Creating Release Commit and Tag ==="
+    git add Cargo.toml Cargo.lock uv.lock CHANGELOG.md
+    git commit -m "chore(release): v{{version}}"
+    git tag -a "v{{version}}" -m "Release v{{version}}"
+    echo ""
+    echo "Release v{{version}} created successfully!"
+    echo "To publish, run:"
+    echo "    git push origin main v{{version}}"
 
 # Pre-commit hook recipe (formatting, linting, and type checking)
 pre-commit: fmt-check lint typecheck

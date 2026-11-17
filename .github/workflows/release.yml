@@ -1,0 +1,177 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  # =========================================================================
+  # 1. Verify Release Integrity (Tag vs Manifests and Changelog)
+  # =========================================================================
+  verify:
+    name: Verify Release Tag and Notes
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify Tag against Cargo.toml and CHANGELOG.md
+        id: check
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
+          # Check if tag is pre-release (contains hyphen, e.g. 0.4.0-alpha.7)
+          if [[ "${VERSION}" == *-* ]]; then
+            echo "prerelease=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "prerelease=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+          echo "Checking Cargo.toml version equals '${VERSION}'..."
+          CARGO_VERSION=$(python3 -c "
+          import tomllib, pathlib
+          data = tomllib.loads(pathlib.Path('Cargo.toml').read_text(encoding='utf-8'))
+          print(data['workspace']['package']['version'])
+          ")
+
+          if [[ "${CARGO_VERSION}" != "${VERSION}" ]]; then
+            echo "::error::Tag '${TAG}' does not match workspace Cargo.toml version '${CARGO_VERSION}'!"
+            exit 1
+          fi
+
+          echo "Checking CHANGELOG.md for dated section '[${VERSION}]'..."
+          python3 scripts/check_changelog.py --format
+          NOTES=$(python3 scripts/check_changelog.py --extract "${VERSION}")
+          if [[ -z "${NOTES}" ]]; then
+            echo "::error::No release notes found in CHANGELOG.md for version '${VERSION}'!"
+            exit 1
+          fi
+
+          echo "Release verification passed for ${TAG}."
+
+  # =========================================================================
+  # 2. Build Source Distribution (sdist)
+  # =========================================================================
+  build-sdist:
+    name: Build Source Distribution
+    needs: [verify]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          command: sdist
+          args: --out dist
+
+      - name: Upload sdist Artifact
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: wheels-sdist
+          path: dist/*
+
+  # =========================================================================
+  # 3. Build Multi-Platform Native Wheels (abi3)
+  # =========================================================================
+  build-wheels:
+    name: Build Wheels (${{ matrix.os }}, ${{ matrix.target }})
+    needs: [verify]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build Wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          sccache: false
+
+      - name: Upload Wheel Artifact
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.target }}
+          path: dist/*
+
+  # =========================================================================
+  # 4. GitHub Release Creation
+  # =========================================================================
+  release:
+    name: Create GitHub Release
+    needs: [verify, build-sdist, build-wheels]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download Built Artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Extract Release Notes
+        id: notes
+        run: |
+          VERSION="${{ needs.verify.outputs.version }}"
+          python3 scripts/check_changelog.py --extract "${VERSION}" > release_notes.md
+          cat release_notes.md
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        with:
+          name: Voyager OGM v${{ needs.verify.outputs.version }}
+          body_path: release_notes.md
+          prerelease: ${{ needs.verify.outputs.prerelease == 'true' }}
+          files: dist/*
+
+  # =========================================================================
+  # 5. PyPI Publish (Trusted Publishing)
+  # =========================================================================
+  pypi-publish:
+    name: Publish to PyPI
+    needs: [verify, release]
+    if: vars.PYPI_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download Artifacts for PyPI
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist/
