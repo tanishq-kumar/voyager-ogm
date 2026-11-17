@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
 
 concurrency:
@@ -123,7 +124,26 @@ jobs:
         run: uv run --all-extras mypy packages/python/voyager_ogm
 
   # =========================================================================
-  # 3. Supply-Chain Security & Dependency Hygiene Gate
+  # 3. Changelog Conformance & Unreleased Gate
+  # =========================================================================
+  changelog:
+    name: Changelog Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate CHANGELOG.md Format
+        run: python3 scripts/check_changelog.py --format
+
+      - name: Verify Unreleased Changelog Entry
+        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
+        run: python3 scripts/check_changelog.py --require-unreleased-change origin/${{ github.base_ref }}
+
+  # =========================================================================
+  # 3b. Supply-Chain Security & Dependency Hygiene Gate
   # =========================================================================
   supply-chain:
     name: Supply Chain & Dependencies
@@ -294,7 +314,7 @@ jobs:
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [lint, changes, supply-chain, test-rust, test-python, sanitizer-and-fuzz]
+    needs: [lint, changelog, supply-chain, changes, test-rust, test-python, sanitizer-and-fuzz]
     runs-on: ubuntu-latest
     steps:
       - name: Verify All Matrix Jobs Passed
@@ -305,6 +325,10 @@ jobs:
           fi
           if [[ "${{ needs.lint.result }}" != "success" ]]; then
             echo "::error::Lint and code quality checks must pass."
+            exit 1
+          fi
+          if [[ "${{ needs.changelog.result }}" != "success" ]]; then
+            echo "::error::Changelog checks must pass (update CHANGELOG.md [Unreleased] or apply skip-changelog label)."
             exit 1
           fi
           if [[ "${{ needs.supply-chain.result }}" != "success" ]]; then

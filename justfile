@@ -107,6 +107,10 @@ fmt-check:
     cargo fmt --all -- --check
     uv run --no-sync ruff format --check .
 
+# Validate CHANGELOG.md conformance with Keep a Changelog 1.1.0
+changelog-check:
+    uv run python scripts/check_changelog.py --format
+
 # Lint code across Rust and Python
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
@@ -142,6 +146,38 @@ typecheck:
 # Full Continuous Integration (CI) verification suite
 ci: fmt-check lint deny machete audit test
     @echo "[PASS] Full CI verification passed with 0 errors!"
+
+# Cut a release: verify branch & clean tree, run CI, update manifests, cut changelog, commit and tag
+[unix]
+release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    branch=$(git rev-parse --abbrev-ref HEAD)
+    if [[ "$branch" != "main" ]]; then
+        echo "Error: Releases must be cut from the 'main' branch (currently on '$branch')." >&2
+        exit 1
+    fi
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo "Error: Working directory is not clean. Commit or stash changes before releasing." >&2
+        exit 1
+    fi
+    echo "=== Running Full CI Suite ==="
+    just ci
+    echo "=== Updating Version to {{version}} in Cargo.toml ==="
+    python3 -c "import pathlib, tomllib; p = pathlib.Path('Cargo.toml'); text = p.read_text(encoding='utf-8'); old = tomllib.loads(text)['workspace']['package']['version']; needle = 'version = \"' + old + '\"'; n = text.count(needle); assert n >= 1, 'workspace version not found'; p.write_text(text.replace(needle, 'version = \"{{version}}\"'), encoding='utf-8'); print(f'Bumped {old} -> {{version}} in {n} places (workspace package + internal path deps)')"
+    echo "=== Updating Lockfiles ==="
+    cargo update -w
+    uv lock
+    echo "=== Cutting CHANGELOG.md Section ==="
+    python3 scripts/check_changelog.py --release "{{version}}" "$(date +%Y-%m-%d)"
+    echo "=== Creating Release Commit and Tag ==="
+    git add Cargo.toml Cargo.lock uv.lock CHANGELOG.md
+    git commit -m "chore(release): v{{version}}"
+    git tag -a "v{{version}}" -m "Release v{{version}}"
+    echo ""
+    echo "Release v{{version}} created successfully!"
+    echo "To publish, run:"
+    echo "    git push origin main v{{version}}"
 
 # Pre-commit hook recipe (formatting, linting, and type checking)
 pre-commit: fmt-check lint typecheck

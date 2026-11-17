@@ -22,5 +22,6 @@
 ## Verification Checklist
 - [ ] Code passes all pre-commit formatting and linters (`just pre-commit` / `cargo fmt`, `clippy -D warnings`, `ruff`, `ty`, `mypy`)
 - [ ] Unit and integration test suites pass (`just test` / `cargo nextest`, `pytest`)
+- [ ] CHANGELOG.md `[Unreleased]` updated, or `skip-changelog` label applied
 - [ ] Benchmarks updated/verified if performance-sensitive (`just bench-save`)
 - [ ] No regressions or unexpected behavior changes

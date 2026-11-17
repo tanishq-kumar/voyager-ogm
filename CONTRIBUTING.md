@@ -166,17 +166,28 @@ Following the cleanup in `#131`, Voyager maintains a strict policy regarding API
    git checkout -b feat/my-new-feature
    ```
 2. Make your changes and add tests where appropriate.
-3. Run `just ci` to ensure all formatting, linting, and tests pass.
-4. Commit your changes using conventional commit messages in simple English:
+3. Update `CHANGELOG.md`:
+   - Every user-facing pull request must add a bullet under `## [Unreleased]` in `CHANGELOG.md` following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+   - Internal-only pull requests (CI, internal refactors, documentation-only) are exempt if tagged with the `skip-changelog` label.
+4. Run `just ci` to ensure all formatting, linting, and tests pass.
+5. Commit your changes using conventional commit messages in simple English:
    - `feat: add math functions to expression compiler`
    - `fix: handle null property in record deserializer`
    - `docs: update setup instructions in README`
-5. Push your branch to GitHub and open a Pull Request.
-6. In your PR description, explain what changes you made and link any related issues (e.g. `Closes #20`).
+6. Push your branch to GitHub and open a Pull Request.
+7. In your PR description, explain what changes you made and link any related issues (e.g. `Closes #20`).
 
 ---
 
-## 11. Contribution Licensing
+## 11. Releasing
+
+Voyager OGM follows Semantic Versioning with pre-1.0 rules and an automated, tag-driven release process.
+
+For details on the versioning policy, pre-release conventions, maintenance branches, and the release checklist, see [RELEASING.md](RELEASING.md).
+
+---
+
+## 12. Contribution Licensing
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in Voyager OGM by you, as defined in the Apache-2.0 license, shall be dual licensed under the MIT License and the Apache License, Version 2.0, without any additional terms or conditions.
 

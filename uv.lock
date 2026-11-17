@@ -1793,7 +1793,6 @@ wheels = [
 
 [[package]]
 name = "voyager-ogm"
-version = "0.4.0a6"
 source = { editable = "." }
 dependencies = [
     { name = "polars" },
@@ -1889,7 +1888,7 @@ requires-dist = [
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2024.1" },
     { name = "tzdata", marker = "sys_platform == 'win32' and extra == 'dev'", specifier = ">=2024.1" },
 ]
-provides-extras = ["duckdb", "neo4j", "relate", "age", "sqlalchemy", "analytics", "dev", "notebook"]
+provides-extras = ["age", "analytics", "dev", "duckdb", "neo4j", "notebook", "relate", "sqlalchemy"]
 
 [package.metadata.requires-dev]
 dev = [
