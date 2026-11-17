@@ -119,7 +119,7 @@ release version:
     echo "=== Running Full CI Suite ==="
     just ci
     echo "=== Updating Version to {{version}} in Cargo.toml ==="
-    python3 -c "import re, pathlib; p = pathlib.Path('Cargo.toml'); content = p.read_text(encoding='utf-8'); new_content = re.sub(r'version = \"[^\"]+\"', 'version = \"{{version}}\"', content, count=1); p.write_text(new_content, encoding='utf-8')"
+    python3 -c "import pathlib, tomllib; p = pathlib.Path('Cargo.toml'); text = p.read_text(encoding='utf-8'); old = tomllib.loads(text)['workspace']['package']['version']; needle = 'version = \"' + old + '\"'; n = text.count(needle); assert n >= 1, 'workspace version not found'; p.write_text(text.replace(needle, 'version = \"{{version}}\"'), encoding='utf-8'); print(f'Bumped {old} -> {{version}} in {n} places (workspace package + internal path deps)')"
     echo "=== Updating Lockfiles ==="
     cargo update -w
     uv lock
