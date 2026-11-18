@@ -113,6 +113,7 @@ def test_tck_topology_nodes_and_edges_integrity():
     assert res4.nodes_found >= 2
 
 
+@pytest.mark.live
 def test_tck_tier3_live_neo4j_execution():
     """Tier 3: Executes official openCypher Match1 scenarios on live Neo4j."""
     neo4j_host = os.getenv("NEO4J_HOST", "127.0.0.1")
@@ -160,6 +161,7 @@ def test_tck_tier3_live_neo4j_execution():
     driver.close()
 
 
+@pytest.mark.live
 def test_tck_tier3_live_falkordb_execution():
     """Tier 3: Executes official openCypher Match1 scenarios on live FalkorDB."""
     falkor_host = os.getenv("FALKORDB_HOST", "127.0.0.1")

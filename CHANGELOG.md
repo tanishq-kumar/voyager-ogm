@@ -113,6 +113,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `Node` subclasses now accept `__label__ = "X"` as the single-label form of `__labels__ = ["X"]`, and the label is used consistently by query compilation, cached labels, schema registration, and bulk ingestion.
   - Declaring both `__label__` and `__labels__` with a different primary label now raises `TypeError` at class creation.
   - An explicit `@node("X")` decorator argument takes precedence over class-body label declarations; `Relationship` classes now honour a class-body `__type__` in the same way.
+- **Live-Engine Python Tests Missing the `live` Marker (#199)**:
+  - Marked the remaining Neo4j/Memgraph/FalkorDB and openCypher/openGQL Tier 3 integration tests with `@pytest.mark.live` so `pytest -m "not live"` no longer runs them when containers are up.
+  - Existing `skipif` port probes are kept, so `pytest -m live` still skips cleanly when a container is unavailable.
 - **Identity Map Uses the Declared Primary Key (#178)**:
   - `Session.register()` / `AsyncSession.register()`, `flush()`, `Node.save()`, and `Node.async_save()` now default `key_field` to the model's declared `Field(primary_key=True)` property instead of assuming `id`, falling back to `id` only when the model declares no primary key.
   - Explicit `key_field=` arguments continue to override the detected primary key unchanged.
