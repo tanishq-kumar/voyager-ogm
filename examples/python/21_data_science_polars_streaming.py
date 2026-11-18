@@ -1,9 +1,17 @@
-"""Level 4: Data Engineering - Zero-Copy Polars & Arrow Ingestion.
+"""Voyager OGM: Zero-Copy Polars & Arrow Columnar Streaming.
 
-Learn how to stream hundreds of thousands of graph entities directly into
-a Polars DataFrame with ZERO intermediate Python object allocations.
+Teaches:
+    - Streaming graph entity batches directly into Polars with zero Python object overhead
+    - Using the official Arrow PyCapsule protocol (`__arrow_c_stream__`)
+    - Ingesting 100,000 graph nodes in under 2 milliseconds
+    - Running vectorized columnar graph analytics (grouping, filtering, aggregations) in Polars
 
-Run with: `uv run python examples/python/04_data_science_polars_streaming.py`
+Prerequisites:
+    - Engine: None (runs in-memory / offline; uses native synthetic Arrow stream)
+    - Extras: None (Polars is a base dependency of voyager-ogm)
+
+Run with:
+    `uv run python examples/python/21_data_science_polars_streaming.py`
 """
 
 from __future__ import annotations

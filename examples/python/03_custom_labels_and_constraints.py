@@ -1,6 +1,18 @@
-"""Approach 2: Custom Graph Labels & Field Constraints (Indexes / Uniqueness).
+"""Voyager OGM: Custom Graph Labels & Field Constraints.
 
-Run with: `uv run python examples/python/02_custom_label_and_constraints.py`
+Teaches:
+    - Explicit database labels with `@node(label="Customer")`
+    - Defining index and uniqueness constraints via `Field(unique=True, index=True)`
+    - How constraints feed into DDL generation (see also `13_schema_ddl_and_indexes.py`)
+    - Custom relationship type names with `@relationship(type_name="PURCHASED")`
+    - Compiling queries to SQL:2023 PGQ (`GRAPH_TABLE`)
+
+Prerequisites:
+    - Engine: None (runs offline / compile-only)
+    - Extras: None
+
+Run with:
+    `uv run python examples/python/03_custom_labels_and_constraints.py`
 """
 
 from __future__ import annotations

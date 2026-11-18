@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Unified Examples Learning Path, OGM-First Modernization, and Rust Parity (#172)**:
+  - Streamlined Python examples into a single progressive beginner-to-advanced learning path (01 to 31) with OGM-first declarative modeling, mutation DSL, and consistent setup and offline skip handling.
+  - Added idiomatic Rust examples covering schema DDL and index emission (`08`), mutation builder (`09`), bulk ingestion compilation (`10`), transactions and unit of work (`11`), vector/full-text search query building (`12`), and live engine execution (`live_connect_and_query`).
+  - Added new Python examples covering real engine bridges via `create_bridge()` and mock fallbacks, embedded Relate (`relate://`), bulk ingestion, transactions with savepoints and identity map, multi-engine live execution (Memgraph, FalkorDB, Apache AGE), vector and full-text search, mutation DSL, and standalone `AsyncSession` / `HybridSession`.
+  - Added `just examples-live` recipe and updated `examples-python` and `examples-rust` to run all offline examples.
 - **Embedded Relate Database Bridge (#157)**:
   - Added `RelateBridge` and `AsyncRelateBridge` in `voyager_ogm.bridge`, exported from `voyager_ogm`, for in-process, zero-network execution against embedded Relate databases (`relatedb.ai`).
   - Added auto-instantiation support in `create_bridge()` for `relate://` and `relatedb://` URI schemes and connection instance auto-detection.

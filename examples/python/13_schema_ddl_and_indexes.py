@@ -1,10 +1,18 @@
-"""Voyager OGM Example 13: Declarative Schema, Constraints & Index Management.
+"""Voyager OGM: Declarative Schema, Constraints & Index DDL.
 
-Demonstrates how Voyager OGM manages constraints and indexes across all supported
-graph and relational engines (Neo4j, Memgraph, FalkorDB, Apache AGE, DuckPGQ, Postgres 19+).
+Teaches:
+    - Declaring primary keys, unique constraints, and secondary indexes on graph models
+    - Multi-dialect DDL generation via `SchemaManager.generate_ddl()`
+    - Dialect targets: Neo4j, Memgraph, FalkorDB, Apache AGE, DuckDB, PostgreSQL
+    - Drop DDL generation via `SchemaManager.generate_drop_ddl()`
+    - Executing DDL offline via `MockBridge` or real engines
+
+Prerequisites:
+    - Engine: None (runs offline / compile-only via MockBridge; optional DuckDB/Postgres if executed live)
+    - Extras: None (or `duckdb` / `psycopg` if executing against live engines)
 
 Run with:
-    uv run python examples/python/13_schema_ddl_and_indexes.py
+    `uv run python examples/python/13_schema_ddl_and_indexes.py`
 """
 
 from __future__ import annotations
@@ -120,7 +128,7 @@ def main() -> None:
     print("-" * 50)
     from voyager_ogm.bridge import MockBridge
 
-    session = Session(MockBridge())
+    session = Session(bridge=MockBridge())
 
     print("  1. session.create_constraints(User, Follows):")
     executed_constraints = session.create_constraints(User, Follows)

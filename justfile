@@ -238,7 +238,7 @@ prune:
 prune-debug: prune
 
 
-# Run all Rust code examples
+# Run all Rust code examples (offline / no database needed)
 examples-rust:
     uv run cargo run --example 01_step_by_step_chaining
     uv run cargo run --example 02_semantic_shortcuts
@@ -246,18 +246,52 @@ examples-rust:
     uv run cargo run --example 04_expression_tree_builder
     uv run cargo run --example 05_direct_arena_allocation
     uv run cargo run --example 06_ast_optimizer_constant_folding
+    uv run cargo run --example 07_explain_and_profile_queries
+    uv run cargo run -p voyager-ogm --example 08_schema_ddl_and_indexes
+    uv run cargo run -p voyager-ogm --example 09_mutation_builder
+    uv run cargo run -p voyager-ogm --example 10_bulk_ingest_compilation
+    uv run cargo run -p voyager-ogm --example 11_transactions_and_unit_of_work
+    uv run cargo run -p voyager-ogm --example 12_vector_and_fulltext_search
 
-# Run all Python code examples (Beginner to Advanced)
+# Run all Python code examples (Beginner to Advanced, offline / no database needed)
 examples-python:
-    uv run python examples/python/01_beginner_hello_graph.py
-    uv run python examples/python/02_intermediate_relationships.py
-    uv run python examples/python/03_advanced_multihop_aggregations.py
-    uv run python examples/python/04_data_science_polars_streaming.py
-    uv run python examples/python/05_enterprise_multi_dialect.py
-    uv run python examples/python/06_sqlalchemy_hybrid_bridge.py
-    uv run python examples/python/11_query_optimizer_constant_folding.py
+    uv run python examples/python/01_hello_graph.py
+    uv run python examples/python/02_minimal_type_annotations.py
+    uv run python examples/python/03_custom_labels_and_constraints.py
+    uv run python examples/python/04_relationships_and_traversals.py
+    uv run python examples/python/05_oop_class_inheritance.py
+    uv run python examples/python/06_multihop_aggregations.py
+    uv run python examples/python/07_mutation_dsl.py
+    uv run python examples/python/08_multi_dialect_compilation.py
+    uv run python examples/python/09_enterprise_dialects.py
+    uv run python examples/python/10_query_optimizer_constant_folding.py
+    uv run python examples/python/11_query_profiling_and_explain.py
+    uv run python examples/python/12_vector_and_fulltext_search.py
+    uv run python examples/python/13_schema_ddl_and_indexes.py
+    uv run python examples/python/14_schema_validation.py
+    uv run python examples/python/15_topology_extraction.py
+    uv run python examples/python/16_spec_interchange.py
+    uv run python examples/python/17_database_bridges.py
+    uv run python examples/python/18_transactions_and_identity_map.py
+    uv run python examples/python/19_bulk_ingestion.py
+    uv run python examples/python/20_embedded_relate_bridge.py
+    uv run python examples/python/21_data_science_polars_streaming.py
+    uv run python examples/python/22_async_and_hybrid_sessions.py
+    uv run python examples/python/23_sqlalchemy_hybrid_bridge.py
+    uv run python examples/python/24_sqlalchemy_graph_table.py
+    uv run python examples/python/25_networkx_analytics.py
+    uv run python examples/python/26_query_path_visualization.py
+    uv run python examples/python/27_marimo_graphrag_demo.py
+    uv run python examples/python/29_native_rust_builder.py
 
-# Run all code examples across Rust and Python
+# Run live code examples (requires running database containers via `just up` or Compose runner)
+examples-live:
+    uv run python examples/python/30_live_neo4j_execution.py
+    uv run python examples/python/31_live_multi_engine_execution.py
+    uv run cargo run -p voyager-net --example live_explain_and_profile
+    uv run cargo run -p voyager-net --example live_connect_and_query
+
+# Run all code examples across Rust and Python (offline)
 examples: examples-rust examples-python
 
 # Generate synthetic scale datasets for hydration benchmarks

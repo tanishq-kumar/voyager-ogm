@@ -1,13 +1,18 @@
-"""Example 17: Topology-Backed SQLAlchemy GRAPH_TABLE & Multi-Label Nodes.
+"""Voyager OGM: Topology-Backed SQLAlchemy GRAPH_TABLE & Multi-Label Nodes.
 
-Demonstrates Voyager's native AST topology integration with SQLAlchemy:
-1. Build graph traversal queries using multi-label domain models (`@node(labels=["Person", "Employee"])`).
-2. Construct a first-class SQLAlchemy FromClause with `graph_table(...)`.
-3. Verify the path pattern string is auto-derived directly from the native AST arena (zero regex).
-4. Prove multi-label node preservation (`(p:Person:Employee)`) preventing pattern broadening in PGQ SQL.
-5. Compose and compile standard SQLAlchemy relational SELECT queries joining SQL tables with GRAPH_TABLE.
+Teaches:
+    - Building graph traversal queries using multi-label domain models (`@node(labels=[...])`)
+    - Constructing a first-class SQLAlchemy FromClause with `graph_table(...)`
+    - Deriving graph patterns directly from the native AST arena with zero regex parsing
+    - Preserving multi-label node patterns in generated SQL:2023 PGQ statements
+    - Composing relational SQLAlchemy `select()` queries that join relational tables with `GRAPH_TABLE`
 
-Run with: `uv run python examples/python/17_sqlalchemy_graph_table.py`
+Prerequisites:
+    - Engine: None (runs offline / compile-only; no database needed)
+    - Extras: `sqlalchemy` extra (`pip install "voyager-ogm[sqlalchemy]"`)
+
+Run with:
+    `uv run python examples/python/24_sqlalchemy_graph_table.py`
 """
 
 from __future__ import annotations

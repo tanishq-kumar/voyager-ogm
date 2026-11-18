@@ -1,6 +1,19 @@
-//! Approach 7: Query Profiling and Plan Explanation (`explain` & `profile`)
+//! Voyager OGM: Query Profiling & Plan Explanation
 //!
-//! Run with: `cargo run --example 07_explain_and_profile_queries`
+//! Teaches:
+//! - Setting ExecutionMode: `builder.explain()` and `builder.profile()`
+//! - Multi-dialect keyword translation:
+//!   * openCypher (Neo4j / Memgraph): `EXPLAIN`
+//!   * ISO GQL: `EXPLAIN`
+//!   * SQL:2023 PGQ: `EXPLAIN`
+//!   * Apache AGE: `EXPLAIN SELECT ...`
+//!
+//! Prerequisites:
+//! - Engine: None (offline / compile-only)
+//! - Crates: voyager-ogm
+//!
+//! Run with:
+//! `cargo run --example 07_explain_and_profile_queries`
 
 use voyager_ogm::ast::ExecutionMode;
 use voyager_ogm::builder::QueryBuilder;

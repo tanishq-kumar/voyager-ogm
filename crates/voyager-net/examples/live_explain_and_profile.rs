@@ -1,9 +1,20 @@
-//! Live Engine Example: Query Profiling and Plan Explanation (`explain` & `profile`)
+//! Voyager OGM: Live Engine Query Profiling & Plan Explanation
 //!
-//! Connects to live Neo4j and Memgraph instances, executes `EXPLAIN` and `PROFILE` queries,
-//! and prints plan statistics and returned Arrow record batches.
+//! Teaches:
+//! - Connecting to live graph engines over Bolt protocol in Rust
+//! - Executing live `EXPLAIN` and `PROFILE` queries on Neo4j (port 7687) and Memgraph (port 7688)
+//! - Graph cleanup and seeding with `QueryBuilder`
+//! - Extracting runtime execution metrics and Arrow record batches
+//! - Clean skip when database engines are not reachable
 //!
-//! Run with: `cargo run -p voyager-net --example live_explain_and_profile`
+//! Prerequisites:
+//! - Engine: Neo4j (port 7687) and/or Memgraph (port 7688) running via:
+//!   `docker compose -f containers/compose.yaml up -d neo4j memgraph`
+//!   (or `podman compose -f containers/compose.yaml up -d neo4j memgraph`)
+//! - Crates: voyager-ogm, voyager-net, tokio
+//!
+//! Run with:
+//! `cargo run -p voyager-net --example live_explain_and_profile`
 
 use std::collections::HashMap;
 

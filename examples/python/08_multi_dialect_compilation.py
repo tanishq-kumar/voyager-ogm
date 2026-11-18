@@ -1,7 +1,18 @@
-"""Approach 4: Universal Multi-Dialect Query Compilation.
+"""Voyager OGM: Multi-Dialect Query Compilation.
 
-Compiles a single graph AST into openCypher 9/25, SQL:2023 PGQ, and ISO GQL.
-Run with: `uv run python examples/python/04_multi_dialect_compilation.py`
+Teaches:
+    - Compiling a single graph AST into multiple target graph query languages
+    - openCypher 9 / Cypher 25 for Neo4j and Memgraph
+    - SQL:2023 PGQ (`GRAPH_TABLE`) for DuckDB and PostgreSQL
+    - ISO/IEC 39075:2024 GQL standard syntax
+    - Parameter mapping and variable-length traversal conversion across dialects
+
+Prerequisites:
+    - Engine: None (runs offline / compile-only; no database needed)
+    - Extras: None
+
+Run with:
+    `uv run python examples/python/08_multi_dialect_compilation.py`
 """
 
 from __future__ import annotations
@@ -47,13 +58,13 @@ def main() -> None:
         .limit(10)
     )
 
-    # 1. openCypher (Neo4j, Memgraph, RedisGraph, AgensGraph)
+    # 1. openCypher (Neo4j, Memgraph)
     cypher = query.compile("cypher")
     print("[1] openCypher 9 / Cypher 25:")
     print(f"    {cypher.statement}")
     print(f"    Params: {cypher.parameters}\n")
 
-    # 2. SQL:2023 PGQ (PostgreSQL 19, DuckPGQ, Oracle 23ai)
+    # 2. SQL:2023 PGQ (DuckDB, PostgreSQL)
     pgq = query.compile("sql_pgq", graph_name="movie_network")
     print("[2] SQL:2023 PGQ (GRAPH_TABLE):")
     print(f"    {pgq.statement}")

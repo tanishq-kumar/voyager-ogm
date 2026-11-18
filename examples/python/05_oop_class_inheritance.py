@@ -1,6 +1,20 @@
-"""Approach 3: Pure OOP Subclassing (Without Decorators).
+"""Voyager OGM: Pure OOP Class Inheritance (Subclassing Node & Relationship).
 
-Run with: `uv run python examples/python/03_oop_subclassing.py`
+Teaches:
+    - Defining models via inheritance (`class Person(Node):`, `class ActedIn(Relationship):`)
+    - When to prefer subclassing vs decorators:
+        * Subclassing: Ideal for large domain models, shared mixins, base classes, and IDE autocompletion
+        * Decorators (`@node`): Ideal for lightweight scripts, dataclass-like syntax, and rapid prototyping
+    - Specifying labels in class inheritance (`class Movie(Node, label="Film"):`)
+    - Specifying relationship types (`class ActedIn(Relationship, type_name="ACTED_IN"):`)
+    - Compiling to ISO/IEC 39075:2024 GQL
+
+Prerequisites:
+    - Engine: None (runs offline / compile-only)
+    - Extras: None
+
+Run with:
+    `uv run python examples/python/05_oop_class_inheritance.py`
 """
 
 from __future__ import annotations

@@ -1,6 +1,16 @@
-//! Approach 3: Combined Edge & Target Node Pattern (`to_edge`)
+//! Voyager OGM: Combined 1-Hop Pattern
 //!
-//! Run with: `cargo run --example 03_single_call_pattern`
+//! Teaches:
+//! - Combined 1-hop pattern definitions with `.node().to_edge()`
+//! - Explicit Direction control (`Direction::Outgoing`, `Direction::Incoming`)
+//! - SQL:2023 PGQ `GRAPH_TABLE` emission with schema naming
+//!
+//! Prerequisites:
+//! - Engine: None (offline / compile-only)
+//! - Crates: voyager-ogm
+//!
+//! Run with:
+//! `cargo run --example 03_single_call_pattern`
 
 use voyager_ogm::ast::Direction;
 use voyager_ogm::builder::QueryBuilder;

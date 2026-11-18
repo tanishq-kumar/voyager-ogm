@@ -1,11 +1,21 @@
-"""Level 5: Enterprise - Universal Multi-Dialect Query Compilation.
+"""Voyager OGM: Enterprise Multi-Dialect Query Compilation & Dialect Cheat-Sheet.
 
-Learn how to write ONE graph query in Python and compile it into:
-  1. openCypher 9 / Cypher 25 (Neo4j, Memgraph, RedisGraph)
-  2. SQL:2023 PGQ (DuckPGQ, PostgreSQL 19, Oracle 23ai)
-  3. ISO/IEC 39075:2024 GQL (Official ISO standard)
+Teaches:
+    - Multi-label node entity definitions (`@node(label=["Person", "Engineer"])`)
+    - Dialect name cheat-sheet:
+        * `"cypher"`: openCypher 9 / Cypher 25 (Neo4j, Memgraph, FalkorDB)
+        * `"sql_pgq"`: SQL:2023 Property Graph Queries (`GRAPH_TABLE`) (DuckDB, PostgreSQL)
+        * `"iso_gql"`: ISO/IEC 39075:2024 Graph Query Language (ISO GQL standard)
+        * `"age"`: Apache AGE Cypher-in-SQL extension for PostgreSQL
+    - How multi-labels compile differently: `:Person:Engineer` (Cypher) vs `IS Person IS Engineer` (PGQ) vs `Person&Engineer` (GQL)
+    - Specifying graph schema names for SQL:2023 PGQ (`graph_name="infra_graph"`)
 
-Run with: `uv run python examples/python/05_enterprise_multi_dialect.py`
+Prerequisites:
+    - Engine: None (runs offline / compile-only; no database needed)
+    - Extras: None
+
+Run with:
+    `uv run python examples/python/09_enterprise_dialects.py`
 """
 
 from __future__ import annotations
@@ -60,9 +70,9 @@ def main() -> None:
     print(f"    {cypher.statement}")
     print(f"    Parameters: {cypher.parameters}\n")
 
-    # 2. Compile to SQL:2023 PGQ (for DuckPGQ / PostgreSQL 19)
+    # 2. Compile to SQL:2023 PGQ (for DuckDB / PostgreSQL)
     pgq = query.compile("sql_pgq", graph_name="infra_graph")
-    print("[2] SQL:2023 PGQ GRAPH_TABLE (for DuckDB / PostgreSQL 19):")
+    print("[2] SQL:2023 PGQ GRAPH_TABLE (for DuckDB / PostgreSQL):")
     print(f"    {pgq.statement}")
     print(f"    Parameters: {pgq.parameters}\n")
 

@@ -1,22 +1,48 @@
-"""Example 18: NetworkX Graph Analytics Export Bridge.
+"""Voyager OGM: NetworkX Graph Analytics Export Bridge.
 
-Demonstrates exporting Voyager query execution results directly into NetworkX:
-1. Execute a query with node entities and relationships.
-2. Export query results directly to a NetworkX DiGraph via `result.to_networkx()`.
-3. Run network analysis algorithms (PageRank, shortest paths, centrality) via NetworkX.
+Teaches:
+    - Exporting Voyager query results directly into NetworkX graphs via `result.to_networkx()`
+    - Directed graph construction (`nx.DiGraph`) preserving edge types and weights
+    - Running graph algorithms: PageRank, betweenness centrality, and shortest paths
+    - In-memory analytics workflows bridging database results with NetworkX
 
-Run with: `uv run python examples/python/18_networkx_analytics.py`
+Prerequisites:
+    - Engine: None (runs in-memory / offline via MockBridge)
+    - Extras: `analytics` extra (`pip install "voyager-ogm[analytics]"`)
+
+Run with:
+    `uv run python examples/python/25_networkx_analytics.py`
 """
 
 from __future__ import annotations
 
 import networkx as nx
-from voyager_ogm import MockBridge, Session
+from voyager_ogm import (
+    Field,
+    MockBridge,
+    Node,
+    Query,
+    Relationship,
+    Session,
+    node,
+    relationship,
+)
+
+
+@node(label="User")
+class User(Node):
+    id: int = Field(primary_key=True)
+    name: str = Field()
+
+
+@relationship(type_name="FOLLOWS")
+class Follows(Relationship):
+    weight: float = Field(default=1.0)
 
 
 def main() -> None:
     print("=" * 70)
-    print("[Example 18] NetworkX Graph Analytics Export Bridge")
+    print("[25] NetworkX Graph Analytics Export Bridge")
     print("=" * 70)
 
     # 1. Simulate database query returning social network graph records
@@ -42,7 +68,11 @@ def main() -> None:
     )
 
     session = Session(bridge=bridge, dialect="cypher")
-    res = session.execute("MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN a, r, b")
+    a = User(alias="a")
+    b = User(alias="b")
+    r = Follows(alias="r")
+    q = Query.match(a).to(r).node(b).return_(a, r, b)
+    res = session.execute(q)
 
     # 2. Export directly into a NetworkX directed graph
     graph = res.to_networkx(directed=True)

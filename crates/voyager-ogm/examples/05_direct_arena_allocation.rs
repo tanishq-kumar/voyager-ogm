@@ -1,6 +1,17 @@
-//! Approach 5: Low-Level Direct AST Allocation (`QueryAstArena`)
+//! Voyager OGM: Direct AST Allocation
 //!
-//! Run with: `cargo run --example 05_direct_arena_allocation`
+//! Teaches:
+//! - Direct, contiguous AST memory allocation via `QueryAstArena`
+//! - Manually constructing `AstNode::MatchClause`, `AstNode::NodePattern`, `AstNode::ReturnClause`
+//! - Emitting ISO/IEC 39075:2024 GQL statements directly from arena IDs
+//! - Zero-heap-fragmentation AST manipulation patterns
+//!
+//! Prerequisites:
+//! - Engine: None (offline / compile-only)
+//! - Crates: voyager-ogm
+//!
+//! Run with:
+//! `cargo run --example 05_direct_arena_allocation`
 
 use voyager_ogm::ast::*;
 use voyager_ogm::emitters::IsoGqlEmitter;

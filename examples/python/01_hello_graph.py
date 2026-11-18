@@ -1,9 +1,17 @@
-"""Level 1: Beginner - "Hello Graph!"
+"""Voyager OGM: Hello Graph!
 
-The absolute simplest way to define a graph node and run your first query.
-No complex decorators or database jargon required.
+Teaches:
+    - Defining graph node entities using `@node`
+    - Automatic alias generation (`_person_0`) for conflict-free queries
+    - Constructing fluent pattern match queries with standard comparison operators
+    - Compiling queries offline to parameterized openCypher statements
 
-Run with: `uv run python examples/python/01_beginner_hello_graph.py`
+Prerequisites:
+    - Engine: None (runs offline / compile-only; no database needed)
+    - Extras: None
+
+Run with:
+    `uv run python examples/python/01_hello_graph.py`
 """
 
 from __future__ import annotations

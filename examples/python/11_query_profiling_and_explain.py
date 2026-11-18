@@ -1,15 +1,21 @@
-"""Voyager OGM: Query Profiling and Plan Explanation (explain and profile).
+"""Voyager OGM: Query Profiling and Plan Explanation (EXPLAIN & PROFILE).
 
-Demonstrates:
-1. Fluent query modification via `.explain()` and `.profile()`.
-2. Functional style `explain(query)` and `profile(query)` preserving immutability.
-3. Composable execution modes (`explain(profile(query))` or `.explain().profile()`).
-4. Multi-dialect keyword translation:
-   - openCypher (Neo4j / Memgraph): `EXPLAIN` and `PROFILE`
-   - ISO/IEC GQL: `EXPLAIN` and `PROFILE`
-   - SQL:2023 PGQ (DuckDB / PostgreSQL): `EXPLAIN` and `EXPLAIN ANALYZE`
-   - Apache AGE: `EXPLAIN SELECT ...` and `EXPLAIN ANALYZE SELECT ...`
-5. Session execution pattern with `MockBridge`.
+Teaches:
+    - Fluent query profiling with `.explain()` and `.profile()`
+    - Functional wrappers `explain(query)` and `profile(query)`
+    - Multi-dialect keyword translation:
+        * openCypher (Neo4j / Memgraph): `EXPLAIN` and `PROFILE`
+        * ISO/IEC 39075:2024 GQL: `EXPLAIN` and `PROFILE`
+        * SQL:2023 PGQ (DuckDB / PostgreSQL): `EXPLAIN` and `EXPLAIN ANALYZE`
+        * Apache AGE: `EXPLAIN SELECT ...` and `EXPLAIN ANALYZE SELECT ...`
+    - MockBridge execution and live engine profiling when Neo4j is available
+
+Prerequisites:
+    - Engine: None for offline AST profiling; optional live Neo4j on bolt://127.0.0.1:7687
+    - Extras: None (or `neo4j` for optional live profiling)
+
+Run with:
+    `uv run python examples/python/11_query_profiling_and_explain.py`
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ from voyager_ogm import (
     Query,
     Relationship,
     Session,
+    create_bridge,
     explain,
     node,
     profile,
@@ -155,62 +162,51 @@ def main():
     # 6. Live Engine Execution (Neo4j on localhost:7687)
     # -------------------------------------------------------------------------
     print("\n--- 5. Live Engine Execution (Neo4j) ---")
+    uri = "bolt://127.0.0.1:7687"
     try:
-        from neo4j import GraphDatabase
-
-        driver = GraphDatabase.driver("bolt://127.0.0.1:7687", auth=("neo4j", "voyagerpass123"))
-        driver.verify_connectivity()
-        live_session = Session(bridge=driver, dialect="cypher")
-
-        print("Connected to live Neo4j database on localhost:7687!")
-
-        # 1. Clean up test nodes using QueryBuilder
-        u_clean = User("u_clean")
-        q_cleanup = Query.match(u_clean).detach_delete(u_clean)
-        live_session.execute(q_cleanup)
-
-        # 2. Seed test graph data using QueryBuilder fluent mutations
-        u1 = User("u1")
-        u2 = User("u2")
-        r1 = FriendsWith("r1")
-        q_seed = (
-            Query.create(u1)
-            .to(r1)
-            .node(u2)
-            .set(
-                u1.user_id == "u1",
-                u1.name == "Alice",
-                u1.active == True,  # noqa: E712
-                u1.tier == "enterprise",
-                u2.user_id == "u2",
-                u2.name == "Bob",
-                u2.active == True,  # noqa: E712
-                u2.tier == "enterprise",
-                r1.since == 2024,
+        bridge = create_bridge(uri, fallback="mock")
+        if not bridge.ping():
+            print(
+                f"[SKIP] Neo4j engine is not reachable on {uri} (start with `docker compose -f containers/compose.yaml up -d neo4j` or `podman compose ...`)."
             )
-        )
-        live_session.execute(q_seed)
+        else:
+            live_session = Session(bridge=bridge, dialect="cypher")
+            print("Connected to live Neo4j database on localhost:7687!")
 
-        # 3. Execute live EXPLAIN
-        print("Executing live EXPLAIN query...")
-        exp_res = explain(base_query).execute(live_session)
-        print(f"-> Live EXPLAIN executed cleanly! (Data rows returned: {len(exp_res.all())})")
-        assert len(exp_res.all()) == 0
+            # 1. Clean up test nodes using OGM QueryBuilder
+            u_clean = User("u_clean")
+            q_cleanup = Query.match(u_clean).detach_delete(u_clean)
+            live_session.execute(q_cleanup)
 
-        # 4. Execute live PROFILE
-        print("Executing live PROFILE query...")
-        prof_res = profile(base_query).execute(live_session)
-        prof_rows = prof_res.all()
-        print(f"-> Live PROFILE executed cleanly! (Data rows returned: {len(prof_rows)})")
-        assert len(prof_rows) >= 1
-        print(f"-> Profiled Result Row: {prof_rows[0]}")
+            # 2. Seed test graph data using OGM models & QueryBuilder fluent mutations
+            u1 = User(alias="u1", user_id="u1", name="Alice", active=True, tier="enterprise")
+            u2 = User(alias="u2", user_id="u2", name="Bob", active=True, tier="enterprise")
+            r1 = FriendsWith(alias="r1", since=2024)
+            # Workaround for #174: Query.create(instance) currently drops field values, so
+            # .set(instance) writes them explicitly. Drop .set(...) once #174 is fixed.
+            q_seed = Query.create(u1).to(r1).node(u2).set(u1).set(u2).set(r1.since == 2024)
+            live_session.execute(q_seed)
 
-        # 5. Clean up using QueryBuilder
-        live_session.execute(q_cleanup)
-        driver.close()
-        print("Live Neo4j execution validated successfully!")
+            # 3. Execute live EXPLAIN
+            print("Executing live EXPLAIN query...")
+            exp_res = explain(base_query).execute(live_session)
+            print(f"-> Live EXPLAIN executed cleanly! (Data rows returned: {len(exp_res.all())})")
+            assert len(exp_res.all()) == 0
+
+            # 4. Execute live PROFILE
+            print("Executing live PROFILE query...")
+            prof_res = profile(base_query).execute(live_session)
+            prof_rows = prof_res.all()
+            print(f"-> Live PROFILE executed cleanly! (Data rows returned: {len(prof_rows)})")
+            assert len(prof_rows) >= 1
+            print(f"-> Profiled Result Row: {prof_rows[0]}")
+
+            # 5. Clean up using QueryBuilder
+            live_session.execute(q_cleanup)
+            live_session.close()
+            print("Live Neo4j execution validated successfully!")
     except Exception as e:
-        print(f"[NOTE] Live Neo4j engine check skipped: {e}")
+        print(f"[SKIP] Live Neo4j engine check skipped: {e}")
 
     print("\nAll explain & profile examples executed successfully!")
 

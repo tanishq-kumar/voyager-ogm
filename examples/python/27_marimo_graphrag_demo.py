@@ -1,3 +1,21 @@
+"""Voyager OGM: Interactive Marimo GraphRAG Dashboard.
+
+Teaches:
+    - Building reactive, interactive graph dashboards in Marimo notebooks
+    - Traitlet synchronization and reactive click callbacks
+    - Ingesting dictionary records and Polars DataFrames into GraphViewer
+    - Exploring multi-hop graph subgraphs with interactive UI filters
+
+Prerequisites:
+    - Engine: None (runs in-memory / offline)
+    - Extras: `notebook` extra (`pip install "voyager-ogm[notebook]"`, marimo)
+
+Run with:
+    `marimo run examples/python/27_marimo_graphrag_demo.py`
+    # or view as Python script:
+    `uv run python examples/python/27_marimo_graphrag_demo.py`
+"""
+
 import marimo
 
 __generated_with = "0.24.0"
@@ -146,7 +164,7 @@ def _(dataset_dropdown):
         edge_label_col="rel",
         height="520px",
     )
-    viewer
+    _ = viewer
     return active_df, viewer
 
 
@@ -167,7 +185,7 @@ def _(active_df, mo, pl, viewer):
         result = mo.md(
             "*Click any node on the graph canvas above to inspect its 1-hop neighborhood and properties in real time.*"
         )
-    result
+    _ = result
     return
 
 
@@ -241,11 +259,11 @@ def _():
         .node(m)
         .where(tx.amount > 10000.0)
         .return_(
-            customer="c.cust_id",
-            source_account="a1.acc_num",
-            destination_account="a2.acc_num",
-            merchant="m.name",
-            transfer_amount="tx.amount",
+            customer=c.cust_id,
+            source_account=a1.acc_num,
+            destination_account=a2.acc_num,
+            merchant=m.name,
+            transfer_amount=tx.amount,
         )
         .limit(50)
     )
