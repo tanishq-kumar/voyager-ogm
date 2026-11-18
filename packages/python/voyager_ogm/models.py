@@ -734,6 +734,29 @@ class PredicateExpr(BinaryExpr):
         )
 
 
+def get_primary_key_field(model: type[Any]) -> str | None:
+    """Returns the declared primary key property name for a model, if any.
+
+    Primary keys are declared with ``Field(primary_key=True)``. The property
+    name is preferred over the Python attribute name so that renamed fields
+    resolve consistently with schema registration and query generation.
+
+    Args:
+        model: Node or Relationship model class to inspect.
+
+    Returns:
+        The primary key property name, or None when the model declares no
+        primary key.
+    """
+    schema = getattr(model, "_schema_fields", None)
+    if not isinstance(schema, dict):
+        return None
+    for f_name, f_obj in schema.items():
+        if getattr(f_obj, "primary_key", False):
+            return getattr(f_obj, "name", None) or f_name
+    return None
+
+
 def _process_type_annotations(cls: Any) -> dict[str, Field]:
     """Extracts type annotations and injects Field descriptors automatically.
 
@@ -856,11 +879,7 @@ class Node:
             name = cls.__name__
             labels = list(getattr(cls, "__labels__", [name]))
             fields = getattr(cls, "_schema_fields", {})
-            primary_key = None
-            for f_name, f_obj in fields.items():
-                if getattr(f_obj, "primary_key", False):
-                    primary_key = getattr(f_obj, "name", None) or f_name
-                    break
+            primary_key = get_primary_key_field(cls)
             fulltext_indexes = getattr(cls, "__fulltext_indexes__", None)
             ft_list = None
             if fulltext_indexes is not None:
@@ -979,7 +998,7 @@ class Node:
         """[Experimental] Attaches a session via weak reference for Active Record `.save()` ergonomics."""
         self._session_ref = weakref.ref(session)
 
-    def save(self, session: Any = None, key_field: str = "id") -> Any:
+    def save(self, session: Any = None, key_field: str | None = None) -> Any:
         """[Experimental] Persists dirty property changes to the database using Active Record ergonomics.
 
         Technique: Active Record + Data Mapper Fusion
@@ -991,7 +1010,8 @@ class Node:
         Args:
             session: Explicit Session to persist through. If omitted, uses the session
                 attached during initialization or registration.
-            key_field: Unique primary key property name (defaults to 'id').
+            key_field: Unique primary key property name. Defaults to the model's
+                declared `Field(primary_key=True)`, falling back to 'id'.
 
         Returns:
             BulkExecutionResult if flushed, or None if no dirty fields were pending.
@@ -1016,21 +1036,25 @@ class Node:
         if not self._dirty_fields:
             return None
 
+        resolved_key_field = key_field
+        if resolved_key_field is None:
+            resolved_key_field = get_primary_key_field(self.__class__) or "id"
+
         record = {k: serialize_param_value(v) for k, v in self._dirty_fields.items()}
-        primary_val = self.get(key_field)
+        primary_val = self.get(resolved_key_field)
         if primary_val is not None:
-            record[key_field] = serialize_param_value(primary_val)
+            record[resolved_key_field] = serialize_param_value(primary_val)
 
         plan = active_session.bulk_upsert(
             model=self.__class__,
             data=[record],
-            key_field=key_field,
+            key_field=resolved_key_field,
         )
         result = active_session.run_bulk(plan)
         self.clear_dirty()
         return result
 
-    async def async_save(self, session: Any = None, key_field: str = "id") -> Any:
+    async def async_save(self, session: Any = None, key_field: str | None = None) -> Any:
         """[Experimental] Asynchronously persists dirty property changes to the database using Active Record ergonomics.
 
         Technique: Active Record + Data Mapper Fusion
@@ -1042,7 +1066,8 @@ class Node:
         Args:
             session: Explicit AsyncSession to persist through. If omitted, uses the session
                 attached during initialization or registration.
-            key_field: Unique primary key property name (defaults to 'id').
+            key_field: Unique primary key property name. Defaults to the model's
+                declared `Field(primary_key=True)`, falling back to 'id'.
 
         Returns:
             BulkExecutionResult if flushed, or None if no dirty fields were pending.
@@ -1067,15 +1092,19 @@ class Node:
         if not self._dirty_fields:
             return None
 
+        resolved_key_field = key_field
+        if resolved_key_field is None:
+            resolved_key_field = get_primary_key_field(self.__class__) or "id"
+
         record = {k: serialize_param_value(v) for k, v in self._dirty_fields.items()}
-        primary_val = self.get(key_field)
+        primary_val = self.get(resolved_key_field)
         if primary_val is not None:
-            record[key_field] = serialize_param_value(primary_val)
+            record[resolved_key_field] = serialize_param_value(primary_val)
 
         plan = active_session.bulk_upsert(
             model=self.__class__,
             data=[record],
-            key_field=key_field,
+            key_field=resolved_key_field,
         )
         result = await active_session.run_bulk(plan)
         self.clear_dirty()
