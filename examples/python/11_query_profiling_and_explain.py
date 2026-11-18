@@ -182,9 +182,7 @@ def main():
             u1 = User(alias="u1", user_id="u1", name="Alice", active=True, tier="enterprise")
             u2 = User(alias="u2", user_id="u2", name="Bob", active=True, tier="enterprise")
             r1 = FriendsWith(alias="r1", since=2024)
-            # Workaround for #174: Query.create(instance) currently drops field values, so
-            # .set(instance) writes them explicitly. Drop .set(...) once #174 is fixed.
-            q_seed = Query.create(u1).to(r1).node(u2).set(u1).set(u2).set(r1.since == 2024)
+            q_seed = Query.create(u1).to(r1).node(u2)
             live_session.execute(q_seed)
 
             # 3. Execute live EXPLAIN

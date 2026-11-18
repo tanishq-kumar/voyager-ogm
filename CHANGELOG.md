@@ -79,6 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added explicit, loud errors on mock bridge fallback in production configurations.
 
 ### Changed
+- **Examples use the fixed OGM write path (#174, #175)**: removed the `.set(instance)` workarounds after `Query.create(...)` in examples 07, 11, 17, 20 and 31, and changed the MERGE demo in example 07 to a keyed `Query.merge(instance)` upsert.
 - Renamed the Rust core crate `voyager-core` to `voyager-ogm` (`voyager_core::` -> `voyager_ogm::`; `RUST_LOG` targets change accordingly) (#171).
 - Repository renamed to `tanishq-kumar/voyager`; package names unchanged (#168).
 - **Runtime Panic Handling, PyO3 and Toolchain Updates (#158)**:

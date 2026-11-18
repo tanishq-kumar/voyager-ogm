@@ -95,11 +95,9 @@ def main() -> None:
     alan = Member(alias="alan", id=2, username="Alan", reputation=880)
     comm = Community(alias="c10", id=10, name="GraphAI", topic="Machine Learning")
 
-    # Workaround for #174: Query.create(instance) currently drops field values, so
-    # .set(instance) writes them explicitly. Drop .set(...) once #174 is fixed.
-    session.execute(Query.create(ada).set(ada))
-    session.execute(Query.create(alan).set(alan))
-    session.execute(Query.create(comm).set(comm))
+    session.execute(Query.create(ada))
+    session.execute(Query.create(alan))
+    session.execute(Query.create(comm))
 
     # Connect matched nodes via relationship patterns using OGM Query
     m_match = Member(alias="m")

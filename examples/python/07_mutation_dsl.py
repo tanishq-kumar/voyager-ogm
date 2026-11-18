@@ -46,16 +46,14 @@ def main() -> None:
     dst = Account(alias="dst", acc_no="ACC-200", holder="Bob", balance=1200.0)
     tx = TransferredTo(alias="tx", amount=750.0)
 
-    # Single node creation
-    # Workaround for #174: Query.create(instance) currently drops field values, so
-    # .set(instance) writes them explicitly. Drop .set(...) once #174 is fixed.
-    q_create_node = Query.create(src).set(src)
+    # Single node creation: every set field becomes a parameterised pattern property
+    q_create_node = Query.create(src)
     compiled_create = q_create_node.compile("cypher")
     print("[1] CREATE Single Node (openCypher):")
     print(f"    {compiled_create.statement}\n")
 
     # Relationship path creation: (src)-[tx]->(dst)
-    q_create_path = Query.create(src).to(tx).node(dst).set(src).set(dst).set(tx.amount == 750.0)
+    q_create_path = Query.create(src).to(tx).node(dst)
     compiled_path = q_create_path.compile("cypher")
     print("[2] CREATE Relationship Path (openCypher):")
     print(f"    {compiled_path.statement}\n")
@@ -63,24 +61,11 @@ def main() -> None:
     # -------------------------------------------------------------------------
     # 2. MERGE: Upsert with ON CREATE and ON MATCH
     # -------------------------------------------------------------------------
-    # Caution (#174, #175): Query.merge(instance) does not yet put the key in the MERGE
-    # pattern, and .where(...) after merge is dropped, so this compiles to a keyless
-    # `MERGE (a:Account)` that matches ANY existing Account. For keyed upserts today use
-    # Node.save() or session.bulk_create(); this block shows the ON CREATE / ON MATCH syntax.
-    # Note: openCypher MERGE specifies pattern-level matching without a trailing WHERE.
-    # To assign key identifiers and initial defaults on insert vs update on match,
-    # use fluent .on_create_set(...) and .on_match_set(...).
-    user = Account(alias="a")
-    q_merge = (
-        Query.merge(user)
-        .on_create_set(
-            user.acc_no == "ACC-300",
-            user.holder == "Charlie",
-            user.status == "PENDING",
-            user.balance == 0.0,
-        )
-        .on_match_set(user.status == "ACTIVE")
-    )
+    # Query.merge(instance) keys the MERGE pattern on the primary key (acc_no) and writes
+    # the other set fields in both ON CREATE SET and ON MATCH SET. Chained
+    # .on_create_set(...) / .on_match_set(...) calls are appended after them.
+    user = Account(alias="a", acc_no="ACC-300", holder="Charlie")
+    q_merge = Query.merge(user).on_match_set(user.status == "ACTIVE")
     compiled_merge = q_merge.compile("cypher")
     print("[3] MERGE Upsert Pattern (openCypher):")
     print(f"    Statement:  {compiled_merge.statement}")
@@ -130,7 +115,7 @@ def main() -> None:
     # -------------------------------------------------------------------------
     # 6. Multi-Dialect ISO GQL Compilation
     # -------------------------------------------------------------------------
-    gql_insert = Query.create(src).set(src).compile("iso_gql")  # .set: workaround for #174
+    gql_insert = Query.create(src).compile("iso_gql")
     print("[7] ISO/IEC 39075:2024 GQL INSERT:")
     print(f"    {gql_insert.statement}\n")
 

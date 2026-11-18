@@ -86,16 +86,7 @@ def main() -> None:
     s1_seed = Service(alias="s1", name="auth-service", language="Rust", latency_ms=4.2)
     s2_seed = Service(alias="s2", name="payment-service", language="Go", latency_ms=12.5)
     dep_seed = DependsOn(alias="d", protocol="gRPC")
-    # Workaround for #174: Query.create(instance) currently drops field values, so
-    # .set(...) writes them explicitly. Drop the .set(...) calls once #174 is fixed.
-    q_seed = (
-        Query.create(s1_seed)
-        .to(dep_seed)
-        .node(s2_seed)
-        .set(s1_seed)
-        .set(s2_seed)
-        .set(dep_seed.protocol == "gRPC")
-    )
+    q_seed = Query.create(s1_seed).to(dep_seed).node(s2_seed)
 
     engines_tested = 0
 
