@@ -540,6 +540,7 @@ class TestSessionFullTextLifecycle:
         assert res_alias is not None
 
 
+@pytest.mark.live
 class TestLiveEngineFullTextIntegration:
     """Integration tests against live Neo4j, FalkorDB, and Memgraph instances when reachable."""
 

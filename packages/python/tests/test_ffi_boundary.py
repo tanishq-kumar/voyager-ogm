@@ -261,6 +261,7 @@ def test_native_client_invalid_uri():
         NativeClient("unknown://host:1234")
 
 
+@pytest.mark.live
 @pytest.mark.skipif(not FALKORDB_ONLINE, reason="Live FalkorDB container not available")
 def test_native_client_falkordb_sync_and_async():
     """Verify synchronous and asynchronous query execution on FalkorDB via NativeClient."""
@@ -289,6 +290,7 @@ def test_native_client_falkordb_sync_and_async():
     client.close()
 
 
+@pytest.mark.live
 @pytest.mark.skipif(not NEO4J_ONLINE, reason="Live Neo4j container not available")
 def test_native_client_neo4j_sync_and_async():
     """Verify synchronous and asynchronous query execution on Neo4j via NativeClient."""
@@ -335,6 +337,7 @@ def test_session_backend_selection():
         Session("unsupported://127.0.0.1:9999", backend="native")
 
 
+@pytest.mark.live
 @pytest.mark.skipif(not FALKORDB_ONLINE, reason="Live FalkorDB container not available")
 def test_session_native_falkordb():
     """Verify Session full query workflow using native backend against FalkorDB."""
@@ -364,6 +367,7 @@ def test_session_native_falkordb():
         assert tbl.column("num")[0].as_py() == 123
 
 
+@pytest.mark.live
 @pytest.mark.skipif(not FALKORDB_ONLINE, reason="Live FalkorDB container not available")
 @pytest.mark.asyncio
 async def test_async_session_native_falkordb():

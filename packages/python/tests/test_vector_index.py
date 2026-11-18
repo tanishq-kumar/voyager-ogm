@@ -356,6 +356,7 @@ class TestSessionSchemaLifecycle:
         assert res is not None
 
 
+@pytest.mark.live
 class TestLiveEngineVectorIntegration:
     """Integration tests against live Neo4j and FalkorDB instances when reachable."""
 
