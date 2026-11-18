@@ -130,8 +130,65 @@ pub trait AsyncConnection: Send + Sync {
     /// Returns `true` if the connection is currently inside an explicit transaction block.
     fn is_in_transaction(&self) -> bool;
 
+    /// Returns `true` when a ROLLBACK can still be issued to end the current
+    /// transaction. Failed transactions (for example PostgreSQL `INERROR`)
+    /// need a rollback even though [`Self::is_in_transaction`] is false.
+    fn can_rollback(&self) -> bool {
+        self.is_in_transaction()
+    }
+
     /// Gracefully closes the underlying socket and releases server resources.
     async fn close(&mut self) -> Result<()>;
+
+    /// Begins an explicit database transaction on this connection.
+    ///
+    /// The default implementation reports that the dialect does not support
+    /// transactions. Backends that do support them override this method.
+    async fn begin_transaction(&mut self) -> Result<()> {
+        Err(NetError::TransactionError(
+            "This backend does not support transactions".to_string(),
+        ))
+    }
+
+    /// Commits the explicit database transaction currently open on this connection.
+    async fn commit_transaction(&mut self) -> Result<()> {
+        Err(NetError::TransactionError(
+            "This backend does not support transactions".to_string(),
+        ))
+    }
+
+    /// Rolls back the explicit database transaction currently open on this connection.
+    async fn rollback_transaction(&mut self) -> Result<()> {
+        Err(NetError::TransactionError(
+            "This backend does not support transactions".to_string(),
+        ))
+    }
+
+    /// Creates a named savepoint inside the active transaction.
+    async fn create_savepoint(&mut self, name: &str) -> Result<()> {
+        Err(NetError::TransactionError(format!(
+            "Savepoint '{name}' is not supported by this backend"
+        )))
+    }
+
+    /// Rolls the active transaction back to a named savepoint.
+    async fn rollback_to_savepoint(&mut self, name: &str) -> Result<()> {
+        Err(NetError::TransactionError(format!(
+            "Savepoint '{name}' is not supported by this backend"
+        )))
+    }
+
+    /// Releases a named savepoint from the active transaction.
+    async fn release_savepoint(&mut self, name: &str) -> Result<()> {
+        Err(NetError::TransactionError(format!(
+            "Savepoint '{name}' is not supported by this backend"
+        )))
+    }
+
+    /// Returns `true` when the backend supports real transaction savepoints.
+    fn supports_savepoints(&self) -> bool {
+        false
+    }
 }
 
 #[async_trait]
@@ -160,8 +217,40 @@ impl AsyncConnection for Box<dyn AsyncConnection> {
         (**self).is_in_transaction()
     }
 
+    fn can_rollback(&self) -> bool {
+        (**self).can_rollback()
+    }
+
     async fn close(&mut self) -> Result<()> {
         (**self).close().await
+    }
+
+    async fn begin_transaction(&mut self) -> Result<()> {
+        (**self).begin_transaction().await
+    }
+
+    async fn commit_transaction(&mut self) -> Result<()> {
+        (**self).commit_transaction().await
+    }
+
+    async fn rollback_transaction(&mut self) -> Result<()> {
+        (**self).rollback_transaction().await
+    }
+
+    async fn create_savepoint(&mut self, name: &str) -> Result<()> {
+        (**self).create_savepoint(name).await
+    }
+
+    async fn rollback_to_savepoint(&mut self, name: &str) -> Result<()> {
+        (**self).rollback_to_savepoint(name).await
+    }
+
+    async fn release_savepoint(&mut self, name: &str) -> Result<()> {
+        (**self).release_savepoint(name).await
+    }
+
+    fn supports_savepoints(&self) -> bool {
+        (**self).supports_savepoints()
     }
 }
 

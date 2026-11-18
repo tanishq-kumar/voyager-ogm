@@ -296,10 +296,21 @@ impl RedisConnection {
         }
     }
 
-    /// Begins a new transaction on this connection using `MULTI`.
+    /// The legacy Redis `MULTI` API is intentionally unsupported as a transaction.
+    ///
+    /// FalkorDB/Redis cannot provide rollback or read-your-writes, so this
+    /// legacy entry point fails like the [`AsyncConnection`] transaction API.
     pub async fn begin_transaction(&mut self) -> Result<RedisTransaction<'_>> {
-        RedisTransaction::begin(self).await
+        Err(falkordb_transaction_error())
     }
+}
+
+/// Error explaining why FalkorDB/Redis cannot act as a transactional database.
+pub(crate) fn falkordb_transaction_error() -> NetError {
+    NetError::TransactionError(
+        "FalkorDB does not support transactions: Redis MULTI/EXEC cannot provide rollback or read-your-writes"
+            .to_string(),
+    )
 }
 
 #[async_trait]
@@ -348,5 +359,17 @@ impl AsyncConnection for RedisConnection {
         let _ = write_command(&mut self.stream, &["QUIT"]).await;
         self.is_valid = false;
         Ok(())
+    }
+
+    async fn begin_transaction(&mut self) -> Result<()> {
+        Err(falkordb_transaction_error())
+    }
+
+    async fn commit_transaction(&mut self) -> Result<()> {
+        Err(falkordb_transaction_error())
+    }
+
+    async fn rollback_transaction(&mut self) -> Result<()> {
+        Err(falkordb_transaction_error())
     }
 }

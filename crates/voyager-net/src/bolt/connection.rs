@@ -995,4 +995,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncConnection for BoltCo
         }
         Ok(())
     }
+
+    async fn begin_transaction(&mut self) -> Result<()> {
+        self.begin_tx(None).await
+    }
+
+    async fn commit_transaction(&mut self) -> Result<()> {
+        self.commit_tx().await
+    }
+
+    async fn rollback_transaction(&mut self) -> Result<()> {
+        self.rollback_tx().await
+    }
 }

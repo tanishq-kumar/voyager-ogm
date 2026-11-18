@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use pyo3::exceptions::{
     PyNotImplementedError, PyRuntimeError, PyTypeError, PyUserWarning, PyValueError,
@@ -2701,16 +2701,16 @@ impl PyUnitOfWork {
     }
 }
 
-/// Native Two-Layer Transaction with in-memory savepoints and dirty rollback.
-#[pyclass(name = "NativeTransaction")]
-pub struct PyTransaction {
+/// Native in-memory Unit of Work scope with savepoints and dirty-state rollback.
+#[pyclass(name = "NativeUnitOfWorkScope")]
+pub struct PyUnitOfWorkScope {
     inner: voyager_ogm::transaction::Transaction,
     uow: voyager_ogm::transaction::UnitOfWork,
     arena: voyager_ogm::ast::QueryAstArena,
 }
 
 #[pymethods]
-impl PyTransaction {
+impl PyUnitOfWorkScope {
     #[new]
     fn new(id: u64) -> Self {
         let uow = voyager_ogm::transaction::UnitOfWork::new();
@@ -3060,6 +3060,25 @@ impl PyNativeQueryResult {
     }
 }
 
+fn query_result_to_py(query_result: voyager_net::QueryResult) -> PyResult<PyNativeQueryResult> {
+    let columns = query_result.columns.clone();
+    let summary = query_result.summary.clone();
+    let batch = query_result
+        .into_single_batch()
+        .map_err(|e| PyValueError::new_err(e.to_string()))?
+        .unwrap_or_else(|| {
+            arrow::record_batch::RecordBatch::new_empty(std::sync::Arc::new(
+                arrow::datatypes::Schema::empty(),
+            ))
+        });
+
+    Ok(PyNativeQueryResult {
+        stream: PyArrowStream::from_batch(batch),
+        columns,
+        summary,
+    })
+}
+
 use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 
 static RUNTIME_PID: AtomicU32 = AtomicU32::new(0);
@@ -3237,11 +3256,461 @@ impl PyNativeClient {
         })
     }
 
+    /// Synchronously leases one pooled connection and begins a native transaction.
+    fn begin_transaction_sync(&self, py: Python<'_>) -> PyResult<PyNativeTransaction> {
+        let client = self.client.clone();
+        let tx = py
+            .detach(|| {
+                get_tokio_runtime().block_on(async move { client.begin_transaction().await })
+            })
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(PyNativeTransaction::from_handle(tx))
+    }
+
+    /// Asynchronously leases one pooled connection and begins a native transaction.
+    fn begin_transaction<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.client.clone();
+        let _ = get_tokio_runtime();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let tx = client
+                .begin_transaction()
+                .await
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            Ok(PyNativeTransaction::from_handle(tx))
+        })
+    }
+
     /// Closes the connection pool.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         let client = self.client.clone();
         py.detach(|| get_tokio_runtime().block_on(async move { client.close().await }));
         Ok(())
+    }
+}
+
+type NativeTransactionHandle =
+    voyager_net::NativeTransaction<Box<dyn voyager_net::AsyncConnection>>;
+
+const TX_STATE_ACTIVE: u8 = 1;
+const TX_STATE_COMMITTED: u8 = 2;
+const TX_STATE_ROLLED_BACK: u8 = 3;
+const TX_STATE_FAILED: u8 = 4;
+
+/// Marks a PyO3 transaction failed if its future is cancelled mid-await.
+///
+/// The taken [`NativeTransaction`] is dropped on cancellation, which marks its
+/// pooled connection broken (never RESET/reused with in-flight frames). The
+/// guard additionally records the FAILED lifecycle state so Python sees an
+/// aborted transaction instead of a stale ACTIVE handle with no connection.
+struct TxFutureGuard {
+    inner: Arc<parking_lot::Mutex<Option<NativeTransactionHandle>>>,
+    state: Arc<AtomicU8>,
+    armed: bool,
+}
+
+impl TxFutureGuard {
+    fn new(
+        inner: Arc<parking_lot::Mutex<Option<NativeTransactionHandle>>>,
+        state: Arc<AtomicU8>,
+    ) -> Self {
+        Self {
+            inner,
+            state,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TxFutureGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.state.store(TX_STATE_FAILED, Ordering::Release);
+            self.inner.lock().take();
+        }
+    }
+}
+
+fn native_transaction_state_code(state: voyager_net::NativeTransactionState) -> u8 {
+    match state {
+        voyager_net::NativeTransactionState::Active => TX_STATE_ACTIVE,
+        voyager_net::NativeTransactionState::Failed => TX_STATE_FAILED,
+        voyager_net::NativeTransactionState::Committed => TX_STATE_COMMITTED,
+        voyager_net::NativeTransactionState::RolledBack => TX_STATE_ROLLED_BACK,
+    }
+}
+
+/// Native explicit database transaction holding one pooled connection.
+#[pyclass(name = "NativeTransaction")]
+pub struct PyNativeTransaction {
+    inner: Arc<parking_lot::Mutex<Option<NativeTransactionHandle>>>,
+    state: Arc<AtomicU8>,
+    supports_savepoints: bool,
+}
+
+impl PyNativeTransaction {
+    fn from_handle(tx: NativeTransactionHandle) -> Self {
+        let supports_savepoints = tx.supports_savepoints();
+        Self {
+            inner: Arc::new(parking_lot::Mutex::new(Some(tx))),
+            state: Arc::new(AtomicU8::new(TX_STATE_ACTIVE)),
+            supports_savepoints,
+        }
+    }
+
+    fn ensure_active(&self) -> PyResult<()> {
+        match self.state.load(Ordering::Acquire) {
+            TX_STATE_ACTIVE => Ok(()),
+            TX_STATE_FAILED => Err(PyRuntimeError::new_err(
+                "transaction is aborted; roll back before executing or committing more statements",
+            )),
+            _ => Err(PyRuntimeError::new_err(
+                "Transaction is not active; it was already committed or rolled back",
+            )),
+        }
+    }
+
+    fn ensure_rollback_allowed(&self) -> PyResult<()> {
+        match self.state.load(Ordering::Acquire) {
+            TX_STATE_ACTIVE | TX_STATE_FAILED => Ok(()),
+            _ => Err(PyRuntimeError::new_err(
+                "Transaction is not active; it was already committed or rolled back",
+            )),
+        }
+    }
+
+    fn sync_state_from_handle(&self, tx: &NativeTransactionHandle) {
+        self.state
+            .store(native_transaction_state_code(tx.state()), Ordering::Release);
+    }
+
+    fn take(&self) -> PyResult<NativeTransactionHandle> {
+        self.inner.lock().take().ok_or_else(|| {
+            PyRuntimeError::new_err("Transaction is not active; no pooled connection is leased")
+        })
+    }
+
+    fn put(&self, tx: NativeTransactionHandle) {
+        *self.inner.lock() = Some(tx);
+    }
+
+    fn ensure_savepoints(&self) -> PyResult<()> {
+        if self.supports_savepoints {
+            Ok(())
+        } else {
+            Err(PyRuntimeError::new_err(
+                "Savepoints are not supported by this backend (Bolt/Neo4j/Memgraph has no savepoints)",
+            ))
+        }
+    }
+}
+
+#[pymethods]
+impl PyNativeTransaction {
+    /// Returns the lifecycle state ('ACTIVE', 'COMMITTED', or 'ROLLED_BACK').
+    #[getter]
+    fn state(&self) -> &'static str {
+        match self.state.load(Ordering::Acquire) {
+            TX_STATE_COMMITTED => "COMMITTED",
+            TX_STATE_ROLLED_BACK => "ROLLED_BACK",
+            TX_STATE_FAILED => "FAILED",
+            _ => "ACTIVE",
+        }
+    }
+
+    /// Returns `true` while the transaction accepts statements.
+    #[getter]
+    fn is_active(&self) -> bool {
+        self.state.load(Ordering::Acquire) == TX_STATE_ACTIVE
+    }
+
+    /// Returns `true` when this transaction supports real savepoints.
+    #[getter]
+    fn supports_savepoints(&self) -> bool {
+        self.supports_savepoints
+    }
+
+    /// Synchronously executes a statement inside the transaction.
+    #[pyo3(signature = (query, params=None))]
+    fn execute_sync(
+        &self,
+        py: Python<'_>,
+        query: String,
+        params: Option<Bound<'_, PyDict>>,
+    ) -> PyResult<PyNativeQueryResult> {
+        self.ensure_active()?;
+        let params_map = py_dict_to_json_params(params)?;
+        let mut tx = self.take()?;
+        let (tx, result) = py.detach(|| {
+            let result =
+                get_tokio_runtime().block_on(async { tx.execute(&query, &params_map).await });
+            (tx, result)
+        });
+        self.sync_state_from_handle(&tx);
+        self.put(tx);
+        query_result_to_py(result.map_err(|e| PyValueError::new_err(e.to_string()))?)
+    }
+
+    /// Asynchronously executes a statement inside the transaction.
+    #[pyo3(signature = (query, params=None))]
+    fn execute<'py>(
+        &self,
+        py: Python<'py>,
+        query: String,
+        params: Option<Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_active()?;
+        let params_map = py_dict_to_json_params(params)?;
+        let inner = self.inner.clone();
+        let state = self.state.clone();
+        let _ = get_tokio_runtime();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = TxFutureGuard::new(inner.clone(), state.clone());
+            let mut tx = match inner.lock().take() {
+                Some(tx) => tx,
+                None => {
+                    guard.disarm();
+                    return Err(PyRuntimeError::new_err("Transaction is not active"));
+                }
+            };
+            let result = tx.execute(&query, &params_map).await;
+            let tx_state = tx.state();
+            *inner.lock() = Some(tx);
+            state.store(native_transaction_state_code(tx_state), Ordering::Release);
+            guard.disarm();
+            query_result_to_py(result.map_err(|e| PyValueError::new_err(e.to_string()))?)
+        })
+    }
+
+    /// Synchronously commits the transaction.
+    fn commit_sync(&self, py: Python<'_>) -> PyResult<()> {
+        self.ensure_active()?;
+        let mut tx = self.take()?;
+        let (tx, result) = py.detach(|| {
+            let result = get_tokio_runtime().block_on(async { tx.commit().await });
+            (tx, result)
+        });
+        match result {
+            Ok(_) => {
+                self.state.store(TX_STATE_COMMITTED, Ordering::Release);
+                Ok(())
+            }
+            Err(err) => {
+                self.sync_state_from_handle(&tx);
+                self.put(tx);
+                Err(PyValueError::new_err(err.to_string()))
+            }
+        }
+    }
+
+    /// Asynchronously commits the transaction.
+    fn commit<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_active()?;
+        let inner = self.inner.clone();
+        let state = self.state.clone();
+        let _ = get_tokio_runtime();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = TxFutureGuard::new(inner.clone(), state.clone());
+            let mut tx = match inner.lock().take() {
+                Some(tx) => tx,
+                None => {
+                    guard.disarm();
+                    return Err(PyRuntimeError::new_err("Transaction is not active"));
+                }
+            };
+            match tx.commit().await {
+                Ok(_) => {
+                    state.store(TX_STATE_COMMITTED, Ordering::Release);
+                    guard.disarm();
+                    Ok(())
+                }
+                Err(err) => {
+                    let tx_state = tx.state();
+                    *inner.lock() = Some(tx);
+                    state.store(native_transaction_state_code(tx_state), Ordering::Release);
+                    guard.disarm();
+                    Err(PyValueError::new_err(err.to_string()))
+                }
+            }
+        })
+    }
+
+    /// Synchronously rolls the transaction back.
+    fn rollback_sync(&self, py: Python<'_>) -> PyResult<()> {
+        self.ensure_rollback_allowed()?;
+        let mut tx = self.take()?;
+        let (tx, result) = py.detach(|| {
+            let result = get_tokio_runtime().block_on(async { tx.rollback().await });
+            (tx, result)
+        });
+        match result {
+            Ok(()) => {
+                self.state.store(TX_STATE_ROLLED_BACK, Ordering::Release);
+                Ok(())
+            }
+            Err(err) => {
+                self.sync_state_from_handle(&tx);
+                self.put(tx);
+                Err(PyValueError::new_err(err.to_string()))
+            }
+        }
+    }
+
+    /// Asynchronously rolls the transaction back.
+    fn rollback<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_rollback_allowed()?;
+        let inner = self.inner.clone();
+        let state = self.state.clone();
+        let _ = get_tokio_runtime();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = TxFutureGuard::new(inner.clone(), state.clone());
+            let mut tx = match inner.lock().take() {
+                Some(tx) => tx,
+                None => {
+                    guard.disarm();
+                    return Err(PyRuntimeError::new_err("Transaction is not active"));
+                }
+            };
+            match tx.rollback().await {
+                Ok(()) => {
+                    state.store(TX_STATE_ROLLED_BACK, Ordering::Release);
+                    guard.disarm();
+                    Ok(())
+                }
+                Err(err) => {
+                    let tx_state = tx.state();
+                    *inner.lock() = Some(tx);
+                    state.store(native_transaction_state_code(tx_state), Ordering::Release);
+                    guard.disarm();
+                    Err(PyValueError::new_err(err.to_string()))
+                }
+            }
+        })
+    }
+
+    /// Synchronously creates a real database savepoint.
+    fn savepoint_sync(&self, py: Python<'_>, name: String) -> PyResult<()> {
+        self.ensure_active()?;
+        self.ensure_savepoints()?;
+        let mut tx = self.take()?;
+        let (tx, result) = py.detach(|| {
+            let result = get_tokio_runtime().block_on(async { tx.savepoint(&name).await });
+            (tx, result)
+        });
+        self.sync_state_from_handle(&tx);
+        self.put(tx);
+        result.map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Asynchronously creates a real database savepoint.
+    fn savepoint<'py>(&self, py: Python<'py>, name: String) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_active()?;
+        self.ensure_savepoints()?;
+        let inner = self.inner.clone();
+        let state = self.state.clone();
+        let _ = get_tokio_runtime();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = TxFutureGuard::new(inner.clone(), state.clone());
+            let mut tx = match inner.lock().take() {
+                Some(tx) => tx,
+                None => {
+                    guard.disarm();
+                    return Err(PyRuntimeError::new_err("Transaction is not active"));
+                }
+            };
+            let result = tx.savepoint(&name).await;
+            let tx_state = tx.state();
+            *inner.lock() = Some(tx);
+            state.store(native_transaction_state_code(tx_state), Ordering::Release);
+            guard.disarm();
+            result.map_err(|e| PyValueError::new_err(e.to_string()))
+        })
+    }
+
+    /// Synchronously rolls the transaction back to a savepoint.
+    fn rollback_to_savepoint_sync(&self, py: Python<'_>, name: String) -> PyResult<()> {
+        self.ensure_active()?;
+        self.ensure_savepoints()?;
+        let mut tx = self.take()?;
+        let (tx, result) = py.detach(|| {
+            let result =
+                get_tokio_runtime().block_on(async { tx.rollback_to_savepoint(&name).await });
+            (tx, result)
+        });
+        self.sync_state_from_handle(&tx);
+        self.put(tx);
+        result.map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Asynchronously rolls the transaction back to a savepoint.
+    fn rollback_to_savepoint<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_active()?;
+        self.ensure_savepoints()?;
+        let inner = self.inner.clone();
+        let state = self.state.clone();
+        let _ = get_tokio_runtime();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = TxFutureGuard::new(inner.clone(), state.clone());
+            let mut tx = match inner.lock().take() {
+                Some(tx) => tx,
+                None => {
+                    guard.disarm();
+                    return Err(PyRuntimeError::new_err("Transaction is not active"));
+                }
+            };
+            let result = tx.rollback_to_savepoint(&name).await;
+            let tx_state = tx.state();
+            *inner.lock() = Some(tx);
+            state.store(native_transaction_state_code(tx_state), Ordering::Release);
+            guard.disarm();
+            result.map_err(|e| PyValueError::new_err(e.to_string()))
+        })
+    }
+
+    /// Synchronously releases a database savepoint.
+    fn release_savepoint_sync(&self, py: Python<'_>, name: String) -> PyResult<()> {
+        self.ensure_active()?;
+        self.ensure_savepoints()?;
+        let mut tx = self.take()?;
+        let (tx, result) = py.detach(|| {
+            let result = get_tokio_runtime().block_on(async { tx.release_savepoint(&name).await });
+            (tx, result)
+        });
+        self.sync_state_from_handle(&tx);
+        self.put(tx);
+        result.map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Asynchronously releases a database savepoint.
+    fn release_savepoint<'py>(&self, py: Python<'py>, name: String) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_active()?;
+        self.ensure_savepoints()?;
+        let inner = self.inner.clone();
+        let state = self.state.clone();
+        let _ = get_tokio_runtime();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = TxFutureGuard::new(inner.clone(), state.clone());
+            let mut tx = match inner.lock().take() {
+                Some(tx) => tx,
+                None => {
+                    guard.disarm();
+                    return Err(PyRuntimeError::new_err("Transaction is not active"));
+                }
+            };
+            let result = tx.release_savepoint(&name).await;
+            let tx_state = tx.state();
+            *inner.lock() = Some(tx);
+            state.store(native_transaction_state_code(tx_state), Ordering::Release);
+            guard.disarm();
+            result.map_err(|e| PyValueError::new_err(e.to_string()))
+        })
     }
 }
 
@@ -5005,9 +5474,10 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyArrowStream>()?;
     m.add_class::<PyNativeQueryResult>()?;
     m.add_class::<PyNativeClient>()?;
+    m.add_class::<PyNativeTransaction>()?;
     m.add_class::<PyNativeCircuitRouter>()?;
     m.add_class::<PyUnitOfWork>()?;
-    m.add_class::<PyTransaction>()?;
+    m.add_class::<PyUnitOfWorkScope>()?;
     m.add_class::<PyNativeSchemaRegistry>()?;
     m.add("VoyagerError", m.py().get_type::<VoyagerError>())?;
     // pyo3::create_exception! generates a standard PyErr type whose C-level tp_init rejects keyword arguments.

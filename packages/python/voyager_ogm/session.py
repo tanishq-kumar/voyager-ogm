@@ -32,8 +32,9 @@ from voyager_ogm.ingestion import (
 )
 from voyager_ogm.models import get_primary_key_field
 from voyager_ogm.query import CompiledQuery, Query
-from voyager_ogm.transaction import Transaction
+from voyager_ogm.transaction import AsyncTransaction, Transaction
 from voyager_ogm.types import serialize_param_value
+from voyager_ogm.unit_of_work import UnitOfWork
 
 logger = logging.getLogger("voyager_ogm.session")
 _T_Session = TypeVar("_T_Session")
@@ -694,6 +695,7 @@ class _SessionBase:
         self._identity_map: weakref.WeakValueDictionary[tuple[type[Any], Any], Any] = (
             weakref.WeakValueDictionary()
         )
+        self._active_transaction: Any = None
 
         self._is_explicit_mock = (
             bridge is None
@@ -921,6 +923,26 @@ class _SessionBase:
     def clear(self) -> None:
         """Clears all tracked entities from the Identity Map."""
         self._identity_map.clear()
+
+    def unit_of_work(self) -> UnitOfWork:
+        """Creates an in-memory Unit of Work bound to this session.
+
+        The returned unit of work snapshots all identity-mapped entities at begin and
+        at each savepoint. Rolling back restores their in-memory property values and
+        removes entities registered inside the unit of work. It only tracks entities
+        when the session identity map is enabled.
+
+        Returns:
+            An active UnitOfWork with savepoint support.
+        """
+        if not self._enable_identity_map:
+            warnings.warn(
+                "session.unit_of_work() has no effect because the identity map is disabled; "
+                "create the session with enable_identity_map=True to track and restore entities.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return UnitOfWork(session=self)
 
     def _prepare_flush_batches(
         self, key_field: str | None = None
@@ -1273,6 +1295,22 @@ class Session(_SessionBase):
         """
         return BoundQuery(self, target_or_query)
 
+    def transaction(self) -> Transaction:
+        """Begins a real database transaction on the session's selected backend.
+
+        Every execution path (``execute``, ``execute_to_polars``,
+        ``execute_to_arrow``, ``run_bulk`` and ``flush``) issued while the
+        transaction is active is routed through it. A clean context exit commits;
+        an exception rolls back and re-raises.
+
+        Returns:
+            An active real database Transaction.
+
+        Raises:
+            RuntimeError: If a transaction is already active on this session.
+        """
+        return Transaction(self)
+
     def execute(
         self,
         query_or_statement: Query | CompiledQuery | str,
@@ -1288,6 +1326,25 @@ class Session(_SessionBase):
             ExecutionResult containing rows, SQLAlchemy mappings/scalars access, and graph entity extraction.
         """
         stmt, params, q_obj = self._prepare_statement(query_or_statement, parameters)
+
+        active = self._active_transaction
+        if active is not None:
+            tx_result = active._execute_sync(stmt, params)
+            if active.backend == "native":
+                return ExecutionResult(
+                    records=None,
+                    statement=stmt,
+                    query=q_obj,
+                    dialect=self._dialect,
+                    stream=tx_result.stream,
+                    summary=tx_result.summary,
+                )
+            return ExecutionResult(
+                records=tx_result,
+                statement=stmt,
+                query=q_obj,
+                dialect=self._dialect,
+            )
 
         should_try_native = (
             self._native_client is not None
@@ -1346,6 +1403,10 @@ class Session(_SessionBase):
         """
         stmt, params, _ = self._prepare_statement(query_or_statement, parameters)
 
+        active = self._active_transaction
+        if active is not None:
+            return active._execute_to_polars_sync(stmt, params)
+
         should_try_native = (
             self._native_client is not None
             and self._requested_backend in ("native", "auto")
@@ -1392,6 +1453,10 @@ class Session(_SessionBase):
         """
         stmt, params, _ = self._prepare_statement(query_or_statement, parameters)
 
+        active = self._active_transaction
+        if active is not None:
+            return active._execute_to_arrow_sync(stmt, params)
+
         should_try_native = (
             self._native_client is not None
             and self._requested_backend in ("native", "auto")
@@ -1423,6 +1488,14 @@ class Session(_SessionBase):
 
     def ping(self) -> bool:
         """Pings the database connection to verify liveness and network connectivity."""
+        if self._active_transaction is not None:
+            # Route the probe through the transaction's single leased
+            # connection; a second pool checkout can deadlock a size-1 pool.
+            try:
+                self.execute(self._get_ping_statement())
+                return True
+            except Exception:
+                return False
         if self.backend == "native" and self._native_client is not None:
             try:
                 if hasattr(self._native_client, "ping_sync"):
@@ -1473,6 +1546,9 @@ class Session(_SessionBase):
         Returns:
             Execution metrics summary including total batches, records, and elapsed time.
         """
+        active = self._active_transaction
+        if active is not None:
+            return active._execute_bulk_sync(plan)
         return self._bridge.execute_bulk(plan)
 
     def ingest_parquet(
@@ -1885,16 +1961,14 @@ class Session(_SessionBase):
     # Ergonomic alias for fulltext_search
     text_search = fulltext_search
 
-    def transaction(self) -> Transaction:
-        """Creates a fresh two-layer rollback transaction context manager.
-
-        Returns:
-            Active transaction instance with savepoint support.
-        """
-        return Transaction()
-
     def close(self) -> None:
         """Closes the underlying database bridge and native connection pool, clearing the identity map."""
+        active = self._active_transaction
+        if active is not None:
+            try:
+                active.rollback()
+            except Exception:
+                logger.warning("Failed to roll back active transaction during session close")
         self.clear()
         if self._native_client is not None:
             self._native_client.close()
@@ -1978,6 +2052,20 @@ class AsyncSession(_SessionBase):
         """
         return AsyncBoundQuery(self, target_or_query)
 
+    def transaction(self) -> AsyncTransaction:
+        """Creates a real async database transaction for this session.
+
+        Use ``async with session.transaction() as tx:``. The transaction begins on
+        entry; every execution path issued while it is active is routed through it.
+
+        Returns:
+            A pending AsyncTransaction.
+
+        Raises:
+            RuntimeError: If a transaction is already active on this session.
+        """
+        return AsyncTransaction(self)
+
     async def execute(
         self,
         query_or_statement: Query | CompiledQuery | str,
@@ -1993,6 +2081,25 @@ class AsyncSession(_SessionBase):
             ExecutionResult containing rows, SQLAlchemy mappings/scalars access, and graph entity extraction.
         """
         stmt, params, q_obj = self._prepare_statement(query_or_statement, parameters)
+
+        active = self._active_transaction
+        if active is not None:
+            tx_result = await active._execute(stmt, params)
+            if active.backend == "native":
+                return ExecutionResult(
+                    records=None,
+                    statement=stmt,
+                    query=q_obj,
+                    dialect=self._dialect,
+                    stream=tx_result.stream,
+                    summary=tx_result.summary,
+                )
+            return ExecutionResult(
+                records=tx_result,
+                statement=stmt,
+                query=q_obj,
+                dialect=self._dialect,
+            )
 
         should_try_native = (
             self._native_client is not None
@@ -2051,6 +2158,10 @@ class AsyncSession(_SessionBase):
         """
         stmt, params, _ = self._prepare_statement(query_or_statement, parameters)
 
+        active = self._active_transaction
+        if active is not None:
+            return await active._execute_to_polars(stmt, params)
+
         should_try_native = (
             self._native_client is not None
             and self._requested_backend in ("native", "auto")
@@ -2097,6 +2208,10 @@ class AsyncSession(_SessionBase):
         """
         stmt, params, _ = self._prepare_statement(query_or_statement, parameters)
 
+        active = self._active_transaction
+        if active is not None:
+            return await active._execute_to_arrow(stmt, params)
+
         should_try_native = (
             self._native_client is not None
             and self._requested_backend in ("native", "auto")
@@ -2128,6 +2243,14 @@ class AsyncSession(_SessionBase):
 
     async def ping(self) -> bool:
         """Pings the database connection asynchronously to verify liveness."""
+        if self._active_transaction is not None:
+            # Route the probe through the transaction's single leased
+            # connection; a second pool checkout can deadlock a size-1 pool.
+            try:
+                await self.execute(self._get_ping_statement())
+                return True
+            except Exception:
+                return False
         if self.backend == "native" and self._native_client is not None:
             try:
                 if hasattr(self._native_client, "ping"):
@@ -2184,6 +2307,9 @@ class AsyncSession(_SessionBase):
         Returns:
             Execution metrics summary including total batches, records, and elapsed time.
         """
+        active = self._active_transaction
+        if active is not None:
+            return await active._execute_bulk(plan)
         return await self._bridge.execute_bulk(plan)
 
     async def ingest_parquet(
@@ -2573,6 +2699,12 @@ class AsyncSession(_SessionBase):
 
     async def close(self) -> None:
         """Asynchronously closes the underlying database bridge and native connection pool, clearing the identity map."""
+        active = self._active_transaction
+        if active is not None:
+            try:
+                await active.rollback()
+            except Exception:
+                logger.warning("Failed to roll back active transaction during session close")
         self.clear()
         if self._native_client is not None:
             self._native_client.close()

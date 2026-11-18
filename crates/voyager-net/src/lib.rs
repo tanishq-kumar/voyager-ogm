@@ -19,6 +19,7 @@ pub mod config;
 pub mod engine;
 pub mod error;
 pub mod mock;
+pub mod native_transaction;
 pub mod pool;
 pub mod postgres;
 pub mod redis;
@@ -41,6 +42,7 @@ pub use engine::{
 };
 pub use error::{NetError, Result};
 pub use mock::{MockConnection, MockConnectionFactory, MockEngine};
+pub use native_transaction::{NativeTransaction, NativeTransactionState};
 pub use pool::{ConnectionPool, PoolMetricsSnapshot, PooledConnection};
 pub use postgres::{
     AgeEdge, AgePath, AgeValue, AgeVertex, AuthenticationRequest, BackendMessage, FieldDescription,

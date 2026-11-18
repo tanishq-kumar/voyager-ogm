@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use crate::engine::{AsyncTransaction, QueryResult, QuerySummary};
 use crate::error::{NetError, Result};
-use crate::redis::connection::RedisConnection;
+use crate::redis::connection::{RedisConnection, falkordb_transaction_error};
 use crate::redis::graph::FalkorQueryResult;
 use crate::redis::resp::RespValue;
 
@@ -13,34 +13,14 @@ use crate::redis::resp::RespValue;
 pub struct RedisTransaction<'a> {
     conn: &'a mut RedisConnection,
     is_active: bool,
-    #[allow(dead_code)]
     queued_count: usize,
     accumulated_summary: QuerySummary,
 }
 
 impl<'a> RedisTransaction<'a> {
-    /// Begins a new transaction on the provided Redis connection by executing `MULTI`.
-    pub async fn begin(conn: &'a mut RedisConnection) -> Result<Self> {
-        let resp = conn.execute_raw(&["MULTI"]).await?;
-        match resp {
-            RespValue::SimpleString(s) if s == "OK" => {
-                conn.set_in_transaction(true);
-                Ok(Self {
-                    conn,
-                    is_active: true,
-                    queued_count: 0,
-                    accumulated_summary: QuerySummary::default(),
-                })
-            }
-            RespValue::Error(err) => Err(NetError::TransactionError(format!(
-                "Failed to begin Redis transaction (MULTI): {}",
-                err
-            ))),
-            other => Err(NetError::ProtocolError(format!(
-                "Unexpected response to MULTI: {:?}",
-                other
-            ))),
-        }
+    /// The legacy `MULTI` path is intentionally unusable as a transaction.
+    pub async fn begin(_conn: &'a mut RedisConnection) -> Result<Self> {
+        Err(falkordb_transaction_error())
     }
 
     /// Returns `true` if this transaction is active and has not been committed or rolled back.
