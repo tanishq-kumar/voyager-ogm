@@ -406,6 +406,17 @@ pub enum LabelExpression {
 }
 
 impl LabelExpression {
+    /// Checks if this label expression contains the specified label (case-insensitive or exact).
+    pub fn contains_label(&self, target: &str) -> bool {
+        match self {
+            LabelExpression::Label(l) => l.eq_ignore_ascii_case(target),
+            LabelExpression::And(a, b) | LabelExpression::Or(a, b) => {
+                a.contains_label(target) || b.contains_label(target)
+            }
+            LabelExpression::Not(n) => n.contains_label(target),
+            LabelExpression::Wildcard => false,
+        }
+    }
     /// Creates a single label expression.
     #[inline]
     pub fn label(name: impl Into<String>) -> Self {

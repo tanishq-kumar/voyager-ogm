@@ -192,6 +192,7 @@ class Field(Generic[_T]):
             self.type_annotation = _BUILTIN_TYPES[type_annotation]
         else:
             self.type_annotation = type_annotation
+        self._owner: type | None = None
 
     def __class_getitem__(cls, item: Any) -> Any:
         """Enables generic typing support like `Field[str]` or `Field[int]`.
@@ -213,6 +214,7 @@ class Field(Generic[_T]):
         """
         if self.name is None:
             self.name = name
+        self._owner = owner
 
     def __get__(self, instance: Any, owner: type | None = None) -> Any:
         """Returns the BoundField descriptor for an instance or the descriptor itself.
@@ -250,6 +252,140 @@ class Field(Generic[_T]):
         assert self.name is not None
         return BoundField(alias, self.name)
 
+    def __repr__(self) -> str:
+        owner_name = self._owner.__name__ if self._owner else ""
+        if owner_name:
+            return f"{owner_name}.{self.name}"
+        return f"Field({self.name})"
+
+    def __hash__(self) -> int:
+        # Defining __eq__ would otherwise make Field unhashable; keep identity hashing.
+        return id(self)
+
+    def __eq__(self, other: Any) -> Any:  # type: ignore[override]
+        if isinstance(other, Field) and self is other:
+            return True
+        return PredicateExpr("", self.name or "", "eq", other, model_class=self._owner)
+
+    def __ne__(self, other: Any) -> Any:  # type: ignore[override]
+        if isinstance(other, Field) and self is other:
+            return False
+        return PredicateExpr("", self.name or "", "neq", other, model_class=self._owner)
+
+    def __gt__(self, other: Any) -> PredicateExpr:
+        return PredicateExpr("", self.name or "", "gt", other, model_class=self._owner)
+
+    def __ge__(self, other: Any) -> PredicateExpr:
+        return PredicateExpr("", self.name or "", "gte", other, model_class=self._owner)
+
+    def __lt__(self, other: Any) -> PredicateExpr:
+        return PredicateExpr("", self.name or "", "lt", other, model_class=self._owner)
+
+    def __le__(self, other: Any) -> PredicateExpr:
+        return PredicateExpr("", self.name or "", "lte", other, model_class=self._owner)
+
+    def contains(self, substring: Any) -> PredicateExpr:
+        """Creates a string substring predicate `self CONTAINS substring`."""
+        return PredicateExpr("", self.name or "", "contains", substring, model_class=self._owner)
+
+    def in_(self, other: Any) -> PredicateExpr:
+        """Creates an IN list membership predicate `self IN values`."""
+        val_list = list(other) if isinstance(other, (list, tuple, set)) else other
+        return PredicateExpr("", self.name or "", "in", val_list, model_class=self._owner)
+
+    def not_in(self, other: Any) -> PredicateExpr:
+        """Creates a NOT IN list membership predicate `self NOT IN values`."""
+        val_list = list(other) if isinstance(other, (list, tuple, set)) else other
+        return PredicateExpr("", self.name or "", "not_in", val_list, model_class=self._owner)
+
+    def startswith(self, prefix: Any) -> PredicateExpr:
+        """Creates a prefix predicate `self STARTS WITH prefix`."""
+        return PredicateExpr("", self.name or "", "starts_with", prefix, model_class=self._owner)
+
+    def endswith(self, suffix: Any) -> PredicateExpr:
+        """Creates a suffix predicate `self ENDS WITH suffix`."""
+        return PredicateExpr("", self.name or "", "ends_with", suffix, model_class=self._owner)
+
+    def __add__(self, other: Any) -> BinaryExpr:
+        from voyager_ogm.expressions import BinaryExpr, PropExpr, to_expression
+
+        return BinaryExpr(
+            PropExpr("", self.name or "", model_class=self._owner), "+", to_expression(other)
+        )
+
+    def __radd__(self, other: Any) -> BinaryExpr:
+        from voyager_ogm.expressions import BinaryExpr, PropExpr, to_expression
+
+        return BinaryExpr(
+            to_expression(other), "+", PropExpr("", self.name or "", model_class=self._owner)
+        )
+
+    def __sub__(self, other: Any) -> BinaryExpr:
+        from voyager_ogm.expressions import BinaryExpr, PropExpr, to_expression
+
+        return BinaryExpr(
+            PropExpr("", self.name or "", model_class=self._owner), "-", to_expression(other)
+        )
+
+    def __rsub__(self, other: Any) -> BinaryExpr:
+        from voyager_ogm.expressions import BinaryExpr, PropExpr, to_expression
+
+        return BinaryExpr(
+            to_expression(other), "-", PropExpr("", self.name or "", model_class=self._owner)
+        )
+
+    def __mul__(self, other: Any) -> BinaryExpr:
+        from voyager_ogm.expressions import BinaryExpr, PropExpr, to_expression
+
+        return BinaryExpr(
+            PropExpr("", self.name or "", model_class=self._owner), "*", to_expression(other)
+        )
+
+    def __rmul__(self, other: Any) -> BinaryExpr:
+        from voyager_ogm.expressions import BinaryExpr, PropExpr, to_expression
+
+        return BinaryExpr(
+            to_expression(other), "*", PropExpr("", self.name or "", model_class=self._owner)
+        )
+
+    def __truediv__(self, other: Any) -> BinaryExpr:
+        from voyager_ogm.expressions import BinaryExpr, PropExpr, to_expression
+
+        return BinaryExpr(
+            PropExpr("", self.name or "", model_class=self._owner), "/", to_expression(other)
+        )
+
+    def __rtruediv__(self, other: Any) -> BinaryExpr:
+        from voyager_ogm.expressions import BinaryExpr, PropExpr, to_expression
+
+        return BinaryExpr(
+            to_expression(other), "/", PropExpr("", self.name or "", model_class=self._owner)
+        )
+
+    def count(self) -> AggregationExpr:
+        """Returns a `COUNT(self)` column aggregation expression."""
+        return AggregationExpr("", self.name or "", "count", model_class=self._owner)
+
+    def avg(self) -> AggregationExpr:
+        """Returns an `AVG(self)` column aggregation expression."""
+        return AggregationExpr("", self.name or "", "avg", model_class=self._owner)
+
+    def sum(self) -> AggregationExpr:
+        """Returns a `SUM(self)` column aggregation expression."""
+        return AggregationExpr("", self.name or "", "sum", model_class=self._owner)
+
+    def min(self) -> AggregationExpr:
+        """Returns a `MIN(self)` column aggregation expression."""
+        return AggregationExpr("", self.name or "", "min", model_class=self._owner)
+
+    def max(self) -> AggregationExpr:
+        """Returns a `MAX(self)` column aggregation expression."""
+        return AggregationExpr("", self.name or "", "max", model_class=self._owner)
+
+    def collect(self) -> AggregationExpr:
+        """Returns a `COLLECT(self)` column aggregation expression."""
+        return AggregationExpr("", self.name or "", "collect", model_class=self._owner)
+
     def distance_to(self, other: Any) -> FunctionExpr:
         """Computes spatial distance expression `point.distance(field, other)`.
 
@@ -260,7 +396,8 @@ class Field(Generic[_T]):
             FunctionExpr representing the spatial distance expression.
         """
         name = self.name or ""
-        return BoundField("", name).distance_to(other)
+        bf = BoundField("", name, model_class=self._owner)
+        return bf.distance_to(other)
 
 
 class VectorProperty(Field):
@@ -349,17 +486,24 @@ class BoundField(Expression):
         field_name: Property name on the entity.
     """
 
-    def __init__(self, target_alias: str, field_name: str) -> None:
+    def __init__(
+        self,
+        target_alias: str,
+        field_name: str,
+        model_class: type | None = None,
+    ) -> None:
         """Initializes a BoundField.
 
         Args:
             target_alias: Entity variable alias in the query.
             field_name: Property name on the entity.
+            model_class: Optional owning model class for class-level resolution.
         """
         self.target_alias = target_alias
         self.field_name = field_name
         self.target = target_alias
         self.field = field_name
+        self.model_class = model_class
 
     def to_spec(self) -> tuple[str, str, str]:
         """Returns the AST property specification tuple `('prop', var, prop)`."""
@@ -387,73 +531,107 @@ class BoundField(Expression):
             other.field_name,
         ):
             return True
-        return PredicateExpr(self.target_alias, self.field_name, "eq", other)
+        return PredicateExpr(
+            self.target_alias, self.field_name, "eq", other, model_class=self.model_class
+        )
 
     def __gt__(self, other: Any) -> PredicateExpr:
         """Creates a greater-than predicate `alias.prop > value`."""
-        return PredicateExpr(self.target_alias, self.field_name, "gt", other)
+        return PredicateExpr(
+            self.target_alias, self.field_name, "gt", other, model_class=self.model_class
+        )
 
     def __ge__(self, other: Any) -> PredicateExpr:
         """Creates a greater-than-or-equal predicate `alias.prop >= value`."""
-        return PredicateExpr(self.target_alias, self.field_name, "gte", other)
+        return PredicateExpr(
+            self.target_alias, self.field_name, "gte", other, model_class=self.model_class
+        )
 
     def __lt__(self, other: Any) -> PredicateExpr:
         """Creates a less-than predicate `alias.prop < value`."""
-        return PredicateExpr(self.target_alias, self.field_name, "lt", other)
+        return PredicateExpr(
+            self.target_alias, self.field_name, "lt", other, model_class=self.model_class
+        )
 
     def __le__(self, other: Any) -> PredicateExpr:
         """Creates a less-than-or-equal predicate `alias.prop <= value`."""
-        return PredicateExpr(self.target_alias, self.field_name, "lte", other)
+        return PredicateExpr(
+            self.target_alias, self.field_name, "lte", other, model_class=self.model_class
+        )
 
     def __ne__(self, other: Any) -> PredicateExpr:  # type: ignore[override]
         """Creates a not-equal predicate `alias.prop != value`."""
-        return PredicateExpr(self.target_alias, self.field_name, "ne", other)
+        return PredicateExpr(
+            self.target_alias, self.field_name, "ne", other, model_class=self.model_class
+        )
 
     def in_(self, other: Any) -> PredicateExpr:
         """Creates an IN list membership predicate `alias.prop IN values`."""
         val_list = list(other) if isinstance(other, (list, tuple, set)) else other
-        return PredicateExpr(self.target_alias, self.field_name, "in", val_list)
+        return PredicateExpr(
+            self.target_alias, self.field_name, "in", val_list, model_class=self.model_class
+        )
 
     def not_in(self, other: Any) -> PredicateExpr:
         """Creates a NOT IN list membership predicate `alias.prop NOT IN values`."""
         val_list = list(other) if isinstance(other, (list, tuple, set)) else other
-        return PredicateExpr(self.target_alias, self.field_name, "not_in", val_list)
+        return PredicateExpr(
+            self.target_alias, self.field_name, "not_in", val_list, model_class=self.model_class
+        )
 
     def startswith(self, prefix: Any) -> PredicateExpr:
         """Creates a prefix predicate `alias.prop STARTS WITH prefix`."""
-        return PredicateExpr(self.target_alias, self.field_name, "starts_with", prefix)
+        return PredicateExpr(
+            self.target_alias, self.field_name, "starts_with", prefix, model_class=self.model_class
+        )
 
     def endswith(self, suffix: Any) -> PredicateExpr:
         """Creates a suffix predicate `alias.prop ENDS WITH suffix`."""
-        return PredicateExpr(self.target_alias, self.field_name, "ends_with", suffix)
+        return PredicateExpr(
+            self.target_alias, self.field_name, "ends_with", suffix, model_class=self.model_class
+        )
 
     def contains(self, substring: Any) -> PredicateExpr:
         """Creates a string substring predicate `alias.prop CONTAINS value`."""
-        return PredicateExpr(self.target_alias, self.field_name, "contains", substring)
+        return PredicateExpr(
+            self.target_alias, self.field_name, "contains", substring, model_class=self.model_class
+        )
 
     def count(self) -> AggregationExpr:
         """Returns a `COUNT(alias.prop)` aggregation expression."""
-        return AggregationExpr(self.target_alias, self.field_name, "count")
+        return AggregationExpr(
+            self.target_alias, self.field_name, "count", model_class=self.model_class
+        )
 
     def avg(self) -> AggregationExpr:
         """Returns an `AVG(alias.prop)` aggregation expression."""
-        return AggregationExpr(self.target_alias, self.field_name, "avg")
+        return AggregationExpr(
+            self.target_alias, self.field_name, "avg", model_class=self.model_class
+        )
 
     def sum(self) -> AggregationExpr:
         """Returns a `SUM(alias.prop)` aggregation expression."""
-        return AggregationExpr(self.target_alias, self.field_name, "sum")
+        return AggregationExpr(
+            self.target_alias, self.field_name, "sum", model_class=self.model_class
+        )
 
     def min(self) -> AggregationExpr:
         """Returns a `MIN(alias.prop)` aggregation expression."""
-        return AggregationExpr(self.target_alias, self.field_name, "min")
+        return AggregationExpr(
+            self.target_alias, self.field_name, "min", model_class=self.model_class
+        )
 
     def max(self) -> AggregationExpr:
         """Returns a `MAX(alias.prop)` aggregation expression."""
-        return AggregationExpr(self.target_alias, self.field_name, "max")
+        return AggregationExpr(
+            self.target_alias, self.field_name, "max", model_class=self.model_class
+        )
 
     def collect(self) -> AggregationExpr:
         """Returns a `COLLECT(alias.prop)` aggregation expression."""
-        return AggregationExpr(self.target_alias, self.field_name, "collect")
+        return AggregationExpr(
+            self.target_alias, self.field_name, "collect", model_class=self.model_class
+        )
 
     def distance_to(self, other: Any) -> FunctionExpr:
         """Creates a spatial distance expression `point.distance(self, other)`.
@@ -470,19 +648,29 @@ class BoundField(Expression):
 class AggregationExpr(Expression):
     """Container for AST column aggregation expressions (e.g. COUNT, AVG)."""
 
-    def __init__(self, target: str, field: str, func: str) -> None:
+    def __init__(
+        self,
+        target: str,
+        field: str,
+        func: str,
+        model_class: type | None = None,
+    ) -> None:
         self.target = target
         self.target_alias = target
         self.field = field
         self.field_name = field
         self.func = func
+        self.model_class = model_class
 
     def to_spec(self) -> tuple[str, str, str, str, None]:
         """Converts this aggregation into an AST spec descriptor tuple."""
         return ("agg", self.target, self.field, self.func, None)
 
     def __repr__(self) -> str:
-        return f"{self.func.upper()}({self.target}.{self.field})"
+        tgt = self.target or (self.model_class.__name__ if self.model_class else "")
+        if tgt:
+            return f"{self.func.upper()}({tgt}.{self.field})"
+        return f"{self.func.upper()}(.{self.field})"
 
 
 class PredicateExpr(BinaryExpr):
@@ -495,7 +683,14 @@ class PredicateExpr(BinaryExpr):
         value: Right-hand side literal comparison value.
     """
 
-    def __init__(self, target: str, field: str, op: str, value: Any) -> None:
+    def __init__(
+        self,
+        target: str,
+        field: str,
+        op: str,
+        value: Any,
+        model_class: type | None = None,
+    ) -> None:
         """Initializes a PredicateExpr.
 
         Args:
@@ -503,6 +698,7 @@ class PredicateExpr(BinaryExpr):
             field: Property name.
             op: Operator string.
             value: Right-hand comparison value.
+            model_class: Optional owning model class for class-level resolution.
         """
         self.target = target
         self.target_alias = target
@@ -510,7 +706,8 @@ class PredicateExpr(BinaryExpr):
         self.field_name = field
         self.op = op
         self.value = value
-        super().__init__(PropExpr(target, field), op, to_expression(value))
+        self.model_class = model_class
+        super().__init__(PropExpr(target, field, model_class=model_class), op, to_expression(value))
 
     def to_spec(self) -> tuple[str, str, Any, Any]:
         """Converts to native AST binary expression tuple."""
@@ -522,7 +719,10 @@ class PredicateExpr(BinaryExpr):
         )
 
     def __repr__(self) -> str:
-        return f"({self.target}.{self.field} {self.op} {self.value!r})"
+        tgt = self.target or (self.model_class.__name__ if self.model_class else "")
+        if tgt:
+            return f"({tgt}.{self.field} {self.op} {self.value!r})"
+        return f"(.{self.field} {self.op} {self.value!r})"
 
     def __bool__(self) -> bool:
         """Explicitly disallows evaluating a PredicateExpr in a boolean context."""
@@ -585,6 +785,9 @@ def _process_type_annotations(cls: Any) -> dict[str, Field]:
             if val.name is None:
                 val.name = attr_name
             fields_map[attr_name] = val
+
+    for f in fields_map.values():
+        f._owner = cls
 
     cls._schema_fields = fields_map
     return fields_map
@@ -1208,6 +1411,8 @@ def node(target: type | str | list[str] | None = None, **kwargs: Any) -> Any:
             ns["_cached_label"] = cls_labels[0] if cls_labels else cls.__name__
             ns["_schema_fields"] = fields_map
             derived = type(cls.__name__, (cls, Node), ns)
+            for f in fields_map.values():
+                f._owner = derived
             cast(Any, derived).register_schema()
             return derived
         else:
@@ -1275,6 +1480,8 @@ def relationship(target: type | str | None = None, **kwargs: Any) -> Any:
             ns["_cached_types"] = [rel_type]
             ns["_schema_fields"] = fields_map
             derived = type(cls.__name__, (cls, Relationship), ns)
+            for f in fields_map.values():
+                f._owner = derived
             cast(Any, derived).register_schema()
             return derived
         else:

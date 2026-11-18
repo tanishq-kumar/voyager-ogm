@@ -94,6 +94,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Breaking:** Removed module-level free functions `unwind()` and `load_csv()` from `voyager_ogm` and `voyager_ogm.query`. Use `Query.unwind()` and `Query.load_csv()`.
 
 ### Fixed
+- **OGM Write Path and Class-Level Field Binding (#174, #175, #176)**:
+  - `Query.create(instance)` now inlines every set field as parameterised pattern properties (nodes and relationships); previously all property values were silently dropped.
+  - `Query.merge(instance)` keys the MERGE pattern on the primary key (else unique fields, else all set fields) and writes the remaining fields to both `ON CREATE SET` and `ON MATCH SET`.
+  - `Query.merge(...).where(...)` folds equality predicates into the MERGE pattern and raises `ValueError` for any other predicate instead of dropping it, which produced a keyless MERGE.
+  - Class-level fields such as `Person.name` resolve to the alias of the single pattern created from that class in `return_`, `where`, `order_by`, `with_`, `set` and aggregations, instead of emitting `RETURN .name` or `WHERE $p0`; an ambiguous or missing pattern raises `ValueError`.
+  - Apache AGE: `cypher()` query parameters are passed as a single JSON argument.
 - **Stack Overflow in Recursion Depth Guards on Windows and macOS (#166)**:
   - Shrank the per-level stack frames of the RESP parser (`parse_resp_slice`) and the Python AST converter (`py_to_node_handle_depth`) by moving match arms into small helpers, so depth guards trigger before the stack is exhausted on 1 MB (Windows) and 2 MiB (macOS) stacks.
   - Lowered `MAX_RESP_DEPTH` from 128 to 64, matching `MAX_PACKSTREAM_DEPTH`.
