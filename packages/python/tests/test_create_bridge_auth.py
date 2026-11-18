@@ -148,6 +148,7 @@ def test_bolt_token_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_postgres_tuple_auth(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test Postgres/AGE accepts a (user, password) tuple and forwards user/password connect kwargs."""
+    pytest.importorskip("psycopg")  # not installed on Python 3.14 (see pyproject.toml markers)
     mock_connect = MagicMock()
     mock_conn = MockConnection()
     mock_connect.return_value = mock_conn
@@ -171,6 +172,7 @@ def test_postgres_tuple_auth(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_postgres_invalid_auth_type_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test non-tuple auth parameter raises TypeError for PostgreSQL / AGE."""
+    pytest.importorskip("psycopg")  # not installed on Python 3.14 (see pyproject.toml markers)
     with pytest.raises(
         TypeError, match="Postgres/AGE auth must be a \\(username, password\\) tuple"
     ):
@@ -189,6 +191,7 @@ def test_postgres_invalid_auth_type_raises(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_age_scheme_rewrite(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test age:// URI is rewritten to postgresql:// before connecting."""
+    pytest.importorskip("psycopg")  # not installed on Python 3.14 (see pyproject.toml markers)
     mock_connect = MagicMock()
     mock_conn = MockConnection()
     mock_connect.return_value = mock_conn
@@ -205,6 +208,7 @@ def test_age_scheme_rewrite(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_age_s_sslmode_rewrite(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test age+s:// URI is rewritten to postgresql:// and sslmode=require is passed."""
+    pytest.importorskip("psycopg")  # not installed on Python 3.14 (see pyproject.toml markers)
     mock_connect = MagicMock()
     mock_conn = MockConnection()
     mock_connect.return_value = mock_conn
@@ -257,6 +261,7 @@ def test_password_masked_in_create_bridge_error() -> None:
 
 def test_age_setup_statements_issued_for_age_scheme(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test age:// always unconditionally executes LOAD 'age' and search_path setup."""
+    pytest.importorskip("psycopg")  # not installed on Python 3.14 (see pyproject.toml markers)
     mock_conn = MockConnection()
     monkeypatch.setattr("psycopg.connect", lambda *args, **kwargs: mock_conn)
 
@@ -270,6 +275,7 @@ def test_age_setup_statements_not_issued_for_plain_postgres(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test postgresql:// checks pg_extension and does NOT issue AGE setup when age extension is absent."""
+    pytest.importorskip("psycopg")  # not installed on Python 3.14 (see pyproject.toml markers)
     # fetchone returns None -> age extension is not installed
     mock_conn = MockConnection(fetchone_return=None)
     monkeypatch.setattr("psycopg.connect", lambda *args, **kwargs: mock_conn)
@@ -285,6 +291,7 @@ def test_age_setup_statements_issued_for_postgres_with_age_extension(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test postgresql:// detects age in pg_extension and runs LOAD 'age' setup."""
+    pytest.importorskip("psycopg")  # not installed on Python 3.14 (see pyproject.toml markers)
     # fetchone returns (1,) -> age extension IS installed
     mock_conn = MockConnection(fetchone_return=(1,))
     monkeypatch.setattr("psycopg.connect", lambda *args, **kwargs: mock_conn)
@@ -318,6 +325,7 @@ def test_postgres_bridge_user_supplied_connection_auto_detects_age() -> None:
 
 def test_falkordb_tuple_auth(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test FalkorDB accepts a (username, password) tuple."""
+    pytest.importorskip("falkordb")  # not installed on Python 3.14 (see pyproject.toml markers)
     mock_from_url = MagicMock()
     mock_falkor_inst = MagicMock()
     mock_from_url.return_value = mock_falkor_inst
@@ -336,6 +344,7 @@ def test_falkordb_tuple_auth(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_falkordb_invalid_auth_type_raises() -> None:
     """Test invalid auth type raises TypeError for FalkorDB."""
+    pytest.importorskip("falkordb")  # not installed on Python 3.14 (see pyproject.toml markers)
     with pytest.raises(
         TypeError, match="FalkorDB/Redis auth must be a \\(username, password\\) tuple"
     ):
