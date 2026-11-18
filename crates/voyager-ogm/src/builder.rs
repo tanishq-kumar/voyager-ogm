@@ -30,6 +30,7 @@ use crate::ast::{
     AggregationFunc, AstNode, BinaryOp, Direction, ExecutionMode, LabelExpression, LiteralValue,
     NodeHandle, PathMode, ProjectionItem, QueryAstArena, UnaryOp,
 };
+use crate::error::{Error, Result};
 use crate::schema::{DdlDialect, resolve_fulltext_search};
 
 #[derive(Debug, Clone)]
@@ -39,6 +40,7 @@ struct PendingEdge {
     variable: Option<String>,
     min_hops: Option<u32>,
     max_hops: Option<u32>,
+    predicates: Vec<NodeHandle>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +81,8 @@ pub struct QueryBuilder {
     distinct: bool,
     limit: Option<u64>,
     skip: Option<u64>,
+    build_error: Option<String>,
+    last_merged_variable: Option<String>,
 }
 
 impl QueryBuilder {
@@ -87,6 +91,8 @@ impl QueryBuilder {
         Self {
             arena: QueryAstArena::new(),
             execution_mode: ExecutionMode::Normal,
+            build_error: None,
+            last_merged_variable: None,
             ..Default::default()
         }
     }
@@ -114,6 +120,87 @@ impl QueryBuilder {
     pub fn set_execution_mode(&mut self, mode: ExecutionMode) -> &mut Self {
         self.execution_mode = mode;
         self
+    }
+
+    /// Returns the active clause mode of this builder ("match", "optional_match", "create", "merge", "with").
+    #[inline(always)]
+    pub fn clause_mode(&self) -> Option<&'static str> {
+        self.clause_mode.map(|m| match m {
+            ClauseMode::Match => "match",
+            ClauseMode::OptionalMatch => "optional_match",
+            ClauseMode::Create => "create",
+            ClauseMode::Merge => "merge",
+            ClauseMode::With => "with",
+        })
+    }
+
+    /// Returns the variable name of the active MERGE clause pattern, if any.
+    #[inline(always)]
+    pub fn last_merged_variable(&self) -> Option<String> {
+        self.last_merged_variable.clone()
+    }
+
+    /// Checks if a variable has already been declared in a pattern in this query.
+    pub fn is_variable_declared(&self, var: &str) -> bool {
+        if let Some(ref pending) = self.pending_edge {
+            if let Some(ref v) = pending.variable {
+                if v == var {
+                    return true;
+                }
+            }
+        }
+        if let Some(ref v) = self.current_path_variable {
+            if v == var {
+                return true;
+            }
+        }
+        for node in self.arena.nodes() {
+            match node {
+                AstNode::NodePattern {
+                    variable: Some(v), ..
+                } if v == var => return true,
+                AstNode::EdgePattern {
+                    variable: Some(v), ..
+                } if v == var => return true,
+                AstNode::PathChain {
+                    path_variable: Some(v),
+                    ..
+                } if v == var => return true,
+                AstNode::UnwindClause { alias, .. } if alias == var => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Finds all variable names in the query patterns whose label expression matches any of the given labels.
+    pub fn find_variables_by_labels(&self, labels: &[String]) -> Vec<String> {
+        let mut vars = Vec::new();
+        for node in self.arena.nodes() {
+            match node {
+                AstNode::NodePattern {
+                    variable: Some(var),
+                    label_expression: Some(expr),
+                    ..
+                }
+                | AstNode::EdgePattern {
+                    variable: Some(var),
+                    label_expression: Some(expr),
+                    ..
+                } if labels.iter().any(|lbl| expr.contains_label(lbl)) && !vars.contains(var) => {
+                    vars.push(var.clone());
+                }
+                _ => {}
+            }
+        }
+        if let Some(ref pending) = self.pending_edge {
+            if let (Some(var), Some(expr)) = (&pending.variable, &pending.label_expression) {
+                if labels.iter().any(|lbl| expr.contains_label(lbl)) && !vars.contains(var) {
+                    vars.push(var.clone());
+                }
+            }
+        }
+        vars
     }
 
     /// Allocates an identifier variable node in the arena.
@@ -391,6 +478,7 @@ impl QueryBuilder {
         self.flush_current_path();
         self.clause_mode = Some(ClauseMode::Match);
         self.is_optional_match = false;
+        self.last_merged_variable = None;
         self
     }
 
@@ -399,6 +487,7 @@ impl QueryBuilder {
         self.flush_current_path();
         self.clause_mode = Some(ClauseMode::OptionalMatch);
         self.is_optional_match = true;
+        self.last_merged_variable = None;
         self
     }
 
@@ -406,6 +495,7 @@ impl QueryBuilder {
     pub fn create(&mut self) -> &mut Self {
         self.flush_current_path();
         self.clause_mode = Some(ClauseMode::Create);
+        self.last_merged_variable = None;
         self
     }
 
@@ -413,6 +503,7 @@ impl QueryBuilder {
     pub fn merge(&mut self) -> &mut Self {
         self.flush_current_path();
         self.clause_mode = Some(ClauseMode::Merge);
+        self.last_merged_variable = None;
         self
     }
 
@@ -469,6 +560,21 @@ impl QueryBuilder {
             is_merge: false,
         });
         self.current_on_match_set.push(item);
+        self
+    }
+
+    /// Adds assignments to BOTH `ON CREATE SET` and `ON MATCH SET` sharing the same literal value.
+    pub fn on_create_and_match_set(
+        &mut self,
+        var: impl Into<String>,
+        prop: impl Into<String>,
+        val: impl Into<LiteralValue>,
+    ) -> &mut Self {
+        let var_s: String = var.into();
+        let prop_s: String = prop.into();
+        let value = self.literal(val);
+        self.on_create_set_expr(var_s.clone(), prop_s.clone(), value);
+        self.on_match_set_expr(var_s, prop_s, value);
         self
     }
 
@@ -578,15 +684,69 @@ impl QueryBuilder {
         self.node_pattern_internal(variable.map(Into::into), Some(expr))
     }
 
+    /// Defines a node with inline property equality predicates: `(variable:Label {prop: val, ...})`.
+    pub fn node_with_props(
+        &mut self,
+        variable: Option<impl Into<String>>,
+        labels: Vec<impl Into<String>>,
+        properties: Vec<(impl Into<String>, impl Into<LiteralValue>)>,
+    ) -> &mut Self {
+        let label_expr = LabelExpression::from_labels(labels.into_iter().map(Into::into));
+        let var = variable.map(Into::into);
+        let mut preds = Vec::with_capacity(properties.len());
+        for (prop, val) in properties {
+            let p_str: String = prop.into();
+            let v_lit: LiteralValue = val.into();
+            let left = if let Some(ref v) = var {
+                self.prop(v, &p_str)
+            } else {
+                self.ident(&p_str)
+            };
+            let right = self.literal(v_lit);
+            let pred = self.arena.alloc(AstNode::BinaryExpression {
+                left,
+                op: BinaryOp::Eq,
+                right,
+            });
+            preds.push(pred);
+        }
+        self.node_pattern_internal_with_predicates(var, label_expr, preds)
+    }
+
+    /// Alias for [`Self::node_with_props`].
+    #[inline(always)]
+    pub fn node_properties(
+        &mut self,
+        variable: Option<impl Into<String>>,
+        labels: Vec<impl Into<String>>,
+        properties: Vec<(impl Into<String>, impl Into<LiteralValue>)>,
+    ) -> &mut Self {
+        self.node_with_props(variable, labels, properties)
+    }
+
     pub(crate) fn node_pattern_internal(
         &mut self,
         variable: Option<String>,
         label_expression: Option<LabelExpression>,
     ) -> &mut Self {
+        self.node_pattern_internal_with_predicates(variable, label_expression, Vec::new())
+    }
+
+    pub(crate) fn node_pattern_internal_with_predicates(
+        &mut self,
+        variable: Option<String>,
+        label_expression: Option<LabelExpression>,
+        predicates: Vec<NodeHandle>,
+    ) -> &mut Self {
+        if self.clause_mode == Some(ClauseMode::Merge) {
+            if let Some(ref v) = variable {
+                self.last_merged_variable = Some(v.clone());
+            }
+        }
         let node_handle = self.arena.alloc(AstNode::NodePattern {
             variable,
             label_expression,
-            predicates: Vec::new(),
+            predicates,
         });
 
         if let Some(pending) = self.pending_edge.take() {
@@ -596,7 +756,7 @@ impl QueryBuilder {
                 direction: pending.direction,
                 min_hops: pending.min_hops,
                 max_hops: pending.max_hops,
-                predicates: Vec::new(),
+                predicates: pending.predicates,
                 target_node: node_handle,
             });
             self.current_edges.push(edge_handle);
@@ -675,6 +835,44 @@ impl QueryBuilder {
             variable: variable.map(Into::into),
             min_hops: None,
             max_hops: None,
+            predicates: Vec::new(),
+        });
+        self
+    }
+
+    /// Chains an **outgoing** relationship traversal with inline property predicates: `-[r:TYPE {k: v}]->`.
+    pub fn to_with_props(
+        &mut self,
+        edge_types: Vec<impl Into<String>>,
+        variable: Option<impl Into<String>>,
+        properties: Vec<(impl Into<String>, impl Into<LiteralValue>)>,
+    ) -> &mut Self {
+        let expr = LabelExpression::from_edge_types(edge_types.into_iter().map(Into::into));
+        let var = variable.map(Into::into);
+        let mut preds = Vec::with_capacity(properties.len());
+        for (prop, val) in properties {
+            let p_str: String = prop.into();
+            let v_lit: LiteralValue = val.into();
+            let left = if let Some(ref v) = var {
+                self.prop(v, &p_str)
+            } else {
+                self.ident(&p_str)
+            };
+            let right = self.literal(v_lit);
+            let pred = self.arena.alloc(AstNode::BinaryExpression {
+                left,
+                op: BinaryOp::Eq,
+                right,
+            });
+            preds.push(pred);
+        }
+        self.pending_edge = Some(PendingEdge {
+            direction: Direction::Outgoing,
+            label_expression: expr,
+            variable: var,
+            min_hops: None,
+            max_hops: None,
+            predicates: preds,
         });
         self
     }
@@ -726,6 +924,44 @@ impl QueryBuilder {
             variable: variable.map(Into::into),
             min_hops: None,
             max_hops: None,
+            predicates: Vec::new(),
+        });
+        self
+    }
+
+    /// Chains an **incoming** relationship traversal with inline property predicates: `<-[r:TYPE {k: v}]-`.
+    pub fn from_with_props(
+        &mut self,
+        edge_types: Vec<impl Into<String>>,
+        variable: Option<impl Into<String>>,
+        properties: Vec<(impl Into<String>, impl Into<LiteralValue>)>,
+    ) -> &mut Self {
+        let expr = LabelExpression::from_edge_types(edge_types.into_iter().map(Into::into));
+        let var = variable.map(Into::into);
+        let mut preds = Vec::with_capacity(properties.len());
+        for (prop, val) in properties {
+            let p_str: String = prop.into();
+            let v_lit: LiteralValue = val.into();
+            let left = if let Some(ref v) = var {
+                self.prop(v, &p_str)
+            } else {
+                self.ident(&p_str)
+            };
+            let right = self.literal(v_lit);
+            let pred = self.arena.alloc(AstNode::BinaryExpression {
+                left,
+                op: BinaryOp::Eq,
+                right,
+            });
+            preds.push(pred);
+        }
+        self.pending_edge = Some(PendingEdge {
+            direction: Direction::Incoming,
+            label_expression: expr,
+            variable: var,
+            min_hops: None,
+            max_hops: None,
+            predicates: preds,
         });
         self
     }
@@ -777,6 +1013,44 @@ impl QueryBuilder {
             variable: variable.map(Into::into),
             min_hops: None,
             max_hops: None,
+            predicates: Vec::new(),
+        });
+        self
+    }
+
+    /// Chains an **undirected** relationship traversal with inline property predicates: `-[r:TYPE {k: v}]-`.
+    pub fn edge_with_props(
+        &mut self,
+        edge_types: Vec<impl Into<String>>,
+        variable: Option<impl Into<String>>,
+        properties: Vec<(impl Into<String>, impl Into<LiteralValue>)>,
+    ) -> &mut Self {
+        let expr = LabelExpression::from_edge_types(edge_types.into_iter().map(Into::into));
+        let var = variable.map(Into::into);
+        let mut preds = Vec::with_capacity(properties.len());
+        for (prop, val) in properties {
+            let p_str: String = prop.into();
+            let v_lit: LiteralValue = val.into();
+            let left = if let Some(ref v) = var {
+                self.prop(v, &p_str)
+            } else {
+                self.ident(&p_str)
+            };
+            let right = self.literal(v_lit);
+            let pred = self.arena.alloc(AstNode::BinaryExpression {
+                left,
+                op: BinaryOp::Eq,
+                right,
+            });
+            preds.push(pred);
+        }
+        self.pending_edge = Some(PendingEdge {
+            direction: Direction::Undirected,
+            label_expression: expr,
+            variable: var,
+            min_hops: None,
+            max_hops: None,
+            predicates: preds,
         });
         self
     }
@@ -998,6 +1272,56 @@ impl QueryBuilder {
         self.where_property(var, prop, BinaryOp::Contains, value)
     }
 
+    /// Folds an equality predicate `var.prop = val` into the inline properties of the active MERGE pattern.
+    pub fn fold_merge_eq(&mut self, var: &str, prop: &str, val: LiteralValue) -> Result<()> {
+        let mut target_handle: Option<NodeHandle> = None;
+        if let Some(start_handle) = self.current_path_start {
+            if let Ok(AstNode::NodePattern { variable, .. }) = self.arena.get(start_handle) {
+                if variable.as_deref() == Some(var) || (variable.is_none() && var.is_empty()) {
+                    target_handle = Some(start_handle);
+                }
+            }
+        }
+        if target_handle.is_none() {
+            for &edge_handle in &self.current_edges {
+                if let Ok(AstNode::EdgePattern { variable, .. }) = self.arena.get(edge_handle) {
+                    if variable.as_deref() == Some(var) {
+                        target_handle = Some(edge_handle);
+                        break;
+                    }
+                }
+            }
+        }
+        let Some(handle) = target_handle else {
+            return Err(Error::InvalidClause(format!(
+                "Cannot fold WHERE equality predicate into MERGE pattern: variable '{var}' not found in current pattern"
+            )));
+        };
+
+        let target_ident = self.arena.alloc(AstNode::Identifier(var.to_string()));
+        let left = self.arena.alloc(AstNode::PropertyAccess {
+            target: target_ident,
+            property: prop.to_string(),
+        });
+        let right = self.arena.alloc(AstNode::Literal(val));
+        let eq_node = self.arena.alloc(AstNode::BinaryExpression {
+            left,
+            op: BinaryOp::Eq,
+            right,
+        });
+
+        match self.arena.get_mut(handle) {
+            Ok(AstNode::NodePattern { predicates, .. }) => {
+                predicates.push(eq_node);
+            }
+            Ok(AstNode::EdgePattern { predicates, .. }) => {
+                predicates.push(eq_node);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     // ========================================================
     // WITH / Intermediate Projections
     // ========================================================
@@ -1006,6 +1330,7 @@ impl QueryBuilder {
     pub fn r#with(&mut self) -> &mut Self {
         self.flush_current_path();
         self.clause_mode = Some(ClauseMode::With);
+        self.last_merged_variable = None;
         self.projections.clear();
         self.order_bys.clear();
         self.distinct = false;
@@ -1340,6 +1665,11 @@ impl QueryBuilder {
                     self.mutation_clauses.push(create_handle);
                 }
                 Some(ClauseMode::Merge) => {
+                    if !self.current_where_predicates.is_empty() {
+                        self.build_error = Some(
+                            "MERGE clause does not support WHERE predicates; fold equality predicates into pattern properties or use ON CREATE SET / ON MATCH SET".to_string(),
+                        );
+                    }
                     let on_create_set = std::mem::take(&mut self.current_on_create_set);
                     let on_match_set = std::mem::take(&mut self.current_on_match_set);
                     let merge_handle = self.arena.alloc(AstNode::MergeClause {
@@ -1390,18 +1720,26 @@ impl QueryBuilder {
         }
     }
 
-    /// Finalizes the AST and returns the completed arena alongside the root statement handle.
-    pub fn build(mut self) -> (QueryAstArena, NodeHandle) {
+    /// Finalizes the AST and returns the completed arena alongside the root statement handle,
+    /// or returns an Error if AST validation or clause rules were violated.
+    pub fn try_build(mut self) -> Result<(QueryAstArena, NodeHandle)> {
+        if let Some(err_msg) = self.build_error.take() {
+            return Err(Error::InvalidClause(err_msg));
+        }
         if let Some(proc_handle) = self.procedure_call {
             if let Ok(AstNode::ProcedureCall { execution_mode, .. }) =
                 self.arena.get_mut(proc_handle)
             {
                 *execution_mode = self.execution_mode;
             }
-            return (self.arena, proc_handle);
+            return Ok((self.arena, proc_handle));
         }
 
         self.flush_current_path();
+
+        if let Some(err_msg) = self.build_error.take() {
+            return Err(Error::InvalidClause(err_msg));
+        }
 
         let return_clause = if self.projections.is_empty() {
             None
@@ -1427,7 +1765,13 @@ impl QueryBuilder {
             return_clause,
         });
 
-        (self.arena, root_handle)
+        Ok((self.arena, root_handle))
+    }
+
+    /// Finalizes the AST and returns the completed arena alongside the root statement handle.
+    /// Panics if AST construction rules were violated. Prefer [`Self::try_build`] for fallible queries.
+    pub fn build(self) -> (QueryAstArena, NodeHandle) {
+        self.try_build().expect("QueryBuilder::build failed")
     }
 
     /// Returns an immutable reference to the internal arena.

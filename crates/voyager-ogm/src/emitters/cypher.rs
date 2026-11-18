@@ -15,6 +15,7 @@ pub struct CypherEmitter {
     parameters: HashMap<String, LiteralValue>,
     buffer: String,
     ignore_execution_mode: bool,
+    node_params: HashMap<NodeHandle, String>,
 }
 
 impl CypherEmitter {
@@ -25,6 +26,7 @@ impl CypherEmitter {
             parameters: HashMap::new(),
             buffer: String::with_capacity(256),
             ignore_execution_mode: false,
+            node_params: HashMap::new(),
         }
     }
 
@@ -255,11 +257,17 @@ impl CypherEmitter {
                 Ok(())
             }
             AstNode::Literal(lit) => {
+                if let Some(param_name) = self.node_params.get(&handle) {
+                    self.buffer.push('$');
+                    self.buffer.push_str(param_name);
+                    return Ok(());
+                }
                 let param_name = format!("p{}", self.param_counter);
                 self.param_counter += 1;
                 self.buffer.push('$');
                 self.buffer.push_str(&param_name);
-                self.parameters.insert(param_name, lit.clone());
+                self.parameters.insert(param_name.clone(), lit.clone());
+                self.node_params.insert(handle, param_name);
                 Ok(())
             }
             AstNode::BinaryExpression { left, op, right } => {
@@ -775,6 +783,7 @@ impl AstVisitor for CypherEmitter {
     fn visit_query(&mut self, arena: &QueryAstArena, root: NodeHandle) -> Result<CompiledQuery> {
         self.buffer.clear();
         self.parameters.clear();
+        self.node_params.clear();
         self.param_counter = 0;
 
         let root_node = arena.get(root)?;

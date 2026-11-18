@@ -140,3 +140,108 @@ fn test_remove_property_mutation() {
         "MATCH (p:User) WHERE p.id = $p0 REMOVE p.temporary_token"
     );
 }
+
+#[test]
+fn test_create_node_with_props() {
+    let mut builder = QueryBuilder::new();
+    builder.create().node_with_props(
+        Some("p"),
+        vec!["Person"],
+        vec![
+            ("id", voyager_ogm::ast::LiteralValue::Int64(1)),
+            ("name", voyager_ogm::ast::LiteralValue::String("Ada".into())),
+        ],
+    );
+
+    let (arena, root) = builder.try_build().expect("build failed");
+
+    let mut cypher = CypherEmitter::new();
+    let res = cypher.visit_query(&arena, root).unwrap();
+    assert_eq!(res.statement, "CREATE (p:Person {id: $p0, name: $p1})");
+
+    let mut gql = IsoGqlEmitter::new();
+    let res_gql = gql.visit_query(&arena, root).unwrap();
+    assert_eq!(res_gql.statement, "INSERT (p:Person {id: $p0, name: $p1})");
+}
+
+#[test]
+fn test_create_path_with_props() {
+    let mut builder = QueryBuilder::new();
+    builder
+        .create()
+        .node_with_props(
+            Some("a"),
+            vec!["Person"],
+            vec![("name", voyager_ogm::ast::LiteralValue::String("Ada".into()))],
+        )
+        .to_with_props(
+            vec!["TX"],
+            Some("t"),
+            vec![("amount", voyager_ogm::ast::LiteralValue::Float64(750.0))],
+        )
+        .node_with_props(
+            Some("b"),
+            vec!["Person"],
+            vec![("name", voyager_ogm::ast::LiteralValue::String("Bob".into()))],
+        );
+
+    let (arena, root) = builder.try_build().expect("build failed");
+
+    let mut cypher = CypherEmitter::new();
+    let res = cypher.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res.statement,
+        "CREATE (a:Person {name: $p0})-[t:TX {amount: $p1}]->(b:Person {name: $p2})"
+    );
+}
+
+#[test]
+fn test_merge_with_on_create_and_match_set_dedup() {
+    let mut builder = QueryBuilder::new();
+    builder
+        .merge()
+        .node_with_props(
+            Some("p"),
+            vec!["Person"],
+            vec![("id", voyager_ogm::ast::LiteralValue::Int64(1))],
+        )
+        .on_create_and_match_set("p", "name", "Ada")
+        .on_create_and_match_set("p", "age", 36i64);
+
+    let (arena, root) = builder.try_build().expect("build failed");
+
+    let mut cypher = CypherEmitter::new();
+    let res = cypher.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res.statement,
+        "MERGE (p:Person {id: $p0}) ON CREATE SET p.name = $p1, p.age = $p2 ON MATCH SET p.name = $p1, p.age = $p2"
+    );
+    assert_eq!(res.parameters.len(), 3);
+}
+
+#[test]
+fn test_merge_fold_eq() {
+    let mut builder = QueryBuilder::new();
+    builder.merge().node(Some("p"), vec!["Person"]);
+    builder
+        .fold_merge_eq("p", "name", "Ada".into())
+        .expect("fold failed");
+
+    let (arena, root) = builder.try_build().expect("build failed");
+
+    let mut cypher = CypherEmitter::new();
+    let res = cypher.visit_query(&arena, root).unwrap();
+    assert_eq!(res.statement, "MERGE (p:Person {name: $p0})");
+}
+
+#[test]
+fn test_merge_leftover_where_error() {
+    let mut builder = QueryBuilder::new();
+    builder
+        .merge()
+        .node(Some("p"), vec!["Person"])
+        .where_gt("p", "age", 30i64);
+
+    let err = builder.try_build().unwrap_err();
+    assert!(err.to_string().contains("MERGE"));
+}

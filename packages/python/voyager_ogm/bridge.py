@@ -897,6 +897,11 @@ class PostgresBridge:
         def _make_repl(r: str) -> Callable[[re.Match[str]], str]:
             return lambda _m: r
 
+        if "cypher(" in statement:
+            import json
+
+            return statement, (json.dumps(parameters),)
+
         if "GRAPH_TABLE" in statement:
             # PG19 GRAPH_TABLE does not support prepared parameters inside table function AST
             stmt = statement

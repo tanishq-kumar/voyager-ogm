@@ -1795,6 +1795,22 @@ impl PyQueryBuilder {
         self.inner.execution_mode().as_str()
     }
 
+    fn clause_mode(&self) -> Option<&'static str> {
+        self.inner.clause_mode()
+    }
+
+    fn last_merged_variable(&self) -> Option<String> {
+        self.inner.last_merged_variable()
+    }
+
+    fn is_variable_declared(&self, var: &str) -> bool {
+        self.inner.is_variable_declared(var)
+    }
+
+    fn find_variables_by_labels(&self, labels: Vec<String>) -> Vec<String> {
+        self.inner.find_variables_by_labels(&labels)
+    }
+
     fn clone_builder(&self) -> Self {
         self.clone()
     }
@@ -1821,25 +1837,85 @@ impl PyQueryBuilder {
         Ok(vars_set.into_iter().collect())
     }
 
-    #[pyo3(signature = (variable=None, labels=vec![]))]
-    fn node(&mut self, variable: Option<String>, labels: Vec<String>) {
-        self.inner.node(variable, labels);
+    #[pyo3(signature = (variable=None, labels=vec![], properties=None))]
+    fn node(
+        &mut self,
+        variable: Option<String>,
+        labels: Vec<String>,
+        properties: Option<Vec<(String, Bound<'_, PyAny>)>>,
+    ) -> PyResult<()> {
+        if let Some(props) = properties {
+            let mut props_lit = Vec::with_capacity(props.len());
+            for (k, v) in props {
+                let lit = py_to_literal(&v)?;
+                props_lit.push((k, lit));
+            }
+            self.inner.node_with_props(variable, labels, props_lit);
+        } else {
+            self.inner.node(variable, labels);
+        }
+        Ok(())
     }
 
-    #[pyo3(signature = (edge_types=vec![], variable=None))]
-    fn to(&mut self, edge_types: Vec<String>, variable: Option<String>) {
-        self.inner.to(edge_types, variable);
+    #[pyo3(signature = (edge_types=vec![], variable=None, properties=None))]
+    fn to(
+        &mut self,
+        edge_types: Vec<String>,
+        variable: Option<String>,
+        properties: Option<Vec<(String, Bound<'_, PyAny>)>>,
+    ) -> PyResult<()> {
+        if let Some(props) = properties {
+            let mut props_lit = Vec::with_capacity(props.len());
+            for (k, v) in props {
+                let lit = py_to_literal(&v)?;
+                props_lit.push((k, lit));
+            }
+            self.inner.to_with_props(edge_types, variable, props_lit);
+        } else {
+            self.inner.to(edge_types, variable);
+        }
+        Ok(())
     }
 
     #[allow(clippy::wrong_self_convention)]
-    #[pyo3(signature = (edge_types=vec![], variable=None))]
-    fn from_edge(&mut self, edge_types: Vec<String>, variable: Option<String>) {
-        self.inner.from(edge_types, variable);
+    #[pyo3(signature = (edge_types=vec![], variable=None, properties=None))]
+    fn from_edge(
+        &mut self,
+        edge_types: Vec<String>,
+        variable: Option<String>,
+        properties: Option<Vec<(String, Bound<'_, PyAny>)>>,
+    ) -> PyResult<()> {
+        if let Some(props) = properties {
+            let mut props_lit = Vec::with_capacity(props.len());
+            for (k, v) in props {
+                let lit = py_to_literal(&v)?;
+                props_lit.push((k, lit));
+            }
+            self.inner.from_with_props(edge_types, variable, props_lit);
+        } else {
+            self.inner.from(edge_types, variable);
+        }
+        Ok(())
     }
 
-    #[pyo3(signature = (edge_types=vec![], variable=None))]
-    fn edge(&mut self, edge_types: Vec<String>, variable: Option<String>) {
-        self.inner.edge(edge_types, variable);
+    #[pyo3(signature = (edge_types=vec![], variable=None, properties=None))]
+    fn edge(
+        &mut self,
+        edge_types: Vec<String>,
+        variable: Option<String>,
+        properties: Option<Vec<(String, Bound<'_, PyAny>)>>,
+    ) -> PyResult<()> {
+        if let Some(props) = properties {
+            let mut props_lit = Vec::with_capacity(props.len());
+            for (k, v) in props {
+                let lit = py_to_literal(&v)?;
+                props_lit.push((k, lit));
+            }
+            self.inner.edge_with_props(edge_types, variable, props_lit);
+        } else {
+            self.inner.edge(edge_types, variable);
+        }
+        Ok(())
     }
 
     fn hops(&mut self, min: u32, max: u32) {
@@ -2051,6 +2127,29 @@ impl PyQueryBuilder {
         Ok(())
     }
 
+    fn on_create_and_match_set(
+        &mut self,
+        var: String,
+        prop: String,
+        val: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let lit = py_to_literal(val)?;
+        self.inner.on_create_and_match_set(var, prop, lit);
+        Ok(())
+    }
+
+    fn fold_merge_eq(
+        &mut self,
+        variable: String,
+        property: String,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let lit = py_to_literal(value)?;
+        self.inner
+            .fold_merge_eq(&variable, &property, lit)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     fn set_property(&mut self, var: String, prop: String, val: &Bound<'_, PyAny>) -> PyResult<()> {
         let lit = py_to_literal(val)?;
         self.inner.set_property(var, prop, lit);
@@ -2224,7 +2323,11 @@ impl PyQueryBuilder {
     ) -> PyResult<Bound<'py, PyDict>> {
         check_warn_cypher_path_mode(py, dialect, self.inner.get_path_mode().as_deref())?;
 
-        let (mut arena, root) = self.inner.clone().build();
+        let (mut arena, root) = self
+            .inner
+            .clone()
+            .try_build()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         if optimize {
             let opt_level = OptimizationLevel::from_str_opt(optimization_level);
@@ -2276,7 +2379,11 @@ impl PyQueryBuilder {
 
     /// Extracts native graph topology (nodes and edges) directly from the AST arena.
     fn extract_topology<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let (arena, root) = self.inner.clone().build();
+        let (arena, root) = self
+            .inner
+            .clone()
+            .try_build()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
         let topology = GraphTopology::from_arena(&arena, Some(root));
         topology_to_py_dict(&topology, py)
     }
@@ -2288,7 +2395,11 @@ impl PyQueryBuilder {
         registry: Option<&PyNativeSchemaRegistry>,
         py: Python<'py>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let (arena, root) = self.inner.clone().build();
+        let (arena, root) = self
+            .inner
+            .clone()
+            .try_build()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
         let topology = GraphTopology::from_arena(&arena, Some(root));
         let reg = match registry {
             Some(r) => r.registry(),
@@ -2478,7 +2589,9 @@ fn compile_query_from_spec<'py>(
     let mut builder = QueryBuilder::new();
     build_query_from_spec_internal(&mut builder, spec)?;
     check_warn_cypher_path_mode(py, dialect, builder.get_path_mode().as_deref())?;
-    let (mut arena, root) = builder.build();
+    let (mut arena, root) = builder
+        .try_build()
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
     if optimize {
         let opt_level = OptimizationLevel::from_str_opt(optimization_level);

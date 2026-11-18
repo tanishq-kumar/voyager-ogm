@@ -12,7 +12,16 @@ from dataclasses import field as dc_field
 from typing import Any
 
 from voyager_ogm._voyager_rs import NativeQueryBuilder
-from voyager_ogm.expressions import AliasedExpr, Expression, to_expression
+from voyager_ogm.expressions import (
+    AliasedExpr,
+    BinaryExpr,
+    Expression,
+    FunctionExpr,
+    LiteralExpr,
+    PropExpr,
+    UnaryExpr,
+    to_expression,
+)
 from voyager_ogm.models import (
     AggregationExpr,
     BoundField,
@@ -274,6 +283,160 @@ class Query:
 
     def __deepcopy__(self, memo: Any) -> Query:
         return self.clone()
+
+    @staticmethod
+    def _extract_instance_properties(entity: Node | Relationship) -> list[tuple[str, Any]]:
+        """Extracts non-None property values explicitly set on an entity instance."""
+        values = getattr(entity, "_values", {})
+        dirty = getattr(entity, "_dirty_fields", {})
+        combined = dict(values)
+        combined.update(dirty)
+        return [(k, v) for k, v in combined.items() if v is not None]
+
+    @staticmethod
+    def _extract_merge_properties(
+        entity: Node,
+    ) -> tuple[list[tuple[str, Any]], list[tuple[str, Any]]]:
+        """Extracts key properties and non-key properties for a MERGE node instance.
+
+        Key fields:
+          1. fields with primary_key=True that are set;
+          2. if none, fields with unique=True that are set;
+          3. if none, all set fields (plain pattern MERGE).
+        """
+        all_props = Query._extract_instance_properties(entity)
+        set_map = dict(all_props)
+        schema = getattr(entity, "_schema_fields", {})
+
+        pk_names = [
+            f.name
+            for f in schema.values()
+            if getattr(f, "primary_key", False) and f.name in set_map
+        ]
+        if pk_names:
+            key_names = set(pk_names)
+        else:
+            unique_names = [
+                f.name for f in schema.values() if getattr(f, "unique", False) and f.name in set_map
+            ]
+            if unique_names:
+                key_names = set(unique_names)
+            else:
+                key_names = set(set_map.keys())
+
+        key_props = [(k, v) for k, v in all_props if k in key_names]
+        other_props = [(k, v) for k, v in all_props if k not in key_names]
+        return key_props, other_props
+
+    def _resolve_model_alias(self, model_class: type | None) -> str:
+        """Resolves a model class reference to the query variable alias generated for it."""
+        if model_class is None:
+            raise ValueError(
+                "Cannot resolve class-level field: owning model class is unknown. "
+                "Use an aliased instance instead (e.g. p = Person(alias='p'))."
+            )
+        candidate_labels: list[str] = []
+        if isinstance(model_class, type) and issubclass(model_class, Node):
+            cached = getattr(model_class, "_cached_labels", None)
+            if cached:
+                candidate_labels.extend(cached)
+            raw = getattr(model_class, "__labels__", None)
+            if raw:
+                candidate_labels.extend(raw)
+        elif isinstance(model_class, type) and issubclass(model_class, Relationship):
+            cached_types = getattr(model_class, "_cached_types", None)
+            if cached_types:
+                candidate_labels.extend(cached_types)
+            cached_type = getattr(model_class, "_cached_type", None)
+            if cached_type:
+                candidate_labels.append(cached_type)
+            raw_t = getattr(model_class, "__type__", None)
+            if raw_t:
+                candidate_labels.append(raw_t)
+        name = getattr(model_class, "__name__", str(model_class))
+        candidate_labels.append(name)
+        dedup_labels = list(dict.fromkeys(candidate_labels))
+        matches = self._native.find_variables_by_labels(dedup_labels)
+        if len(matches) == 1:
+            return matches[0]
+        elif len(matches) == 0:
+            raise ValueError(
+                f"Class-level field on '{name}' cannot be resolved: "
+                f"no pattern for '{name}' exists in the query. "
+                f"Use an aliased instance instead (e.g. p = {name}(alias='p'))."
+            )
+        else:
+            raise ValueError(
+                f"Class-level field on '{name}' is ambiguous: "
+                f"multiple patterns ({', '.join(matches)}) were created from '{name}'. "
+                f"Use an aliased instance instead (e.g. p = {name}(alias='p'))."
+            )
+
+    def _resolve_expr(self, expr: Any) -> Any:
+        """Recursively resolves class-level fields and expressions to bound aliases."""
+        if isinstance(expr, Field):
+            owner = getattr(expr, "_owner", None)
+            alias = self._resolve_model_alias(owner)
+            return BoundField(alias, expr.name or "", model_class=owner)
+
+        if isinstance(expr, BoundField):
+            if (not expr.target_alias) and expr.model_class is not None:
+                alias = self._resolve_model_alias(expr.model_class)
+                return BoundField(alias, expr.field_name, model_class=expr.model_class)
+            return expr
+
+        if isinstance(expr, PropExpr):
+            if (not expr.target_alias) and expr.model_class is not None:
+                alias = self._resolve_model_alias(expr.model_class)
+                return PropExpr(alias, expr.field_name, model_class=expr.model_class)
+            return expr
+
+        if isinstance(expr, PredicateExpr):
+            target = expr.target
+            if (not target) and expr.model_class is not None:
+                target = self._resolve_model_alias(expr.model_class)
+            resolved_val = self._resolve_expr(expr.value)
+            return PredicateExpr(
+                target,
+                expr.field,
+                expr.op,
+                resolved_val,
+                model_class=expr.model_class,
+            )
+
+        if isinstance(expr, AggregationExpr):
+            target = expr.target
+            if (not target) and expr.model_class is not None:
+                target = self._resolve_model_alias(expr.model_class)
+            return AggregationExpr(
+                target,
+                expr.field,
+                expr.func,
+                model_class=expr.model_class,
+            )
+
+        if isinstance(expr, BinaryExpr):
+            left = self._resolve_expr(expr.left)
+            right = self._resolve_expr(expr.right)
+            return BinaryExpr(left, expr.op, right)
+
+        if isinstance(expr, UnaryExpr):
+            operand = self._resolve_expr(expr.operand)
+            return UnaryExpr(expr.op, operand)
+
+        if isinstance(expr, FunctionExpr):
+            args = [self._resolve_expr(a) for a in expr.args]
+            return FunctionExpr(expr.name, args)
+
+        if isinstance(expr, AliasedExpr):
+            inner = self._resolve_expr(expr.expr)
+            return AliasedExpr(inner, expr.alias)
+
+        if isinstance(expr, (list, tuple)):
+            resolved_list = [self._resolve_expr(x) for x in expr]
+            return type(expr)(resolved_list)
+
+        return expr
 
     @staticmethod
     def exists(subquery_or_pattern: Any) -> Any:
@@ -715,11 +878,25 @@ class Query:
         """
         if variable is not None and node_or_var is None:
             node_or_var = variable
+        mode = self._native.clause_mode()
         if isinstance(node_or_var, Node):
             lbls = getattr(node_or_var, "_cached_labels", None)
             if lbls is None:
                 lbls = node_or_var.labels
-            self._native.node(node_or_var._alias, lbls)
+            alias = node_or_var._alias
+            if mode == "create":
+                if self._native.is_variable_declared(alias):
+                    self._native.node(alias, lbls)
+                else:
+                    props = self._extract_instance_properties(node_or_var)
+                    self._native.node(alias, lbls, props)
+            elif mode == "merge":
+                key_props, other_props = self._extract_merge_properties(node_or_var)
+                self._native.node(alias, lbls, key_props)
+                for prop_name, prop_val in other_props:
+                    self._native.on_create_and_match_set(alias, prop_name, prop_val)
+            else:
+                self._native.node(alias, lbls)
         elif isinstance(node_or_var, type) and issubclass(node_or_var, Node):
             lbls = getattr(node_or_var, "_cached_labels", None)
             if lbls is None:
@@ -747,12 +924,18 @@ class Query:
         var: str | None,
         edge_type: str | list[str] | None = None,
         variable: str | None = None,
-    ) -> tuple[list[str], str | None]:
+    ) -> tuple[list[str], str | None, list[tuple[str, Any]] | None]:
         actual_rel = rel if rel is not None else edge_type
         actual_var = var if var is not None else variable
+        mode = self._native.clause_mode()
         if isinstance(actual_rel, Relationship):
             cached_types = getattr(actual_rel, "_cached_types", None)
-            return (cached_types or [actual_rel.edge_type]), actual_rel._alias
+            types = cached_types or [actual_rel.edge_type]
+            alias = actual_rel._alias
+            props = None
+            if mode in ("create", "merge"):
+                props = self._extract_instance_properties(actual_rel)
+            return types, alias, props
         elif isinstance(actual_rel, type) and issubclass(actual_rel, Relationship):
             cached_types = getattr(actual_rel, "_cached_types", None)
             if cached_types is not None:
@@ -762,14 +945,15 @@ class Query:
                     cached_types[0] if cached_types else actual_rel.__name__.upper(),
                 )
                 alias = actual_var or _get_next_alias(cached_type)
-                return cached_types, alias
+                return cached_types, alias, None
             instance = actual_rel()
-            return [instance.edge_type], actual_var or instance.alias
+            alias = actual_var or instance.alias
+            return [instance.edge_type], alias, None
         elif isinstance(actual_rel, str):
-            return [actual_rel], actual_var
+            return [actual_rel], actual_var, None
         elif isinstance(actual_rel, list):
-            return actual_rel, actual_var
-        return [], actual_var
+            return actual_rel, actual_var, None
+        return [], actual_var, None
 
     def to(
         self,
@@ -790,8 +974,10 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
-        types, edge_var = self._extract_rel_info(rel, var, edge_type=edge_type, variable=variable)
-        self._native.to(types, edge_var)
+        types, edge_var, props = self._extract_rel_info(
+            rel, var, edge_type=edge_type, variable=variable
+        )
+        self._native.to(types, edge_var, props)
         return self
 
     def from_(
@@ -813,8 +999,10 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
-        types, edge_var = self._extract_rel_info(rel, var, edge_type=edge_type, variable=variable)
-        self._native.from_edge(types, edge_var)
+        types, edge_var, props = self._extract_rel_info(
+            rel, var, edge_type=edge_type, variable=variable
+        )
+        self._native.from_edge(types, edge_var, props)
         return self
 
     def edge(
@@ -836,8 +1024,10 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
-        types, edge_var = self._extract_rel_info(rel, var, edge_type=edge_type, variable=variable)
-        self._native.edge(types, edge_var)
+        types, edge_var, props = self._extract_rel_info(
+            rel, var, edge_type=edge_type, variable=variable
+        )
+        self._native.edge(types, edge_var, props)
         return self
 
     def hops(self, min_hops: int, max_hops: int) -> Query:
@@ -966,11 +1156,45 @@ class Query:
             The Query instance for fluent chaining.
 
         Raises:
-            ValueError: If called with no predicates.
+            ValueError: If called with no predicates or if invalid predicate in MERGE mode.
         """
         if not predicates:
             raise ValueError("where() requires at least one predicate condition")
-        for pred in predicates:
+
+        mode = self._native.clause_mode()
+        if mode == "merge":
+            merged_var = self._native.last_merged_variable()
+            for raw_pred in predicates:
+                pred = self._resolve_expr(raw_pred)
+                folded = False
+                if isinstance(pred, PredicateExpr):
+                    if (
+                        (merged_var is None or pred.target == merged_var)
+                        and pred.op in ("=", "eq")
+                        and not isinstance(pred.value, Expression)
+                    ):
+                        self._native.fold_merge_eq(pred.target, pred.field, pred.value)
+                        folded = True
+                elif isinstance(pred, BinaryExpr):
+                    if (
+                        isinstance(pred.left, PropExpr)
+                        and pred.op in ("=", "eq")
+                        and (merged_var is None or pred.left.target_alias == merged_var)
+                        and isinstance(pred.right, LiteralExpr)
+                    ):
+                        self._native.fold_merge_eq(
+                            pred.left.target_alias, pred.left.field_name, pred.right.value
+                        )
+                        folded = True
+                if not folded:
+                    raise ValueError(
+                        "MERGE clause does not support WHERE predicates. "
+                        "Use on_create_set() / on_match_set() or a preceding MATCH clause."
+                    )
+            return self
+
+        for raw_pred in predicates:
+            pred = self._resolve_expr(raw_pred)
             if isinstance(pred, PredicateExpr) and not isinstance(pred.value, Expression):
                 self._native.where_property(pred.target, pred.field, pred.op, pred.value)
                 continue
@@ -1002,11 +1226,17 @@ class Query:
             The Query instance for fluent chaining.
 
         Raises:
-            ValueError: If called with no predicates.
+            ValueError: If called with no predicates or if called in MERGE mode.
         """
         if not predicates:
             raise ValueError("where_not() requires at least one predicate condition")
-        for pred in predicates:
+        if self._native.clause_mode() == "merge":
+            raise ValueError(
+                "MERGE clause does not support WHERE predicates. "
+                "Use on_create_set() / on_match_set() or a preceding MATCH clause."
+            )
+        for raw_pred in predicates:
+            pred = self._resolve_expr(raw_pred)
             expr = to_expression(pred)
             not_expr = ~expr
             native_expr = getattr(not_expr, "_native_expr", None)
@@ -1026,8 +1256,14 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
-        for assign in assignments:
-            self._native.on_create_set(assign.target, assign.field, assign.value)
+        for raw_assign in assignments:
+            assign = (
+                self._resolve_expr(raw_assign)
+                if isinstance(raw_assign, (PredicateExpr, Expression, Field, BoundField))
+                else raw_assign
+            )
+            if isinstance(assign, PredicateExpr):
+                self._native.on_create_set(assign.target, assign.field, assign.value)
         for key, val in kwargs.items():
             if "." in key:
                 var, prop = key.split(".", 1)
@@ -1044,8 +1280,14 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
-        for assign in assignments:
-            self._native.on_match_set(assign.target, assign.field, assign.value)
+        for raw_assign in assignments:
+            assign = (
+                self._resolve_expr(raw_assign)
+                if isinstance(raw_assign, (PredicateExpr, Expression, Field, BoundField))
+                else raw_assign
+            )
+            if isinstance(assign, PredicateExpr):
+                self._native.on_match_set(assign.target, assign.field, assign.value)
         for key, val in kwargs.items():
             if "." in key:
                 var, prop = key.split(".", 1)
@@ -1063,7 +1305,12 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
-        for assign in assignments:
+        for raw_assign in assignments:
+            assign = (
+                self._resolve_expr(raw_assign)
+                if isinstance(raw_assign, (PredicateExpr, Expression, Field, BoundField))
+                else raw_assign
+            )
             if isinstance(assign, PredicateExpr):
                 self._native.set_property(assign.target, assign.field, assign.value)
             elif isinstance(assign, Node):
@@ -1129,6 +1376,7 @@ class Query:
         return self
 
     def _project_field(self, field: Any, alias: str | None = None) -> None:
+        field = self._resolve_expr(field)
         if isinstance(field, AliasedExpr):
             final_alias = field.alias if alias is None else alias
             nat = getattr(field.expr, "_native_expr", None)
@@ -1344,6 +1592,7 @@ class Query:
         Returns:
             The Query instance for fluent chaining.
         """
+        field = self._resolve_expr(field)
         if isinstance(field, BoundField):
             self._native.order_by(field.target_alias, field.field_name, ascending)
         elif isinstance(field, Expression) or hasattr(field, "to_spec"):

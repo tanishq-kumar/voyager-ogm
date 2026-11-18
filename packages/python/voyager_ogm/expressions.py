@@ -190,11 +190,17 @@ class Expression:
 class PropExpr(Expression):
     """Property expression accessing a property on an aliased node or edge variable: `var.prop`."""
 
-    def __init__(self, target_alias: str, field_name: str) -> None:
+    def __init__(
+        self,
+        target_alias: str,
+        field_name: str,
+        model_class: type | None = None,
+    ) -> None:
         self.target_alias = target_alias
         self.field_name = field_name
         self.target = target_alias
         self.field = field_name
+        self.model_class = model_class
         if HAS_VOYAGER_RS and AstExpr is not None:
             try:
                 self._native_expr = AstExpr.prop(target_alias, field_name)
@@ -517,11 +523,19 @@ def to_expression(val: Any) -> Expression:
     if hasattr(val, "_alias"):
         return IdentExpr(val._alias)
     if hasattr(val, "target_alias") and hasattr(val, "field_name"):
-        return PropExpr(str(val.target_alias), str(val.field_name))
+        return PropExpr(
+            str(val.target_alias),
+            str(val.field_name),
+            model_class=getattr(val, "model_class", None),
+        )
     if hasattr(val, "alias") and isinstance(val.alias, str):
         return IdentExpr(val.alias)
     if hasattr(val, "name") and not hasattr(val, "alias"):
-        return PropExpr("", str(val.name or ""))
+        return PropExpr(
+            "",
+            str(val.name or ""),
+            model_class=getattr(val, "_owner", None),
+        )
     return LiteralExpr(val)
 
 
