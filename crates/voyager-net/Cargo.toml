@@ -11,7 +11,7 @@ readme = "README.md"
 autobenches = false
 
 [dependencies]
-voyager-core = { workspace = true, features = ["serde", "arrow"] }
+voyager-ogm = { workspace = true, features = ["serde", "arrow"] }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 async-trait = { workspace = true }

@@ -2,7 +2,7 @@
 
 Provides automated constraint generation, schema reflection, index management,
 and Graph Types validation for openCypher (Neo4j / Memgraph), ISO GQL, and SQL:2023 PGQ.
-All DDL statements are deterministically emitted via native voyager-core Rust emitters.
+All DDL statements are deterministically emitted via native voyager-ogm Rust emitters.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ def canonical_vector_index_name(label: str, prop: str, dialect: str = "cypher") 
     except Exception:
         # Pure-Python fallback for environments where the native Rust extension is unavailable.
         # NOTE: Keep this fallback in exact sync with `canonical_vector_index_name`
-        # in `crates/voyager-core/src/schema.rs`.
+        # in `crates/voyager-ogm/src/schema.rs`.
         lbl = label.lower()
         prp = prop.lower()
         if dialect.lower() in ("duckdb", "sql", "postgres", "postgresql", "age", "apache_age"):
@@ -153,7 +153,7 @@ def canonical_fulltext_index_name(
     except Exception:
         # Pure-Python fallback for environments where the native Rust extension is unavailable.
         # NOTE: Keep this fallback in exact sync with `canonical_fulltext_index_name`
-        # in `crates/voyager-core/src/schema.rs`.
+        # in `crates/voyager-ogm/src/schema.rs`.
         lbl = label_or_type.lower()
         prp = "_".join(p.lower() for p in props)
         suffix = prp if prp else "fulltext"
@@ -425,7 +425,7 @@ class SchemaManager:
     ) -> list[str]:
         """Generates DDL statements for the specified model and dialect.
 
-        Delegates directly to native voyager-core Rust emitters.
+        Delegates directly to native voyager-ogm Rust emitters.
 
         Note on DuckDB:
             DuckDB's property graph extensions implement SQL:2023 PGQ (DuckPGQ), while pure

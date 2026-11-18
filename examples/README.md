@@ -4,7 +4,7 @@ Code examples showing query building and entity modeling patterns in Rust and Py
 
 ---
 
-## Rust Examples (`crates/voyager-core/examples/`)
+## Rust Examples (`crates/voyager-ogm/examples/`)
 
 Run the Rust examples with:
 ```bash
@@ -15,13 +15,13 @@ cargo run --example <example_name>
 
 | Example File | Approach | Description |
 | :--- | :--- | :--- |
-| [`01_step_by_step_chaining.rs`](../crates/voyager-core/examples/01_step_by_step_chaining.rs) | **Step-by-Step Path Chaining** | Multi-hop traversal chaining with fluent methods. |
-| [`02_semantic_shortcuts.rs`](../crates/voyager-core/examples/02_semantic_shortcuts.rs) | **Semantic Shortcuts** | Directional navigation with `.node_label()`, `.out_edge()`, and `.order_by_desc()`. |
-| [`03_single_call_pattern.rs`](../crates/voyager-core/examples/03_single_call_pattern.rs) | **Combined 1-Hop Pattern** | 1-hop pattern definitions with `.node().to_edge()`. |
-| [`04_expression_tree_builder.rs`](../crates/voyager-core/examples/04_expression_tree_builder.rs) | **Nested Expression Trees** | Boolean predicate trees with `AND`, `OR`, `XOR`, and property comparisons. |
-| [`05_direct_arena_allocation.rs`](../crates/voyager-core/examples/05_direct_arena_allocation.rs) | **Direct AST Allocation** | Direct AST allocation using `QueryAstArena`. |
-| [`06_ast_optimizer_constant_folding.rs`](../crates/voyager-core/examples/06_ast_optimizer_constant_folding.rs) | **AST Optimizer & Constant Folding** | Compile-time arithmetic folding, boolean simplification, and predicate pushdown. |
-| [`07_explain_and_profile_queries.rs`](../crates/voyager-core/examples/07_explain_and_profile_queries.rs) | **Query Profiling & Plan Explanation** | ExecutionMode (`EXPLAIN` / `PROFILE`), fluent modifiers, and multi-dialect emission. |
+| [`01_step_by_step_chaining.rs`](../crates/voyager-ogm/examples/01_step_by_step_chaining.rs) | **Step-by-Step Path Chaining** | Multi-hop traversal chaining with fluent methods. |
+| [`02_semantic_shortcuts.rs`](../crates/voyager-ogm/examples/02_semantic_shortcuts.rs) | **Semantic Shortcuts** | Directional navigation with `.node_label()`, `.out_edge()`, and `.order_by_desc()`. |
+| [`03_single_call_pattern.rs`](../crates/voyager-ogm/examples/03_single_call_pattern.rs) | **Combined 1-Hop Pattern** | 1-hop pattern definitions with `.node().to_edge()`. |
+| [`04_expression_tree_builder.rs`](../crates/voyager-ogm/examples/04_expression_tree_builder.rs) | **Nested Expression Trees** | Boolean predicate trees with `AND`, `OR`, `XOR`, and property comparisons. |
+| [`05_direct_arena_allocation.rs`](../crates/voyager-ogm/examples/05_direct_arena_allocation.rs) | **Direct AST Allocation** | Direct AST allocation using `QueryAstArena`. |
+| [`06_ast_optimizer_constant_folding.rs`](../crates/voyager-ogm/examples/06_ast_optimizer_constant_folding.rs) | **AST Optimizer & Constant Folding** | Compile-time arithmetic folding, boolean simplification, and predicate pushdown. |
+| [`07_explain_and_profile_queries.rs`](../crates/voyager-ogm/examples/07_explain_and_profile_queries.rs) | **Query Profiling & Plan Explanation** | ExecutionMode (`EXPLAIN` / `PROFILE`), fluent modifiers, and multi-dialect emission. |
 | [`live_explain_and_profile.rs`](../crates/voyager-net/examples/live_explain_and_profile.rs) | **Live Engine Profiling & Plan Explanation** | Live Bolt execution against Neo4j and Memgraph with QueryBuilder seeding and profiling. |
 
 ---

@@ -6,7 +6,7 @@ The **Query Spec Interchange Protocol** is the canonical, language-agnostic Abst
 
 - Python SDK (`voyager-ogm`)
 - TypeScript / Node.js SDK (`@voyager-ogm/client`)
-- Native Rust Core Engine (`voyager-core` / `voyager-pyo3`)
+- Native Rust Core Engine (`voyager-ogm` / `voyager-pyo3`)
 - AI Model Context Protocol (MCP) servers and language agents
 
 This formal ABI contract guarantees cross-language stability and deterministic translation into target dialects (**openCypher**, **ISO/IEC 39075:2024 GQL**, **SQL:2023 PGQ**, and **Apache AGE**).

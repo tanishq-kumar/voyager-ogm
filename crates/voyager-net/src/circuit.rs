@@ -27,7 +27,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::error::NetError;
-use voyager_core::ErrorCode;
+use voyager_ogm::ErrorCode;
 
 /// Operational lifecycle state of a [`CircuitRouter`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

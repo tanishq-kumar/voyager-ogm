@@ -141,7 +141,7 @@ just ci
 
 Voyager is structured as a monorepo:
 
-* `crates/voyager-core`: Rust core database engine, multi-dialect AST parser, query optimizer, and Arrow bridge.
+* `crates/voyager-ogm`: Rust core database engine, multi-dialect AST parser, query optimizer, and Arrow bridge.
 * `crates/voyager-pyo3`: PyO3 Rust-to-Python native extension bindings.
 * `crates/voyager-cli`: Command-line interface tool (`voy`).
 * `packages/python/voyager_ogm`: Python SDK, Polars streaming integration, and interactive graph viewer.

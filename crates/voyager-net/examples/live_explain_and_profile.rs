@@ -7,12 +7,12 @@
 
 use std::collections::HashMap;
 
-use voyager_core::builder::QueryBuilder;
-use voyager_core::emitters::CypherEmitter;
-use voyager_core::visitor::AstVisitor;
 use voyager_net::bolt::BoltConnection;
 use voyager_net::config::ConnectionConfig;
 use voyager_net::engine::AsyncConnection;
+use voyager_ogm::builder::QueryBuilder;
+use voyager_ogm::emitters::CypherEmitter;
+use voyager_ogm::visitor::AstVisitor;
 
 const NEO4J_URI: &str = "bolt://127.0.0.1:7687";
 const NEO4J_USER: &str = "neo4j";
@@ -67,9 +67,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let mut seed_params = HashMap::new();
             for (k, v) in &compiled_seed.parameters {
-                if let voyager_core::ast::LiteralValue::Int64(i) = v {
+                if let voyager_ogm::ast::LiteralValue::Int64(i) = v {
                     seed_params.insert(k.clone(), serde_json::json!(i));
-                } else if let voyager_core::ast::LiteralValue::String(s) = v {
+                } else if let voyager_ogm::ast::LiteralValue::String(s) = v {
                     seed_params.insert(k.clone(), serde_json::json!(s));
                 }
             }
@@ -92,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let mut exp_params = HashMap::new();
             for (k, v) in &compiled_exp.parameters {
-                if let voyager_core::ast::LiteralValue::Int64(i) = v {
+                if let voyager_ogm::ast::LiteralValue::Int64(i) = v {
                     exp_params.insert(k.clone(), serde_json::json!(i));
                 }
             }
@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let mut prof_params = HashMap::new();
             for (k, v) in &compiled_prof.parameters {
-                if let voyager_core::ast::LiteralValue::Int64(i) = v {
+                if let voyager_ogm::ast::LiteralValue::Int64(i) = v {
                     prof_params.insert(k.clone(), serde_json::json!(i));
                 }
             }
@@ -183,9 +183,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let compiled_seed = emitter.visit_query(&arena_seed, root_seed)?;
             let mut seed_params = HashMap::new();
             for (k, v) in &compiled_seed.parameters {
-                if let voyager_core::ast::LiteralValue::Int64(i) = v {
+                if let voyager_ogm::ast::LiteralValue::Int64(i) = v {
                     seed_params.insert(k.clone(), serde_json::json!(i));
-                } else if let voyager_core::ast::LiteralValue::String(s) = v {
+                } else if let voyager_ogm::ast::LiteralValue::String(s) = v {
                     seed_params.insert(k.clone(), serde_json::json!(s));
                 }
             }

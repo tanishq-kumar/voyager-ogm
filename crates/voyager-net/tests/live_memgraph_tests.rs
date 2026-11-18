@@ -105,9 +105,9 @@ async fn test_live_memgraph_fluent_builder_with_clause_and_pagination() {
         return;
     }
 
-    use voyager_core::builder::QueryBuilder;
-    use voyager_core::emitters::CypherEmitter;
-    use voyager_core::visitor::AstVisitor;
+    use voyager_ogm::builder::QueryBuilder;
+    use voyager_ogm::emitters::CypherEmitter;
+    use voyager_ogm::visitor::AstVisitor;
 
     let config = ConnectionConfig::from_uri(MEMGRAPH_URI);
     let mut conn = BoltConnection::connect(&config)
@@ -150,7 +150,7 @@ async fn test_live_memgraph_fluent_builder_with_clause_and_pagination() {
 
     let mut query_params = HashMap::new();
     for (k, v) in &compiled.parameters {
-        if let voyager_core::ast::LiteralValue::Int64(i) = v {
+        if let voyager_ogm::ast::LiteralValue::Int64(i) = v {
             query_params.insert(k.clone(), serde_json::json!(i));
         }
     }
@@ -235,9 +235,9 @@ async fn test_live_memgraph_simultaneous_explain_and_profile_connections() {
         return;
     }
 
-    use voyager_core::builder::QueryBuilder;
-    use voyager_core::emitters::CypherEmitter;
-    use voyager_core::visitor::AstVisitor;
+    use voyager_ogm::builder::QueryBuilder;
+    use voyager_ogm::emitters::CypherEmitter;
+    use voyager_ogm::visitor::AstVisitor;
 
     let config = ConnectionConfig::from_uri(MEMGRAPH_URI);
 
@@ -303,14 +303,14 @@ async fn test_live_memgraph_simultaneous_explain_and_profile_connections() {
 
     let mut exp_params = HashMap::new();
     for (k, v) in &compiled_exp.parameters {
-        if let voyager_core::ast::LiteralValue::Int64(i) = v {
+        if let voyager_ogm::ast::LiteralValue::Int64(i) = v {
             exp_params.insert(k.clone(), serde_json::json!(i));
         }
     }
 
     let mut prof_params = HashMap::new();
     for (k, v) in &compiled_prof.parameters {
-        if let voyager_core::ast::LiteralValue::Int64(i) = v {
+        if let voyager_ogm::ast::LiteralValue::Int64(i) = v {
             prof_params.insert(k.clone(), serde_json::json!(i));
         }
     }

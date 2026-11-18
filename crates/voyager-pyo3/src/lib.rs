@@ -16,7 +16,7 @@ pyo3::create_exception!(
     pyo3::exceptions::PyValueError
 );
 
-fn make_voyager_err(code: voyager_core::ErrorCode, msg: impl Into<String>) -> PyErr {
+fn make_voyager_err(code: voyager_ogm::ErrorCode, msg: impl Into<String>) -> PyErr {
     Python::attach(|py| {
         let py_err = VoyagerError::new_err(msg.into());
         let _ = py_err.value(py).setattr("code", code.as_str());
@@ -24,10 +24,9 @@ fn make_voyager_err(code: voyager_core::ErrorCode, msg: impl Into<String>) -> Py
     })
 }
 
-fn to_py_schema_err(err: voyager_core::Error) -> PyErr {
+fn to_py_schema_err(err: voyager_ogm::Error) -> PyErr {
     Python::attach(|py| match err.code() {
-        voyager_core::ErrorCode::UnsupportedDialect
-        | voyager_core::ErrorCode::UnsupportedFeature => {
+        voyager_ogm::ErrorCode::UnsupportedDialect | voyager_ogm::ErrorCode::UnsupportedFeature => {
             let py_err = PyNotImplementedError::new_err(err.to_string());
             let _ = py_err.value(py).setattr("code", err.code().as_str());
             py_err
@@ -35,13 +34,13 @@ fn to_py_schema_err(err: voyager_core::Error) -> PyErr {
         _ => make_voyager_err(err.code(), err.to_string()),
     })
 }
-use voyager_core::ast::{
+use voyager_ogm::ast::{
     AggregationFunc, BinaryOp, Direction, LiteralValue, NodeHandle, QueryAstArena, UnaryOp,
 };
-use voyager_core::builder::QueryBuilder;
-use voyager_core::emitters::{AgeEmitter, CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
-use voyager_core::optimizer::{AstOptimizer, OptimizationLevel};
-use voyager_core::schema::{
+use voyager_ogm::builder::QueryBuilder;
+use voyager_ogm::emitters::{AgeEmitter, CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
+use voyager_ogm::optimizer::{AstOptimizer, OptimizationLevel};
+use voyager_ogm::schema::{
     ConformanceReport, DEFAULT_VECTOR_DIMENSIONS, DdlDialect, FieldDescriptor, FieldType,
     FullTextIndexConfig, IndexType, NodeSchema, RelationshipSchema, SchemaRegistry,
     VectorIndexConfig, VectorSimilarity, adapt_tantivy_query as core_adapt_tantivy_query,
@@ -49,8 +48,8 @@ use voyager_core::schema::{
     canonical_vector_index_name as core_canonical_vector_index_name, global_schema_registry,
     resolve_fulltext_search as core_resolve_fulltext_search,
 };
-use voyager_core::topology::GraphTopology;
-use voyager_core::visitor::{AstVisitor, CompiledQuery};
+use voyager_ogm::topology::GraphTopology;
+use voyager_ogm::visitor::{AstVisitor, CompiledQuery};
 
 fn compiled_query_to_py_dict<'py>(
     py: Python<'py>,
@@ -617,13 +616,13 @@ fn handle_dict_expr(
     if let Some(ver_item) = dict.get_item("spec_version")? {
         let ver: u32 = ver_item.extract().map_err(|_| {
             make_voyager_err(
-                voyager_core::ErrorCode::InvalidSpec,
+                voyager_ogm::ErrorCode::InvalidSpec,
                 "Invalid 'spec_version' in expression dictionary: expected integer 1.",
             )
         })?;
         if ver != 1 {
             return Err(make_voyager_err(
-                voyager_core::ErrorCode::InvalidSpec,
+                voyager_ogm::ErrorCode::InvalidSpec,
                 format!("Unsupported expression spec_version: {ver}. Supported major versions: 1."),
             ));
         }
@@ -828,7 +827,7 @@ fn handle_literal_fallback(
         Ok(builder.literal(lit))
     } else {
         Err(make_voyager_err(
-            voyager_core::ErrorCode::InvalidSpec,
+            voyager_ogm::ErrorCode::InvalidSpec,
             format!(
                 "Cannot convert Python object to AST node handle: {}",
                 val.get_type()
@@ -857,7 +856,7 @@ fn py_to_node_handle_depth(
     if let Some(tuple) = extract_expr_tuple(val) {
         if tuple.is_empty() {
             return Err(make_voyager_err(
-                voyager_core::ErrorCode::InvalidClause,
+                voyager_ogm::ErrorCode::InvalidClause,
                 "Empty expression tuple",
             ));
         }
@@ -892,7 +891,7 @@ fn py_to_node_handle_depth(
                 py_to_node_handle_depth(builder, &inner, depth + 1)
             }
             other => Err(make_voyager_err(
-                voyager_core::ErrorCode::InvalidClause,
+                voyager_ogm::ErrorCode::InvalidClause,
                 format!("Unknown expression tuple tag: '{other}'"),
             )),
         }
@@ -907,7 +906,7 @@ fn parse_direction(dir_str: &str) -> PyResult<Direction> {
         "in" | "incoming" | "<-" => Ok(Direction::Incoming),
         "undirected" | "both" | "-" | "--" => Ok(Direction::Undirected),
         other => Err(make_voyager_err(
-            voyager_core::ErrorCode::InvalidClause,
+            voyager_ogm::ErrorCode::InvalidClause,
             format!(
                 "Invalid edge direction '{other}'. Expected 'outgoing' ('out', '->'), 'incoming' ('in', '<-'), or 'undirected' ('both', '-', '--')."
             ),
@@ -926,7 +925,7 @@ fn build_path_steps_into_builder(
             l.to_tuple()
         } else {
             return Err(make_voyager_err(
-                voyager_core::ErrorCode::InvalidClause,
+                voyager_ogm::ErrorCode::InvalidClause,
                 "Expected path step tuple or list",
             ));
         };
@@ -957,7 +956,7 @@ fn build_path_steps_into_builder(
             }
             other => {
                 return Err(make_voyager_err(
-                    voyager_core::ErrorCode::InvalidClause,
+                    voyager_ogm::ErrorCode::InvalidClause,
                     format!("Unknown path step tag: '{other}'. Expected 'node' or 'edge'."),
                 ));
             }
@@ -1051,20 +1050,20 @@ fn build_query_from_spec_internal(
         Some(ver_item) => {
             let ver: u32 = ver_item.extract().map_err(|_| {
                 make_voyager_err(
-                    voyager_core::ErrorCode::InvalidSpec,
+                    voyager_ogm::ErrorCode::InvalidSpec,
                     "Invalid 'spec_version': expected an integer major version number (e.g. 1).",
                 )
             })?;
             if ver != 1 {
                 return Err(make_voyager_err(
-                    voyager_core::ErrorCode::InvalidSpec,
+                    voyager_ogm::ErrorCode::InvalidSpec,
                     format!("Unsupported query spec_version: {ver}. Supported major versions: 1."),
                 ));
             }
         }
         None => {
             return Err(make_voyager_err(
-                voyager_core::ErrorCode::InvalidSpec,
+                voyager_ogm::ErrorCode::InvalidSpec,
                 "Missing required 'spec_version' in query spec dictionary. Expected 'spec_version': 1.",
             ));
         }
@@ -1098,13 +1097,13 @@ fn build_query_from_spec_internal(
                 if let Some(m_ver_item) = m_dict.get_item("spec_version")? {
                     let m_ver: u32 = m_ver_item.extract().map_err(|_| {
                         make_voyager_err(
-                            voyager_core::ErrorCode::InvalidSpec,
+                            voyager_ogm::ErrorCode::InvalidSpec,
                             "Invalid 'spec_version' in match clause: expected an integer major version number.",
                         )
                     })?;
                     if m_ver != 1 {
                         return Err(make_voyager_err(
-                            voyager_core::ErrorCode::InvalidSpec,
+                            voyager_ogm::ErrorCode::InvalidSpec,
                             format!(
                                 "Unsupported match clause spec_version: {m_ver}. Supported major versions: 1."
                             ),
@@ -1124,11 +1123,11 @@ fn build_query_from_spec_internal(
                 if let Some(mode_item) = m_dict.get_item("path_mode")? {
                     if let Ok(m_str) = mode_item.extract::<String>() {
                         let m = match m_str.to_ascii_lowercase().as_str() {
-                            "trail" => voyager_core::ast::PathMode::Trail,
-                            "simple" => voyager_core::ast::PathMode::Simple,
-                            "acyclic" => voyager_core::ast::PathMode::Acyclic,
-                            "walk" => voyager_core::ast::PathMode::Walk,
-                            _ => voyager_core::ast::PathMode::None,
+                            "trail" => voyager_ogm::ast::PathMode::Trail,
+                            "simple" => voyager_ogm::ast::PathMode::Simple,
+                            "acyclic" => voyager_ogm::ast::PathMode::Acyclic,
+                            "walk" => voyager_ogm::ast::PathMode::Walk,
+                            _ => voyager_ogm::ast::PathMode::None,
                         };
                         builder.path_mode(m);
                     }
@@ -1178,7 +1177,7 @@ fn build_query_from_spec_internal(
                     l.to_tuple()
                 } else {
                     return Err(make_voyager_err(
-                        voyager_core::ErrorCode::InvalidClause,
+                        voyager_ogm::ErrorCode::InvalidClause,
                         "Expected mutation tuple or list",
                     ));
                 };
@@ -1241,7 +1240,7 @@ fn build_query_from_spec_internal(
                     }
                     other => {
                         return Err(make_voyager_err(
-                            voyager_core::ErrorCode::InvalidClause,
+                            voyager_ogm::ErrorCode::InvalidClause,
                             format!("Unknown mutation tag: '{other}'"),
                         ));
                     }
@@ -1257,13 +1256,13 @@ fn build_query_from_spec_internal(
                 if let Some(w_ver_item) = with_dict.get_item("spec_version")? {
                     let w_ver: u32 = w_ver_item.extract().map_err(|_| {
                         make_voyager_err(
-                            voyager_core::ErrorCode::InvalidSpec,
+                            voyager_ogm::ErrorCode::InvalidSpec,
                             "Invalid 'spec_version' in with clause: expected an integer major version number.",
                         )
                     })?;
                     if w_ver != 1 {
                         return Err(make_voyager_err(
-                            voyager_core::ErrorCode::InvalidSpec,
+                            voyager_ogm::ErrorCode::InvalidSpec,
                             format!(
                                 "Unsupported with clause spec_version: {w_ver}. Supported major versions: 1."
                             ),
@@ -1287,7 +1286,7 @@ fn build_query_from_spec_internal(
                                 l.to_tuple()
                             } else {
                                 return Err(make_voyager_err(
-                                    voyager_core::ErrorCode::InvalidClause,
+                                    voyager_ogm::ErrorCode::InvalidClause,
                                     "Expected projection tuple or list",
                                 ));
                             };
@@ -1333,7 +1332,7 @@ fn build_query_from_spec_internal(
                                         "collect" => AggregationFunc::Collect,
                                         other => {
                                             return Err(make_voyager_err(
-                                                voyager_core::ErrorCode::InvalidClause,
+                                                voyager_ogm::ErrorCode::InvalidClause,
                                                 format!(
                                                     "Unknown aggregation function '{other}'. Expected count, count_distinct, sum, avg, min, max, collect."
                                                 ),
@@ -1349,7 +1348,7 @@ fn build_query_from_spec_internal(
                                 }
                                 other => {
                                     return Err(make_voyager_err(
-                                        voyager_core::ErrorCode::InvalidClause,
+                                        voyager_ogm::ErrorCode::InvalidClause,
                                         format!(
                                             "Unknown projection tag '{other}'. Expected 'field', 'agg', or 'expr'."
                                         ),
@@ -1411,7 +1410,7 @@ fn build_query_from_spec_internal(
                         l.to_tuple()
                     } else {
                         return Err(make_voyager_err(
-                            voyager_core::ErrorCode::InvalidClause,
+                            voyager_ogm::ErrorCode::InvalidClause,
                             "Expected projection tuple or list",
                         ));
                     };
@@ -1438,7 +1437,7 @@ fn build_query_from_spec_internal(
                                 "collect" => AggregationFunc::Collect,
                                 other => {
                                     return Err(make_voyager_err(
-                                        voyager_core::ErrorCode::InvalidClause,
+                                        voyager_ogm::ErrorCode::InvalidClause,
                                         format!(
                                             "Unknown aggregation function '{other}'. Expected count, count_distinct, sum, avg, min, max, collect."
                                         ),
@@ -1473,7 +1472,7 @@ fn build_query_from_spec_internal(
                         }
                         other => {
                             return Err(make_voyager_err(
-                                voyager_core::ErrorCode::InvalidClause,
+                                voyager_ogm::ErrorCode::InvalidClause,
                                 format!(
                                     "Unknown projection tag '{other}'. Expected 'field', 'agg', or 'expr'."
                                 ),
@@ -1885,11 +1884,11 @@ impl PyQueryBuilder {
 
     fn path_mode(&mut self, mode: String) -> PyResult<()> {
         let m = match mode.to_ascii_lowercase().as_str() {
-            "trail" => voyager_core::ast::PathMode::Trail,
-            "simple" => voyager_core::ast::PathMode::Simple,
-            "acyclic" => voyager_core::ast::PathMode::Acyclic,
-            "walk" => voyager_core::ast::PathMode::Walk,
-            "none" | "" => voyager_core::ast::PathMode::None,
+            "trail" => voyager_ogm::ast::PathMode::Trail,
+            "simple" => voyager_ogm::ast::PathMode::Simple,
+            "acyclic" => voyager_ogm::ast::PathMode::Acyclic,
+            "walk" => voyager_ogm::ast::PathMode::Walk,
+            "none" | "" => voyager_ogm::ast::PathMode::None,
             other => {
                 return Err(PyValueError::new_err(format!(
                     "Unknown path mode '{other}'. Expected trail, simple, acyclic, walk, or none."
@@ -2264,7 +2263,7 @@ impl PyQueryBuilder {
             }
             other => {
                 return Err(make_voyager_err(
-                    voyager_core::ErrorCode::UnsupportedDialect,
+                    voyager_ogm::ErrorCode::UnsupportedDialect,
                     format!(
                         "Unsupported query dialect: '{other}'. Choose from 'cypher', 'sql_pgq', 'iso_gql', or 'apache_age'."
                     ),
@@ -2412,7 +2411,7 @@ impl PyArrowStream {
                 "ArrowArrayStream has already been consumed: the Apache Arrow C Data Interface specification enforces single-pass stream consumption.",
             ));
         }
-        let ffi_stream = voyager_core::arrow::export_batch_to_c_stream(self.batch.clone());
+        let ffi_stream = voyager_ogm::arrow::export_batch_to_c_stream(self.batch.clone());
         pyo3::types::PyCapsule::new_with_value(py, ffi_stream, c"arrow_array_stream")
     }
 
@@ -2441,7 +2440,7 @@ impl PyArrowStream {
 /// Generates a synthetic Arrow RecordBatch stream for microbenchmarks.
 #[pyfunction]
 fn generate_synthetic_stream(count: usize) -> PyResult<PyArrowStream> {
-    let batch = voyager_core::arrow::GraphBatchBuilder::generate_synthetic_nodes(count);
+    let batch = voyager_ogm::arrow::GraphBatchBuilder::generate_synthetic_nodes(count);
     Ok(PyArrowStream::from_batch(batch))
 }
 
@@ -2471,7 +2470,7 @@ fn compile_query_from_spec<'py>(
     };
 
     if let Some(ref k) = cache_key
-        && let Some(cached) = voyager_core::global_query_cache().get(k)
+        && let Some(cached) = voyager_ogm::global_query_cache().get(k)
     {
         return compiled_query_to_py_dict(py, &cached);
     }
@@ -2518,7 +2517,7 @@ fn compile_query_from_spec<'py>(
         }
         other => {
             return Err(make_voyager_err(
-                voyager_core::ErrorCode::UnsupportedDialect,
+                voyager_ogm::ErrorCode::UnsupportedDialect,
                 format!(
                     "Unsupported query dialect: '{other}'. Choose from 'cypher', 'sql_pgq', 'iso_gql', or 'apache_age'."
                 ),
@@ -2527,7 +2526,7 @@ fn compile_query_from_spec<'py>(
     };
 
     if let Some(k) = cache_key {
-        voyager_core::global_query_cache().put(k, compiled.clone());
+        voyager_ogm::global_query_cache().put(k, compiled.clone());
     }
 
     compiled_query_to_py_dict(py, &compiled)
@@ -2536,7 +2535,7 @@ fn compile_query_from_spec<'py>(
 /// Returns telemetry metrics for the global compiled query cache.
 #[pyfunction]
 fn get_query_cache_stats<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-    let m = voyager_core::global_query_cache().metrics();
+    let m = voyager_ogm::global_query_cache().metrics();
     let dict = PyDict::new(py);
     dict.set_item("hits", m.hits)?;
     dict.set_item("misses", m.misses)?;
@@ -2550,19 +2549,19 @@ fn get_query_cache_stats<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
 /// Clears all entries from the global compiled query cache.
 #[pyfunction]
 fn clear_query_cache() {
-    voyager_core::global_query_cache().clear();
+    voyager_ogm::global_query_cache().clear();
 }
 
 /// Returns the native Voyager OGM engine version string.
 #[pyfunction]
 fn version() -> &'static str {
-    voyager_core::VERSION
+    voyager_ogm::VERSION
 }
 
 /// Native In-Memory Unit of Work for dirty entity state management.
 #[pyclass(name = "NativeUnitOfWork")]
 pub struct PyUnitOfWork {
-    inner: voyager_core::transaction::UnitOfWork,
+    inner: voyager_ogm::transaction::UnitOfWork,
 }
 
 #[pymethods]
@@ -2570,7 +2569,7 @@ impl PyUnitOfWork {
     #[new]
     fn new() -> Self {
         Self {
-            inner: voyager_core::transaction::UnitOfWork::new(),
+            inner: voyager_ogm::transaction::UnitOfWork::new(),
         }
     }
 
@@ -2592,18 +2591,18 @@ impl PyUnitOfWork {
 /// Native Two-Layer Transaction with in-memory savepoints and dirty rollback.
 #[pyclass(name = "NativeTransaction")]
 pub struct PyTransaction {
-    inner: voyager_core::transaction::Transaction,
-    uow: voyager_core::transaction::UnitOfWork,
-    arena: voyager_core::ast::QueryAstArena,
+    inner: voyager_ogm::transaction::Transaction,
+    uow: voyager_ogm::transaction::UnitOfWork,
+    arena: voyager_ogm::ast::QueryAstArena,
 }
 
 #[pymethods]
 impl PyTransaction {
     #[new]
     fn new(id: u64) -> Self {
-        let uow = voyager_core::transaction::UnitOfWork::new();
-        let arena = voyager_core::ast::QueryAstArena::new();
-        let inner = voyager_core::transaction::Transaction::new(id, &uow, &arena);
+        let uow = voyager_ogm::transaction::UnitOfWork::new();
+        let arena = voyager_ogm::ast::QueryAstArena::new();
+        let inner = voyager_ogm::transaction::Transaction::new(id, &uow, &arena);
         Self { inner, uow, arena }
     }
 
@@ -2615,9 +2614,9 @@ impl PyTransaction {
     #[getter]
     fn state(&self) -> String {
         match self.inner.state() {
-            voyager_core::transaction::TransactionState::Active => "ACTIVE".into(),
-            voyager_core::transaction::TransactionState::Committed => "COMMITTED".into(),
-            voyager_core::transaction::TransactionState::RolledBack => "ROLLED_BACK".into(),
+            voyager_ogm::transaction::TransactionState::Active => "ACTIVE".into(),
+            voyager_ogm::transaction::TransactionState::Committed => "COMMITTED".into(),
+            voyager_ogm::transaction::TransactionState::RolledBack => "ROLLED_BACK".into(),
         }
     }
 
@@ -2669,14 +2668,9 @@ fn compile_bulk_create<'py>(
     dialect: &str,
 ) -> PyResult<Bound<'py, PyDict>> {
     let prop_refs: Vec<&str> = properties.iter().map(|s| s.as_str()).collect();
-    let compiled = voyager_core::bulk::compile_bulk_create(
-        &label,
-        &prop_refs,
-        batch_param,
-        row_alias,
-        dialect,
-    )
-    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let compiled =
+        voyager_ogm::bulk::compile_bulk_create(&label, &prop_refs, batch_param, row_alias, dialect)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
     let dict = PyDict::new(py);
     dict.set_item("statement", compiled.statement)?;
@@ -2701,7 +2695,7 @@ fn compile_bulk_merge<'py>(
     dialect: &str,
 ) -> PyResult<Bound<'py, PyDict>> {
     let prop_refs: Vec<&str> = properties.iter().map(|s| s.as_str()).collect();
-    let compiled = voyager_core::bulk::compile_bulk_merge(
+    let compiled = voyager_ogm::bulk::compile_bulk_merge(
         &label,
         &key_property,
         &prop_refs,
@@ -2738,7 +2732,7 @@ fn compile_bulk_create_rel<'py>(
     dialect: &str,
 ) -> PyResult<Bound<'py, PyDict>> {
     let prop_refs: Vec<&str> = properties.iter().map(|s| s.as_str()).collect();
-    let compiled = voyager_core::bulk::compile_bulk_create_rel(
+    let compiled = voyager_ogm::bulk::compile_bulk_create_rel(
         &rel_type,
         &prop_refs,
         &from_label,
@@ -4545,7 +4539,7 @@ fn emit_cypher_node_ddl(
     include_type_constraints: bool,
 ) -> PyResult<Vec<String>> {
     let schema = extract_node_schema(node)?;
-    Ok(voyager_core::emit_cypher_node_ddl(
+    Ok(voyager_ogm::emit_cypher_node_ddl(
         &schema,
         include_type_constraints,
     ))
@@ -4558,7 +4552,7 @@ fn emit_cypher_rel_ddl(
     include_type_constraints: bool,
 ) -> PyResult<Vec<String>> {
     let schema = extract_rel_schema(rel)?;
-    Ok(voyager_core::emit_cypher_rel_ddl(
+    Ok(voyager_ogm::emit_cypher_rel_ddl(
         &schema,
         include_type_constraints,
     ))
@@ -4571,7 +4565,7 @@ fn emit_cypher_drop_node_ddl(
     include_type_constraints: bool,
 ) -> PyResult<Vec<String>> {
     let schema = extract_node_schema(node)?;
-    Ok(voyager_core::emit_cypher_drop_node_ddl(
+    Ok(voyager_ogm::emit_cypher_drop_node_ddl(
         &schema,
         include_type_constraints,
     ))
@@ -4584,7 +4578,7 @@ fn emit_cypher_drop_rel_ddl(
     include_type_constraints: bool,
 ) -> PyResult<Vec<String>> {
     let schema = extract_rel_schema(rel)?;
-    Ok(voyager_core::emit_cypher_drop_rel_ddl(
+    Ok(voyager_ogm::emit_cypher_drop_rel_ddl(
         &schema,
         include_type_constraints,
     ))
@@ -4593,7 +4587,7 @@ fn emit_cypher_drop_rel_ddl(
 #[pyfunction]
 fn emit_gql_alter_node_ddl(node: &Bound<'_, PyAny>) -> PyResult<String> {
     let schema = extract_node_schema(node)?;
-    Ok(voyager_core::emit_gql_alter_node_ddl(&schema))
+    Ok(voyager_ogm::emit_gql_alter_node_ddl(&schema))
 }
 
 #[pyfunction]
@@ -4604,7 +4598,7 @@ fn emit_gql_alter_rel_ddl(
     target_label: Option<&str>,
 ) -> PyResult<String> {
     let schema = extract_rel_schema(rel)?;
-    Ok(voyager_core::emit_gql_alter_rel_ddl(
+    Ok(voyager_ogm::emit_gql_alter_rel_ddl(
         &schema,
         source_label,
         target_label,
@@ -4632,7 +4626,7 @@ fn emit_gql_graph_type_ddl(
     }
     let node_refs: Vec<&NodeSchema> = node_schemas.iter().collect();
     let rel_refs: Vec<&RelationshipSchema> = rel_schemas.iter().collect();
-    Ok(voyager_core::emit_gql_graph_type_ddl(
+    Ok(voyager_ogm::emit_gql_graph_type_ddl(
         graph_type_name,
         &node_refs,
         &rel_refs,
@@ -4641,7 +4635,7 @@ fn emit_gql_graph_type_ddl(
 
 #[pyfunction]
 fn emit_gql_drop_graph_type_ddl(graph_type_name: &str) -> PyResult<String> {
-    Ok(voyager_core::emit_gql_drop_graph_type_ddl(graph_type_name))
+    Ok(voyager_ogm::emit_gql_drop_graph_type_ddl(graph_type_name))
 }
 
 #[pyfunction]
@@ -4665,13 +4659,13 @@ fn emit_pgq_property_graph_ddl(
     }
     let node_refs: Vec<&NodeSchema> = node_schemas.iter().collect();
     let rel_refs: Vec<&RelationshipSchema> = rel_schemas.iter().collect();
-    voyager_core::emit_pgq_property_graph_ddl(graph_name, &node_refs, &rel_refs)
+    voyager_ogm::emit_pgq_property_graph_ddl(graph_name, &node_refs, &rel_refs)
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 #[pyfunction]
 fn emit_pgq_drop_property_graph_ddl(graph_name: &str) -> PyResult<String> {
-    Ok(voyager_core::emit_pgq_drop_property_graph_ddl(graph_name))
+    Ok(voyager_ogm::emit_pgq_drop_property_graph_ddl(graph_name))
 }
 
 #[pyfunction]
@@ -4694,28 +4688,28 @@ fn emit_cypher25_graph_type_ddl(
     }
     let node_refs: Vec<&NodeSchema> = node_schemas.iter().collect();
     let rel_refs: Vec<&RelationshipSchema> = rel_schemas.iter().collect();
-    Ok(voyager_core::emit_cypher25_graph_type_ddl(
+    Ok(voyager_ogm::emit_cypher25_graph_type_ddl(
         &node_refs, &rel_refs,
     ))
 }
 
 #[pyfunction]
 fn emit_cypher25_drop_graph_type_ddl() -> PyResult<String> {
-    Ok(voyager_core::emit_cypher25_drop_graph_type_ddl())
+    Ok(voyager_ogm::emit_cypher25_drop_graph_type_ddl())
 }
 
 #[pyfunction]
 #[pyo3(signature = (node, dialect="cypher"))]
 fn emit_node_index_ddl(node: &Bound<'_, PyAny>, dialect: &str) -> PyResult<Vec<String>> {
     let schema = extract_node_schema(node)?;
-    voyager_core::emit_node_index_ddl(&schema, dialect).map_err(to_py_schema_err)
+    voyager_ogm::emit_node_index_ddl(&schema, dialect).map_err(to_py_schema_err)
 }
 
 #[pyfunction]
 #[pyo3(signature = (rel, dialect="cypher"))]
 fn emit_rel_index_ddl(rel: &Bound<'_, PyAny>, dialect: &str) -> PyResult<Vec<String>> {
     let schema = extract_rel_schema(rel)?;
-    voyager_core::emit_rel_index_ddl(&schema, dialect).map_err(to_py_schema_err)
+    voyager_ogm::emit_rel_index_ddl(&schema, dialect).map_err(to_py_schema_err)
 }
 
 #[pyfunction]
@@ -4726,7 +4720,7 @@ fn emit_node_constraint_ddl(
     include_type_constraints: bool,
 ) -> PyResult<Vec<String>> {
     let schema = extract_node_schema(node)?;
-    voyager_core::emit_node_constraint_ddl(&schema, dialect, include_type_constraints)
+    voyager_ogm::emit_node_constraint_ddl(&schema, dialect, include_type_constraints)
         .map_err(to_py_schema_err)
 }
 
@@ -4738,7 +4732,7 @@ fn emit_rel_constraint_ddl(
     include_type_constraints: bool,
 ) -> PyResult<Vec<String>> {
     let schema = extract_rel_schema(rel)?;
-    voyager_core::emit_rel_constraint_ddl(&schema, dialect, include_type_constraints)
+    voyager_ogm::emit_rel_constraint_ddl(&schema, dialect, include_type_constraints)
         .map_err(to_py_schema_err)
 }
 
@@ -4746,14 +4740,14 @@ fn emit_rel_constraint_ddl(
 #[pyo3(signature = (node, dialect="cypher"))]
 fn emit_node_drop_index_ddl(node: &Bound<'_, PyAny>, dialect: &str) -> PyResult<Vec<String>> {
     let schema = extract_node_schema(node)?;
-    voyager_core::emit_node_drop_index_ddl(&schema, dialect).map_err(to_py_schema_err)
+    voyager_ogm::emit_node_drop_index_ddl(&schema, dialect).map_err(to_py_schema_err)
 }
 
 #[pyfunction]
 #[pyo3(signature = (rel, dialect="cypher"))]
 fn emit_rel_drop_index_ddl(rel: &Bound<'_, PyAny>, dialect: &str) -> PyResult<Vec<String>> {
     let schema = extract_rel_schema(rel)?;
-    voyager_core::emit_rel_drop_index_ddl(&schema, dialect).map_err(to_py_schema_err)
+    voyager_ogm::emit_rel_drop_index_ddl(&schema, dialect).map_err(to_py_schema_err)
 }
 
 #[pyfunction]
@@ -4764,7 +4758,7 @@ fn emit_node_drop_constraint_ddl(
     include_type_constraints: bool,
 ) -> PyResult<Vec<String>> {
     let schema = extract_node_schema(node)?;
-    voyager_core::emit_node_drop_constraint_ddl(&schema, dialect, include_type_constraints)
+    voyager_ogm::emit_node_drop_constraint_ddl(&schema, dialect, include_type_constraints)
         .map_err(to_py_schema_err)
 }
 
@@ -4776,7 +4770,7 @@ fn emit_rel_drop_constraint_ddl(
     include_type_constraints: bool,
 ) -> PyResult<Vec<String>> {
     let schema = extract_rel_schema(rel)?;
-    voyager_core::emit_rel_drop_constraint_ddl(&schema, dialect, include_type_constraints)
+    voyager_ogm::emit_rel_drop_constraint_ddl(&schema, dialect, include_type_constraints)
         .map_err(to_py_schema_err)
 }
 
@@ -4910,6 +4904,6 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         Some(&m.dict()),
         None,
     )?;
-    m.add("__version__", voyager_core::VERSION)?;
+    m.add("__version__", voyager_ogm::VERSION)?;
     Ok(())
 }

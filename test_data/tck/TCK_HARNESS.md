@@ -7,11 +7,11 @@ This document describes how Voyager OGM validates query compilation across **ope
 ## 3-Layer Verification Pipeline
 
 ### Layer 1: Table-Driven Conformance Tests
-- Implemented in Rust (`crates/voyager-core/tests/tck_conformance_tests.rs`, `gql_conformance_tests.rs`, `pgq_conformance_tests.rs`, `age_conformance_tests.rs`) and Python (`packages/python/tests/`).
+- Implemented in Rust (`crates/voyager-ogm/tests/tck_conformance_tests.rs`, `gql_conformance_tests.rs`, `pgq_conformance_tests.rs`, `age_conformance_tests.rs`) and Python (`packages/python/tests/`).
 - Validates query structure and parameter binding across operators, traversal hops, mutations, and bulk operations.
 
 ### Layer 2: Golden Snapshot Regression (`cargo insta`)
-- Compares emitted query strings and parameter maps against verified baseline files in `crates/voyager-core/tests/snapshots/`.
+- Compares emitted query strings and parameter maps against verified baseline files in `crates/voyager-ogm/tests/snapshots/`.
 - Ensures zero syntax regressions across AST changes.
 
 ### Layer 3: Live 6-Engine Integration Matrix
