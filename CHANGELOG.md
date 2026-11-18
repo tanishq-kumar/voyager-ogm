@@ -109,6 +109,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `create_bridge()` now rewrites `age://` and `age+s://` URI schemes to `postgresql://` prior to connecting, mapping `+s` and `+ssc` to `sslmode=require`.
   - Added unified `setup_postgres_age()` connection initializer that runs `LOAD 'age'; SET search_path = ag_catalog, "$user", public;` unconditionally for `age://` schemes and automatically when the `age` extension is detected in `pg_extension` for `postgresql://` connections.
   - `PostgresBridge` and `AsyncPostgresBridge` now auto-detect AGE on user-supplied connections, allowing `Session(PostgresBridge(conn), dialect="age")` to execute AGE Cypher queries out of the box.
+- **Node `__label__` Single-Label Alias (#180)**:
+  - `Node` subclasses now accept `__label__ = "X"` as the single-label form of `__labels__ = ["X"]`, and the label is used consistently by query compilation, cached labels, schema registration, and bulk ingestion.
+  - Declaring both `__label__` and `__labels__` with a different primary label now raises `TypeError` at class creation.
+  - An explicit `@node("X")` decorator argument takes precedence over class-body label declarations; `Relationship` classes now honour a class-body `__type__` in the same way.
 - **Identity Map Uses the Declared Primary Key (#178)**:
   - `Session.register()` / `AsyncSession.register()`, `flush()`, `Node.save()`, and `Node.async_save()` now default `key_field` to the model's declared `Field(primary_key=True)` property instead of assuming `id`, falling back to `id` only when the model declares no primary key.
   - Explicit `key_field=` arguments continue to override the detected primary key unchanged.
