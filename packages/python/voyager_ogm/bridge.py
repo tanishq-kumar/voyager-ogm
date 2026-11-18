@@ -874,6 +874,74 @@ class AsyncDuckDbBridge:
         await asyncio.to_thread(self.sync_bridge.close)
 
 
+def mask_uri_password(uri: str) -> str:
+    """Masks password credentials in a database URI for safe error messages and logging.
+
+    Replaces password with '***' while retaining username, host, port, path, and query.
+    For non-string or non-URI inputs, returns the input converted to string.
+    """
+    if not isinstance(uri, str) or "://" not in uri:
+        return str(uri)
+    try:
+        scheme, rest = uri.split("://", 1)
+        slash_idx = rest.find("/")
+        query_idx = rest.find("?")
+        limit = len(rest)
+        if slash_idx != -1:
+            limit = min(limit, slash_idx)
+        if query_idx != -1:
+            limit = min(limit, query_idx)
+
+        authority = rest[:limit]
+        if "@" in authority:
+            userinfo, hostport = authority.rsplit("@", 1)
+            if ":" in userinfo:
+                user, _ = userinfo.split(":", 1)
+                masked_authority = f"{user}:***@{hostport}"
+            else:
+                masked_authority = f"{userinfo}@{hostport}"
+            return f"{scheme}://{masked_authority}{rest[limit:]}"
+    except Exception:
+        pass
+    return uri
+
+
+def setup_postgres_age(conn: Any, force: bool = False) -> None:
+    """Configures a PostgreSQL connection for Apache AGE if required or installed.
+
+    Executes `LOAD 'age'; SET search_path = ag_catalog, "$user", public;`.
+    If `force` is True (e.g. for `age://` schemes), the setup runs unconditionally and raises on failure.
+    If `force` is False (e.g. for `postgresql://` schemes or user-supplied connections), it first verifies
+    whether the 'age' extension is installed via `SELECT 1 FROM pg_extension WHERE extname = 'age'`;
+    if the extension is absent, plain PostgreSQL remains untouched.
+    """
+    if conn is None or not hasattr(conn, "cursor"):
+        return
+    if getattr(conn, "_voyager_age_initialized", False):
+        return
+
+    should_setup = force
+    if not should_setup:
+        try:
+            with conn.cursor() as cur:
+                if not hasattr(cur, "fetchone"):
+                    return
+                cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'age'")
+                row = cur.fetchone()
+                if row:
+                    should_setup = True
+        except Exception:
+            return
+
+    if should_setup:
+        with conn.cursor() as cur:
+            cur.execute("LOAD 'age'; SET search_path = ag_catalog, \"$user\", public;")
+        try:
+            conn._voyager_age_initialized = True
+        except Exception:
+            pass
+
+
 class PostgresBridge:
     """Synchronous PostgreSQL driver bridge (psycopg 3 / psycopg2) with zero-copy Polars output."""
 
@@ -884,6 +952,13 @@ class PostgresBridge:
             connection: PostgreSQL connection instance (e.g. psycopg.Connection).
         """
         self.conn = connection
+        self._conn = connection
+        setup_postgres_age(self.conn, force=False)
+
+    @property
+    def connection(self) -> Any:
+        """Returns underlying PostgreSQL connection instance."""
+        return self.conn
 
     def _format_pgq_statement(
         self, statement: str, parameters: dict[str, Any]
@@ -898,6 +973,8 @@ class PostgresBridge:
             return lambda _m: r
 
         if "cypher(" in statement:
+            if not getattr(self.conn, "_voyager_age_initialized", False):
+                setup_postgres_age(self.conn, force=True)
             import json
 
             return statement, (json.dumps(parameters),)
@@ -1043,6 +1120,13 @@ class AsyncPostgresBridge:
             connection: PostgreSQL connection instance.
         """
         self.sync_bridge = PostgresBridge(connection)
+        self.conn = connection
+        self._conn = connection
+
+    @property
+    def connection(self) -> Any:
+        """Returns underlying PostgreSQL connection instance."""
+        return self.conn
 
     async def execute(
         self, statement: str, parameters: dict[str, Any] | None = None
@@ -1638,6 +1722,8 @@ def create_bridge(
     driver_or_connection: Any = None,
     is_async: Literal[False] = False,
     fallback: str | None = None,
+    *,
+    auth: tuple[str, str] | Any | None = None,
 ) -> DatabaseBridge: ...
 
 
@@ -1646,6 +1732,8 @@ def create_bridge(
     driver_or_connection: Any = None,
     is_async: Literal[True] = True,
     fallback: str | None = None,
+    *,
+    auth: tuple[str, str] | Any | None = None,
 ) -> AsyncDatabaseBridge: ...
 
 
@@ -1654,6 +1742,8 @@ def create_bridge(
     driver_or_connection: Any = None,
     is_async: bool = False,
     fallback: str | None = None,
+    *,
+    auth: tuple[str, str] | Any | None = None,
 ) -> DatabaseBridge | AsyncDatabaseBridge: ...
 
 
@@ -1661,6 +1751,8 @@ def create_bridge(
     driver_or_connection: Any = None,
     is_async: bool = False,
     fallback: str | None = None,
+    *,
+    auth: tuple[str, str] | Any | None = None,
 ) -> DatabaseBridge | AsyncDatabaseBridge:
     """Creates or adapts a database bridge from a user-supplied driver, connection, or URI.
 
@@ -1670,6 +1762,11 @@ def create_bridge(
         fallback: Fallback strategy when driver import fails or URI scheme is unrecognized.
             Pass ``fallback="mock"`` to explicitly opt into returning an in-memory MockBridge
             for testing, mocking, or demonstrations.
+        auth: Explicit authentication credentials. For Bolt schemes, accepts a (username, password)
+            tuple or a neo4j auth token (e.g. bearer_auth). For PostgreSQL/AGE schemes, accepts
+            a (username, password) tuple passed as connect kwargs. For FalkorDB/Redis schemes,
+            accepts a (username, password) tuple. Explicit auth overrides credentials present
+            in the URI.
 
     Returns:
         Configured database bridge adapter.
@@ -1679,7 +1776,8 @@ def create_bridge(
             fallback="mock" was not explicitly requested.
         ImportError: If the official driver package required for the URI scheme is not installed
             and fallback="mock" was not explicitly requested.
-        TypeError: If the driver_or_connection object type is unsupported.
+        TypeError: If the driver_or_connection object type is unsupported, or if an invalid
+            auth type was provided for the scheme.
     """
     if driver_or_connection is None:
         if fallback == "mock":
@@ -1731,7 +1829,7 @@ def create_bridge(
             if fallback == "mock":
                 return AsyncMockBridge() if is_async else MockBridge()
             raise ValueError(
-                f"Invalid connection URI: '{driver_or_connection}'. Expected a valid URI scheme (e.g. 'bolt://', 'duckdb://', 'postgresql://', 'falkordb://', or 'mock://')."
+                f"Invalid connection URI: '{mask_uri_password(driver_or_connection)}'. Expected a valid URI scheme (e.g. 'bolt://', 'duckdb://', 'postgresql://', 'falkordb://', or 'mock://')."
             )
 
         scheme = driver_or_connection.split("://", 1)[0].lower()
@@ -1752,14 +1850,22 @@ def create_bridge(
                 if fallback == "mock":
                     return AsyncMockBridge() if is_async else MockBridge()
                 raise ImportError(
-                    f"The 'neo4j' Python package is required to connect to URI '{driver_or_connection}'. "
+                    f"The 'neo4j' Python package is required to connect to URI '{mask_uri_password(driver_or_connection)}'. "
                     f"Install it with 'pip install neo4j', or pass fallback='mock' for offline testing."
                 ) from e
-            from urllib.parse import parse_qs, urlparse, urlunparse
+            from urllib.parse import parse_qs, unquote, urlsplit, urlunsplit
 
-            parsed_bolt = urlparse(driver_or_connection)
-            bolt_clean_uri = urlunparse(
-                (parsed_bolt.scheme, parsed_bolt.netloc, parsed_bolt.path, "", "", "")
+            parsed_bolt = urlsplit(driver_or_connection)
+            netloc = parsed_bolt.netloc
+            hostport = netloc.rsplit("@", 1)[-1]
+            bolt_clean_uri = urlunsplit(
+                (
+                    parsed_bolt.scheme,
+                    hostport,
+                    parsed_bolt.path,
+                    "",
+                    "",
+                )
             )
             bolt_kwargs: dict[str, Any] = {}
             if parsed_bolt.query:
@@ -1775,6 +1881,20 @@ def create_bridge(
                     except ValueError:
                         pass
 
+            effective_auth = None
+            if auth is not None:
+                effective_auth = auth
+            elif "@" in netloc:
+                userinfo = netloc.rsplit("@", 1)[0]
+                if ":" in userinfo:
+                    u_raw, p_raw = userinfo.split(":", 1)
+                    effective_auth = (unquote(u_raw), unquote(p_raw))
+                else:
+                    effective_auth = (unquote(userinfo), "")
+
+            if effective_auth is not None:
+                bolt_kwargs["auth"] = effective_auth
+
             if is_async and hasattr(neo4j, "AsyncGraphDatabase"):
                 async_drv = neo4j.AsyncGraphDatabase.driver(bolt_clean_uri, **bolt_kwargs)
                 return AsyncNeo4jBoltBridge(async_drv)
@@ -1785,33 +1905,86 @@ def create_bridge(
                 if fallback == "mock":
                     return AsyncMockBridge() if is_async else MockBridge()
                 raise RuntimeError(
-                    f"Unable to instantiate neo4j driver from '{driver_or_connection}'."
+                    f"Unable to instantiate neo4j driver from '{mask_uri_password(driver_or_connection)}'."
                 )
         elif scheme == "duckdb":
+            if auth is not None:
+                raise TypeError("DuckDB does not accept auth credentials")
             try:
                 import duckdb
             except ImportError as e:
                 if fallback == "mock":
                     return AsyncMockBridge() if is_async else MockBridge()
                 raise ImportError(
-                    f"The 'duckdb' Python package is required to connect to URI '{driver_or_connection}'. "
+                    f"The 'duckdb' Python package is required to connect to URI '{mask_uri_password(driver_or_connection)}'. "
                     f"Install it with 'pip install duckdb', or pass fallback='mock' for offline testing."
                 ) from e
             path = driver_or_connection.replace("duckdb://", "") or ":memory:"
             duck_conn = duckdb.connect(path)
             duck_bridge = DuckDbBridge(duck_conn)
             return AsyncDuckDbBridge(duck_conn) if is_async else duck_bridge
-        elif scheme in ("postgresql", "postgres", "age", "postgresql+s", "postgres+s", "age+s"):
+        elif scheme in (
+            "postgresql",
+            "postgres",
+            "age",
+            "postgresql+s",
+            "postgres+s",
+            "age+s",
+            "postgresql+ssc",
+            "postgres+ssc",
+            "age+ssc",
+        ):
             try:
                 import psycopg
             except ImportError as e:
                 if fallback == "mock":
                     return AsyncMockBridge() if is_async else MockBridge()
                 raise ImportError(
-                    f"The 'psycopg' Python package is required to connect to URI '{driver_or_connection}'. "
+                    f"The 'psycopg' Python package is required to connect to URI '{mask_uri_password(driver_or_connection)}'. "
                     f"Install it with 'pip install psycopg[binary]', or pass fallback='mock' for offline testing."
                 ) from e
-            pg_conn = psycopg.connect(driver_or_connection, autocommit=True)
+            from urllib.parse import parse_qs, urlsplit, urlunsplit
+
+            is_age_scheme = scheme in ("age", "age+s", "age+ssc")
+            is_ssl_scheme = scheme in (
+                "postgresql+s",
+                "postgres+s",
+                "age+s",
+                "postgresql+ssc",
+                "postgres+ssc",
+                "age+ssc",
+            )
+
+            parsed_pg = urlsplit(driver_or_connection)
+            target_scheme = "postgresql" if (is_age_scheme or is_ssl_scheme) else parsed_pg.scheme
+            new_query = parsed_pg.query
+            if is_ssl_scheme:
+                qs = parse_qs(parsed_pg.query)
+                if "sslmode" not in qs and "ssl" not in qs:
+                    new_query = (
+                        f"{parsed_pg.query}&sslmode=require"
+                        if parsed_pg.query
+                        else "sslmode=require"
+                    )
+
+            clean_pg_uri = urlunsplit(
+                (target_scheme, parsed_pg.netloc, parsed_pg.path, new_query, parsed_pg.fragment)
+            )
+
+            pg_kwargs: dict[str, Any] = {"autocommit": True}
+            if is_ssl_scheme:
+                pg_kwargs["sslmode"] = "require"
+
+            if auth is not None:
+                if not isinstance(auth, tuple) or len(auth) != 2:
+                    raise TypeError(
+                        f"Postgres/AGE auth must be a (username, password) tuple, got {type(auth).__name__}"
+                    )
+                pg_kwargs["user"] = auth[0]
+                pg_kwargs["password"] = auth[1]
+
+            pg_conn = psycopg.connect(clean_pg_uri, **pg_kwargs)
+            setup_postgres_age(pg_conn, force=is_age_scheme)
             pg_bridge = PostgresBridge(pg_conn)
             return AsyncPostgresBridge(pg_conn) if is_async else pg_bridge
         elif scheme in (
@@ -1829,12 +2002,12 @@ def create_bridge(
                 if fallback == "mock":
                     return AsyncMockBridge() if is_async else MockBridge()
                 raise ImportError(
-                    f"The 'falkordb' Python package is required to connect to URI '{driver_or_connection}'. "
+                    f"The 'falkordb' Python package is required to connect to URI '{mask_uri_password(driver_or_connection)}'. "
                     f"Install it with 'pip install falkordb', or pass fallback='mock' for offline testing."
                 ) from e
-            from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+            from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
-            parsed_url = urlparse(driver_or_connection)
+            parsed_url = urlsplit(driver_or_connection)
             redis_scheme = "rediss" if scheme in ("rediss", "falkordbs", "valkeys") else "redis"
             qs = parse_qs(parsed_url.query)
             redis_qs = {}
@@ -1852,27 +2025,38 @@ def create_bridge(
                     "ssl_cert_reqs",
                 ):
                     redis_qs[k] = vals[0]
-            clean_url = urlunparse(
+
+            falkor_kwargs: dict[str, Any] = {}
+            if auth is not None:
+                if not isinstance(auth, tuple) or len(auth) != 2:
+                    raise TypeError(
+                        f"FalkorDB/Redis auth must be a (username, password) tuple, got {type(auth).__name__}"
+                    )
+                falkor_kwargs["username"] = auth[0]
+                falkor_kwargs["password"] = auth[1]
+
+            clean_url = urlunsplit(
                 (
                     redis_scheme,
                     parsed_url.netloc,
                     parsed_url.path,
-                    parsed_url.params,
                     urlencode(redis_qs),
                     parsed_url.fragment,
                 )
             )
-            parsed = FalkorDB.from_url(clean_url)
+            parsed = FalkorDB.from_url(clean_url, **falkor_kwargs)
             f_bridge = FalkorDBBridge(parsed)
             return AsyncFalkorDBBridge(parsed) if is_async else f_bridge
         elif scheme in ("relate", "relatedb"):
+            if auth is not None:
+                raise TypeError("Relate does not accept auth credentials")
             try:
                 import relate
             except ImportError as e:
                 if fallback == "mock":
                     return AsyncMockBridge() if is_async else MockBridge()
                 raise ImportError(
-                    f"The 'relate-db' Python package is required to connect to URI '{driver_or_connection}'. "
+                    f"The 'relate-db' Python package is required to connect to URI '{mask_uri_password(driver_or_connection)}'. "
                     f"Install it with 'pip install relate-db', or pass fallback='mock' for offline testing."
                 ) from e
             path = driver_or_connection.split("://", 1)[1]
@@ -1884,7 +2068,7 @@ def create_bridge(
             if fallback == "mock":
                 return AsyncMockBridge() if is_async else MockBridge()
             raise ValueError(
-                f"No bridge available for URI '{driver_or_connection}' (unrecognized scheme: '{scheme}'). "
+                f"No bridge available for URI '{mask_uri_password(driver_or_connection)}' (unrecognized scheme: '{scheme}'). "
                 f"Tried adapters: bolt, duckdb, postgres, falkordb, relate. "
                 f"Install required driver or check the URI, or pass fallback='mock' (or use a 'mock://' URI) for offline testing."
             )

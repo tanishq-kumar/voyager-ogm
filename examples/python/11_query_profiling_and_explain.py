@@ -162,7 +162,7 @@ def main():
     # 6. Live Engine Execution (Neo4j on localhost:7687)
     # -------------------------------------------------------------------------
     print("\n--- 5. Live Engine Execution (Neo4j) ---")
-    uri = "bolt://127.0.0.1:7687"
+    uri = "bolt://neo4j:voyagerpass123@127.0.0.1:7687"
     try:
         bridge = create_bridge(uri, fallback="mock")
         if not bridge.ping():

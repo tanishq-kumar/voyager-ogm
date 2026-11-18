@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Bridge Authentication Credentials Parameter (#193)**:
+  - Added keyword-only `auth: tuple[str, str] | Any | None = None` parameter to `create_bridge()` across all overloads.
+  - Bolt schemes accept `(username, password)` tuples and custom auth tokens (e.g. `bearer_auth`) passed directly to `GraphDatabase.driver` / `AsyncGraphDatabase.driver`.
+  - PostgreSQL and Apache AGE schemes accept `(username, password)` tuples passed as `user=` / `password=` connect keyword arguments; invalid types raise `TypeError`.
+  - FalkorDB and Redis schemes accept `(username, password)` tuples passed as `username=` / `password=` keyword arguments to `FalkorDB.from_url`.
+  - Explicit `auth=` takes precedence over credentials in URI strings.
 - **Unified Examples Learning Path, OGM-First Modernization, and Rust Parity (#172)**:
   - Streamlined Python examples into a single progressive beginner-to-advanced learning path (01 to 31) with OGM-first declarative modeling, mutation DSL, and consistent setup and offline skip handling.
   - Added idiomatic Rust examples covering schema DDL and index emission (`08`), mutation builder (`09`), bulk ingestion compilation (`10`), transactions and unit of work (`11`), vector/full-text search query building (`12`), and live engine execution (`live_connect_and_query`).
@@ -95,6 +101,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Breaking:** Removed module-level free functions `unwind()` and `load_csv()` from `voyager_ogm` and `voyager_ogm.query`. Use `Query.unwind()` and `Query.load_csv()`.
 
 ### Fixed
+- **Bolt URI Embedded Credentials Stripping and Decoding (#181)**:
+  - `create_bridge()` now extracts and URL-decodes user and password credentials from Bolt connection URIs, forwarding them as `auth=(user, password)` to `GraphDatabase.driver` / `AsyncGraphDatabase.driver`.
+  - Strips `userinfo` from the netloc so the Bolt driver receives a clean `scheme://host:port` string while preserving path and query parameters.
+  - Added password masking (`user:***@host`) across all connection exception and log formatting paths to guarantee secrets are never leaked.
+- **Apache AGE Connection Setup and Scheme Rewriting (#191)**:
+  - `create_bridge()` now rewrites `age://` and `age+s://` URI schemes to `postgresql://` prior to connecting, mapping `+s` and `+ssc` to `sslmode=require`.
+  - Added unified `setup_postgres_age()` connection initializer that runs `LOAD 'age'; SET search_path = ag_catalog, "$user", public;` unconditionally for `age://` schemes and automatically when the `age` extension is detected in `pg_extension` for `postgresql://` connections.
+  - `PostgresBridge` and `AsyncPostgresBridge` now auto-detect AGE on user-supplied connections, allowing `Session(PostgresBridge(conn), dialect="age")` to execute AGE Cypher queries out of the box.
 - **Identity Map Uses the Declared Primary Key (#178)**:
   - `Session.register()` / `AsyncSession.register()`, `flush()`, `Node.save()`, and `Node.async_save()` now default `key_field` to the model's declared `Field(primary_key=True)` property instead of assuming `id`, falling back to `id` only when the model declares no primary key.
   - Explicit `key_field=` arguments continue to override the detected primary key unchanged.
