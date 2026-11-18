@@ -167,18 +167,28 @@ query = (
 )
 ```
 
-### 5. In-Memory Identity Map & Unit of Work
+### 5. Real Database Transactions, In-Memory Identity Map & Unit of Work
 
-Voyager combines **Active Record** ergonomics with **Data Mapper** architecture:
+Voyager separates **database transactions** from the **in-memory unit of work**:
 
+- **Real Database Transactions**: `session.transaction()` (and `async with` on `AsyncSession`) begins a real database transaction on Neo4j/Memgraph (Bolt), Apache AGE/PostgreSQL, embedded DuckDB/DuckPGQ and embedded Relate. `execute`, `execute_to_polars`, `execute_to_arrow`, bulk plans and `flush()` are all routed through it; a clean exit commits, an exception rolls back and re-raises. Savepoints are real on Apache AGE/PostgreSQL and raise on Bolt, DuckDB and Relate. FalkorDB raises because Redis `MULTI`/`EXEC` cannot roll back.
 - **Active Record Ergonomics**: Work with graph nodes and relationships as natural Python objects—read, update, and modify fields directly in your application code.
-- **Data Mapper Cleanliness**: Instead of firing an immediate database query on every property modification, the transactional Unit of Work tracks dirty fields in memory and flushes them in a single, minimal batched update.
+- **Data Mapper Cleanliness**: Instead of firing an immediate database query on every property modification, `session.unit_of_work()` tracks dirty fields in memory and flushes them in a single, minimal batched update.
 - **Identity Map Consistency**: If the same graph node is loaded across multiple queries or traversals within a transaction, Voyager returns the exact same in-memory object. Changes made in one place are immediately visible everywhere without stale reads or duplicate database lookups.
 
 #### Example:
 
 ```python
-with session.transaction():
+# Real database transaction: rolls back the CREATE on the server.
+try:
+    with session.transaction():
+        session.execute("CREATE (:AuditLog {event: 'login'})")
+        raise RuntimeError("abort")
+except RuntimeError:
+    pass
+
+# In-memory unit of work: tracks identity-mapped entities and batches writes.
+with session.unit_of_work():
     # 1. Fetch a person from the database (or retrieve tracked instance via session.get / session.get_node)
     alice = session.get(Person, id="alice_42")  # or session.get_node(Person, "alice_42")
 

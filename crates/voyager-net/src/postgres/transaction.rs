@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use crate::engine::{AsyncConnection, AsyncTransaction, QueryResult, QuerySummary};
 use crate::error::{NetError, Result};
-use crate::postgres::connection::PostgresConnection;
+use crate::postgres::connection::{PostgresConnection, validate_savepoint_name};
 
 /// Asynchronous transaction wrapper managing a leased [`PostgresConnection`].
 pub struct PostgresTransaction<'a> {
@@ -36,6 +36,11 @@ impl<'a> PostgresTransaction<'a> {
                 "Cannot execute query on inactive transaction".to_string(),
             ));
         }
+        if !self.conn.is_valid() {
+            return Err(NetError::TransactionError(
+                "transaction is aborted; roll back before executing more statements".to_string(),
+            ));
+        }
 
         let res = self.conn.execute(query, params).await?;
         self.summary_accumulator.nodes_created += res.summary.nodes_created;
@@ -53,7 +58,21 @@ impl<'a> PostgresTransaction<'a> {
                 "Transaction is already completed".to_string(),
             ));
         }
+        if !self.conn.is_valid() {
+            return Err(NetError::TransactionError(
+                "transaction is aborted; roll back instead of committing".to_string(),
+            ));
+        }
         self.conn.execute_simple("COMMIT;").await?;
+        if self
+            .conn
+            .last_command_tag()
+            .is_some_and(|tag| tag.eq_ignore_ascii_case("ROLLBACK"))
+        {
+            return Err(NetError::TransactionError(
+                "transaction is aborted; PostgreSQL converted COMMIT into ROLLBACK".to_string(),
+            ));
+        }
         self.is_active = false;
         Ok(self.summary_accumulator.clone())
     }
@@ -75,6 +94,7 @@ impl<'a> PostgresTransaction<'a> {
                 "Cannot create savepoint in inactive transaction".to_string(),
             ));
         }
+        validate_savepoint_name(name)?;
         self.conn
             .execute_simple(&format!("SAVEPOINT {};", name))
             .await?;
@@ -88,6 +108,7 @@ impl<'a> PostgresTransaction<'a> {
                 "Cannot rollback savepoint in inactive transaction".to_string(),
             ));
         }
+        validate_savepoint_name(name)?;
         self.conn
             .execute_simple(&format!("ROLLBACK TO SAVEPOINT {};", name))
             .await?;
@@ -101,6 +122,7 @@ impl<'a> PostgresTransaction<'a> {
                 "Cannot release savepoint in inactive transaction".to_string(),
             ));
         }
+        validate_savepoint_name(name)?;
         self.conn
             .execute_simple(&format!("RELEASE SAVEPOINT {};", name))
             .await?;
@@ -120,6 +142,11 @@ impl<'a> AsyncTransaction for PostgresTransaction<'a> {
                 "Cannot execute query on inactive transaction".to_string(),
             ));
         }
+        if !self.conn.is_valid() {
+            return Err(NetError::TransactionError(
+                "transaction is aborted; roll back before executing more statements".to_string(),
+            ));
+        }
 
         let res = self.conn.execute(query, params).await?;
         // Accumulate mutation counters
@@ -137,7 +164,21 @@ impl<'a> AsyncTransaction for PostgresTransaction<'a> {
                 "Transaction is already completed".to_string(),
             ));
         }
+        if !self.conn.is_valid() {
+            return Err(NetError::TransactionError(
+                "transaction is aborted; roll back instead of committing".to_string(),
+            ));
+        }
         self.conn.execute_simple("COMMIT;").await?;
+        if self
+            .conn
+            .last_command_tag()
+            .is_some_and(|tag| tag.eq_ignore_ascii_case("ROLLBACK"))
+        {
+            return Err(NetError::TransactionError(
+                "transaction is aborted; PostgreSQL converted COMMIT into ROLLBACK".to_string(),
+            ));
+        }
         self.is_active = false;
         Ok(self.summary_accumulator.clone())
     }

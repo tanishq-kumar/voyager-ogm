@@ -145,6 +145,146 @@ class AsyncDatabaseBridge(Protocol):
         ...
 
 
+def _validate_savepoint_name(name: str) -> str:
+    """Validates an unquoted savepoint identifier before interpolating SQL.
+
+    Args:
+        name: Caller-supplied savepoint name.
+
+    Returns:
+        The validated savepoint name.
+
+    Raises:
+        ValueError: If the name is not a safe SQL identifier.
+    """
+    if not isinstance(name, str) or not name:
+        raise ValueError("Savepoint name must be a non-empty string")
+    if not (name[0].isalpha() or name[0] == "_"):
+        raise ValueError(f"Invalid savepoint name {name!r}")
+    if not all(ch.isalnum() or ch == "_" for ch in name):
+        raise ValueError(f"Invalid savepoint name {name!r}")
+    return name
+
+
+def _pg_transaction_status(conn: Any) -> str | None:
+    """Returns the psycopg transaction status name when the driver exposes it."""
+    info = getattr(conn, "info", None)
+    if info is not None and hasattr(info, "transaction_status"):
+        status = info.transaction_status
+        return str(getattr(status, "name", status)).upper()
+    getter = getattr(conn, "get_transaction_status", None)
+    if callable(getter):
+        try:
+            status = getter()
+        except Exception:
+            return None
+        return str(getattr(status, "name", status)).upper()
+    return None
+
+
+def _pg_connection_closed(conn: Any) -> bool:
+    """Returns whether a psycopg connection reports itself closed."""
+    value = getattr(conn, "closed", 0)
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+class MockTransaction:
+    """In-memory stand-in for a database transaction on MockBridge."""
+
+    def __init__(self, bridge: MockBridge) -> None:
+        """Initializes the mock transaction.
+
+        Args:
+            bridge: Parent MockBridge that records executed statements.
+        """
+        self._bridge = bridge
+        self._state = "ACTIVE"
+        self._savepoints: dict[str, int] = {}
+
+    @property
+    def state(self) -> str:
+        """Returns the lifecycle state ('ACTIVE', 'FAILED', 'COMMITTED', 'ROLLED_BACK')."""
+        return self._state
+
+    @property
+    def is_active(self) -> bool:
+        """Returns whether the mock transaction accepts statements."""
+        return self._state == "ACTIVE"
+
+    @property
+    def supports_savepoints(self) -> bool:
+        """Mock transactions support in-memory savepoints."""
+        return True
+
+    def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Executes a statement through the mock bridge."""
+        if not self.is_active:
+            raise ValueError("Cannot execute query on inactive transaction")
+        return self._bridge.execute(statement, parameters)
+
+    def execute_to_polars(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> pl.DataFrame:
+        """Executes a statement through the mock bridge and returns a DataFrame."""
+        if not self.is_active:
+            raise ValueError("Cannot execute query on inactive transaction")
+        return self._bridge.execute_to_polars(statement, parameters)
+
+    def execute_bulk(
+        self,
+        plan_or_statement: BulkIngestionPlan | str,
+        batches: Sequence[dict[str, Any]] | None = None,
+    ) -> BulkExecutionResult:
+        """Executes a bulk plan through the mock bridge."""
+        if not self.is_active:
+            raise ValueError("Cannot execute bulk plan on inactive transaction")
+        return self._bridge.execute_bulk(plan_or_statement, batches)
+
+    def commit(self) -> None:
+        """Marks the mock transaction committed."""
+        if not self.is_active:
+            raise ValueError("Cannot commit inactive transaction")
+        self._state = "COMMITTED"
+        self._savepoints.clear()
+
+    def rollback(self) -> None:
+        """Marks the mock transaction rolled back."""
+        if not self.is_active:
+            raise ValueError("Cannot rollback inactive transaction")
+        self._state = "ROLLED_BACK"
+        self._savepoints.clear()
+
+    def savepoint(self, name: str) -> None:
+        """Creates an in-memory savepoint and records the query log length."""
+        if not self.is_active:
+            raise ValueError("Cannot create savepoint on inactive transaction")
+        _validate_savepoint_name(name)
+        if name in self._savepoints:
+            raise ValueError(f"Savepoint {name!r} already exists")
+        self._savepoints[name] = len(self._bridge.executed_queries)
+
+    def rollback_to_savepoint(self, name: str) -> None:
+        """Rolls the mock query log back to a savepoint."""
+        if not self.is_active:
+            raise ValueError("Cannot rollback savepoint on inactive transaction")
+        if name not in self._savepoints:
+            raise ValueError(f"Savepoint {name!r} does not exist")
+        del self._bridge.executed_queries[self._savepoints[name] :]
+
+    def release_savepoint(self, name: str) -> None:
+        """Releases an in-memory savepoint."""
+        if not self.is_active:
+            raise ValueError("Cannot release savepoint on inactive transaction")
+        if name not in self._savepoints:
+            raise ValueError(f"Savepoint {name!r} does not exist")
+        self._savepoints.pop(name, None)
+
+
 class MockBridge:
     """In-memory Mock Bridge for zero-network testing and query inspection."""
 
@@ -246,6 +386,10 @@ class MockBridge:
             statement=statement,
         )
 
+    def begin_transaction(self) -> MockTransaction:
+        """Opens an in-memory mock transaction."""
+        return MockTransaction(self)
+
     def ping(self) -> bool:
         """Pings the mock bridge."""
         return True
@@ -253,6 +397,69 @@ class MockBridge:
     def close(self) -> None:
         """Closes the bridge."""
         pass
+
+
+class AsyncMockTransaction:
+    """Asynchronous in-memory stand-in for a database transaction."""
+
+    def __init__(self, transaction: MockTransaction) -> None:
+        """Initializes the async wrapper around a sync mock transaction."""
+        self._sync = transaction
+
+    @property
+    def state(self) -> str:
+        """Returns the lifecycle state."""
+        return self._sync.state
+
+    @property
+    def is_active(self) -> bool:
+        """Returns whether the transaction accepts statements."""
+        return self._sync.is_active
+
+    @property
+    def supports_savepoints(self) -> bool:
+        """Mock transactions support in-memory savepoints."""
+        return True
+
+    async def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Executes a statement through the mock bridge."""
+        return self._sync.execute(statement, parameters)
+
+    async def execute_to_polars(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> pl.DataFrame:
+        """Executes a statement and returns a Polars DataFrame."""
+        return self._sync.execute_to_polars(statement, parameters)
+
+    async def execute_bulk(
+        self,
+        plan_or_statement: BulkIngestionPlan | str,
+        batches: Sequence[dict[str, Any]] | None = None,
+    ) -> BulkExecutionResult:
+        """Executes a bulk plan through the mock bridge."""
+        return self._sync.execute_bulk(plan_or_statement, batches)
+
+    async def commit(self) -> None:
+        """Marks the mock transaction committed."""
+        self._sync.commit()
+
+    async def rollback(self) -> None:
+        """Marks the mock transaction rolled back."""
+        self._sync.rollback()
+
+    async def savepoint(self, name: str) -> None:
+        """Creates an in-memory savepoint."""
+        self._sync.savepoint(name)
+
+    async def rollback_to_savepoint(self, name: str) -> None:
+        """Rolls the mock query log back to a savepoint."""
+        self._sync.rollback_to_savepoint(name)
+
+    async def release_savepoint(self, name: str) -> None:
+        """Releases an in-memory savepoint."""
+        self._sync.release_savepoint(name)
 
 
 class AsyncMockBridge:
@@ -317,6 +524,10 @@ class AsyncMockBridge:
             BulkExecutionResult.
         """
         return self.sync_mock.execute_bulk(plan_or_statement, batches)
+
+    async def begin_transaction(self) -> AsyncMockTransaction:
+        """Opens an in-memory mock transaction."""
+        return AsyncMockTransaction(MockTransaction(self.sync_mock))
 
     async def ping(self) -> bool:
         """Pings the async mock bridge."""
@@ -515,10 +726,184 @@ class Neo4jBoltBridge:
         except Exception:
             return False
 
+    def begin_transaction(self) -> Neo4jBoltTransaction:
+        """Begins an explicit Bolt transaction and leases one driver session."""
+        return Neo4jBoltTransaction(self.driver, self.database)
+
     def close(self) -> None:
         """Closes the underlying driver."""
         if hasattr(self.driver, "close"):
             self.driver.close()
+
+
+class Neo4jBoltTransaction:
+    """Explicit Bolt transaction holding one Neo4j/Memgraph driver session."""
+
+    _savepoint_error_message = (
+        "Neo4j/Memgraph Bolt transactions do not support savepoints; "
+        "use Apache AGE/PostgreSQL for real savepoints"
+    )
+
+    def __init__(self, driver: Any, database: str | None = None) -> None:
+        """Begins a driver transaction.
+
+        Args:
+            driver: Neo4j-compatible driver instance.
+            database: Optional target database name.
+        """
+        self._session = driver.session(**({"database": database} if database else {}))
+        self._state = "ACTIVE"
+        try:
+            self._tx = self._session.begin_transaction()
+        except Exception:
+            self._session.close()
+            self._state = "ROLLED_BACK"
+            raise
+
+    @property
+    def state(self) -> str:
+        """Returns the lifecycle state ('ACTIVE', 'FAILED', 'COMMITTED', 'ROLLED_BACK')."""
+        return self._state
+
+    @property
+    def is_active(self) -> bool:
+        """Returns whether the transaction accepts statements."""
+        if self._state != "ACTIVE":
+            return False
+        closed = getattr(self._tx, "closed", None)
+        if callable(closed):
+            try:
+                return not bool(closed())
+            except Exception:
+                return True
+        return True
+
+    @property
+    def supports_savepoints(self) -> bool:
+        """Bolt transactions (Neo4j/Memgraph) have no savepoints."""
+        return False
+
+    def _mark_failed(self) -> None:
+        """Marks the transaction aborted after a statement/driver error."""
+        self._state = "FAILED"
+
+    def _close_session(self) -> None:
+        """Closes the leased driver session without masking the active error."""
+        try:
+            self._session.close()
+        except Exception:
+            pass
+
+    def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Runs a Cypher statement inside the transaction."""
+        if self._state == "FAILED":
+            raise RuntimeError("transaction is aborted; roll back before executing more statements")
+        if not self.is_active:
+            raise ValueError("Cannot execute query on inactive transaction")
+        try:
+            result = self._tx.run(statement, _adapt_bolt_parameters(parameters or {}))
+            return [_normalize_bolt_record(record) for record in result]
+        except BaseException:
+            self._mark_failed()
+            raise
+
+    def execute_to_polars(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> pl.DataFrame:
+        """Runs a Cypher statement and returns a Polars DataFrame."""
+        records = self.execute(statement, parameters)
+        return pl.DataFrame(records) if records else pl.DataFrame()
+
+    def execute_bulk(
+        self,
+        plan_or_statement: BulkIngestionPlan | str,
+        batches: Sequence[dict[str, Any]] | None = None,
+    ) -> BulkExecutionResult:
+        """Runs a bulk plan on the transaction's driver transaction."""
+        if self._state == "FAILED":
+            raise RuntimeError("transaction is aborted; roll back before executing more statements")
+        if not self.is_active:
+            raise ValueError("Cannot execute bulk plan on inactive transaction")
+        start_time = time.perf_counter()
+        statement = ""
+        total_records = 0
+        total_batches = 0
+
+        try:
+            if isinstance(plan_or_statement, str):
+                statement = plan_or_statement
+                batch_list = batches or []
+                total_batches = len(batch_list)
+                for b in batch_list:
+                    total_records += len(b.get("batch", []))
+                    self._tx.run(statement, _adapt_bolt_parameters(b))
+            else:
+                statement = plan_or_statement.statement
+                for batch_item in plan_or_statement:
+                    total_batches += 1
+                    total_records += len(batch_item.parameters.get("batch", []))
+                    self._tx.run(statement, _adapt_bolt_parameters(batch_item.parameters))
+        except BaseException:
+            self._mark_failed()
+            raise
+
+        return BulkExecutionResult(
+            total_batches=total_batches,
+            total_records=total_records,
+            duration_seconds=time.perf_counter() - start_time,
+            statement=statement,
+        )
+
+    def commit(self) -> None:
+        """Commits the Bolt transaction and closes the driver session."""
+        if self._state == "FAILED":
+            raise RuntimeError("transaction is aborted; roll back instead of committing")
+        if not self.is_active:
+            raise ValueError("Cannot commit inactive transaction")
+        try:
+            self._tx.commit()
+            self._state = "COMMITTED"
+        except BaseException:
+            self._mark_failed()
+            raise
+        finally:
+            self._close_session()
+
+    def rollback(self) -> None:
+        """Rolls the Bolt transaction back and closes the driver session."""
+        if self._state not in ("ACTIVE", "FAILED"):
+            raise ValueError("Cannot rollback inactive transaction")
+        try:
+            self._tx.rollback()
+            self._state = "ROLLED_BACK"
+        except BaseException:
+            self._mark_failed()
+            raise
+        finally:
+            self._close_session()
+
+    def savepoint(self, name: str) -> None:
+        """Raises because Bolt engines do not support savepoints."""
+        raise RuntimeError(
+            "Neo4j/Memgraph Bolt transactions do not support savepoints; "
+            "use Apache AGE/PostgreSQL for real savepoints"
+        )
+
+    def rollback_to_savepoint(self, name: str) -> None:
+        """Raises because Bolt engines do not support savepoints."""
+        raise RuntimeError(
+            "Neo4j/Memgraph Bolt transactions do not support savepoints; "
+            "use Apache AGE/PostgreSQL for real savepoints"
+        )
+
+    def release_savepoint(self, name: str) -> None:
+        """Raises because Bolt engines do not support savepoints."""
+        raise RuntimeError(
+            "Neo4j/Memgraph Bolt transactions do not support savepoints; "
+            "use Apache AGE/PostgreSQL for real savepoints"
+        )
 
 
 class AsyncNeo4jBoltBridge:
@@ -633,6 +1018,16 @@ class AsyncNeo4jBoltBridge:
         except Exception:
             return False
 
+    async def begin_transaction(self) -> AsyncNeo4jBoltTransaction:
+        """Begins an explicit async Bolt transaction and leases one driver session."""
+        session = self.driver.session(**({"database": self.database} if self.database else {}))
+        try:
+            tx = await session.begin_transaction()
+        except Exception:
+            await session.close()
+            raise
+        return AsyncNeo4jBoltTransaction(session, tx)
+
     async def close(self) -> None:
         """Closes the underlying async driver."""
         if hasattr(self.driver, "close"):
@@ -640,6 +1035,177 @@ class AsyncNeo4jBoltBridge:
                 await self.driver.close()
             else:
                 self.driver.close()
+
+
+class AsyncNeo4jBoltTransaction:
+    """Explicit async Bolt transaction holding one driver session."""
+
+    _savepoint_error_message = (
+        "Neo4j/Memgraph Bolt transactions do not support savepoints; "
+        "use Apache AGE/PostgreSQL for real savepoints"
+    )
+
+    def __init__(self, session: Any, tx: Any) -> None:
+        """Initializes the transaction wrapper.
+
+        Args:
+            session: Async neo4j driver session.
+            tx: Async neo4j transaction.
+        """
+        self._session = session
+        self._tx = tx
+        self._state = "ACTIVE"
+
+    @property
+    def state(self) -> str:
+        """Returns the lifecycle state."""
+        return self._state
+
+    @property
+    def is_active(self) -> bool:
+        """Returns whether the transaction accepts statements."""
+        if self._state != "ACTIVE":
+            return False
+        closed = getattr(self._tx, "closed", None)
+        if callable(closed):
+            try:
+                return not bool(closed())
+            except Exception:
+                return True
+        return True
+
+    @property
+    def supports_savepoints(self) -> bool:
+        """Bolt transactions have no savepoints."""
+        return False
+
+    def _mark_failed(self) -> None:
+        """Marks the transaction aborted after a statement/driver error."""
+        self._state = "FAILED"
+
+    async def _close_session(self) -> None:
+        """Closes the leased driver session without masking the active error."""
+        try:
+            await self._session.close()
+        except Exception:
+            pass
+
+    async def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Runs a Cypher statement inside the transaction."""
+        if self._state == "FAILED":
+            raise RuntimeError("transaction is aborted; roll back before executing more statements")
+        if not self.is_active:
+            raise ValueError("Cannot execute query on inactive transaction")
+        try:
+            result = await self._tx.run(statement, _adapt_bolt_parameters(parameters or {}))
+            if hasattr(result, "__aiter__"):
+                records = []
+                async for record in result:
+                    records.append(_normalize_bolt_record(record))
+                return records
+            raw = await result.data()
+            return [_normalize_bolt_record(r) for r in raw]
+        except BaseException:
+            self._mark_failed()
+            raise
+
+    async def execute_to_polars(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> pl.DataFrame:
+        """Runs a Cypher statement and returns a Polars DataFrame."""
+        records = await self.execute(statement, parameters)
+        return pl.DataFrame(records) if records else pl.DataFrame()
+
+    async def execute_bulk(
+        self,
+        plan_or_statement: BulkIngestionPlan | str,
+        batches: Sequence[dict[str, Any]] | None = None,
+    ) -> BulkExecutionResult:
+        """Runs a bulk plan on the transaction's driver transaction."""
+        if self._state == "FAILED":
+            raise RuntimeError("transaction is aborted; roll back before executing more statements")
+        if not self.is_active:
+            raise ValueError("Cannot execute bulk plan on inactive transaction")
+        start_time = time.perf_counter()
+        statement = ""
+        total_records = 0
+        total_batches = 0
+
+        try:
+            if isinstance(plan_or_statement, str):
+                statement = plan_or_statement
+                batch_list = batches or []
+                total_batches = len(batch_list)
+                for b in batch_list:
+                    total_records += len(b.get("batch", []))
+                    await self._tx.run(statement, _adapt_bolt_parameters(b))
+            else:
+                statement = plan_or_statement.statement
+                for batch_item in plan_or_statement:
+                    total_batches += 1
+                    total_records += len(batch_item.parameters.get("batch", []))
+                    await self._tx.run(statement, _adapt_bolt_parameters(batch_item.parameters))
+        except BaseException:
+            self._mark_failed()
+            raise
+
+        return BulkExecutionResult(
+            total_batches=total_batches,
+            total_records=total_records,
+            duration_seconds=time.perf_counter() - start_time,
+            statement=statement,
+        )
+
+    async def commit(self) -> None:
+        """Commits the transaction and closes the driver session."""
+        if self._state == "FAILED":
+            raise RuntimeError("transaction is aborted; roll back instead of committing")
+        if not self.is_active:
+            raise ValueError("Cannot commit inactive transaction")
+        try:
+            await self._tx.commit()
+            self._state = "COMMITTED"
+        except BaseException:
+            self._mark_failed()
+            raise
+        finally:
+            await self._close_session()
+
+    async def rollback(self) -> None:
+        """Rolls the transaction back and closes the driver session."""
+        if self._state not in ("ACTIVE", "FAILED"):
+            raise ValueError("Cannot rollback inactive transaction")
+        try:
+            await self._tx.rollback()
+            self._state = "ROLLED_BACK"
+        except BaseException:
+            self._mark_failed()
+            raise
+        finally:
+            await self._close_session()
+
+    async def savepoint(self, name: str) -> None:
+        """Raises because Bolt engines do not support savepoints."""
+        raise RuntimeError(
+            "Neo4j/Memgraph Bolt transactions do not support savepoints; "
+            "use Apache AGE/PostgreSQL for real savepoints"
+        )
+
+    async def rollback_to_savepoint(self, name: str) -> None:
+        """Raises because Bolt engines do not support savepoints."""
+        raise RuntimeError(
+            "Neo4j/Memgraph Bolt transactions do not support savepoints; "
+            "use Apache AGE/PostgreSQL for real savepoints"
+        )
+
+    async def release_savepoint(self, name: str) -> None:
+        """Raises because Bolt engines do not support savepoints."""
+        raise RuntimeError(
+            "Neo4j/Memgraph Bolt transactions do not support savepoints; "
+            "use Apache AGE/PostgreSQL for real savepoints"
+        )
 
 
 class DuckDbBridge:
@@ -804,10 +1370,145 @@ class DuckDbBridge:
         except Exception:
             return False
 
+    def begin_transaction(self) -> DuckDbBridgeTransaction:
+        """Begins an explicit DuckDB transaction on the bridge connection."""
+        return DuckDbBridgeTransaction(self)
+
     def close(self) -> None:
         """Closes connection."""
         if hasattr(self.con, "close"):
             self.con.close()
+
+
+class DuckDbBridgeTransaction:
+    """Explicit DuckDB / DuckPGQ transaction holding one connection.
+
+    DuckDB has no savepoints and no nested transactions: ``BEGIN`` inside an
+    existing transaction fails. A failing statement aborts the whole DuckDB
+    transaction, so this wrapper marks the transaction ``FAILED`` and rejects
+    further statements until it is rolled back.
+    """
+
+    _savepoint_error_message = (
+        "DuckDB transactions do not support savepoints; "
+        "use Apache AGE/PostgreSQL for real savepoints"
+    )
+
+    def __init__(self, bridge: DuckDbBridge) -> None:
+        """Starts an explicit transaction on the bridge's connection.
+
+        Args:
+            bridge: Parent DuckDB bridge.
+
+        Raises:
+            RuntimeError: If the connection is already inside a transaction.
+        """
+        self._bridge = bridge
+        try:
+            bridge.con.execute("BEGIN")
+        except Exception as exc:
+            raise RuntimeError(
+                "cannot begin a DuckDB transaction: the connection may already be inside "
+                f"a transaction (DuckDB has no nested transactions): {exc}"
+            ) from exc
+        self._state = "ACTIVE"
+
+    @property
+    def state(self) -> str:
+        """Returns the lifecycle state ('ACTIVE', 'FAILED', 'COMMITTED', 'ROLLED_BACK')."""
+        return self._state
+
+    @property
+    def is_active(self) -> bool:
+        """Returns whether the transaction accepts statements."""
+        return self._state == "ACTIVE"
+
+    @property
+    def supports_savepoints(self) -> bool:
+        """DuckDB has no savepoints."""
+        return False
+
+    def _mark_failed(self) -> None:
+        """Marks the transaction aborted after a statement/driver error."""
+        self._state = "FAILED"
+
+    def _ensure_executable(self) -> None:
+        """Rejects further statements once the transaction has failed."""
+        if self._state == "FAILED":
+            raise RuntimeError("transaction is aborted; roll back before executing more statements")
+        if not self.is_active:
+            raise ValueError("Cannot execute query on inactive transaction")
+
+    def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Executes a statement inside the transaction through the DuckPGQ bridge."""
+        self._ensure_executable()
+        try:
+            return self._bridge.execute(statement, parameters)
+        except BaseException:
+            self._mark_failed()
+            raise
+
+    def execute_to_polars(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> pl.DataFrame:
+        """Executes a statement through the DuckPGQ bridge and returns Polars."""
+        self._ensure_executable()
+        try:
+            return self._bridge.execute_to_polars(statement, parameters)
+        except BaseException:
+            self._mark_failed()
+            raise
+
+    def execute_bulk(
+        self,
+        plan_or_statement: BulkIngestionPlan | str,
+        batches: Sequence[dict[str, Any]] | None = None,
+    ) -> BulkExecutionResult:
+        """Executes a bulk plan inside the transaction."""
+        self._ensure_executable()
+        try:
+            return self._bridge.execute_bulk(plan_or_statement, batches)
+        except BaseException:
+            self._mark_failed()
+            raise
+
+    def commit(self) -> None:
+        """Commits the transaction."""
+        if self._state == "FAILED":
+            raise RuntimeError("transaction is aborted; roll back instead of committing")
+        if not self.is_active:
+            raise ValueError("Cannot commit inactive transaction")
+        try:
+            self._bridge.con.execute("COMMIT")
+            self._state = "COMMITTED"
+        except BaseException:
+            self._mark_failed()
+            raise
+
+    def rollback(self) -> None:
+        """Rolls the transaction back."""
+        if self._state not in ("ACTIVE", "FAILED"):
+            raise ValueError("Cannot rollback inactive transaction")
+        try:
+            self._bridge.con.execute("ROLLBACK")
+            self._state = "ROLLED_BACK"
+        except BaseException:
+            self._mark_failed()
+            raise
+
+    def savepoint(self, name: str) -> None:
+        """Raises because DuckDB does not support savepoints."""
+        raise RuntimeError(self._savepoint_error_message)
+
+    def rollback_to_savepoint(self, name: str) -> None:
+        """Raises because DuckDB does not support savepoints."""
+        raise RuntimeError(self._savepoint_error_message)
+
+    def release_savepoint(self, name: str) -> None:
+        """Raises because DuckDB does not support savepoints."""
+        raise RuntimeError(self._savepoint_error_message)
 
 
 class AsyncDuckDbBridge:
@@ -869,9 +1570,97 @@ class AsyncDuckDbBridge:
         """Pings DuckDB asynchronously to verify connection liveness."""
         return await asyncio.to_thread(self.sync_bridge.ping)
 
+    async def begin_transaction(self) -> AsyncDuckDbBridgeTransaction:
+        """Begins an explicit DuckDB transaction asynchronously."""
+        sync_tx = await asyncio.to_thread(self.sync_bridge.begin_transaction)
+        return AsyncDuckDbBridgeTransaction(sync_tx)
+
     async def close(self) -> None:
         """Closes connection asynchronously."""
         await asyncio.to_thread(self.sync_bridge.close)
+
+
+class AsyncDuckDbBridgeTransaction:
+    """Asynchronous wrapper around a synchronous DuckDB transaction."""
+
+    def __init__(self, transaction: DuckDbBridgeTransaction) -> None:
+        """Initializes the async transaction wrapper."""
+        self._sync = transaction
+
+    @property
+    def state(self) -> str:
+        """Returns the lifecycle state."""
+        return self._sync.state
+
+    @property
+    def is_active(self) -> bool:
+        """Returns whether the transaction accepts statements."""
+        return self._sync.is_active
+
+    @property
+    def supports_savepoints(self) -> bool:
+        """DuckDB has no savepoints."""
+        return False
+
+    async def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Executes a statement inside the transaction."""
+        try:
+            return await asyncio.to_thread(self._sync.execute, statement, parameters)
+        except asyncio.CancelledError:
+            self._sync._mark_failed()
+            raise
+
+    async def execute_to_polars(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> pl.DataFrame:
+        """Executes a statement and returns a Polars DataFrame."""
+        try:
+            return await asyncio.to_thread(self._sync.execute_to_polars, statement, parameters)
+        except asyncio.CancelledError:
+            self._sync._mark_failed()
+            raise
+
+    async def execute_bulk(
+        self,
+        plan_or_statement: BulkIngestionPlan | str,
+        batches: Sequence[dict[str, Any]] | None = None,
+    ) -> BulkExecutionResult:
+        """Executes a bulk plan inside the transaction."""
+        try:
+            return await asyncio.to_thread(self._sync.execute_bulk, plan_or_statement, batches)
+        except asyncio.CancelledError:
+            self._sync._mark_failed()
+            raise
+
+    async def commit(self) -> None:
+        """Commits the transaction."""
+        try:
+            await asyncio.to_thread(self._sync.commit)
+        except asyncio.CancelledError:
+            self._sync._mark_failed()
+            raise
+
+    async def rollback(self) -> None:
+        """Rolls the transaction back."""
+        try:
+            await asyncio.to_thread(self._sync.rollback)
+        except asyncio.CancelledError:
+            self._sync._mark_failed()
+            raise
+
+    async def savepoint(self, name: str) -> None:
+        """Raises because DuckDB does not support savepoints."""
+        raise RuntimeError(self._sync._savepoint_error_message)
+
+    async def rollback_to_savepoint(self, name: str) -> None:
+        """Raises because DuckDB does not support savepoints."""
+        raise RuntimeError(self._sync._savepoint_error_message)
+
+    async def release_savepoint(self, name: str) -> None:
+        """Raises because DuckDB does not support savepoints."""
+        raise RuntimeError(self._sync._savepoint_error_message)
 
 
 def mask_uri_password(uri: str) -> str:
@@ -1104,10 +1893,224 @@ class PostgresBridge:
         except Exception:
             return False
 
+    def begin_transaction(self) -> PostgresBridgeTransaction:
+        """Begins an explicit PostgreSQL/AGE transaction on the bridge connection."""
+        return PostgresBridgeTransaction(self)
+
     def close(self) -> None:
         """Closes connection."""
         if hasattr(self.conn, "close"):
             self.conn.close()
+
+
+class PostgresBridgeTransaction:
+    """Explicit PostgreSQL / Apache AGE transaction holding one connection."""
+
+    def __init__(self, bridge: PostgresBridge) -> None:
+        """Starts a transaction on the bridge's connection.
+
+        The AGE setup (`LOAD 'age'`, `SET search_path`) runs before `BEGIN`, so a
+        rollback cannot undo it.
+
+        Args:
+            bridge: Parent PostgreSQL bridge.
+        """
+        self._bridge = bridge
+        conn = bridge.conn
+        setup_postgres_age(conn, force=False)
+
+        self._original_autocommit = getattr(conn, "autocommit", None)
+        if self._original_autocommit is False:
+            # Commit any pending work (including AGE setup) and take explicit
+            # control of BEGIN/COMMIT so psycopg does not start its own block.
+            conn.commit()
+            conn.autocommit = True
+
+        try:
+            self._execute_sql("BEGIN")
+        except Exception:
+            self._restore_autocommit()
+            raise
+        self._state = "ACTIVE"
+
+    @property
+    def state(self) -> str:
+        """Returns the lifecycle state ('ACTIVE', 'FAILED', 'COMMITTED', 'ROLLED_BACK')."""
+        return self._state
+
+    @property
+    def is_active(self) -> bool:
+        """Returns whether the transaction accepts statements."""
+        if self._state != "ACTIVE":
+            return False
+        conn = self._bridge.conn
+        if _pg_connection_closed(conn):
+            return False
+        status = _pg_transaction_status(conn)
+        if status is None:
+            return True
+        return status in ("INTRANS", "ACTIVE")
+
+    @property
+    def supports_savepoints(self) -> bool:
+        """PostgreSQL/AGE supports real savepoints."""
+        return True
+
+    def _mark_failed(self) -> None:
+        """Marks the transaction aborted after a statement/driver error."""
+        self._state = "FAILED"
+
+    def _ensure_executable(self) -> None:
+        """Rejects further statements once the transaction has failed."""
+        if self._state == "FAILED":
+            raise RuntimeError("transaction is aborted; roll back before executing more statements")
+        if not self.is_active:
+            raise ValueError("Cannot execute query on inactive transaction")
+
+    def _restore_autocommit(self) -> None:
+        """Restores the connection's original autocommit mode."""
+        if self._original_autocommit is not None:
+            try:
+                self._bridge.conn.autocommit = self._original_autocommit
+            except Exception:
+                pass
+
+    def _execute_sql(self, statement: str, parameters: Sequence[Any] = ()) -> str | None:
+        """Executes a control statement and returns its command tag."""
+        with self._bridge.conn.cursor() as cur:
+            cur.execute(statement, parameters)
+            return getattr(cur, "statusmessage", None)
+
+    def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Executes a statement inside the transaction."""
+        self._ensure_executable()
+        stmt, params = self._bridge._format_pgq_statement(statement, parameters or {})
+        try:
+            with self._bridge.conn.cursor() as cur:
+                cur.execute(stmt, params)
+                if cur.description:
+                    cols = [d[0] for d in cur.description]
+                    rows = cur.fetchall()
+                    return [dict(zip(cols, row, strict=False)) for row in rows]
+                return []
+        except BaseException:
+            self._mark_failed()
+            raise
+
+    def execute_to_polars(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> pl.DataFrame:
+        """Executes a statement and returns a Polars DataFrame."""
+        self._ensure_executable()
+        stmt, params = self._bridge._format_pgq_statement(statement, parameters or {})
+        try:
+            with self._bridge.conn.cursor() as cur:
+                cur.execute(stmt, params)
+                if cur.description:
+                    cols = [d[0] for d in cur.description]
+                    rows = cur.fetchall()
+                    return pl.DataFrame(rows, schema=cols, orient="row")
+                return pl.DataFrame()
+        except BaseException:
+            self._mark_failed()
+            raise
+
+    def execute_bulk(
+        self,
+        plan_or_statement: BulkIngestionPlan | str,
+        batches: Sequence[dict[str, Any]] | None = None,
+    ) -> BulkExecutionResult:
+        """Executes a bulk plan inside the transaction."""
+        self._ensure_executable()
+        start_time = time.perf_counter()
+        statement = ""
+        total_records = 0
+        total_batches = 0
+
+        try:
+            with self._bridge.conn.cursor() as cur:
+                if isinstance(plan_or_statement, str):
+                    statement = plan_or_statement
+                    batch_list = batches or []
+                    total_batches = len(batch_list)
+                    for b in batch_list:
+                        total_records += len(b.get("batch", []))
+                        stmt, params = self._bridge._format_pgq_statement(statement, b)
+                        cur.execute(stmt, params)
+                else:
+                    statement = plan_or_statement.statement
+                    for batch_item in plan_or_statement:
+                        total_batches += 1
+                        total_records += len(batch_item.parameters.get("batch", []))
+                        stmt, params = self._bridge._format_pgq_statement(
+                            statement, batch_item.parameters
+                        )
+                        cur.execute(stmt, params)
+        except BaseException:
+            self._mark_failed()
+            raise
+
+        return BulkExecutionResult(
+            total_batches=total_batches,
+            total_records=total_records,
+            duration_seconds=time.perf_counter() - start_time,
+            statement=statement,
+        )
+
+    def commit(self) -> None:
+        """Commits the transaction."""
+        if self._state == "FAILED":
+            raise RuntimeError("transaction is aborted; roll back instead of committing")
+        if not self.is_active:
+            raise ValueError("Cannot commit inactive transaction")
+        try:
+            status = _pg_transaction_status(self._bridge.conn)
+            if status == "INERROR":
+                raise RuntimeError("transaction is aborted; PostgreSQL is in a failed state")
+            tag = self._execute_sql("COMMIT")
+            if tag is not None and tag.upper().startswith("ROLLBACK"):
+                raise RuntimeError(
+                    "transaction is aborted; PostgreSQL converted COMMIT into ROLLBACK"
+                )
+            self._state = "COMMITTED"
+        except BaseException:
+            self._mark_failed()
+            raise
+        finally:
+            self._restore_autocommit()
+
+    def rollback(self) -> None:
+        """Rolls the transaction back."""
+        if self._state not in ("ACTIVE", "FAILED"):
+            raise ValueError("Cannot rollback inactive transaction")
+        try:
+            self._execute_sql("ROLLBACK")
+            self._state = "ROLLED_BACK"
+        except BaseException:
+            self._mark_failed()
+            raise
+        finally:
+            self._restore_autocommit()
+
+    def savepoint(self, name: str) -> None:
+        """Creates a real SAVEPOINT."""
+        self._ensure_executable()
+        name = _validate_savepoint_name(name)
+        self._execute_sql(f"SAVEPOINT {name}")
+
+    def rollback_to_savepoint(self, name: str) -> None:
+        """Rolls back to a real SAVEPOINT."""
+        self._ensure_executable()
+        name = _validate_savepoint_name(name)
+        self._execute_sql(f"ROLLBACK TO SAVEPOINT {name}")
+
+    def release_savepoint(self, name: str) -> None:
+        """Releases a real SAVEPOINT."""
+        self._ensure_executable()
+        name = _validate_savepoint_name(name)
+        self._execute_sql(f"RELEASE SAVEPOINT {name}")
 
 
 class AsyncPostgresBridge:
@@ -1152,9 +2155,97 @@ class AsyncPostgresBridge:
         """Pings PostgreSQL asynchronously to verify connection liveness."""
         return await asyncio.to_thread(self.sync_bridge.ping)
 
+    async def begin_transaction(self) -> AsyncPostgresBridgeTransaction:
+        """Begins an explicit PostgreSQL/AGE transaction asynchronously."""
+        sync_tx = await asyncio.to_thread(self.sync_bridge.begin_transaction)
+        return AsyncPostgresBridgeTransaction(sync_tx)
+
     async def close(self) -> None:
         """Closes connection asynchronously."""
         await asyncio.to_thread(self.sync_bridge.close)
+
+
+class AsyncPostgresBridgeTransaction:
+    """Asynchronous wrapper around a synchronous PostgreSQL/AGE transaction."""
+
+    def __init__(self, transaction: PostgresBridgeTransaction) -> None:
+        """Initializes the async transaction wrapper."""
+        self._sync = transaction
+
+    @property
+    def state(self) -> str:
+        """Returns the lifecycle state."""
+        return self._sync.state
+
+    @property
+    def is_active(self) -> bool:
+        """Returns whether the transaction accepts statements."""
+        return self._sync.is_active
+
+    @property
+    def supports_savepoints(self) -> bool:
+        """PostgreSQL/AGE supports real savepoints."""
+        return True
+
+    async def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Executes a statement inside the transaction."""
+        try:
+            return await asyncio.to_thread(self._sync.execute, statement, parameters)
+        except asyncio.CancelledError:
+            self._sync._mark_failed()
+            raise
+
+    async def execute_to_polars(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> pl.DataFrame:
+        """Executes a statement and returns a Polars DataFrame."""
+        try:
+            return await asyncio.to_thread(self._sync.execute_to_polars, statement, parameters)
+        except asyncio.CancelledError:
+            self._sync._mark_failed()
+            raise
+
+    async def execute_bulk(
+        self,
+        plan_or_statement: BulkIngestionPlan | str,
+        batches: Sequence[dict[str, Any]] | None = None,
+    ) -> BulkExecutionResult:
+        """Executes a bulk plan inside the transaction."""
+        try:
+            return await asyncio.to_thread(self._sync.execute_bulk, plan_or_statement, batches)
+        except asyncio.CancelledError:
+            self._sync._mark_failed()
+            raise
+
+    async def commit(self) -> None:
+        """Commits the transaction."""
+        try:
+            await asyncio.to_thread(self._sync.commit)
+        except asyncio.CancelledError:
+            self._sync._mark_failed()
+            raise
+
+    async def rollback(self) -> None:
+        """Rolls the transaction back."""
+        try:
+            await asyncio.to_thread(self._sync.rollback)
+        except asyncio.CancelledError:
+            self._sync._mark_failed()
+            raise
+
+    async def savepoint(self, name: str) -> None:
+        """Creates a real SAVEPOINT."""
+        await asyncio.to_thread(self._sync.savepoint, name)
+
+    async def rollback_to_savepoint(self, name: str) -> None:
+        """Rolls back to a real SAVEPOINT."""
+        await asyncio.to_thread(self._sync.rollback_to_savepoint, name)
+
+    async def release_savepoint(self, name: str) -> None:
+        """Releases a real SAVEPOINT."""
+        await asyncio.to_thread(self._sync.release_savepoint, name)
 
 
 def _adapt_falkordb_value(val: Any) -> Any:
@@ -1305,6 +2396,13 @@ class FalkorDBBridge:
             statement=statement,
         )
 
+    def begin_transaction(self) -> Any:
+        """Raises because FalkorDB/Redis cannot provide transactional rollback."""
+        raise RuntimeError(
+            "FalkorDB does not support transactions: Redis MULTI/EXEC cannot provide "
+            "rollback or read-your-writes"
+        )
+
     def ping(self) -> bool:
         """Pings FalkorDB to verify connection liveness."""
         try:
@@ -1358,6 +2456,13 @@ class AsyncFalkorDBBridge:
     ) -> BulkExecutionResult:
         """Asynchronously executes bulk ingestion plan."""
         return await asyncio.to_thread(self.sync_bridge.execute_bulk, plan_or_statement, batches)
+
+    async def begin_transaction(self) -> Any:
+        """Raises because FalkorDB/Redis cannot provide transactional rollback."""
+        raise RuntimeError(
+            "FalkorDB does not support transactions: Redis MULTI/EXEC cannot provide "
+            "rollback or read-your-writes"
+        )
 
     async def ping(self) -> bool:
         """Pings FalkorDB asynchronously to verify connection liveness."""
@@ -1584,10 +2689,199 @@ class RelateBridge:
         except Exception:
             return False
 
+    def begin_transaction(self) -> RelateBridgeTransaction:
+        """Begins an explicit Relate transaction on the bridge connection."""
+        return RelateBridgeTransaction(self)
+
     def close(self) -> None:
         """Closes the underlying Relate database connection."""
         if hasattr(self.con, "close"):
             self.con.close()
+
+
+class RelateBridgeTransaction:
+    """Explicit Relate transaction driven by the connection's autocommit flag.
+
+    Relate is DB-API based: setting ``autocommit = False`` groups statements
+    into a transaction that ``commit()`` / ``rollback()`` ends. The original
+    autocommit value is restored on every completion path. A failing statement
+    leaves the engine transaction in a failed state, so further statements are
+    rejected until rollback.
+    """
+
+    _savepoint_error_message = (
+        "Relate transactions do not support savepoints; "
+        "use Apache AGE/PostgreSQL for real savepoints"
+    )
+
+    def __init__(self, bridge: RelateBridge) -> None:
+        """Starts an explicit transaction on the bridge's connection.
+
+        Args:
+            bridge: Parent Relate bridge.
+
+        Raises:
+            RuntimeError: If the connection already has autocommit disabled and
+                an open transaction with pending work. That work belongs to the
+                caller, so it is never silently committed or discarded.
+        """
+        self._bridge = bridge
+        conn = bridge.con
+        self._original_autocommit = getattr(conn, "autocommit", True)
+        if self._original_autocommit is False:
+            if self._transaction_open(conn):
+                raise RuntimeError(
+                    "cannot begin a Relate transaction: the connection already has an "
+                    "explicit transaction with pending work; commit or roll it back first"
+                )
+        else:
+            try:
+                conn.autocommit = False
+            except Exception as exc:
+                self._restore_autocommit()
+                raise RuntimeError(f"cannot begin a Relate transaction: {exc}") from exc
+        self._state = "ACTIVE"
+
+    @property
+    def state(self) -> str:
+        """Returns the lifecycle state ('ACTIVE', 'FAILED', 'COMMITTED', 'ROLLED_BACK')."""
+        return self._state
+
+    @property
+    def is_active(self) -> bool:
+        """Returns whether the transaction accepts statements."""
+        return self._state == "ACTIVE"
+
+    @property
+    def supports_savepoints(self) -> bool:
+        """Relate has no savepoints."""
+        return False
+
+    @staticmethod
+    def _transaction_open(conn: Any) -> bool:
+        """Returns whether the Relate connection has an open transaction."""
+        probe = getattr(conn, "_transaction_open", None)
+        if callable(probe):
+            try:
+                return bool(probe())
+            except Exception:
+                return True
+        # Without a public probe, assume pending work rather than risk it.
+        return True
+
+    def _restore_autocommit(self) -> None:
+        """Restores the connection's original autocommit mode (best effort)."""
+        original = self._original_autocommit
+        if original is None:
+            return
+        conn = self._bridge.con
+        try:
+            if bool(getattr(conn, "autocommit", original)) == bool(original):
+                return
+            if original and self._transaction_open(conn):
+                # Relate's autocommit setter commits; end any failed/open
+                # transaction first so the setter cannot raise or commit it.
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            conn.autocommit = original
+        except Exception:
+            try:
+                if original and self._transaction_open(conn):
+                    conn.rollback()
+            except Exception:
+                pass
+            try:
+                conn.autocommit = original
+            except Exception:
+                pass
+
+    def _mark_failed(self) -> None:
+        """Marks the transaction aborted after a statement/driver error."""
+        self._state = "FAILED"
+
+    def _ensure_executable(self) -> None:
+        """Rejects further statements once the transaction has failed."""
+        if self._state == "FAILED":
+            raise RuntimeError("transaction is aborted; roll back before executing more statements")
+        if not self.is_active:
+            raise ValueError("Cannot execute query on inactive transaction")
+
+    def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Executes a statement inside the transaction."""
+        self._ensure_executable()
+        try:
+            return self._bridge.execute(statement, parameters)
+        except BaseException:
+            self._mark_failed()
+            raise
+
+    def execute_to_polars(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> pl.DataFrame:
+        """Executes a statement and returns a Polars DataFrame."""
+        self._ensure_executable()
+        try:
+            return self._bridge.execute_to_polars(statement, parameters)
+        except BaseException:
+            self._mark_failed()
+            raise
+
+    def execute_bulk(
+        self,
+        plan_or_statement: BulkIngestionPlan | str,
+        batches: Sequence[dict[str, Any]] | None = None,
+    ) -> BulkExecutionResult:
+        """Executes a bulk plan inside the transaction."""
+        self._ensure_executable()
+        try:
+            return self._bridge.execute_bulk(plan_or_statement, batches)
+        except BaseException:
+            self._mark_failed()
+            raise
+
+    def commit(self) -> None:
+        """Commits the transaction."""
+        if self._state == "FAILED":
+            raise RuntimeError("transaction is aborted; roll back instead of committing")
+        if not self.is_active:
+            raise ValueError("Cannot commit inactive transaction")
+        try:
+            self._bridge.con.commit()
+            self._state = "COMMITTED"
+        except BaseException:
+            self._mark_failed()
+            raise
+        finally:
+            self._restore_autocommit()
+
+    def rollback(self) -> None:
+        """Rolls the transaction back."""
+        if self._state not in ("ACTIVE", "FAILED"):
+            raise ValueError("Cannot rollback inactive transaction")
+        try:
+            self._bridge.con.rollback()
+            self._state = "ROLLED_BACK"
+        except BaseException:
+            self._mark_failed()
+            raise
+        finally:
+            self._restore_autocommit()
+
+    def savepoint(self, name: str) -> None:
+        """Raises because Relate does not support savepoints."""
+        raise RuntimeError(self._savepoint_error_message)
+
+    def rollback_to_savepoint(self, name: str) -> None:
+        """Raises because Relate does not support savepoints."""
+        raise RuntimeError(self._savepoint_error_message)
+
+    def release_savepoint(self, name: str) -> None:
+        """Raises because Relate does not support savepoints."""
+        raise RuntimeError(self._savepoint_error_message)
 
 
 class AsyncRelateBridge:
@@ -1634,10 +2928,107 @@ class AsyncRelateBridge:
         await asyncio.sleep(0)
         return self.sync_bridge.ping()
 
+    async def begin_transaction(self) -> AsyncRelateBridgeTransaction:
+        """Begins an explicit Relate transaction on the event-loop thread."""
+        await asyncio.sleep(0)
+        return AsyncRelateBridgeTransaction(self.sync_bridge.begin_transaction())
+
     async def close(self) -> None:
         """Closes Relate connection asynchronously."""
         await asyncio.sleep(0)
         self.sync_bridge.close()
+
+
+class AsyncRelateBridgeTransaction:
+    """Asynchronous wrapper around a synchronous Relate transaction.
+
+    Relate connections are thread-affine, so every call stays on the event-loop
+    thread, matching :class:`AsyncRelateBridge`.
+    """
+
+    def __init__(self, transaction: RelateBridgeTransaction) -> None:
+        """Initializes the async transaction wrapper."""
+        self._sync = transaction
+
+    @property
+    def state(self) -> str:
+        """Returns the lifecycle state."""
+        return self._sync.state
+
+    @property
+    def is_active(self) -> bool:
+        """Returns whether the transaction accepts statements."""
+        return self._sync.is_active
+
+    @property
+    def supports_savepoints(self) -> bool:
+        """Relate has no savepoints."""
+        return False
+
+    async def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Executes a statement inside the transaction."""
+        await asyncio.sleep(0)
+        try:
+            return self._sync.execute(statement, parameters)
+        except asyncio.CancelledError:
+            self._sync._mark_failed()
+            raise
+
+    async def execute_to_polars(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> pl.DataFrame:
+        """Executes a statement and returns a Polars DataFrame."""
+        await asyncio.sleep(0)
+        try:
+            return self._sync.execute_to_polars(statement, parameters)
+        except asyncio.CancelledError:
+            self._sync._mark_failed()
+            raise
+
+    async def execute_bulk(
+        self,
+        plan_or_statement: BulkIngestionPlan | str,
+        batches: Sequence[dict[str, Any]] | None = None,
+    ) -> BulkExecutionResult:
+        """Executes a bulk plan inside the transaction."""
+        await asyncio.sleep(0)
+        try:
+            return self._sync.execute_bulk(plan_or_statement, batches)
+        except asyncio.CancelledError:
+            self._sync._mark_failed()
+            raise
+
+    async def commit(self) -> None:
+        """Commits the transaction."""
+        await asyncio.sleep(0)
+        try:
+            self._sync.commit()
+        except asyncio.CancelledError:
+            self._sync._mark_failed()
+            raise
+
+    async def rollback(self) -> None:
+        """Rolls the transaction back."""
+        await asyncio.sleep(0)
+        try:
+            self._sync.rollback()
+        except asyncio.CancelledError:
+            self._sync._mark_failed()
+            raise
+
+    async def savepoint(self, name: str) -> None:
+        """Raises because Relate does not support savepoints."""
+        raise RuntimeError(self._sync._savepoint_error_message)
+
+    async def rollback_to_savepoint(self, name: str) -> None:
+        """Raises because Relate does not support savepoints."""
+        raise RuntimeError(self._sync._savepoint_error_message)
+
+    async def release_savepoint(self, name: str) -> None:
+        """Raises because Relate does not support savepoints."""
+        raise RuntimeError(self._sync._savepoint_error_message)
 
 
 _BRIDGE_REGISTRY: list[tuple[Callable[[Any], bool], type, bool]] = []

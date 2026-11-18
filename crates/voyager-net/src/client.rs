@@ -6,6 +6,7 @@ use crate::bolt::BoltConnection;
 use crate::config::{ConnectionConfig, PoolConfig};
 use crate::engine::{AsyncConnection, QueryResult};
 use crate::error::{NetError, Result};
+use crate::native_transaction::NativeTransaction;
 use crate::pool::ConnectionPool;
 use crate::postgres::PostgresConnection;
 use crate::redis::RedisConnection;
@@ -93,6 +94,12 @@ impl NativeClient {
     ) -> Result<QueryResult> {
         let mut conn = self.pool.acquire().await?;
         conn.execute(query, params).await
+    }
+
+    /// Leases one pooled connection and begins an explicit transaction on it.
+    pub async fn begin_transaction(&self) -> Result<NativeTransaction<Box<dyn AsyncConnection>>> {
+        let conn = self.pool.acquire().await?;
+        NativeTransaction::begin(conn).await
     }
 
     /// Sends a lightweight liveness probe ping to the database.

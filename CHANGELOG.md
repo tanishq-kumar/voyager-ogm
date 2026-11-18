@@ -85,6 +85,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added explicit, loud errors on mock bridge fallback in production configurations.
 
 ### Changed
+- **Breaking:** `session.transaction()` is now a real database transaction, and the in-memory API is `UnitOfWork` / `unit_of_work()` (#177):
+  - `session.transaction()` / `async with session.transaction()` begins a real `BEGIN`/`COMMIT`/`ROLLBACK` transaction on Neo4j, Memgraph, and Apache AGE/PostgreSQL through both the Python driver bridges and the native Rust client, and on the embedded DuckDB/DuckPGQ and Relate bridges. Every session execution path (`execute`, `execute_to_polars`, `execute_to_arrow`, `run_bulk`, `flush()`) is routed through the active transaction; a clean exit commits, an exception rolls back and re-raises, and nested transactions raise.
+  - Real savepoints (`tx.savepoint(name)`) are supported on Apache AGE/PostgreSQL and raise on Bolt engines (Neo4j/Memgraph have no savepoints), DuckDB and Relate. FalkorDB raises a clear error because Redis `MULTI`/`EXEC` cannot provide rollback or read-your-writes. The real-transaction context manager is exported as `TransactionSavepoint`; the top-level `SavepointContext` remains the in-memory unit-of-work savepoint.
+  - A failed statement marks the transaction `FAILED`: further statements and `commit()` raise a clear "transaction is aborted; roll back" error, `rollback()` cleans up without masking the original error, and the context manager re-raises the original exception. This fail-closed behaviour applies to native Bolt/PostgreSQL and the Neo4j/Memgraph/AGE, DuckDB/DuckPGQ and Relate bridges.
+  - The in-memory class is renamed `Transaction` -> `UnitOfWork` (module `voyager_ogm.unit_of_work`), exposed via `Session.unit_of_work()` / `AsyncSession.unit_of_work()`; the old deprecated aliases are removed. It now snapshots identity-mapped entities so rollback restores entity values, and warns when the identity map is disabled.
+  - Renamed the PyO3 scope class `NativeTransaction` to `NativeUnitOfWorkScope`, and added a native `NativeTransaction` that leases one pooled connection for a real database transaction.
+  - With the identity map enabled, a real transaction also opens a `UnitOfWork`, so a database rollback restores tracked entities as well.
 - **Examples use the fixed OGM write path (#174, #175)**: removed the `.set(instance)` workarounds after `Query.create(...)` in examples 07, 11, 17, 20 and 31, and changed the MERGE demo in example 07 to a keyed `Query.merge(instance)` upsert.
 - Renamed the Rust core crate `voyager-core` to `voyager-ogm` (`voyager_core::` -> `voyager_ogm::`; `RUST_LOG` targets change accordingly) (#171).
 - Repository renamed to `tanishq-kumar/voyager`; package names unchanged (#168).
@@ -103,7 +110,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Bolt URI Embedded Credentials Stripping and Decoding (#181)**:
   - `create_bridge()` now extracts and URL-decodes user and password credentials from Bolt connection URIs, forwarding them as `auth=(user, password)` to `GraphDatabase.driver` / `AsyncGraphDatabase.driver`.
-  - Strips `userinfo` from the netloc so the Bolt driver receives a clean `scheme://host:port` string while preserving path and query parameters.
+  - Strips `userinfo` from the netloc so the Bolt driver receives a clean `scheme://host:port` string; query parameters are parsed into driver options and removed from the URI, because direct `bolt://` drivers reject them.
   - Added password masking (`user:***@host`) across all connection exception and log formatting paths to guarantee secrets are never leaked.
 - **Apache AGE Connection Setup and Scheme Rewriting (#191)**:
   - `create_bridge()` now rewrites `age://` and `age+s://` URI schemes to `postgresql://` prior to connecting, mapping `+s` and `+ssc` to `sslmode=require`.

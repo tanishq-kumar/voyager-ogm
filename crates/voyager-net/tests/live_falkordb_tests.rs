@@ -203,25 +203,17 @@ async fn test_live_falkordb_transactions_commit_and_rollback() {
 
     let _ = conn.graph_delete(graph_name).await;
 
-    // 1. Transaction Commit
-    let mut tx = conn
-        .begin_transaction()
-        .await
-        .expect("Failed to begin transaction");
-    assert!(tx.is_active());
-
-    tx.execute("CREATE (n:TxNode {id: 101})", &HashMap::new())
-        .await
-        .expect("Failed to queue query 1");
-    tx.execute("CREATE (n:TxNode {id: 102})", &HashMap::new())
-        .await
-        .expect("Failed to queue query 2");
-
-    let summary = tx.commit().await.expect("Failed to commit transaction");
+    // Legacy Redis MULTI/EXEC is intentionally unusable as a transaction.
+    let err = match conn.begin_transaction().await {
+        Ok(_) => panic!("FalkorDB must reject legacy MULTI transactions"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string().contains("does not support transactions"),
+        "unexpected error: {err}"
+    );
     assert!(!conn.is_in_transaction());
-    assert_eq!(summary.nodes_created, 2);
 
-    // Verify nodes are present
     let check = conn
         .graph_query(
             graph_name,
@@ -230,34 +222,7 @@ async fn test_live_falkordb_transactions_commit_and_rollback() {
         )
         .await
         .unwrap();
-    assert_eq!(check.rows[0][0].as_i64().unwrap(), 2);
-
-    // 2. Transaction Rollback (DISCARD)
-    let mut tx2 = conn
-        .begin_transaction()
-        .await
-        .expect("Failed to begin transaction 2");
-    assert!(tx2.is_active());
-
-    tx2.execute("CREATE (n:RollbackNode {id: 999})", &HashMap::new())
-        .await
-        .expect("Failed to queue query in tx2");
-
-    tx2.rollback()
-        .await
-        .expect("Failed to rollback transaction");
-    assert!(!conn.is_in_transaction());
-
-    // Verify rollback node does not exist
-    let check2 = conn
-        .graph_query(
-            graph_name,
-            "MATCH (n:RollbackNode) RETURN count(n)",
-            &HashMap::new(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(check2.rows[0][0].as_i64().unwrap(), 0);
+    assert_eq!(check.rows[0][0].as_i64().unwrap(), 0);
 
     let _ = conn.graph_delete(graph_name).await;
     conn.close().await.unwrap();

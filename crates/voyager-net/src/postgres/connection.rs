@@ -26,6 +26,7 @@ pub struct PostgresConnection {
     transaction_status: TransactionStatus,
     is_age_initialized: bool,
     query_timeout: Option<std::time::Duration>,
+    last_command_tag: Option<String>,
 }
 
 impl PostgresConnection {
@@ -81,6 +82,7 @@ impl PostgresConnection {
             transaction_status: TransactionStatus::Idle,
             is_age_initialized: false,
             query_timeout,
+            last_command_tag: None,
         };
 
         // Perform protocol handshake & authentication
@@ -278,6 +280,7 @@ impl PostgresConnection {
                     rows.push(row);
                 }
                 BackendMessage::CommandComplete(tag) => {
+                    self.last_command_tag = Some(tag.clone());
                     parse_command_tag(&tag, &mut summary);
                 }
                 BackendMessage::ReadyForQuery(status) => {
@@ -327,6 +330,11 @@ impl PostgresConnection {
     /// Returns the active transaction status reported by PostgreSQL.
     pub fn transaction_status(&self) -> TransactionStatus {
         self.transaction_status
+    }
+
+    /// Returns the command tag of the most recently completed simple query.
+    pub fn last_command_tag(&self) -> Option<&str> {
+        self.last_command_tag.as_deref()
     }
 
     /// Returns the server parameters collected during handshake.
@@ -404,9 +412,89 @@ impl AsyncConnection for PostgresConnection {
         self.transaction_status == TransactionStatus::InTransaction
     }
 
+    fn can_rollback(&self) -> bool {
+        self.transaction_status != TransactionStatus::Idle
+    }
+
     async fn close(&mut self) -> Result<()> {
         let _ = write_frontend_message(&mut self.stream, &FrontendMessage::Terminate).await;
         Ok(())
+    }
+
+    async fn begin_transaction(&mut self) -> Result<()> {
+        // The AGE setup (`LOAD 'age'; SET search_path = ...`) is executed as a
+        // separate simple query before this point, so it is committed and cannot
+        // be undone by rolling back this explicit transaction.
+        if self.is_age_initialized {
+            self.init_age().await?;
+        }
+        self.execute_simple("BEGIN;").await?;
+        Ok(())
+    }
+
+    async fn commit_transaction(&mut self) -> Result<()> {
+        if self.transaction_status == TransactionStatus::FailedTransaction {
+            return Err(NetError::TransactionError(
+                "transaction is aborted; roll back instead of committing".to_string(),
+            ));
+        }
+        self.last_command_tag = None;
+        self.execute_simple("COMMIT;").await?;
+        match self.last_command_tag.as_deref() {
+            Some(tag) if tag.eq_ignore_ascii_case("COMMIT") => Ok(()),
+            Some(tag) if tag.eq_ignore_ascii_case("ROLLBACK") => Err(NetError::TransactionError(
+                "transaction is aborted; PostgreSQL converted COMMIT into ROLLBACK".to_string(),
+            )),
+            other => Err(NetError::ProtocolError(format!(
+                "Unexpected command tag after COMMIT: {other:?}"
+            ))),
+        }
+    }
+
+    async fn rollback_transaction(&mut self) -> Result<()> {
+        self.execute_simple("ROLLBACK;").await?;
+        Ok(())
+    }
+
+    async fn create_savepoint(&mut self, name: &str) -> Result<()> {
+        validate_savepoint_name(name)?;
+        self.execute_simple(&format!("SAVEPOINT {};", name)).await?;
+        Ok(())
+    }
+
+    async fn rollback_to_savepoint(&mut self, name: &str) -> Result<()> {
+        validate_savepoint_name(name)?;
+        self.execute_simple(&format!("ROLLBACK TO SAVEPOINT {};", name))
+            .await?;
+        Ok(())
+    }
+
+    async fn release_savepoint(&mut self, name: &str) -> Result<()> {
+        validate_savepoint_name(name)?;
+        self.execute_simple(&format!("RELEASE SAVEPOINT {};", name))
+            .await?;
+        Ok(())
+    }
+
+    fn supports_savepoints(&self) -> bool {
+        true
+    }
+}
+
+/// Validates that a savepoint name is a safe unquoted SQL identifier.
+pub(crate) fn validate_savepoint_name(name: &str) -> Result<()> {
+    let mut chars = name.chars();
+    let valid_start = chars
+        .next()
+        .map(|c| c.is_ascii_alphabetic() || c == '_')
+        .unwrap_or(false);
+    let valid_rest = chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if valid_start && valid_rest {
+        Ok(())
+    } else {
+        Err(NetError::TransactionError(format!(
+            "Invalid savepoint name '{name}'; expected an unquoted SQL identifier"
+        )))
     }
 }
 

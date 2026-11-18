@@ -35,6 +35,10 @@ pub struct MockConnection {
     pub canned_results: CannedResultQueue,
     /// Counter tracking number of times `reset()` was invoked.
     pub reset_count: Arc<AtomicUsize>,
+    /// Rows committed by this connection, shared through the factory store.
+    committed_rows: Arc<Mutex<Vec<String>>>,
+    /// Rows written inside the current transaction and not yet committed.
+    pending_rows: Vec<String>,
 }
 
 impl MockConnection {
@@ -49,7 +53,14 @@ impl MockConnection {
             executed_queries: Arc::new(Mutex::new(Vec::new())),
             canned_results: Arc::new(Mutex::new(VecDeque::new())),
             reset_count: Arc::new(AtomicUsize::new(0)),
+            committed_rows: Arc::new(Mutex::new(Vec::new())),
+            pending_rows: Vec::new(),
         }
+    }
+
+    /// Returns the number of committed rows in this connection's data store.
+    pub fn row_count(&self) -> usize {
+        self.committed_rows.lock().len()
     }
 
     /// Returns the number of times `reset()` was called on this connection.
@@ -94,6 +105,14 @@ impl AsyncConnection for MockConnection {
             .lock()
             .push((query.to_string(), params.clone()));
 
+        if query.to_ascii_uppercase().contains("CREATE") {
+            if self.in_transaction {
+                self.pending_rows.push(query.to_string());
+            } else {
+                self.committed_rows.lock().push(query.to_string());
+            }
+        }
+
         if let Some(canned) = self.canned_results.lock().pop_front() {
             canned
         } else {
@@ -120,6 +139,7 @@ impl AsyncConnection for MockConnection {
             ));
         }
         self.in_transaction = false;
+        self.pending_rows.clear();
         Ok(())
     }
 
@@ -135,6 +155,39 @@ impl AsyncConnection for MockConnection {
         self.is_valid = false;
         Ok(())
     }
+
+    async fn begin_transaction(&mut self) -> Result<()> {
+        self.in_transaction = true;
+        Ok(())
+    }
+
+    async fn commit_transaction(&mut self) -> Result<()> {
+        self.committed_rows.lock().append(&mut self.pending_rows);
+        self.in_transaction = false;
+        Ok(())
+    }
+
+    async fn rollback_transaction(&mut self) -> Result<()> {
+        self.pending_rows.clear();
+        self.in_transaction = false;
+        Ok(())
+    }
+
+    async fn create_savepoint(&mut self, _name: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn rollback_to_savepoint(&mut self, _name: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn release_savepoint(&mut self, _name: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn supports_savepoints(&self) -> bool {
+        true
+    }
 }
 
 /// Factory for generating `MockConnection` instances with configurable failure injection.
@@ -143,6 +196,7 @@ pub struct MockConnectionFactory {
     fail_create: AtomicBool,
     fail_ping_on_create: AtomicBool,
     created_count: AtomicUsize,
+    rows: Arc<Mutex<Vec<String>>>,
 }
 
 impl MockConnectionFactory {
@@ -165,6 +219,11 @@ impl MockConnectionFactory {
     pub fn created_count(&self) -> usize {
         self.created_count.load(Ordering::SeqCst)
     }
+
+    /// Returns the number of committed rows shared by connections from this factory.
+    pub fn row_count(&self) -> usize {
+        self.rows.lock().len()
+    }
 }
 
 #[async_trait]
@@ -178,6 +237,7 @@ impl ConnectionFactory<MockConnection> for MockConnectionFactory {
 
         self.created_count.fetch_add(1, Ordering::SeqCst);
         let mut conn = MockConnection::new();
+        conn.committed_rows = self.rows.clone();
         if self.fail_ping_on_create.load(Ordering::SeqCst) {
             conn.fail_ping = true;
         }
