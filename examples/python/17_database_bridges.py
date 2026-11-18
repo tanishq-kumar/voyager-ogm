@@ -81,9 +81,7 @@ def main() -> None:
         # Execute through Voyager Session and OGM Query builder
         session_relate = Session(bridge=relate_bridge, dialect="cypher")
         charlie = Person(alias="p", name="Charlie", age=32)
-        # Workaround for #174: Query.create(instance) currently drops field values, so
-        # .set(instance) writes them explicitly. Drop .set(...) once #174 is fixed.
-        session_relate.execute(Query.create(charlie).set(charlie))
+        session_relate.execute(Query.create(charlie))
 
         p_query = Person(alias="p")
         res_relate = session_relate.execute(
