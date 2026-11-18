@@ -94,6 +94,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Breaking:** Removed module-level free functions `unwind()` and `load_csv()` from `voyager_ogm` and `voyager_ogm.query`. Use `Query.unwind()` and `Query.load_csv()`.
 
 ### Fixed
+- **Identity Map Uses the Declared Primary Key (#178)**:
+  - `Session.register()` / `AsyncSession.register()`, `flush()`, `Node.save()`, and `Node.async_save()` now default `key_field` to the model's declared `Field(primary_key=True)` property instead of assuming `id`, falling back to `id` only when the model declares no primary key.
+  - Explicit `key_field=` arguments continue to override the detected primary key unchanged.
 - **OGM Write Path and Class-Level Field Binding (#174, #175, #176)**:
   - `Query.create(instance)` now inlines every set field as parameterised pattern properties (nodes and relationships); previously all property values were silently dropped.
   - `Query.merge(instance)` keys the MERGE pattern on the primary key (else unique fields, else all set fields) and writes the remaining fields to both `ON CREATE SET` and `ON MATCH SET`.

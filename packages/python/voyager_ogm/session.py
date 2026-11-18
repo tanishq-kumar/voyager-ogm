@@ -30,6 +30,7 @@ from voyager_ogm.ingestion import (
     create_parquet_ingest_plan,
     create_parquet_rel_ingest_plan,
 )
+from voyager_ogm.models import get_primary_key_field
 from voyager_ogm.query import CompiledQuery, Query
 from voyager_ogm.transaction import Transaction
 from voyager_ogm.types import serialize_param_value
@@ -835,15 +836,47 @@ class _SessionBase:
             "latency_ms": latency_ms,
         }
 
-    def register(self, node: Any, key_field: str = "id", is_clean: bool = False) -> Any:
-        """Registers a node instance with this session's Identity Map."""
+    @staticmethod
+    def _resolve_key_field(model: type[Any], key_field: str | None) -> str:
+        """Resolves an explicit key field or the model's declared primary key.
+
+        Args:
+            model: Node or Relationship model class.
+            key_field: Explicit key property name, or None to auto-detect.
+
+        Returns:
+            The explicit key field, the model's declared primary key property, or
+            'id' when the model declares no primary key.
+        """
+        if key_field is not None:
+            return key_field
+        return get_primary_key_field(model) or "id"
+
+    def register(self, node: Any, key_field: str | None = None, is_clean: bool = False) -> Any:
+        """Registers a node instance with this session's Identity Map.
+
+        Args:
+            node: Node instance to track.
+            key_field: Unique primary key property name. Defaults to the model's
+                declared `Field(primary_key=True)`, falling back to 'id'.
+            is_clean: Whether to clear dirty fields before registering.
+
+        Returns:
+            The registered instance, an existing tracked instance with the same
+            identity, or the node unchanged when tracking is disabled.
+        """
         if not self._enable_identity_map:
             return node
 
         if is_clean and hasattr(node, "clear_dirty"):
             node.clear_dirty()
 
-        key_val = node.get(key_field) if hasattr(node, "get") else getattr(node, key_field, None)
+        resolved_key_field = self._resolve_key_field(type(node), key_field)
+        key_val = (
+            node.get(resolved_key_field)
+            if hasattr(node, "get")
+            else getattr(node, resolved_key_field, None)
+        )
         if key_val is None:
             return node
 
@@ -890,9 +923,14 @@ class _SessionBase:
         self._identity_map.clear()
 
     def _prepare_flush_batches(
-        self, key_field: str = "id"
+        self, key_field: str | None = None
     ) -> list[tuple[type[Any], list[Any], BulkIngestionPlan]]:
-        """Prepares grouped bulk upsert plans for all dirty entities in the identity map."""
+        """Prepares grouped bulk upsert plans for all dirty entities in the identity map.
+
+        Args:
+            key_field: Explicit key property name applied to every model, or None
+                to use each model's declared primary key (falling back to 'id').
+        """
         if not self._enable_identity_map or not self._identity_map:
             return []
 
@@ -903,19 +941,24 @@ class _SessionBase:
 
         plans: list[tuple[type[Any], list[Any], BulkIngestionPlan]] = []
         for model_cls, nodes in dirty_by_model.items():
+            resolved_key_field = self._resolve_key_field(model_cls, key_field)
             batch_data: list[dict[str, Any]] = []
             for n in nodes:
                 record = {k: serialize_param_value(v) for k, v in n.dirty_fields.items()}
-                primary_val = n.get(key_field) if hasattr(n, "get") else getattr(n, key_field, None)
+                primary_val = (
+                    n.get(resolved_key_field)
+                    if hasattr(n, "get")
+                    else getattr(n, resolved_key_field, None)
+                )
                 if primary_val is not None:
-                    record[key_field] = serialize_param_value(primary_val)
+                    record[resolved_key_field] = serialize_param_value(primary_val)
                 batch_data.append(record)
 
             if batch_data:
                 plan = self.bulk_upsert(
                     model=model_cls,
                     data=batch_data,
-                    key_field=key_field,
+                    key_field=resolved_key_field,
                 )
                 plans.append((model_cls, nodes, plan))
         return plans
@@ -1618,8 +1661,16 @@ class Session(_SessionBase):
         )
         return self.run_bulk(plan)
 
-    def flush(self, key_field: str = "id") -> list[BulkExecutionResult]:
-        """Flushes all dirty entities tracked in the Identity Map in a single batch per model."""
+    def flush(self, key_field: str | None = None) -> list[BulkExecutionResult]:
+        """Flushes all dirty entities tracked in the Identity Map in a single batch per model.
+
+        Args:
+            key_field: Explicit key property name applied to every model, or None
+                to use each model's declared primary key (falling back to 'id').
+
+        Returns:
+            One BulkExecutionResult per model batch that was executed.
+        """
         batches = self._prepare_flush_batches(key_field=key_field)
         results: list[BulkExecutionResult] = []
         for _, nodes, plan in batches:
@@ -2321,8 +2372,16 @@ class AsyncSession(_SessionBase):
         )
         return await self.run_bulk(plan)
 
-    async def flush(self, key_field: str = "id") -> list[BulkExecutionResult]:
-        """Asynchronously flushes all dirty entities tracked in the Identity Map in a single batch per model."""
+    async def flush(self, key_field: str | None = None) -> list[BulkExecutionResult]:
+        """Asynchronously flushes all dirty entities tracked in the Identity Map in a single batch per model.
+
+        Args:
+            key_field: Explicit key property name applied to every model, or None
+                to use each model's declared primary key (falling back to 'id').
+
+        Returns:
+            One BulkExecutionResult per model batch that was executed.
+        """
         batches = self._prepare_flush_batches(key_field=key_field)
         results: list[BulkExecutionResult] = []
         for _, nodes, plan in batches:
