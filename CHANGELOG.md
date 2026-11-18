@@ -74,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added explicit, loud errors on mock bridge fallback in production configurations.
 
 ### Changed
+- Repository renamed to `tanishq-kumar/voyager`; package names unchanged (#168).
 - **Runtime Panic Handling, PyO3 and Toolchain Updates (#158)**:
   - Configured the release profile to unwind instead of abort, allowing Rust panics to surface as catchable Python `PanicException` instead of killing the interpreter.
   - Upgraded PyO3 and `pyo3-async-runtimes` to 0.29.
@@ -212,9 +213,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Typed entity models: `@node`, `@relationship`, `Node`, `Relationship`, and `Field[T]` descriptors.
   - Constructor auto-aliasing (`p = Person()` -> `_person_0`) and fluent query compiler.
 
-[Unreleased]: https://github.com/tanishq-kumar/voyager-ogm/compare/v0.4.0-alpha.6...HEAD
-[0.4.0-alpha.6]: https://github.com/tanishq-kumar/voyager-ogm/compare/v0.4.0-alpha.5...v0.4.0-alpha.6
-[0.4.0-alpha.5]: https://github.com/tanishq-kumar/voyager-ogm/compare/v0.3.0-alpha.1...v0.4.0-alpha.5
-[0.3.0-alpha.1]: https://github.com/tanishq-kumar/voyager-ogm/compare/v0.2.0-alpha.1...v0.3.0-alpha.1
-[0.2.0-alpha.1]: https://github.com/tanishq-kumar/voyager-ogm/compare/v0.1.0-alpha.1...v0.2.0-alpha.1
-[0.1.0-alpha.1]: https://github.com/tanishq-kumar/voyager-ogm/releases/tag/v0.1.0-alpha.1
+[Unreleased]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0-alpha.6...HEAD
+[0.4.0-alpha.6]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0-alpha.5...v0.4.0-alpha.6
+[0.4.0-alpha.5]: https://github.com/tanishq-kumar/voyager/compare/v0.3.0-alpha.1...v0.4.0-alpha.5
+[0.3.0-alpha.1]: https://github.com/tanishq-kumar/voyager/compare/v0.2.0-alpha.1...v0.3.0-alpha.1
+[0.2.0-alpha.1]: https://github.com/tanishq-kumar/voyager/compare/v0.1.0-alpha.1...v0.2.0-alpha.1
+[0.1.0-alpha.1]: https://github.com/tanishq-kumar/voyager/releases/tag/v0.1.0-alpha.1

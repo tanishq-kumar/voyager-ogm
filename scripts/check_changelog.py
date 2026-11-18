@@ -332,7 +332,7 @@ def release_version(changelog_path: Path, version: str, release_date: str) -> No
 
     # Update link block
     updated_links: list[str] = []
-    github_base = "https://github.com/tanishq-kumar/voyager-ogm"
+    github_base = "https://github.com/tanishq-kumar/voyager"
     inserted_version_link = False
 
     for l_line in links:

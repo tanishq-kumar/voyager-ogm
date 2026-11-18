@@ -14,10 +14,10 @@ Welcome! Thank you for taking the time to contribute to Voyager.
 
 ## 2. Finding Ways to Help
 
-* **Good First Issues**: Beginner-friendly tasks are labeled as [`good first issue`](https://github.com/tanishq-kumar/voyager-ogm/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22). These are great starting points if you are new to the codebase.
-* **Help Wanted**: Issues labeled [`help wanted`](https://github.com/tanishq-kumar/voyager-ogm/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22) are community tasks open for contribution.
-* **Bug Fixes**: Issues labeled [`bug`](https://github.com/tanishq-kumar/voyager-ogm/issues?q=is%3Aopen+is%3Aissue+label%3A%22bug%22) are always great candidates for contribution.
-* **Discuss Features First**: Before implementing large new features or major breaking changes, please open an issue or start a [GitHub Discussion](https://github.com/tanishq-kumar/voyager-ogm/discussions) first. This avoids wasted effort and ensures alignment on the design before code is written.
+* **Good First Issues**: Beginner-friendly tasks are labeled as [`good first issue`](https://github.com/tanishq-kumar/voyager/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22). These are great starting points if you are new to the codebase.
+* **Help Wanted**: Issues labeled [`help wanted`](https://github.com/tanishq-kumar/voyager/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22) are community tasks open for contribution.
+* **Bug Fixes**: Issues labeled [`bug`](https://github.com/tanishq-kumar/voyager/issues?q=is%3Aopen+is%3Aissue+label%3A%22bug%22) are always great candidates for contribution.
+* **Discuss Features First**: Before implementing large new features or major breaking changes, please open an issue or start a [GitHub Discussion](https://github.com/tanishq-kumar/voyager/discussions) first. This avoids wasted effort and ensures alignment on the design before code is written.
 * **Avoiding Duplicate Work**: Check existing issues and open pull requests before starting to avoid duplicate work.
 
 ---
@@ -52,8 +52,8 @@ To work on Voyager locally, make sure you have the following installed:
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/tanishq-kumar/voyager-ogm.git
-   cd voyager-ogm
+   git clone https://github.com/tanishq-kumar/voyager.git
+   cd voyager
    ```
 
 2. **Set up dependencies**:
@@ -195,5 +195,5 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 
 ## 12. Need Help?
 
-* **Questions or Ideas**: Start a thread in [GitHub Discussions](https://github.com/tanishq-kumar/voyager-ogm/discussions).
-* **Bugs & Requests**: Open an issue using our [Bug Report](https://github.com/tanishq-kumar/voyager-ogm/issues/new/choose) or [Feature Request](https://github.com/tanishq-kumar/voyager-ogm/issues/new/choose) templates.
+* **Questions or Ideas**: Start a thread in [GitHub Discussions](https://github.com/tanishq-kumar/voyager/discussions).
+* **Bugs & Requests**: Open an issue using our [Bug Report](https://github.com/tanishq-kumar/voyager/issues/new/choose) or [Feature Request](https://github.com/tanishq-kumar/voyager/issues/new/choose) templates.

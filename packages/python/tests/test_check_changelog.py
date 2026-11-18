@@ -38,9 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial implementation.
 
-[Unreleased]: https://github.com/tanishq-kumar/voyager-ogm/compare/v0.4.0...HEAD
-[0.4.0]: https://github.com/tanishq-kumar/voyager-ogm/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/tanishq-kumar/voyager-ogm/releases/tag/v0.3.0
+[Unreleased]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/tanishq-kumar/voyager/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/tanishq-kumar/voyager/releases/tag/v0.3.0
 """
 
 
@@ -96,7 +96,7 @@ def test_validate_format_invalid_version_order(tmp_path: Path) -> None:
 def test_validate_format_missing_unreleased(tmp_path: Path) -> None:
     bad = SAMPLE_VALID_CHANGELOG.replace("## [Unreleased]\n\n### Added\n- New feature A.\n\n", "")
     bad = bad.replace(
-        "[Unreleased]: https://github.com/tanishq-kumar/voyager-ogm/compare/v0.4.0...HEAD\n", ""
+        "[Unreleased]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0...HEAD\n", ""
     )
     path = tmp_path / "CHANGELOG.md"
     path.write_text(bad, encoding="utf-8")
@@ -106,7 +106,7 @@ def test_validate_format_missing_unreleased(tmp_path: Path) -> None:
 
 def test_validate_format_missing_link_def(tmp_path: Path) -> None:
     bad = SAMPLE_VALID_CHANGELOG.replace(
-        "[0.4.0]: https://github.com/tanishq-kumar/voyager-ogm/compare/v0.3.0...v0.4.0\n",
+        "[0.4.0]: https://github.com/tanishq-kumar/voyager/compare/v0.3.0...v0.4.0\n",
         "",
     )
     path = tmp_path / "CHANGELOG.md"
@@ -145,13 +145,8 @@ def test_release_version(tmp_path: Path) -> None:
 
     content = path.read_text(encoding="utf-8")
     assert "## [Unreleased]\n\n## [0.5.0] - 2026-11-20" in content
-    assert (
-        "[Unreleased]: https://github.com/tanishq-kumar/voyager-ogm/compare/v0.5.0...HEAD"
-        in content
-    )
-    assert (
-        "[0.5.0]: https://github.com/tanishq-kumar/voyager-ogm/compare/v0.4.0...v0.5.0" in content
-    )
+    assert "[Unreleased]: https://github.com/tanishq-kumar/voyager/compare/v0.5.0...HEAD" in content
+    assert "[0.5.0]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0...v0.5.0" in content
 
     # New unreleased section is empty
     notes_050 = check_changelog.extract_version(path, "0.5.0")
