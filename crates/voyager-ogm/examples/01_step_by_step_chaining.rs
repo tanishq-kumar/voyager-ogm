@@ -1,6 +1,17 @@
-//! Approach 1: Step-by-Step Path Chaining (Memgraph GQLAlchemy & ISO GQL Style)
+//! Voyager OGM: Step-by-Step Path Chaining
 //!
-//! Run with: `cargo run --example 01_step_by_step_chaining`
+//! Teaches:
+//! - Multi-hop traversal chaining with fluent QueryBuilder methods
+//! - Directional path navigation: `.r#match()`, `.node()`, `.to()`, `.node()`
+//! - Parameterized filtering with `.where_gt()` and `.where_eq()`
+//! - Multi-dialect AST emission across openCypher, SQL:2023 PGQ, and ISO GQL
+//!
+//! Prerequisites:
+//! - Engine: None (offline / compile-only)
+//! - Crates: voyager-ogm
+//!
+//! Run with:
+//! `cargo run --example 01_step_by_step_chaining`
 
 use voyager_ogm::builder::QueryBuilder;
 use voyager_ogm::emitters::{CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};

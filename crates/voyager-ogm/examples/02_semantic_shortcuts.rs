@@ -1,6 +1,16 @@
-//! Approach 2: Semantic Traversal Shortcuts (`out_edge`, `in_edge`, `field`)
+//! Voyager OGM: Semantic Traversal Shortcuts
 //!
-//! Run with: `cargo run --example 02_semantic_shortcuts`
+//! Teaches:
+//! - High-level navigation shortcuts: `.node_label()`, `.out_edge()`, `.field()`
+//! - String predicate filtering: `.where_contains()`, `.where_gte()`
+//! - Sorting and pagination: `.order_by_desc()`, `.limit()`
+//!
+//! Prerequisites:
+//! - Engine: None (offline / compile-only)
+//! - Crates: voyager-ogm
+//!
+//! Run with:
+//! `cargo run --example 02_semantic_shortcuts`
 
 use voyager_ogm::builder::QueryBuilder;
 use voyager_ogm::emitters::CypherEmitter;

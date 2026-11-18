@@ -1,9 +1,24 @@
-"""Level 3: Advanced - Variable-Length Paths, Aggregations & Complex Filters.
+"""Voyager OGM: Variable-Length Paths, Aggregations & Pagination.
 
-Learn how to query deep friend-of-friend networks, apply variable-length path bounds (*1..3),
-and compute graph metrics with DISTINCT, ORDER BY DESC, and SKIP.
+Teaches:
+    - Variable-length path bounds (`.hops(1, 3)` / `*1..3`)
+    - Deduplicating entity returns with `.distinct()`
+    - Sorting with `.order_by_desc()`
+    - Pagination with `.skip()` and `.limit()`
+    - Query parameter extraction and statement inspection
 
-Run with: `uv run python examples/python/03_advanced_multihop_aggregations.py`
+Expected Output:
+    MATCH (u_start:User)-[rel:FOLLOWS*1..3]->(u_influencer:User)
+    WHERE ((u_start.username = $p0) AND (u_influencer.reputation >= $p1)) AND (u_influencer.country CONTAINS $p2)
+    RETURN DISTINCT u_influencer.username, u_influencer.reputation, u_influencer.country
+    ORDER BY u_influencer.reputation DESC SKIP 10 LIMIT 20
+
+Prerequisites:
+    - Engine: None (runs offline / compile-only; no database needed)
+    - Extras: None
+
+Run with:
+    `uv run python examples/python/06_multihop_aggregations.py`
 """
 
 from __future__ import annotations

@@ -1,6 +1,18 @@
-"""Approach 1: Minimal Decorator & Pure Type Annotations (No Field() needed).
+"""Voyager OGM: Minimal Decorator & Pure Type Annotations.
 
-Run with: `uv run python examples/python/01_minimal_decorator_annotations.py`
+Teaches:
+    - Defining nodes and relationships using pure Python type hints without `Field()`
+    - Relationship declarations using `@relationship`
+    - Composing graph traversals: `(dev)-[contrib]->(proj)`
+    - Multi-predicate filtering with `.where()`
+    - Sorting and pagination with `.order_by()` and `.limit()`
+
+Prerequisites:
+    - Engine: None (runs offline / compile-only)
+    - Extras: None
+
+Run with:
+    `uv run python examples/python/02_minimal_type_annotations.py`
 """
 
 from __future__ import annotations

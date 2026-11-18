@@ -1,16 +1,18 @@
-"""Voyager OGM: Live Graph Path Execution & Visualization (SQLAlchemy + Neo4j Browser Style).
+"""Voyager OGM: Graph Path Execution & Topology Visualization.
 
-Demonstrates how Voyager OGM empowers data scientists and backend engineers to:
-1. Define expressive graph domain models and author complex multi-hop path queries.
-2. Execute queries against a database session with `query.execute(session)` or `session.execute(query)`.
-3. Access query results with SQLAlchemy-grade patterns:
-   - `result.mappings().all()` -> List of dictionary mappings.
-   - `result.scalars().all()`  -> Flat scalar values.
-   - `result.to_polars()`      -> Polars DataFrame.
-   - `result.to_arrow()`       -> Zero-copy Apache Arrow Table.
-4. Auto-reconstruct live data nodes, relationships, and multi-hop paths from result records.
-5. Render an interactive Neo4j Browser / Bloom-style GraphViewer widget (`result.show()`)
-   directly inside Marimo, Jupyter, and VS Code notebooks.
+Teaches:
+    - Authoring complex multi-hop path queries across domain entities
+    - Executing queries and accessing records via `mappings()`, `scalars()`, and `to_polars()`
+    - Reconstructing graph nodes, relationships, and traversal paths from result records
+    - Inspecting GraphViewer configuration and UI widget representations
+    - Offline execution using synthetic records via `MockBridge`
+
+Prerequisites:
+    - Engine: None (runs in-memory / offline using synthetic records queued in MockBridge)
+    - Extras: None
+
+Run with:
+    `uv run python examples/python/26_query_path_visualization.py`
 """
 
 from __future__ import annotations
@@ -97,11 +99,11 @@ fraud_query = (
     .node(m)
     .where(tx.amount > 10000.0)
     .return_(
-        customer="c.cust_id",
-        source_account="a1.acc_num",
-        destination_account="a2.acc_num",
-        merchant="m.name",
-        transfer_amount="tx.amount",
+        customer=c.cust_id,
+        source_account=a1.acc_num,
+        destination_account=a2.acc_num,
+        merchant=m.name,
+        transfer_amount=tx.amount,
     )
     .limit(50)
 )

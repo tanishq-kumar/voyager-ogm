@@ -1,6 +1,17 @@
-//! Approach 6: AST Query Optimizer - Compile-Time Arithmetic Constant Folding & Predicate Pushdown
+//! Voyager OGM: AST Query Optimizer & Constant Folding
 //!
-//! Run with: `cargo run --example 06_ast_optimizer_constant_folding`
+//! Teaches:
+//! - Compile-time arithmetic reduction: `(7 * 24 * 60 * 60) -> 604800`
+//! - Associative arithmetic reassociation
+//! - Index seek predicate pushdown hoisting into `{age: $p0}`
+//! - Multi-dialect optimization across openCypher, SQL:2023 PGQ, and ISO GQL
+//!
+//! Prerequisites:
+//! - Engine: None (offline / compile-only)
+//! - Crates: voyager-ogm
+//!
+//! Run with:
+//! `cargo run --example 06_ast_optimizer_constant_folding`
 
 use voyager_ogm::ast::BinaryOp;
 use voyager_ogm::builder::QueryBuilder;

@@ -1,12 +1,17 @@
-"""Example 14: Native Query Topology Extraction & Inspection.
+"""Voyager OGM: Native Query Topology Extraction & Inspection.
 
-Demonstrates extracting graph topology directly from the AST arena:
-1. Build a multi-hop traversal query using Voyager's fluent DSL.
-2. Extract graph topology with `query.extract_topology()`.
-3. Inspect versioned JSON structure, node properties, edge directions, and hops.
-4. Bridge extracted topology into visualization tooling or downstream AST consumers.
+Teaches:
+    - Extracting graph pattern topology from query ASTs with `query.extract_topology()`
+    - Inspecting extracted nodes, labels, edge types, and traversal directions
+    - Variable-length hop bounds inspection
+    - Consuming topology metadata in downstream tools, visualizers, and AST analyzers
 
-Run with: `uv run python examples/python/14_topology_extraction.py`
+Prerequisites:
+    - Engine: None (runs offline / in-memory; no database needed)
+    - Extras: None
+
+Run with:
+    `uv run python examples/python/15_topology_extraction.py`
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ class ActedIn(Relationship):
 
 def main() -> None:
     print("=" * 70)
-    print("[Example 14] Native Query Topology Extraction")
+    print("[Example 15] Native Query Topology Extraction")
     print("=" * 70)
 
     # 1. Build a fluent query traversing Person -> ACTED_IN -> Movie

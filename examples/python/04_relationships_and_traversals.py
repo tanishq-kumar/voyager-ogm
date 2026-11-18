@@ -1,9 +1,18 @@
-"""Level 2: Intermediate - Connecting the Dots (Nodes & Relationships).
+"""Voyager OGM: Nodes, Edges & Multi-Hop Traversal Paths.
 
-Learn how to connect entities with relationships, traverse incoming & outgoing edges,
-and filter on edge properties (e.g. roles, timestamps).
+Teaches:
+    - Connecting graph entities with directional relationships
+    - Chaining multi-hop paths: `(Actor)-[ACTED_IN]->(Movie)<-[DIRECTED]-(Director)`
+    - Filtering on edge properties (e.g. character names, roles)
+    - Projected return mappings with aliases (`return_(..., director_name=d.name)`)
+    - Offline / compile-only parameter extraction
 
-Run with: `uv run python examples/python/02_intermediate_relationships.py`
+Prerequisites:
+    - Engine: None (runs offline / compile-only; no database needed)
+    - Extras: None
+
+Run with:
+    `uv run python examples/python/04_relationships_and_traversals.py`
 """
 
 from __future__ import annotations
@@ -33,6 +42,7 @@ class Director:
 # Step 2: Define Relationships (Edges) with typed properties
 @relationship(type_name="ACTED_IN")
 class ActedIn:
+    # Field(name="character_name") maps Python attribute 'role' to graph property 'character_name'
     role: str = Field(name="character_name")
     earnings: float = 0.0
 

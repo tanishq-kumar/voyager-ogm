@@ -1,11 +1,18 @@
-"""Example 06: SQLAlchemy Native Property Graph & Hybrid Integration (Task 4.1).
+"""Voyager OGM: SQLAlchemy Native Property Graph & Hybrid Integration.
 
-Demonstrates the 4 Pillars of Voyager's SQLAlchemy 2.0 Integration:
-1. Auto-deriving PropertyGraph schemas & DDL from SQLAlchemy MetaData.
-2. First-class `graph_table()` FromClause compiling into SQL:2023 GRAPH_TABLE expressions.
-3. Live multi-hop recursive graph traversal (`as_cte()`) executed directly on SQLite.
-4. Declarative `graph_relationship()` ORM model descriptors.
-5. Dual-engine hybrid querying with zero-copy Polars DataFrame extraction.
+Teaches:
+    - Auto-deriving `PropertyGraph` schemas and DDL directly from SQLAlchemy `MetaData`
+    - First-class `graph_table()` FromClause compiling into SQL:2023 `GRAPH_TABLE` expressions
+    - Live multi-hop recursive graph traversal (`as_cte()`) executed directly on standard SQLite
+    - Declarative `graph_relationship()` ORM model descriptors
+    - Dual-engine `HybridSession` querying with zero-copy Polars DataFrame extraction
+
+Prerequisites:
+    - Engine: None (runs in-memory / offline using in-memory SQLite and MockBridge)
+    - Extras: `sqlalchemy` extra (`pip install "voyager-ogm[sqlalchemy]"`)
+
+Run with:
+    `uv run python examples/python/23_sqlalchemy_hybrid_bridge.py`
 """
 
 from __future__ import annotations

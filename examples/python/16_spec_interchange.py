@@ -1,13 +1,18 @@
-"""Example 16: Cross-Language Spec Interchange & Compilation ABI.
+"""Voyager OGM: Cross-Language Spec Interchange & Compilation ABI.
 
-Demonstrates Voyager's serialized Query Spec interchange contract:
-1. Construct a canonical AST Query Spec representing a graph traversal and predicates.
-2. Use expression specs (`expr.to_spec()`) for fine-grained predicate representation.
-3. Compile directly from the spec dictionary using the native Rust engine (`compile_query_from_spec()`).
-4. Prove deterministic parity across graph dialects (Cypher, ISO GQL) matching the fluent Query builder.
-5. Mutate the spec dynamically and compile without re-instantiating Python model objects.
+Teaches:
+    - Constructing canonical AST Query Spec dictionaries representing graph patterns
+    - Serializing predicate expressions to spec IR (`expr.to_spec()`)
+    - Direct native Rust compilation from spec dictionaries with `compile_query_from_spec()`
+    - Cross-language interchange between Python, Rust, and TypeScript/Wasm runtimes
+    - Dynamic spec mutation without recreating Python entity model instances
 
-Run with: `uv run python examples/python/16_spec_interchange.py`
+Prerequisites:
+    - Engine: None (runs offline / in-memory; no database needed)
+    - Extras: None
+
+Run with:
+    `uv run python examples/python/16_spec_interchange.py`
 """
 
 from __future__ import annotations

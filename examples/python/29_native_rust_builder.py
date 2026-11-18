@@ -1,6 +1,16 @@
-"""Approach 5: Direct Rust Native Query Builder (`_voyager_rs.NativeQueryBuilder`).
+"""Voyager OGM: Direct Rust Native Query Builder.
 
-Run with: `uv run python examples/python/05_native_rust_builder.py`
+Teaches:
+    - Low-level Rust AST arena access via `_voyager_rs.NativeQueryBuilder`.
+    - Escape hatch bypassing Python allocations for extreme compilation throughput.
+    - Low-level builder primitives (`match`, `node`, `to`, `hops`, `where_gte`, `compile`).
+
+Prerequisites:
+    - Engine: None (offline / in-memory AST compilation)
+    - Extras: None
+
+Run with:
+    `uv run python examples/python/29_native_rust_builder.py`
 """
 
 from __future__ import annotations

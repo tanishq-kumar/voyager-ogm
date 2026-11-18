@@ -1,6 +1,17 @@
-//! Approach 4: Custom Predicate Expression Trees (Nested AND / OR / XOR Logic)
+//! Voyager OGM: Nested Predicate Expression Trees
 //!
-//! Run with: `cargo run --example 04_expression_tree_builder`
+//! Teaches:
+//! - Building custom AST boolean expression trees
+//! - Combining expressions with `BinaryOp::And`, `BinaryOp::Or`, `BinaryOp::Xor`
+//! - Nested parenthesized Cypher where clauses
+//! - Parameter map extraction from expressions
+//!
+//! Prerequisites:
+//! - Engine: None (offline / compile-only)
+//! - Crates: voyager-ogm
+//!
+//! Run with:
+//! `cargo run --example 04_expression_tree_builder`
 
 use voyager_ogm::ast::BinaryOp;
 use voyager_ogm::builder::QueryBuilder;

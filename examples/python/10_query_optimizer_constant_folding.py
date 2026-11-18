@@ -1,10 +1,18 @@
 """Voyager OGM: Compile-Time Constant Folding & AST Query Optimizer.
 
-Demonstrates:
-1. Compile-time arithmetic folding across nested sub-expressions in Rust.
-2. Associative reassociation: ((u.age + 10) + 20) -> (u.age + 30).
-3. Predicate pushdown hoisting enabled by constant folding: u.age == (10 + 15) -> {age: 25}.
-4. Multi-dialect emission across openCypher, ISO/IEC GQL, and SQL:2023 PGQ.
+Teaches:
+    - Compile-time arithmetic reduction across nested AST sub-expressions in Rust
+    - Associative reassociation: `((u.age + 10) + 20) -> (u.age + 30)`
+    - Index seek predicate pushdown hoisting: `u.age == (10 + 15)` folded to `{age: 25}`
+    - Pruning redundant AST binary operators and lowering parameter counts
+    - Cross-dialect emission across openCypher, ISO GQL, and SQL:2023 PGQ
+
+Prerequisites:
+    - Engine: None (runs offline / compile-only; no database needed)
+    - Extras: None
+
+Run with:
+    `uv run python examples/python/10_query_optimizer_constant_folding.py`
 """
 
 from __future__ import annotations
@@ -14,25 +22,26 @@ import sys
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-from voyager_ogm import Field, Node, Query, Relationship
+from voyager_ogm import Field, Node, Query, Relationship, node, relationship
 
 
+@node(label="User")
 class User(Node):
-    __label__ = "User"
     user_id: str = Field(primary_key=True)
     name: str
     age: int
     base_quota: int
 
 
+@node(label="Event")
 class Event(Node):
-    __label__ = "Event"
     event_id: str = Field(primary_key=True)
     duration_sec: int
 
 
+@relationship(type_name="PERFORMED")
 class Performed(Relationship):
-    __type__ = "PERFORMED"
+    pass
 
 
 def main():
