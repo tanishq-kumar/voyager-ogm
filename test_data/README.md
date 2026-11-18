@@ -62,7 +62,7 @@ test_data/
 
 ## Conformance Test Suites
 
-### 1. openCypher Conformance (`crates/voyager-core/tests/tck_conformance_tests.rs`)
+### 1. openCypher Conformance (`crates/voyager-ogm/tests/tck_conformance_tests.rs`)
 - **Format:** Table-driven Rust and Python test suites.
 - **Features Tested:**
   - `MATCH`, `WHERE`, `RETURN`, `ORDER BY`, `LIMIT`, `DISTINCT`.

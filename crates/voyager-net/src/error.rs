@@ -54,7 +54,7 @@ pub enum NetError {
 
     /// Voyager Core AST compiler or emitter error.
     #[error("Core compiler error: {0}")]
-    CoreError(#[from] voyager_core::Error),
+    CoreError(#[from] voyager_ogm::Error),
 
     /// Apache Arrow record batch or schema serialization error.
     #[error("Arrow serialization error: {0}")]
@@ -63,35 +63,35 @@ pub enum NetError {
 
 impl NetError {
     /// Returns the machine-readable diagnostic error code for this network or protocol error.
-    pub fn code(&self) -> voyager_core::ErrorCode {
+    pub fn code(&self) -> voyager_ogm::ErrorCode {
         match self {
-            Self::ConnectionFailed(_) => voyager_core::ErrorCode::ConnectionFailed,
-            Self::AuthenticationFailed(_) => voyager_core::ErrorCode::AuthenticationFailed,
-            Self::PoolExhausted(_) => voyager_core::ErrorCode::PoolExhausted,
-            Self::Timeout(_) => voyager_core::ErrorCode::Timeout,
+            Self::ConnectionFailed(_) => voyager_ogm::ErrorCode::ConnectionFailed,
+            Self::AuthenticationFailed(_) => voyager_ogm::ErrorCode::AuthenticationFailed,
+            Self::PoolExhausted(_) => voyager_ogm::ErrorCode::PoolExhausted,
+            Self::Timeout(_) => voyager_ogm::ErrorCode::Timeout,
             Self::ProtocolError(msg) => {
                 if msg.contains("exceeds available buffer") {
-                    voyager_core::ErrorCode::ClaimedSizeExceedsBuffer
+                    voyager_ogm::ErrorCode::ClaimedSizeExceedsBuffer
                 } else if let Some(sp) = crate::circuit::find_semantic_pattern(msg) {
                     sp.code
                 } else {
-                    voyager_core::ErrorCode::ProtocolError
+                    voyager_ogm::ErrorCode::ProtocolError
                 }
             }
-            Self::TlsError(_) => voyager_core::ErrorCode::TlsError,
-            Self::Closed(_) => voyager_core::ErrorCode::Closed,
-            Self::InvalidUri(_) => voyager_core::ErrorCode::InvalidUri,
-            Self::TransactionError(_) => voyager_core::ErrorCode::TransactionError,
+            Self::TlsError(_) => voyager_ogm::ErrorCode::TlsError,
+            Self::Closed(_) => voyager_ogm::ErrorCode::Closed,
+            Self::InvalidUri(_) => voyager_ogm::ErrorCode::InvalidUri,
+            Self::TransactionError(_) => voyager_ogm::ErrorCode::TransactionError,
             Self::ExecutionError(msg) => {
                 if let Some(sp) = crate::circuit::find_semantic_pattern(msg) {
                     sp.code
                 } else {
-                    voyager_core::ErrorCode::ExecutionError
+                    voyager_ogm::ErrorCode::ExecutionError
                 }
             }
-            Self::IoError(_) => voyager_core::ErrorCode::IoError,
+            Self::IoError(_) => voyager_ogm::ErrorCode::IoError,
             Self::CoreError(e) => e.code(),
-            Self::ArrowError(_) => voyager_core::ErrorCode::ArrowError,
+            Self::ArrowError(_) => voyager_ogm::ErrorCode::ArrowError,
         }
     }
 }

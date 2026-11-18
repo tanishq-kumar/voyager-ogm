@@ -229,9 +229,9 @@ async fn test_live_age_fluent_builder_with_clause() {
         None => return,
     };
 
-    use voyager_core::builder::QueryBuilder;
-    use voyager_core::emitters::CypherEmitter;
-    use voyager_core::visitor::AstVisitor;
+    use voyager_ogm::builder::QueryBuilder;
+    use voyager_ogm::emitters::CypherEmitter;
+    use voyager_ogm::visitor::AstVisitor;
 
     let graph_name = "net_fluent_age_graph";
     let _ = conn
@@ -275,7 +275,7 @@ async fn test_live_age_fluent_builder_with_clause() {
 
     let mut stmt = compiled.statement.clone();
     for (k, v) in &compiled.parameters {
-        if let voyager_core::ast::LiteralValue::Int64(i) = v {
+        if let voyager_ogm::ast::LiteralValue::Int64(i) = v {
             stmt = stmt.replace(&format!("${k}"), &i.to_string());
         }
     }
@@ -315,9 +315,9 @@ async fn test_live_age_simultaneous_explain_and_profile_connections() {
         None => return,
     };
 
-    use voyager_core::builder::QueryBuilder;
-    use voyager_core::emitters::AgeEmitter;
-    use voyager_core::visitor::AstVisitor;
+    use voyager_ogm::builder::QueryBuilder;
+    use voyager_ogm::emitters::AgeEmitter;
+    use voyager_ogm::visitor::AstVisitor;
 
     let graph_name = "net_simultaneous_age_graph";
 

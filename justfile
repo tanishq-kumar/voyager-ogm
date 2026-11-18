@@ -140,7 +140,7 @@ watch job="clippy":
 
 # Static type checking across Python using Astral ty and Mypy (PEP 561 / PEP 681)
 typecheck:
-    uvx ty check packages/python
+    uv run --no-sync ty check packages/python
     uv run --no-sync mypy packages/python/voyager_ogm
 
 # Full Continuous Integration (CI) verification suite

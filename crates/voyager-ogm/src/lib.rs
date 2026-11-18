@@ -1,0 +1,75 @@
+//! # Voyager OGM Core Engine (`voyager-ogm`)
+//!
+//! Voyager OGM is a vendor-neutral Object-Graph Mapper (OGM)
+//! and AST query compiler implemented in pure safe Rust.
+//!
+//! ## Modules
+//! - [`ast`]: AST node definitions and handle-based memory management.
+//! - [`builder`]: Ergonomic fluent query builder API.
+//! - [`emitters`]: Multi-dialect query string emitters (openCypher, SQL:2023 PGQ, ISO GQL).
+//! - [`visitor`]: AST Visitor trait and compilation result containers.
+//! - [`error`]: Error types and diagnostic reporting.
+
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
+#[cfg(feature = "arrow")]
+pub mod arrow;
+pub mod ast;
+pub mod bridge;
+pub mod builder;
+pub mod bulk;
+pub mod cache;
+pub mod emitters;
+pub mod error;
+pub mod optimizer;
+pub mod schema;
+pub mod topology;
+pub mod transaction;
+pub mod visitor;
+
+pub use ast::{
+    AggregationFunc, AstNode, BinaryOp, Direction, ExecutionMode, LabelExpression, LiteralValue,
+    NodeHandle, ProjectionItem, QueryAstArena,
+};
+pub use bridge::{DatabaseBridge, MockDatabaseBridge, QueryResult, QuerySummary};
+pub use builder::QueryBuilder;
+pub use cache::{CacheMetrics, CompiledQueryCache, global_query_cache};
+pub use emitters::{
+    AgeEmitter, CypherEmitter, IsoGqlEmitter, SqlPgqEmitter, emit_cypher_drop_node_ddl,
+    emit_cypher_drop_rel_ddl, emit_cypher_node_ddl, emit_cypher_rel_ddl,
+    emit_cypher25_drop_graph_type_ddl, emit_cypher25_graph_type_ddl, emit_gql_alter_node_ddl,
+    emit_gql_alter_rel_ddl, emit_gql_drop_graph_type_ddl, emit_gql_graph_type_ddl,
+    emit_node_constraint_ddl, emit_node_drop_constraint_ddl, emit_node_drop_index_ddl,
+    emit_node_index_ddl, emit_pgq_drop_property_graph_ddl, emit_pgq_property_graph_ddl,
+    emit_rel_constraint_ddl, emit_rel_drop_constraint_ddl, emit_rel_drop_index_ddl,
+    emit_rel_index_ddl,
+};
+pub use error::{Error, ErrorCode, Result};
+pub use optimizer::{AstOptimizer, OptimizationLevel};
+pub use schema::{
+    ConformanceDiagnostic, ConformanceReport, ConstraintType, DEFAULT_MEMGRAPH_VECTOR_CAPACITY,
+    DEFAULT_VECTOR_DIMENSIONS, DdlDialect, DiagnosticSeverity, FieldDescriptor, FieldType,
+    FullTextIndexConfig, IndexType, NodeSchema, RelationshipSchema, ResolvedFullTextSearch,
+    SchemaRegistry, SchemaSnapshot, VectorIndexConfig, VectorSimilarity, adapt_tantivy_query,
+    canonical_fulltext_index_name, canonical_vector_index_name, global_schema_registry,
+    resolve_fulltext_search,
+};
+pub use topology::{GraphTopology, TopologyEdge, TopologyNode};
+pub use transaction::{
+    CheckpointState, EntityMutation, Savepoint, Transaction, TransactionState, UnitOfWork,
+};
+pub use visitor::{AstVisitor, ColumnMeta, CompiledQuery};
+
+/// Voyager OGM engine version.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_core_initialization() {
+        assert!(!VERSION.is_empty());
+    }
+}

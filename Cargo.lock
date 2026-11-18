@@ -2521,20 +2521,7 @@ version = "0.4.0-alpha.6"
 dependencies = [
  "clap",
  "miette",
- "voyager-core",
-]
-
-[[package]]
-name = "voyager-core"
-version = "0.4.0-alpha.6"
-dependencies = [
- "arrow",
- "criterion",
- "insta",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tracing",
+ "voyager-ogm",
 ]
 
 [[package]]
@@ -2561,7 +2548,20 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
- "voyager-core",
+ "voyager-ogm",
+]
+
+[[package]]
+name = "voyager-ogm"
+version = "0.4.0-alpha.6"
+dependencies = [
+ "arrow",
+ "criterion",
+ "insta",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]
@@ -2574,8 +2574,8 @@ dependencies = [
  "pyo3-async-runtimes",
  "serde_json",
  "tokio",
- "voyager-core",
  "voyager-net",
+ "voyager-ogm",
 ]
 
 [[package]]

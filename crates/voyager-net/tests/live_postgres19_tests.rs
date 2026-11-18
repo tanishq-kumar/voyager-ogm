@@ -208,9 +208,9 @@ async fn test_live_postgres19_transactions() {
 
 #[tokio::test]
 async fn test_live_postgres19_sql_pgq_graph_table_and_arrow() {
-    use voyager_core::builder::QueryBuilder;
-    use voyager_core::emitters::sql_pgq::SqlPgqEmitter;
-    use voyager_core::visitor::AstVisitor;
+    use voyager_ogm::builder::QueryBuilder;
+    use voyager_ogm::emitters::sql_pgq::SqlPgqEmitter;
+    use voyager_ogm::visitor::AstVisitor;
 
     let mut conn = match get_pg19_connection().await {
         Some(c) => c,
@@ -311,7 +311,7 @@ async fn test_live_postgres19_sql_pgq_graph_table_and_arrow() {
         .select_property_aggregate(
             "p",
             "name",
-            voyager_core::ast::AggregationFunc::Count,
+            voyager_ogm::ast::AggregationFunc::Count,
             Some("total_count".to_string()),
         )
         .order_by_asc("p", "city");

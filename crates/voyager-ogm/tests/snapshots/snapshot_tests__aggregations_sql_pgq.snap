@@ -1,0 +1,5 @@
+---
+source: crates/voyager-ogm/tests/snapshot_tests.rs
+expression: pgq_res.statement
+---
+SELECT actor, COUNT(title) AS movie_count, AVG(released) AS avg_released FROM GRAPH_TABLE (movies_graph MATCH (p IS Person) -[r IS ACTED_IN]-> (m IS Movie) COLUMNS (p.name AS actor, m.title AS title, m.released AS released)) GROUP BY actor ORDER BY movie_count DESC LIMIT 20

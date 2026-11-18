@@ -40,7 +40,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Doctor => {
             println!("󰓾 Voyager OGM v{}", env!("CARGO_PKG_VERSION"));
-            println!("  Engine Core: voyager-core v{}", voyager_core::VERSION);
+            println!("  Engine Core: voyager-ogm v{}", voyager_ogm::VERSION);
             println!("  Memory Arena: Active (32-bit handles)");
             println!(
                 "  Supported Dialects: openCypher 9, Cypher 25, SQL:2023 PGQ, ISO GQL 2024, DuckPGQ"

@@ -1,7 +1,6 @@
 use bytes::{Bytes, BytesMut};
 use std::collections::HashMap;
 use std::io::Cursor;
-use voyager_core::ErrorCode;
 use voyager_net::bolt::packstream::{BoltValue, PackStream};
 use voyager_net::bolt::stream::{MAX_BOLT_MESSAGE_SIZE, read_message_frame_buffered};
 use voyager_net::client::connect_any;
@@ -11,6 +10,7 @@ use voyager_net::postgres::connection::format_postgres_query;
 use voyager_net::redis::resp::RespValue;
 use voyager_net::redis::transaction::format_cypher_with_params;
 use voyager_net::uri::{DatabaseProtocol, ParsedUri};
+use voyager_ogm::ErrorCode;
 
 #[test]
 fn test_falkordb_backslash_quote_injection_defense() {
