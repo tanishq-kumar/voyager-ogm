@@ -816,6 +816,75 @@ def _process_type_annotations(cls: Any) -> dict[str, Field]:
     return fields_map
 
 
+def _resolve_declared_labels(cls: type) -> list[str] | None:
+    """Resolves labels declared directly in a class body.
+
+    ``__label__ = "X"`` is accepted as the single-label form of
+    ``__labels__ = ["X"]``. When both are declared, they must agree on the
+    primary label (``__labels__[0]``). Inherited attributes are ignored; only
+    the class's own ``__dict__`` is inspected.
+
+    Args:
+        cls: The class whose declared labels should be resolved.
+
+    Returns:
+        The declared label list, or ``None`` when the class declares neither
+        ``__label__`` nor a non-empty ``__labels__``.
+
+    Raises:
+        TypeError: If ``__label__`` is not a non-empty string, or if both
+            attributes are declared with different primary labels.
+    """
+    if "__label__" not in cls.__dict__ and "__labels__" not in cls.__dict__:
+        return None
+
+    has_label = "__label__" in cls.__dict__
+    declared_label = cls.__dict__.get("__label__")
+    declared_labels = cls.__dict__.get("__labels__")
+
+    if has_label and (not isinstance(declared_label, str) or not declared_label):
+        raise TypeError(
+            f"'{cls.__name__}.__label__' must be a non-empty string, got {declared_label!r}."
+        )
+
+    if has_label and declared_labels and declared_label != declared_labels[0]:
+        raise TypeError(
+            f"'{cls.__name__}' sets both __label__={declared_label!r} and "
+            f"__labels__={list(declared_labels)!r}, but __label__ must equal "
+            f"__labels__[0] ({declared_labels[0]!r}). Declare only one, or make "
+            "__label__ match the first entry of __labels__."
+        )
+
+    if declared_labels:
+        return list(declared_labels)
+    if has_label:
+        return [cast(str, declared_label)]
+    return None
+
+
+def _resolve_declared_type(cls: type) -> str | None:
+    """Resolves a relationship type declared directly in a class body.
+
+    Args:
+        cls: The class whose own ``__type__`` attribute should be resolved.
+
+    Returns:
+        The declared relationship type string, or ``None`` when the class does
+        not declare ``__type__`` in its own body.
+
+    Raises:
+        TypeError: If ``__type__`` is not a non-empty string.
+    """
+    if "__type__" not in cls.__dict__:
+        return None
+    declared_type = cls.__dict__.get("__type__")
+    if not isinstance(declared_type, str) or not declared_type:
+        raise TypeError(
+            f"'{cls.__name__}.__type__' must be a non-empty string, got {declared_type!r}."
+        )
+    return declared_type
+
+
 @dataclass_transform(field_specifiers=(Field,))
 class Node:
     """Base class for Voyager OGM Graph Node Entities.
@@ -823,13 +892,19 @@ class Node:
     Can be directly subclassed or automatically injected via the `@node` decorator.
 
     Attributes:
-        __labels__: Class-level list of graph database labels.
+        __labels__: Class-level list of graph database labels. A class may instead
+            declare the single-label alias ``__label__ = "X"``, which is equivalent
+            to ``__labels__ = ["X"]``. Declaring both is allowed only when
+            ``__label__`` equals ``__labels__[0]``.
         _schema_fields: Dictionary of property field descriptors for schema reflection.
 
     Example:
         >>> class Developer(Node, label=["Person", "Engineer"]):
         ...     name: str
         ...     age: int
+        >>> class Film(Node):
+        ...     __label__ = "Movie"
+        ...     title: str
     """
 
     __labels__: ClassVar[list[str]] = []
@@ -849,13 +924,23 @@ class Node:
             label: Optional custom label or list of labels.
             labels: Optional custom label list (synonym for label).
             **kwargs: Extra keyword arguments passed to super.
+
+        Note:
+            Precedence for the effective labels is: an explicit ``label``/
+            ``labels`` keyword, then a class-body ``__label__`` or ``__labels__``
+            declaration, then the class name. A ``@node("X")`` decorator argument
+            is explicit at the use site and therefore overrides class-body
+            declarations.
         """
         super().__init_subclass__(**kwargs)
+        declared_labels = _resolve_declared_labels(cls)
         lbl = label if label is not None else labels
         if isinstance(lbl, str):
             cls.__labels__ = [lbl]
         elif isinstance(lbl, list):
             cls.__labels__ = list(lbl)
+        elif declared_labels:
+            cls.__labels__ = declared_labels
         elif "__labels__" not in cls.__dict__ or not cls.__labels__:
             cls.__labels__ = [cls.__name__]
 
@@ -1186,12 +1271,17 @@ class Relationship:
 
     Attributes:
         __type__: Relationship type string in the database (e.g. 'ACTED_IN').
+            A class may set this directly in its body; an explicit ``type_name``
+            keyword or decorator argument overrides it.
         __direction__: Edge traversal direction ('outgoing', 'incoming', 'undirected').
         _schema_fields: Dictionary of property field descriptors.
 
     Example:
         >>> class ActedIn(Relationship, type_name="ACTED_IN"):
         ...     role: str
+        ...     since: int = 2000
+        >>> class Directed(Relationship):
+        ...     __type__ = "DIRECTED"
         ...     since: int = 2000
     """
 
@@ -1217,9 +1307,19 @@ class Relationship:
             type_: Alias for type_name.
             direction: Traversal direction ('outgoing', 'incoming', 'undirected').
             **kwargs: Extra keyword arguments passed to super.
+
+        Note:
+            Precedence for the effective type is: an explicit ``type_name``/
+            ``type_``/``type`` keyword, then a class-body ``__type__``
+            declaration, then the uppercase class name. A decorator argument is
+            explicit at the use site and therefore overrides class-body
+            declarations.
         """
         super().__init_subclass__(**kwargs)
-        resolved_type = type_name or type_ or kwargs.get("type") or cls.__name__.upper()
+        declared_type = _resolve_declared_type(cls)
+        resolved_type = (
+            type_name or type_ or kwargs.get("type") or declared_type or cls.__name__.upper()
+        )
         cls.__type__ = resolved_type
         cls.__direction__ = direction
         source_labels = kwargs.get("source_labels") or kwargs.get("from_labels")
@@ -1409,6 +1509,13 @@ def node(target: type | str | list[str] | None = None, **kwargs: Any) -> Any:
     Returns:
         The decorated Node class with schema descriptors and auto-aliasing.
 
+    Note:
+        An explicit decorator label (``@node("Person")``, ``label=...`` or
+        ``labels=...``) wins over a class-body ``__label__`` or ``__labels__``
+        declaration because it is explicit at the use site. Without an explicit
+        decorator label, a class-body ``__label__ = "X"`` is honoured as the
+        single-label form of ``__labels__ = ["X"]``.
+
     Example:
         >>> @node
         ... class User:
@@ -1417,26 +1524,34 @@ def node(target: type | str | list[str] | None = None, **kwargs: Any) -> Any:
         >>> @node(labels=["User", "Admin"])
         ... class Administrator:
         ...     role: str
+        >>> @node
+        ... class Film:
+        ...     __label__ = "Movie"
+        ...     title: str
     """
+    raw_label = kwargs.get(
+        "label",
+        kwargs.get("labels", target if isinstance(target, (str, list)) else None),
+    )
+    explicit_labels = (
+        [raw_label]
+        if isinstance(raw_label, str)
+        else (list(raw_label) if isinstance(raw_label, list) else None)
+    )
 
     def decorator(cls: type) -> type:
-        label = kwargs.get(
-            "label",
-            kwargs.get("labels", target if isinstance(target, (str, list)) else None),
-        )
-        labels = (
-            [label]
-            if isinstance(label, str)
-            else (list(label) if isinstance(label, list) else None)
-        )
-        cls_labels = labels or [cls.__name__]
+        declared_labels = _resolve_declared_labels(cls)
+        cls_labels = explicit_labels or declared_labels or [cls.__name__]
 
         fields_map = _process_type_annotations(cls)
 
         if not issubclass(cls, Node):
             ns = dict(cls.__dict__)
+            if explicit_labels:
+                # The decorator label wins over the class-body alias.
+                ns.pop("__label__", None)
             ns["__labels__"] = cls_labels
-            ns["_cached_labels"] = cls_labels
+            ns["_cached_labels"] = list(cls_labels)
             ns["_cached_label"] = cls_labels[0] if cls_labels else cls.__name__
             ns["_schema_fields"] = fields_map
             derived = type(cls.__name__, (cls, Node), ns)
@@ -1445,8 +1560,11 @@ def node(target: type | str | list[str] | None = None, **kwargs: Any) -> Any:
             cast(Any, derived).register_schema()
             return derived
         else:
+            if explicit_labels and "__label__" in cls.__dict__:
+                # The decorator label wins over the class-body alias.
+                delattr(cls, "__label__")
             cls.__labels__ = cls_labels  # type: ignore[attr-defined]
-            cls._cached_labels = cls_labels  # type: ignore[attr-defined]
+            cls._cached_labels = list(cls_labels)  # type: ignore[attr-defined]
             cls._cached_label = cls_labels[0] if cls_labels else cls.__name__  # type: ignore[attr-defined]
             cls._schema_fields = fields_map  # type: ignore[attr-defined]
             cast(Any, cls).register_schema()
@@ -1471,21 +1589,31 @@ def relationship(target: type | str | None = None, **kwargs: Any) -> Any:
     Returns:
         The decorated Relationship class with schema descriptors.
 
+    Note:
+        An explicit decorator type (``@relationship("FOLLOWS")``,
+        ``type_name=...``, ``type_=...`` or ``type=...``) wins over a class-body
+        ``__type__`` declaration because it is explicit at the use site.
+
     Example:
         >>> @relationship(type_name="FOLLOWS")
         ... class Follows:
         ...     since: int = 2024
+        >>> @relationship
+        ... class Directed:
+        ...     __type__ = "DIRECTED"
+        ...     since: int = 2024
     """
     direction = kwargs.get("direction", "outgoing")
+    explicit_type = (
+        kwargs.get("type_name")
+        or kwargs.get("type_")
+        or kwargs.get("type")
+        or (target if isinstance(target, str) else None)
+    )
 
     def decorator(cls: type) -> type:
-        type_name = (
-            kwargs.get("type_name")
-            or kwargs.get("type_")
-            or kwargs.get("type")
-            or (target if isinstance(target, str) else None)
-        )
-        rel_type = type_name or cls.__name__.upper()
+        declared_type = _resolve_declared_type(cls)
+        rel_type = explicit_type or declared_type or cls.__name__.upper()
 
         fields_map = _process_type_annotations(cls)
         source_labels = kwargs.get("source_labels") or kwargs.get("from_labels")
