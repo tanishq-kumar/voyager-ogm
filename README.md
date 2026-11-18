@@ -2,8 +2,8 @@
 
 **Multi-Dialect Object-Graph Mapper (OGM) and Query Compiler**
 
-[![CI](https://github.com/tanishq-kumar/voyager-ogm/actions/workflows/ci.yml/badge.svg)](https://github.com/tanishq-kumar/voyager-ogm/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/tanishq-kumar/voyager-ogm?color=orange&label=Release)](https://github.com/tanishq-kumar/voyager-ogm/releases)
+[![CI](https://github.com/tanishq-kumar/voyager/actions/workflows/ci.yml/badge.svg)](https://github.com/tanishq-kumar/voyager/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/tanishq-kumar/voyager?color=orange&label=Release)](https://github.com/tanishq-kumar/voyager/releases)
 [![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Standards](https://img.shields.io/badge/Standards-openCypher%20%7C%20SQL%3A2023%20PGQ%20%7C%20ISO%20GQL-green.svg)](https://www.iso.org/standard/76120.html)
 [![Arrow](https://img.shields.io/badge/Zero--Copy-Apache%20Arrow%20PyCapsule-orange.svg)](https://arrow.apache.org/)
@@ -253,14 +253,14 @@ Voyager is verified against 6 database backends:
 
 ## Roadmap
 
-Voyager's development is organized into focused milestone phases. You can track active progress, issues, and completion percentages directly on [**GitHub Milestones**](https://github.com/tanishq-kumar/voyager-ogm/milestones):
+Voyager's development is organized into focused milestone phases. You can track active progress, issues, and completion percentages directly on [**GitHub Milestones**](https://github.com/tanishq-kumar/voyager/milestones):
 
-- **[Milestone 1: v0.1.0-alpha](https://github.com/tanishq-kumar/voyager-ogm/milestone/1)** — Core Read AST Engine _(Completed)_
-- **[Milestone 2: v0.2.0-alpha](https://github.com/tanishq-kumar/voyager-ogm/milestone/2)** — Mutations, Ingestion & Arrow Streaming _(Completed)_
-- **[Milestone 3: v0.3.0-alpha](https://github.com/tanishq-kumar/voyager-ogm/milestone/3)** — Multi-Dialect Syntax Conformance _(Completed)_
-- **[Milestone 4: v0.4.0-alpha](https://github.com/tanishq-kumar/voyager-ogm/milestone/4)** — Python Integrations, Rich Expressions & Query Optimizer _(Active)_
-- **[Milestone 5: v0.5.0-alpha](https://github.com/tanishq-kumar/voyager-ogm/milestone/5)** — TypeScript SDK _(Planned)_
-- **[Milestone 6: v0.6.0-alpha](https://github.com/tanishq-kumar/voyager-ogm/milestone/6)** — Voyager CLI (`voy`) _(Planned)_
+- **[Milestone 1: v0.1.0-alpha](https://github.com/tanishq-kumar/voyager/milestone/1)** — Core Read AST Engine _(Completed)_
+- **[Milestone 2: v0.2.0-alpha](https://github.com/tanishq-kumar/voyager/milestone/2)** — Mutations, Ingestion & Arrow Streaming _(Completed)_
+- **[Milestone 3: v0.3.0-alpha](https://github.com/tanishq-kumar/voyager/milestone/3)** — Multi-Dialect Syntax Conformance _(Completed)_
+- **[Milestone 4: v0.4.0-alpha](https://github.com/tanishq-kumar/voyager/milestone/4)** — Python Integrations, Rich Expressions & Query Optimizer _(Active)_
+- **[Milestone 5: v0.5.0-alpha](https://github.com/tanishq-kumar/voyager/milestone/5)** — TypeScript SDK _(Planned)_
+- **[Milestone 6: v0.6.0-alpha](https://github.com/tanishq-kumar/voyager/milestone/6)** — Voyager CLI (`voy`) _(Planned)_
 
 ---
 

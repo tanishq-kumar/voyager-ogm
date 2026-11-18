@@ -60,7 +60,7 @@ Release wheels and source distributions are published to PyPI using GitHub Actio
 
 - **Environment**: `pypi`
 - **Permissions**: `id-token: write`
-- **Prerequisite**: The repository owner must configure Voyager OGM as a trusted publisher in the PyPI administrative portal (linking repo `tanishq-kumar/voyager-ogm`, workflow `.github/workflows/release.yml`, and environment `pypi`).
+- **Prerequisite**: The repository owner must configure Voyager OGM as a trusted publisher in the PyPI administrative portal (linking repo `tanishq-kumar/voyager`, workflow `.github/workflows/release.yml`, and environment `pypi`). Note: Following the repository rename, the trusted publisher configuration on PyPI must be updated to reference `tanishq-kumar/voyager` (not `voyager-ogm`) for GitHub Actions OIDC authentication to succeed.
 - **Opt-in control**: The publish job runs only when repository variable `PYPI_PUBLISH == 'true'`. Until enabled, release artifacts (sdist and wheels) are built, verified, and attached exclusively to the GitHub Release.
 
 ---
