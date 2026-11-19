@@ -37,7 +37,7 @@ fn to_py_schema_err(err: voyager_ogm::Error) -> PyErr {
 use voyager_ogm::ast::{
     AggregationFunc, BinaryOp, Direction, LiteralValue, NodeHandle, QueryAstArena, UnaryOp,
 };
-use voyager_ogm::builder::QueryBuilder;
+use voyager_ogm::builder::{MergeRelationshipProperties, QueryBuilder};
 use voyager_ogm::emitters::{AgeEmitter, CypherEmitter, IsoGqlEmitter, SqlPgqEmitter};
 use voyager_ogm::optimizer::{AstOptimizer, OptimizationLevel};
 use voyager_ogm::schema::{
@@ -133,6 +133,33 @@ fn py_to_literal(val: &Bound<'_, PyAny>) -> PyResult<LiteralValue> {
             "Unsupported parameter type: {}",
             val.get_type()
         )))
+    }
+}
+
+fn property_list_to_literals(val: &Bound<'_, PyAny>) -> PyResult<Vec<(String, LiteralValue)>> {
+    let list = val.cast::<PyList>().map_err(|_| {
+        PyTypeError::new_err("relationship properties must be a list of (name, value) pairs")
+    })?;
+    let mut properties = Vec::with_capacity(list.len());
+    for item in list {
+        let (name, value): (String, Bound<'_, PyAny>) = item.extract()?;
+        properties.push((name, py_to_literal(&value)?));
+    }
+    Ok(properties)
+}
+
+fn optional_property_list_to_literals(
+    properties: Option<Vec<(String, Bound<'_, PyAny>)>>,
+) -> PyResult<Vec<(String, LiteralValue)>> {
+    match properties {
+        Some(items) => {
+            let mut literals = Vec::with_capacity(items.len());
+            for (name, value) in items {
+                literals.push((name, py_to_literal(&value)?));
+            }
+            Ok(literals)
+        }
+        None => Ok(Vec::new()),
     }
 }
 
@@ -2113,6 +2140,57 @@ impl PyQueryBuilder {
 
     fn merge(&mut self) {
         self.inner.merge();
+    }
+
+    #[pyo3(signature = (source, rel_type, target, direction="outgoing", variable=None, properties=None))]
+    fn create_relationship(
+        &mut self,
+        source: String,
+        rel_type: String,
+        target: String,
+        direction: &str,
+        variable: Option<String>,
+        properties: Option<Vec<(String, Bound<'_, PyAny>)>>,
+    ) -> PyResult<()> {
+        let direction = parse_direction(direction)?;
+        let properties = optional_property_list_to_literals(properties)?;
+        self.inner
+            .create_relationship(source, rel_type, direction, variable, target, properties)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(())
+    }
+
+    #[pyo3(signature = (source, rel_type, target, direction="outgoing", variable=None, properties=None))]
+    fn merge_relationship(
+        &mut self,
+        source: String,
+        rel_type: String,
+        target: String,
+        direction: &str,
+        variable: Option<String>,
+        properties: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let direction = parse_direction(direction)?;
+        let mut parts = MergeRelationshipProperties::new();
+        if let Some(bundle) = properties {
+            let bundle = bundle.cast::<PyTuple>().map_err(|_| {
+                PyTypeError::new_err(
+                    "merge_relationship properties must be a (key, shared, create_only) tuple of property lists",
+                )
+            })?;
+            if bundle.len() != 3 {
+                return Err(PyTypeError::new_err(
+                    "merge_relationship properties must be a (key, shared, create_only) tuple of property lists",
+                ));
+            }
+            parts.key = property_list_to_literals(&bundle.get_item(0)?)?;
+            parts.shared = property_list_to_literals(&bundle.get_item(1)?)?;
+            parts.create_only = property_list_to_literals(&bundle.get_item(2)?)?;
+        }
+        self.inner
+            .merge_relationship(source, rel_type, direction, variable, target, parts)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(())
     }
 
     fn on_create_set(&mut self, var: String, prop: String, val: &Bound<'_, PyAny>) -> PyResult<()> {

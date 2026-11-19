@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Carried descriptions through schema registration into native `FieldDescriptor`, `NodeSchema`, and `RelationshipSchema` structs in Rust and exposed them via PyO3 dictionary bindings.
   - Updated schema snapshot serialization to include `"description"` fields in JSON snapshots when present, omitting them when `None` via serde `skip_serializing_if` so existing snapshot JSON remains byte-identical.
   - Ensured backward compatibility: older snapshots without description keys deserialize cleanly via serde default with `description: None`.
+- **Fluent Relationship Creation Between Bound Nodes (#192)**:
+  - Added `Query.create_relationship(source, rel, target, *, variable=None)` to emit `CREATE (source)-[:TYPE {props}]->(target)` between aliases already bound by `MATCH` or an earlier `CREATE`.
+  - Added `Query.merge_relationship(source, rel, target, *, variable=None)` with the existing MERGE key policy: key properties inline, shared properties on create and match, and default-filled properties on create only. When non-key properties need `ON CREATE SET` / `ON MATCH SET`, the relationship alias is taken from the instance or generated automatically, so `variable=` is not required.
+  - Added native Rust builder methods `QueryBuilder::create_relationship` and `QueryBuilder::merge_relationship` that validate bound endpoint aliases, parameterize relationship properties, and emit for openCypher, ISO GQL (`INSERT` / `UPSERT`), and Apache AGE.
+  - Relationship direction is honored; undirected relationships are created or merged as outgoing from source to target because Cypher requires a direction. An optional relationship variable alias allows the edge to be returned.
 - **Bridge Authentication Credentials Parameter (#193)**:
   - Added keyword-only `auth: tuple[str, str] | Any | None = None` parameter to `create_bridge()` across all overloads.
   - Bolt schemes accept `(username, password)` tuples and custom auth tokens (e.g. `bearer_auth`) passed directly to `GraphDatabase.driver` / `AsyncGraphDatabase.driver`.
