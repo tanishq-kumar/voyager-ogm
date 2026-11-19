@@ -34,6 +34,7 @@ from voyager_ogm.bridge import (
     RelateBridge,
     create_bridge,
     register_bridge,
+    validate_graph_name,
 )
 from voyager_ogm.config import VoyagerConfig, configure, get_config, reset_config
 from voyager_ogm.expressions import (
@@ -284,6 +285,7 @@ __all__ = [
     "to_networkx",
     "to_polars",
     "types",
+    "validate_graph_name",
     "validate_query",
     "VectorProperty",
     "version",

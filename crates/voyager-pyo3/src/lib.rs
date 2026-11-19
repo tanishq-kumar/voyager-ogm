@@ -2358,7 +2358,8 @@ impl PyQueryBuilder {
                     .map_err(|e| PyValueError::new_err(e.to_string()))?
             }
             "age" | "apache_age" | "postgres_age" => {
-                let name = graph_name.unwrap_or_else(|| "age_graph".into());
+                let name = graph_name
+                    .unwrap_or_else(|| voyager_ogm::emitters::age::DEFAULT_AGE_GRAPH.into());
                 let mut emitter = AgeEmitter::new(name);
                 emitter
                     .visit_query(&arena, root)
@@ -2622,7 +2623,8 @@ fn compile_query_from_spec<'py>(
                 .map_err(|e| PyValueError::new_err(e.to_string()))?
         }
         "age" | "apache_age" | "postgres_age" => {
-            let name = graph_name.unwrap_or_else(|| "age_graph".into());
+            let name =
+                graph_name.unwrap_or_else(|| voyager_ogm::emitters::age::DEFAULT_AGE_GRAPH.into());
             let mut emitter = AgeEmitter::new(name);
             emitter
                 .visit_query(&arena, root)
@@ -2771,7 +2773,7 @@ impl PyUnitOfWorkScope {
 
 /// Compiles a high-speed bulk create Cypher/GQL query: `UNWIND $batch AS row CREATE ...`.
 #[pyfunction]
-#[pyo3(signature = (label, properties, batch_param="batch", row_alias="row", dialect="cypher"))]
+#[pyo3(signature = (label, properties, batch_param="batch", row_alias="row", dialect="cypher", graph_name=None))]
 fn compile_bulk_create<'py>(
     py: Python<'py>,
     label: String,
@@ -2779,11 +2781,18 @@ fn compile_bulk_create<'py>(
     batch_param: &str,
     row_alias: &str,
     dialect: &str,
+    graph_name: Option<String>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let prop_refs: Vec<&str> = properties.iter().map(|s| s.as_str()).collect();
-    let compiled =
-        voyager_ogm::bulk::compile_bulk_create(&label, &prop_refs, batch_param, row_alias, dialect)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let compiled = voyager_ogm::bulk::compile_bulk_create_with_graph(
+        &label,
+        &prop_refs,
+        batch_param,
+        row_alias,
+        dialect,
+        graph_name.as_deref(),
+    )
+    .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
     let dict = PyDict::new(py);
     dict.set_item("statement", compiled.statement)?;
@@ -2797,24 +2806,27 @@ fn compile_bulk_create<'py>(
 
 /// Compiles a high-speed bulk upsert / MERGE Cypher/GQL query: `UNWIND $batch AS row MERGE ...`.
 #[pyfunction]
-#[pyo3(signature = (label, key_property, properties, batch_param="batch", row_alias="row", dialect="cypher"))]
+#[pyo3(signature = (label, key_property, properties, batch_param="batch", row_alias="row", dialect="cypher", graph_name=None))]
 fn compile_bulk_merge<'py>(
-    py: Python<'py>,
     label: String,
     key_property: String,
-    properties: Vec<String>,
+    properties: Bound<'py, PyAny>,
     batch_param: &str,
     row_alias: &str,
     dialect: &str,
+    graph_name: Option<String>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let prop_refs: Vec<&str> = properties.iter().map(|s| s.as_str()).collect();
-    let compiled = voyager_ogm::bulk::compile_bulk_merge(
+    let py = properties.py();
+    let prop_strings: Vec<String> = properties.extract()?;
+    let prop_refs: Vec<&str> = prop_strings.iter().map(|s| s.as_str()).collect();
+    let compiled = voyager_ogm::bulk::compile_bulk_merge_with_graph(
         &label,
         &key_property,
         &prop_refs,
         batch_param,
         row_alias,
         dialect,
+        graph_name.as_deref(),
     )
     .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
@@ -2831,7 +2843,7 @@ fn compile_bulk_merge<'py>(
 /// Compiles a high-speed bulk relationship creation query.
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-#[pyo3(signature = (rel_type, properties, from_label, from_key, to_label, to_key, batch_param="batch", row_alias="row", dialect="cypher"))]
+#[pyo3(signature = (rel_type, properties, from_label, from_key, to_label, to_key, batch_param="batch", row_alias="row", dialect="cypher", graph_name=None))]
 fn compile_bulk_create_rel<'py>(
     py: Python<'py>,
     rel_type: String,
@@ -2843,20 +2855,23 @@ fn compile_bulk_create_rel<'py>(
     batch_param: &str,
     row_alias: &str,
     dialect: &str,
+    graph_name: Option<String>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let prop_refs: Vec<&str> = properties.iter().map(|s| s.as_str()).collect();
-    let compiled = voyager_ogm::bulk::compile_bulk_create_rel(
-        &rel_type,
-        &prop_refs,
-        &from_label,
-        &from_key,
-        &to_label,
-        &to_key,
+    let config = voyager_ogm::bulk::BulkRelConfig {
+        rel_type: &rel_type,
+        properties: &prop_refs,
+        from_label: &from_label,
+        from_key: &from_key,
+        to_label: &to_label,
+        to_key: &to_key,
         batch_param,
         row_alias,
         dialect,
-    )
-    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        graph_name: graph_name.as_deref(),
+    };
+    let compiled = voyager_ogm::bulk::compile_bulk_create_rel_with_config(&config)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
     let dict = PyDict::new(py);
     dict.set_item("statement", compiled.statement)?;
@@ -5036,64 +5051,78 @@ impl PyNativeSchemaRegistry {
     }
 
     /// Generates multi-dialect CREATE INDEX DDL statements for registered models.
-    #[pyo3(signature = (dialect="cypher", model_names=None))]
+    #[pyo3(signature = (dialect="cypher", model_names=None, graph_name=None))]
     fn generate_index_ddl(
         &self,
         dialect: &str,
         model_names: Option<Vec<String>>,
+        graph_name: Option<&str>,
     ) -> PyResult<Vec<String>> {
         let str_names: Option<Vec<&str>> = model_names
             .as_ref()
             .map(|v| v.iter().map(|s| s.as_str()).collect());
         self.registry()
-            .generate_index_ddl(dialect, str_names.as_deref())
+            .generate_index_ddl_with_graph(dialect, str_names.as_deref(), graph_name)
             .map_err(to_py_schema_err)
     }
 
     /// Generates multi-dialect CREATE CONSTRAINT DDL statements for registered models.
-    #[pyo3(signature = (dialect="cypher", model_names=None, include_type_constraints=false))]
+    #[pyo3(signature = (dialect="cypher", model_names=None, include_type_constraints=false, graph_name=None))]
     fn generate_constraint_ddl(
         &self,
         dialect: &str,
         model_names: Option<Vec<String>>,
         include_type_constraints: bool,
+        graph_name: Option<&str>,
     ) -> PyResult<Vec<String>> {
         let str_names: Option<Vec<&str>> = model_names
             .as_ref()
             .map(|v| v.iter().map(|s| s.as_str()).collect());
         self.registry()
-            .generate_constraint_ddl(dialect, str_names.as_deref(), include_type_constraints)
+            .generate_constraint_ddl_with_graph(
+                dialect,
+                str_names.as_deref(),
+                include_type_constraints,
+                graph_name,
+            )
             .map_err(to_py_schema_err)
     }
 
     /// Generates multi-dialect DROP INDEX DDL statements for registered models.
-    #[pyo3(signature = (dialect="cypher", model_names=None))]
+    #[pyo3(signature = (dialect="cypher", model_names=None, graph_name=None))]
     fn generate_drop_index_ddl(
         &self,
         dialect: &str,
         model_names: Option<Vec<String>>,
+        graph_name: Option<&str>,
     ) -> PyResult<Vec<String>> {
         let str_names: Option<Vec<&str>> = model_names
             .as_ref()
             .map(|v| v.iter().map(|s| s.as_str()).collect());
         self.registry()
-            .generate_drop_index_ddl(dialect, str_names.as_deref())
+            .generate_drop_index_ddl_with_graph(dialect, str_names.as_deref(), graph_name)
             .map_err(to_py_schema_err)
     }
 
     /// Generates multi-dialect DROP CONSTRAINT DDL statements for registered models.
-    #[pyo3(signature = (dialect="cypher", model_names=None, include_type_constraints=false))]
+    #[pyo3(signature = (dialect="cypher", model_names=None, include_type_constraints=false, graph_name=None))]
     fn generate_drop_constraint_ddl(
         &self,
         dialect: &str,
         model_names: Option<Vec<String>>,
         include_type_constraints: bool,
+        graph_name: Option<&str>,
     ) -> PyResult<Vec<String>> {
         let str_names: Option<Vec<&str>> = model_names
             .as_ref()
             .map(|v| v.iter().map(|s| s.as_str()).collect());
         self.registry()
-            .generate_drop_constraint_ddl(dialect, str_names.as_deref(), include_type_constraints)
+            .generate_drop_constraint_ddl_with_graph(
+                dialect,
+                str_names.as_deref(),
+                include_type_constraints,
+                graph_name,
+            )
             .map_err(to_py_schema_err)
     }
 
@@ -5281,79 +5310,123 @@ fn emit_cypher25_drop_graph_type_ddl() -> PyResult<String> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (node, dialect="cypher"))]
-fn emit_node_index_ddl(node: &Bound<'_, PyAny>, dialect: &str) -> PyResult<Vec<String>> {
+#[pyo3(signature = (node, dialect="cypher", graph_name=None))]
+fn emit_node_index_ddl(
+    node: &Bound<'_, PyAny>,
+    dialect: &str,
+    graph_name: Option<&str>,
+) -> PyResult<Vec<String>> {
     let schema = extract_node_schema(node)?;
-    voyager_ogm::emit_node_index_ddl(&schema, dialect).map_err(to_py_schema_err)
+    voyager_ogm::emit_node_index_ddl_with_graph(&schema, dialect, graph_name)
+        .map_err(to_py_schema_err)
 }
 
 #[pyfunction]
-#[pyo3(signature = (rel, dialect="cypher"))]
-fn emit_rel_index_ddl(rel: &Bound<'_, PyAny>, dialect: &str) -> PyResult<Vec<String>> {
+#[pyo3(signature = (rel, dialect="cypher", graph_name=None))]
+fn emit_rel_index_ddl(
+    rel: &Bound<'_, PyAny>,
+    dialect: &str,
+    graph_name: Option<&str>,
+) -> PyResult<Vec<String>> {
     let schema = extract_rel_schema(rel)?;
-    voyager_ogm::emit_rel_index_ddl(&schema, dialect).map_err(to_py_schema_err)
+    voyager_ogm::emit_rel_index_ddl_with_graph(&schema, dialect, graph_name)
+        .map_err(to_py_schema_err)
 }
 
 #[pyfunction]
-#[pyo3(signature = (node, dialect="cypher", include_type_constraints=false))]
+#[pyo3(signature = (node, dialect="cypher", include_type_constraints=false, graph_name=None))]
 fn emit_node_constraint_ddl(
     node: &Bound<'_, PyAny>,
     dialect: &str,
     include_type_constraints: bool,
+    graph_name: Option<&str>,
 ) -> PyResult<Vec<String>> {
     let schema = extract_node_schema(node)?;
-    voyager_ogm::emit_node_constraint_ddl(&schema, dialect, include_type_constraints)
-        .map_err(to_py_schema_err)
+    voyager_ogm::emit_node_constraint_ddl_with_graph(
+        &schema,
+        dialect,
+        include_type_constraints,
+        graph_name,
+    )
+    .map_err(to_py_schema_err)
 }
 
 #[pyfunction]
-#[pyo3(signature = (rel, dialect="cypher", include_type_constraints=false))]
+#[pyo3(signature = (rel, dialect="cypher", include_type_constraints=false, graph_name=None))]
 fn emit_rel_constraint_ddl(
     rel: &Bound<'_, PyAny>,
     dialect: &str,
     include_type_constraints: bool,
+    graph_name: Option<&str>,
 ) -> PyResult<Vec<String>> {
     let schema = extract_rel_schema(rel)?;
-    voyager_ogm::emit_rel_constraint_ddl(&schema, dialect, include_type_constraints)
+    voyager_ogm::emit_rel_constraint_ddl_with_graph(
+        &schema,
+        dialect,
+        include_type_constraints,
+        graph_name,
+    )
+    .map_err(to_py_schema_err)
+}
+
+#[pyfunction]
+#[pyo3(signature = (node, dialect="cypher", graph_name=None))]
+fn emit_node_drop_index_ddl(
+    node: &Bound<'_, PyAny>,
+    dialect: &str,
+    graph_name: Option<&str>,
+) -> PyResult<Vec<String>> {
+    let schema = extract_node_schema(node)?;
+    voyager_ogm::emit_node_drop_index_ddl_with_graph(&schema, dialect, graph_name)
         .map_err(to_py_schema_err)
 }
 
 #[pyfunction]
-#[pyo3(signature = (node, dialect="cypher"))]
-fn emit_node_drop_index_ddl(node: &Bound<'_, PyAny>, dialect: &str) -> PyResult<Vec<String>> {
-    let schema = extract_node_schema(node)?;
-    voyager_ogm::emit_node_drop_index_ddl(&schema, dialect).map_err(to_py_schema_err)
-}
-
-#[pyfunction]
-#[pyo3(signature = (rel, dialect="cypher"))]
-fn emit_rel_drop_index_ddl(rel: &Bound<'_, PyAny>, dialect: &str) -> PyResult<Vec<String>> {
+#[pyo3(signature = (rel, dialect="cypher", graph_name=None))]
+fn emit_rel_drop_index_ddl(
+    rel: &Bound<'_, PyAny>,
+    dialect: &str,
+    graph_name: Option<&str>,
+) -> PyResult<Vec<String>> {
     let schema = extract_rel_schema(rel)?;
-    voyager_ogm::emit_rel_drop_index_ddl(&schema, dialect).map_err(to_py_schema_err)
+    voyager_ogm::emit_rel_drop_index_ddl_with_graph(&schema, dialect, graph_name)
+        .map_err(to_py_schema_err)
 }
 
 #[pyfunction]
-#[pyo3(signature = (node, dialect="cypher", include_type_constraints=false))]
+#[pyo3(signature = (node, dialect="cypher", include_type_constraints=false, graph_name=None))]
 fn emit_node_drop_constraint_ddl(
     node: &Bound<'_, PyAny>,
     dialect: &str,
     include_type_constraints: bool,
+    graph_name: Option<&str>,
 ) -> PyResult<Vec<String>> {
     let schema = extract_node_schema(node)?;
-    voyager_ogm::emit_node_drop_constraint_ddl(&schema, dialect, include_type_constraints)
-        .map_err(to_py_schema_err)
+    voyager_ogm::emit_node_drop_constraint_ddl_with_graph(
+        &schema,
+        dialect,
+        include_type_constraints,
+        graph_name,
+    )
+    .map_err(to_py_schema_err)
 }
 
 #[pyfunction]
-#[pyo3(signature = (rel, dialect="cypher", include_type_constraints=false))]
+#[pyo3(signature = (rel, dialect="cypher", include_type_constraints=false, graph_name=None))]
 fn emit_rel_drop_constraint_ddl(
     rel: &Bound<'_, PyAny>,
     dialect: &str,
     include_type_constraints: bool,
+    graph_name: Option<&str>,
 ) -> PyResult<Vec<String>> {
     let schema = extract_rel_schema(rel)?;
-    voyager_ogm::emit_rel_drop_constraint_ddl(&schema, dialect, include_type_constraints)
-        .map_err(to_py_schema_err)
+    voyager_ogm::emit_rel_drop_constraint_ddl_with_graph(
+        &schema,
+        dialect,
+        include_type_constraints,
+        graph_name,
+    )
+    .map_err(to_py_schema_err)
 }
 
 /// Returns the canonical deterministic vector index name for a given label and property across dialects.

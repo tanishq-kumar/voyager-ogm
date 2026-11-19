@@ -206,3 +206,179 @@ fn test_age_mutation_wrappers() {
         Some(&LiteralValue::String("Eva".into()))
     );
 }
+
+#[test]
+fn test_age_default_and_custom_graph_name() {
+    use voyager_ogm::emitters::age::DEFAULT_AGE_GRAPH;
+
+    assert_eq!(DEFAULT_AGE_GRAPH, "age_graph");
+
+    let mut b = QueryBuilder::new();
+    b.match_node(Some("p"), vec!["Person"])
+        .field("p", "name", None::<String>);
+    let (arena, root) = b.build();
+
+    // Default emitter
+    let mut default_emitter = AgeEmitter::default();
+    let res_default = default_emitter.visit_query(&arena, root).unwrap();
+    assert!(
+        res_default
+            .statement
+            .starts_with("SELECT * FROM cypher('age_graph',")
+    );
+
+    // Custom graph name emitter
+    let mut custom_emitter = AgeEmitter::new("production_graph");
+    let res_custom = custom_emitter.visit_query(&arena, root).unwrap();
+    assert!(
+        res_custom
+            .statement
+            .starts_with("SELECT * FROM cypher('production_graph',")
+    );
+}
+
+#[test]
+fn test_age_invalid_graph_name_rejected() {
+    let mut b = QueryBuilder::new();
+    b.match_node(Some("p"), vec!["Person"])
+        .field("p", "name", None::<String>);
+    let (arena, root) = b.build();
+
+    let invalid_names = [
+        "x'); DROP",
+        "",
+        "a b",
+        "123start_with_digit",
+        "has-hyphen",
+        "drop;--",
+    ];
+    for name in invalid_names {
+        let mut emitter = AgeEmitter::new(name);
+        let err = emitter.visit_query(&arena, root);
+        assert!(err.is_err(), "Expected graph name '{name}' to be rejected");
+        let err_msg = err.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Invalid Apache AGE graph name"),
+            "Unexpected error message for '{name}': {err_msg}"
+        );
+    }
+}
+
+#[test]
+fn test_bulk_compilation_with_age_graph() {
+    use voyager_ogm::bulk::{compile_bulk_create_with_graph, compile_bulk_merge_with_graph};
+
+    let props = ["name", "age"];
+    let c = compile_bulk_create_with_graph(
+        "User",
+        &props,
+        "batch",
+        "row",
+        "age",
+        Some("production_graph"),
+    )
+    .unwrap();
+    assert!(c.statement.starts_with(
+        "SELECT * FROM cypher('production_graph', $$ UNWIND $batch AS row CREATE (_user_0:User)"
+    ));
+
+    let m = compile_bulk_merge_with_graph(
+        "User",
+        "name",
+        &["age"],
+        "batch",
+        "row",
+        "age",
+        Some("production_graph"),
+    )
+    .unwrap();
+    assert!(m.statement.starts_with(
+        "SELECT * FROM cypher('production_graph', $$ UNWIND $batch AS row MERGE (_user_0:User"
+    ));
+}
+
+#[test]
+fn test_age_ddl_graph_schema_targeting() {
+    use voyager_ogm::emitters::{
+        emit_node_constraint_ddl_with_graph, emit_node_drop_index_ddl_with_graph,
+        emit_node_index_ddl, emit_node_index_ddl_with_graph, emit_rel_index_ddl_with_graph,
+    };
+    use voyager_ogm::schema::{
+        FieldDescriptor, FieldType, FullTextIndexConfig, NodeSchema, RelationshipSchema,
+        VectorSimilarity,
+    };
+
+    let doc_schema = NodeSchema::new("Doc", vec!["Doc".to_string()])
+        .with_field(FieldDescriptor::new("id", FieldType::Int64).primary_key())
+        .with_field(FieldDescriptor::new("title", FieldType::String))
+        .with_field(
+            FieldDescriptor::new("embedding", FieldType::List(Box::new(FieldType::Float64)))
+                .with_vector_index(
+                    128,
+                    VectorSimilarity::Cosine,
+                    Some("doc_vec_idx".to_string()),
+                ),
+        )
+        .with_fulltext_index(FullTextIndexConfig {
+            name: "doc_ft_idx".to_string(),
+            properties: vec!["title".to_string()],
+            analyzer: Some("english".to_string()),
+        });
+
+    // 1. Default graph -> "age_graph"."Doc"
+    let default_ddl = emit_node_index_ddl(&doc_schema, "age").unwrap();
+    assert_eq!(default_ddl.len(), 2);
+    assert!(default_ddl[0].contains("CREATE INDEX IF NOT EXISTS doc_vec_idx ON \"age_graph\".\"Doc\" USING hnsw (embedding vector_cosine_ops);"));
+    assert!(default_ddl[1].contains("CREATE INDEX IF NOT EXISTS doc_ft_idx ON \"age_graph\".\"Doc\" USING gin (to_tsvector('english', (properties->>'title'::text)));"));
+
+    // 2. Custom graph -> "production_graph"."Doc"
+    let custom_ddl =
+        emit_node_index_ddl_with_graph(&doc_schema, "age", Some("production_graph")).unwrap();
+    assert_eq!(custom_ddl.len(), 2);
+    assert!(custom_ddl[0].contains("CREATE INDEX IF NOT EXISTS doc_vec_idx ON \"production_graph\".\"Doc\" USING hnsw (embedding vector_cosine_ops);"));
+    assert!(custom_ddl[1].contains("CREATE INDEX IF NOT EXISTS doc_ft_idx ON \"production_graph\".\"Doc\" USING gin (to_tsvector('english', (properties->>'title'::text)));"));
+
+    // 3. Drop index statements
+    let default_drop = emit_node_drop_index_ddl_with_graph(&doc_schema, "age", None).unwrap();
+    assert_eq!(default_drop.len(), 2);
+    assert_eq!(
+        default_drop[0],
+        "DROP INDEX IF EXISTS \"age_graph\".doc_vec_idx;"
+    );
+    assert_eq!(
+        default_drop[1],
+        "DROP INDEX IF EXISTS \"age_graph\".doc_ft_idx;"
+    );
+
+    let custom_drop =
+        emit_node_drop_index_ddl_with_graph(&doc_schema, "age", Some("production_graph")).unwrap();
+    assert_eq!(custom_drop.len(), 2);
+    assert_eq!(
+        custom_drop[0],
+        "DROP INDEX IF EXISTS \"production_graph\".doc_vec_idx;"
+    );
+    assert_eq!(
+        custom_drop[1],
+        "DROP INDEX IF EXISTS \"production_graph\".doc_ft_idx;"
+    );
+
+    // 4. Invalid graph name rejected
+    assert!(emit_node_index_ddl_with_graph(&doc_schema, "age", Some("bad;drop")).is_err());
+    assert!(emit_node_drop_index_ddl_with_graph(&doc_schema, "age", Some("")).is_err());
+    assert!(emit_node_index_ddl_with_graph(&doc_schema, "age", Some("123num")).is_err());
+
+    // 5. Relationship and constraint error messages reference graph schema
+    let rel_schema = RelationshipSchema::new("Links", "LINKS");
+    let rel_err =
+        emit_rel_index_ddl_with_graph(&rel_schema, "age", Some("production_graph")).unwrap_err();
+    assert!(
+        rel_err
+            .to_string()
+            .contains("\"production_graph\".\"LINKS\"")
+    );
+
+    let constr_err =
+        emit_node_constraint_ddl_with_graph(&doc_schema, "age", false, Some("production_graph"))
+            .unwrap_err();
+    assert!(constr_err.to_string().contains("\"<graph>\".\"<Label>\""));
+}

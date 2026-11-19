@@ -207,22 +207,30 @@ class NativeSchemaRegistry:
     def generate_cypher25_graph_type_ddl(self, model_names: list[str] | None = None) -> str: ...
     def generate_cypher25_drop_graph_type_ddl(self) -> str: ...
     def generate_index_ddl(
-        self, model_names: list[str] | None = None, dialect: str = "cypher"
+        self,
+        dialect: str = "cypher",
+        model_names: list[str] | None = None,
+        graph_name: str | None = None,
     ) -> list[str]: ...
     def generate_constraint_ddl(
         self,
-        model_names: list[str] | None = None,
         dialect: str = "cypher",
+        model_names: list[str] | None = None,
         include_type_constraints: bool = False,
+        graph_name: str | None = None,
     ) -> list[str]: ...
     def generate_drop_index_ddl(
-        self, model_names: list[str] | None = None, dialect: str = "cypher"
+        self,
+        dialect: str = "cypher",
+        model_names: list[str] | None = None,
+        graph_name: str | None = None,
     ) -> list[str]: ...
     def generate_drop_constraint_ddl(
         self,
-        model_names: list[str] | None = None,
         dialect: str = "cypher",
+        model_names: list[str] | None = None,
         include_type_constraints: bool = False,
+        graph_name: str | None = None,
     ) -> list[str]: ...
     def validate_query(self, query: str) -> dict[str, Any]: ...
     def __len__(self) -> int: ...
@@ -360,6 +368,7 @@ def compile_bulk_create(
     batch_param: str = "batch",
     row_alias: str = "row",
     dialect: str = "cypher",
+    graph_name: str | None = None,
 ) -> dict[str, Any]: ...
 def compile_bulk_merge(
     label: str,
@@ -368,6 +377,7 @@ def compile_bulk_merge(
     batch_param: str = "batch",
     row_alias: str = "row",
     dialect: str = "cypher",
+    graph_name: str | None = None,
 ) -> dict[str, Any]: ...
 def compile_bulk_create_rel(
     rel_type: str,
@@ -379,6 +389,7 @@ def compile_bulk_create_rel(
     batch_param: str = "batch",
     row_alias: str = "row",
     dialect: str = "cypher",
+    graph_name: str | None = None,
 ) -> dict[str, Any]: ...
 def compile_query_from_spec(
     spec: dict[str, Any],
@@ -420,21 +431,41 @@ def emit_cypher25_graph_type_ddl(
     rels: list[Any] | None = None,
 ) -> str: ...
 def emit_cypher25_drop_graph_type_ddl() -> str: ...
-def emit_node_index_ddl(spec: Any, dialect: str = "cypher") -> list[str]: ...
-def emit_rel_index_ddl(spec: Any, dialect: str = "cypher") -> list[str]: ...
+def emit_node_index_ddl(
+    spec: Any, dialect: str = "cypher", graph_name: str | None = None
+) -> list[str]: ...
+def emit_rel_index_ddl(
+    spec: Any, dialect: str = "cypher", graph_name: str | None = None
+) -> list[str]: ...
 def emit_node_constraint_ddl(
-    spec: Any, dialect: str = "cypher", include_type_constraints: bool = False
+    spec: Any,
+    dialect: str = "cypher",
+    include_type_constraints: bool = False,
+    graph_name: str | None = None,
 ) -> list[str]: ...
 def emit_rel_constraint_ddl(
-    spec: Any, dialect: str = "cypher", include_type_constraints: bool = False
+    spec: Any,
+    dialect: str = "cypher",
+    include_type_constraints: bool = False,
+    graph_name: str | None = None,
 ) -> list[str]: ...
-def emit_node_drop_index_ddl(spec: Any, dialect: str = "cypher") -> list[str]: ...
-def emit_rel_drop_index_ddl(spec: Any, dialect: str = "cypher") -> list[str]: ...
+def emit_node_drop_index_ddl(
+    spec: Any, dialect: str = "cypher", graph_name: str | None = None
+) -> list[str]: ...
+def emit_rel_drop_index_ddl(
+    spec: Any, dialect: str = "cypher", graph_name: str | None = None
+) -> list[str]: ...
 def emit_node_drop_constraint_ddl(
-    spec: Any, dialect: str = "cypher", include_type_constraints: bool = False
+    spec: Any,
+    dialect: str = "cypher",
+    include_type_constraints: bool = False,
+    graph_name: str | None = None,
 ) -> list[str]: ...
 def emit_rel_drop_constraint_ddl(
-    spec: Any, dialect: str = "cypher", include_type_constraints: bool = False
+    spec: Any,
+    dialect: str = "cypher",
+    include_type_constraints: bool = False,
+    graph_name: str | None = None,
 ) -> list[str]: ...
 def canonical_vector_index_name(label: str, prop: str, dialect: str | None = None) -> str:
     """Returns canonical vector index name. Defaults to Cypher if dialect is omitted or unrecognized."""

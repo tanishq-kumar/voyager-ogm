@@ -11,6 +11,7 @@ import asyncio
 import datetime
 import inspect
 import json
+import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -166,6 +167,34 @@ def _validate_savepoint_name(name: str) -> str:
     return name
 
 
+_SAFE_GRAPH_NAME_REGEX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+
+
+def validate_graph_name(graph_name: str) -> str:
+    """Validates that a graph name is a safe SQL/AGE identifier.
+
+    Graph names in Apache AGE are interpolated into SQL queries
+    (e.g. `cypher('<graph_name>', ...)`). To prevent SQL injection and syntax
+    errors, graph names must be valid alphanumeric/underscore identifiers
+    starting with an ASCII letter or underscore, up to 63 characters in length.
+
+    Args:
+        graph_name: The graph name to validate.
+
+    Returns:
+        The validated graph name.
+
+    Raises:
+        ValueError: If graph_name is not a valid identifier.
+    """
+    if not isinstance(graph_name, str) or not _SAFE_GRAPH_NAME_REGEX.match(graph_name):
+        raise ValueError(
+            f"Invalid graph name {graph_name!r}. Graph names must be valid alphanumeric/underscore "
+            "identifiers (1-63 characters, starting with an ASCII letter or underscore)."
+        )
+    return graph_name
+
+
 def _pg_transaction_status(conn: Any) -> str | None:
     """Returns the psycopg transaction status name when the driver exposes it."""
     info = getattr(conn, "info", None)
@@ -288,7 +317,10 @@ class MockTransaction:
 class MockBridge:
     """In-memory Mock Bridge for zero-network testing and query inspection."""
 
-    def __init__(self) -> None:
+    def __init__(self, graph_name: str | None = None) -> None:
+        if graph_name is not None:
+            validate_graph_name(graph_name)
+        self.graph_name = graph_name
         self.executed_queries: list[tuple[str, dict[str, Any]]] = []
         self._canned_results: list[list[dict[str, Any]] | pl.DataFrame] = []
 
@@ -465,8 +497,23 @@ class AsyncMockTransaction:
 class AsyncMockBridge:
     """Asynchronous in-memory Mock Bridge for testing."""
 
-    def __init__(self) -> None:
-        self.sync_mock = MockBridge()
+    def __init__(self, sync_mock: MockBridge | None = None, graph_name: str | None = None) -> None:
+        if graph_name is not None:
+            validate_graph_name(graph_name)
+        self.sync_mock = sync_mock or MockBridge(graph_name=graph_name)
+        if graph_name is not None:
+            self.sync_mock.graph_name = graph_name
+
+    @property
+    def graph_name(self) -> str | None:
+        """Returns the configured Apache AGE graph name."""
+        return self.sync_mock.graph_name
+
+    @graph_name.setter
+    def graph_name(self, value: str | None) -> None:
+        if value is not None:
+            validate_graph_name(value)
+        self.sync_mock.graph_name = value
 
     @property
     def executed_queries(self) -> list[tuple[str, dict[str, Any]]]:
@@ -1734,14 +1781,18 @@ def setup_postgres_age(conn: Any, force: bool = False) -> None:
 class PostgresBridge:
     """Synchronous PostgreSQL driver bridge (psycopg 3 / psycopg2) with zero-copy Polars output."""
 
-    def __init__(self, connection: Any) -> None:
+    def __init__(self, connection: Any, graph_name: str | None = None) -> None:
         """Initializes PostgresBridge.
 
         Args:
             connection: PostgreSQL connection instance (e.g. psycopg.Connection).
+            graph_name: Optional Apache AGE graph name to target.
         """
+        if graph_name is not None:
+            validate_graph_name(graph_name)
         self.conn = connection
         self._conn = connection
+        self.graph_name = graph_name
         setup_postgres_age(self.conn, force=False)
 
     @property
@@ -2116,15 +2167,29 @@ class PostgresBridgeTransaction:
 class AsyncPostgresBridge:
     """Asynchronous PostgreSQL driver bridge using asyncio worker threads."""
 
-    def __init__(self, connection: Any) -> None:
+    def __init__(self, connection: Any, graph_name: str | None = None) -> None:
         """Initializes AsyncPostgresBridge.
 
         Args:
             connection: PostgreSQL connection instance.
+            graph_name: Optional Apache AGE graph name to target.
         """
-        self.sync_bridge = PostgresBridge(connection)
+        if graph_name is not None:
+            validate_graph_name(graph_name)
+        self.sync_bridge = PostgresBridge(connection, graph_name=graph_name)
         self.conn = connection
         self._conn = connection
+
+    @property
+    def graph_name(self) -> str | None:
+        """The configured Apache AGE graph name, or None."""
+        return self.sync_bridge.graph_name
+
+    @graph_name.setter
+    def graph_name(self, value: str | None) -> None:
+        if value is not None:
+            validate_graph_name(value)
+        self.sync_bridge.graph_name = value
 
     @property
     def connection(self) -> Any:
@@ -3115,6 +3180,7 @@ def create_bridge(
     fallback: str | None = None,
     *,
     auth: tuple[str, str] | Any | None = None,
+    graph_name: str | None = None,
 ) -> DatabaseBridge: ...
 
 
@@ -3125,6 +3191,7 @@ def create_bridge(
     fallback: str | None = None,
     *,
     auth: tuple[str, str] | Any | None = None,
+    graph_name: str | None = None,
 ) -> AsyncDatabaseBridge: ...
 
 
@@ -3135,6 +3202,7 @@ def create_bridge(
     fallback: str | None = None,
     *,
     auth: tuple[str, str] | Any | None = None,
+    graph_name: str | None = None,
 ) -> DatabaseBridge | AsyncDatabaseBridge: ...
 
 
@@ -3144,6 +3212,7 @@ def create_bridge(
     fallback: str | None = None,
     *,
     auth: tuple[str, str] | Any | None = None,
+    graph_name: str | None = None,
 ) -> DatabaseBridge | AsyncDatabaseBridge:
     """Creates or adapts a database bridge from a user-supplied driver, connection, or URI.
 
@@ -3158,29 +3227,46 @@ def create_bridge(
             a (username, password) tuple passed as connect kwargs. For FalkorDB/Redis schemes,
             accepts a (username, password) tuple. Explicit auth overrides credentials present
             in the URI.
+        graph_name: Optional Apache AGE graph name to target when connecting to Apache AGE
+            or PostgreSQL. If specified, validated as a safe identifier.
 
     Returns:
         Configured database bridge adapter.
 
     Raises:
         ValueError: If no driver/URI was provided, or if the URI scheme is unrecognized and
-            fallback="mock" was not explicitly requested.
+            fallback="mock" was not explicitly requested, or if graph_name is invalid.
         ImportError: If the official driver package required for the URI scheme is not installed
             and fallback="mock" was not explicitly requested.
         TypeError: If the driver_or_connection object type is unsupported, or if an invalid
             auth type was provided for the scheme.
     """
+    if graph_name is not None:
+        validate_graph_name(graph_name)
+
     if driver_or_connection is None:
         if fallback == "mock":
-            return AsyncMockBridge() if is_async else MockBridge()
+            return (
+                AsyncMockBridge(graph_name=graph_name)
+                if is_async
+                else MockBridge(graph_name=graph_name)
+            )
         raise ValueError(
             "No database driver, connection, or URI provided. "
             "Provide a valid driver instance, connection URI, or pass fallback='mock' (or use a 'mock://' URI) for offline testing."
         )
 
     if isinstance(driver_or_connection, MockBridge):
-        return AsyncMockBridge() if is_async else driver_or_connection
+        if graph_name is not None:
+            driver_or_connection.graph_name = graph_name
+        return (
+            AsyncMockBridge(driver_or_connection, graph_name=driver_or_connection.graph_name)
+            if is_async
+            else driver_or_connection
+        )
     if isinstance(driver_or_connection, AsyncMockBridge):
+        if graph_name is not None:
+            driver_or_connection.graph_name = graph_name
         return driver_or_connection if is_async else driver_or_connection.sync_mock
 
     if (
@@ -3188,17 +3274,24 @@ def create_bridge(
         and isinstance(driver_or_connection, AsyncDatabaseBridge)
         and inspect.iscoroutinefunction(getattr(driver_or_connection, "execute", None))
     ):
+        if graph_name is not None and hasattr(driver_or_connection, "graph_name"):
+            driver_or_connection.graph_name = graph_name
         return driver_or_connection
     if (
         not is_async
         and isinstance(driver_or_connection, DatabaseBridge)
         and not inspect.iscoroutinefunction(getattr(driver_or_connection, "execute", None))
     ):
+        if graph_name is not None and hasattr(driver_or_connection, "graph_name"):
+            driver_or_connection.graph_name = graph_name
         return driver_or_connection
 
     for matcher, bridge_cls, reg_is_async in _BRIDGE_REGISTRY:
         if reg_is_async == is_async and matcher(driver_or_connection):
-            return bridge_cls(driver_or_connection)
+            bridge_inst = bridge_cls(driver_or_connection)
+            if graph_name is not None and hasattr(bridge_inst, "graph_name"):
+                bridge_inst.graph_name = graph_name
+            return bridge_inst
 
     if is_async:
         for matcher, bridge_cls, reg_is_async in _BRIDGE_REGISTRY:
@@ -3210,11 +3303,28 @@ def create_bridge(
                     return AsyncFalkorDBBridge(driver_or_connection)
                 elif isinstance(sync_inst, RelateBridge):
                     return AsyncRelateBridge(driver_or_connection)
+                elif isinstance(sync_inst, PostgresBridge):
+                    async_inst = AsyncPostgresBridge(driver_or_connection)
+                    if graph_name is not None:
+                        async_inst.graph_name = graph_name
+                    return async_inst
 
     # If a database connection URI string was provided, attempt to auto-instantiate the official driver
     if isinstance(driver_or_connection, str):
         if driver_or_connection.startswith("mock://"):
-            return AsyncMockBridge() if is_async else MockBridge()
+            from urllib.parse import parse_qs, urlsplit
+
+            parsed_mock = urlsplit(driver_or_connection)
+            qs_mock = parse_qs(parsed_mock.query)
+            uri_mock_graph = qs_mock.get("graph", qs_mock.get("graph_name", [None]))[0]
+            resolved_mock_graph = graph_name if graph_name is not None else uri_mock_graph
+            if resolved_mock_graph is not None:
+                validate_graph_name(resolved_mock_graph)
+            return (
+                AsyncMockBridge(graph_name=resolved_mock_graph)
+                if is_async
+                else MockBridge(graph_name=resolved_mock_graph)
+            )
 
         if "://" not in driver_or_connection:
             if fallback == "mock":
@@ -3349,8 +3459,13 @@ def create_bridge(
             parsed_pg = urlsplit(driver_or_connection)
             target_scheme = "postgresql" if (is_age_scheme or is_ssl_scheme) else parsed_pg.scheme
             new_query = parsed_pg.query
+            qs = parse_qs(parsed_pg.query)
+            uri_graph = qs.get("graph", qs.get("graph_name", [None]))[0]
+            resolved_graph = graph_name if graph_name is not None else uri_graph
+            if resolved_graph is not None:
+                validate_graph_name(resolved_graph)
+
             if is_ssl_scheme:
-                qs = parse_qs(parsed_pg.query)
                 if "sslmode" not in qs and "ssl" not in qs:
                     new_query = (
                         f"{parsed_pg.query}&sslmode=require"
@@ -3376,8 +3491,10 @@ def create_bridge(
 
             pg_conn = psycopg.connect(clean_pg_uri, **pg_kwargs)
             setup_postgres_age(pg_conn, force=is_age_scheme)
-            pg_bridge = PostgresBridge(pg_conn)
-            return AsyncPostgresBridge(pg_conn) if is_async else pg_bridge
+            pg_bridge = PostgresBridge(pg_conn, graph_name=resolved_graph)
+            return (
+                AsyncPostgresBridge(pg_conn, graph_name=resolved_graph) if is_async else pg_bridge
+            )
         elif scheme in (
             "falkordb",
             "falkordbs",

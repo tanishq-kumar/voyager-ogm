@@ -148,18 +148,17 @@ def main() -> None:
         try:
             age_uri = "postgresql://postgres:voyagerpass123@127.0.0.1:5455/voyager_graph"
             bridge_age = create_bridge(age_uri)
-            session_age = Session(bridge=bridge_age, dialect="age")
-            compiled_clean = q_clean.compile("age", graph_name="microservices_graph")
-            compiled_seed = q_seed.compile("age", graph_name="microservices_graph")
-            compiled_query = q.compile("age", graph_name="microservices_graph")
+            session_age = Session(
+                bridge=bridge_age, dialect="age", graph_name="microservices_graph"
+            )
 
-            session_age.execute(compiled_clean)
-            session_age.execute(compiled_seed)
-            res_age = session_age.execute(compiled_query)
+            session_age.execute(q_clean)
+            session_age.execute(q_seed)
+            res_age = session_age.execute(q)
             print(f"Apache AGE live execution returned {len(res_age)} rows:")
             for row in res_age.mappings().all():
                 print(f"  {row['source']} -> {row['target']} via {row['protocol']}")
-            session_age.execute(compiled_clean)
+            session_age.execute(q_clean)
             session_age.close()
             engines_tested += 1
         except Exception as err:

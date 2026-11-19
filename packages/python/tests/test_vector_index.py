@@ -146,13 +146,30 @@ class TestVectorModelReflectionAndDDL:
         # Apache AGE DDL
         age_stmts = SchemaManager.generate_index_ddl(ItemAge, dialect="age")
         assert any(
-            'CREATE INDEX IF NOT EXISTS item_feature_idx ON ag_catalog."ItemAge" USING hnsw (feature vector_l2_ops);'
+            'CREATE INDEX IF NOT EXISTS item_feature_idx ON "age_graph"."ItemAge" USING hnsw (feature vector_l2_ops);'
             in s
             for s in age_stmts
         )
 
         age_drop = SchemaManager.generate_drop_index_ddl(ItemAge, dialect="age")
-        assert any("DROP INDEX IF EXISTS item_feature_idx;" in s for s in age_drop)
+        assert any('DROP INDEX IF EXISTS "age_graph".item_feature_idx;' in s for s in age_drop)
+
+        # Apache AGE DDL with custom graph
+        custom_age_stmts = SchemaManager.generate_index_ddl(
+            ItemAge, dialect="age", graph_name="production_graph"
+        )
+        assert any(
+            'CREATE INDEX IF NOT EXISTS item_feature_idx ON "production_graph"."ItemAge" USING hnsw (feature vector_l2_ops);'
+            in s
+            for s in custom_age_stmts
+        )
+        custom_age_drop = SchemaManager.generate_drop_index_ddl(
+            ItemAge, dialect="age", graph_name="production_graph"
+        )
+        assert any(
+            'DROP INDEX IF EXISTS "production_graph".item_feature_idx;' in s
+            for s in custom_age_drop
+        )
 
         # PostgreSQL DDL
         sql_stmts = SchemaManager.generate_index_ddl(ItemAge, dialect="postgres")

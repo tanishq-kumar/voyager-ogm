@@ -5,6 +5,22 @@ use crate::emitters::cypher::CypherEmitter;
 use crate::error::Result;
 use crate::visitor::{AstVisitor, CompiledQuery};
 
+/// Default graph name used by Apache AGE queries when none is explicitly configured.
+pub const DEFAULT_AGE_GRAPH: &str = "age_graph";
+
+/// Validates whether a graph name is a safe PostgreSQL / Apache AGE identifier.
+pub fn is_valid_age_graph_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 63 {
+        return false;
+    }
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// Emits PostgreSQL Apache AGE wrapped Cypher queries:
 /// `SELECT * FROM cypher('graph_name', $$ MATCH ... RETURN ... $$) AS (col1 agtype, col2 agtype)`
 #[derive(Debug)]
@@ -19,16 +35,27 @@ impl AgeEmitter {
             graph_name: graph_name.into(),
         }
     }
+
+    /// Returns the target graph name.
+    pub fn graph_name(&self) -> &str {
+        &self.graph_name
+    }
 }
 
 impl Default for AgeEmitter {
     fn default() -> Self {
-        Self::new("age_graph")
+        Self::new(DEFAULT_AGE_GRAPH)
     }
 }
 
 impl AstVisitor for AgeEmitter {
     fn visit_query(&mut self, arena: &QueryAstArena, root: NodeHandle) -> Result<CompiledQuery> {
+        if !is_valid_age_graph_name(&self.graph_name) {
+            return Err(crate::error::Error::EmissionError(format!(
+                "Invalid Apache AGE graph name '{}'. Graph names must be valid identifiers (alphanumeric and underscores, starting with a letter or underscore, 1 to 63 characters).",
+                self.graph_name
+            )));
+        }
         let mut cypher_emitter = CypherEmitter::new().without_execution_mode();
         let cypher_compiled = cypher_emitter.visit_query(arena, root)?;
 

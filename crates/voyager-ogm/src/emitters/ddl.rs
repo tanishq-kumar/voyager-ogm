@@ -4,6 +4,7 @@
 //! across openCypher (Neo4j / Memgraph), ISO GQL, and SQL:2023 PGQ / DuckPGQ
 //! directly from native `SchemaRegistry` metadata.
 
+use crate::emitters::age::{DEFAULT_AGE_GRAPH, is_valid_age_graph_name};
 use crate::error::{Error, Result};
 use crate::schema::{
     DEFAULT_MEMGRAPH_VECTOR_CAPACITY, DEFAULT_VECTOR_DIMENSIONS, FieldDescriptor, FieldType,
@@ -797,7 +798,7 @@ pub fn ensure_ddl_supported(dialect: &str, op: DdlOp) -> Result<DdlDialect> {
         return Err(Error::UnsupportedDialect {
             dialect: "Apache AGE".to_string(),
             feature: format!(
-                "Cypher '{}' queries. Indexes and constraints in Apache AGE must be defined directly on the underlying PostgreSQL relational tables (e.g. CREATE INDEX ON {{graph}}.\"Label\" USING gin (properties)).",
+                "Cypher '{}' queries. Indexes and constraints in Apache AGE must be defined directly on the underlying PostgreSQL relational tables (e.g. CREATE INDEX ON \"<graph>\".\"<Label>\" USING gin (properties)).",
                 op.name()
             ),
         });
@@ -829,8 +830,17 @@ pub fn is_pure_index_field(field: &FieldDescriptor) -> bool {
     field.indexed && !field.unique && !field.primary_key
 }
 
-/// Emits CREATE INDEX DDL statements for a single node across dialects.
+/// Emits CREATE INDEX DDL statements for a single node across dialects, using default graph targeting.
 pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<String>> {
+    emit_node_index_ddl_with_graph(node, dialect, None)
+}
+
+/// Emits CREATE INDEX DDL statements for a single node across dialects with an optional graph name.
+pub fn emit_node_index_ddl_with_graph(
+    node: &NodeSchema,
+    dialect: &str,
+    graph_name: Option<&str>,
+) -> Result<Vec<String>> {
     let ddl_dialect = ensure_ddl_supported(dialect, DdlOp::CreateIndex)?;
     let mut statements = Vec::new();
     let primary_label = node.primary_label();
@@ -955,6 +965,12 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
             }
         }
         DdlDialect::Age => {
+            let target_graph = graph_name.unwrap_or(DEFAULT_AGE_GRAPH);
+            if !is_valid_age_graph_name(target_graph) {
+                return Err(Error::EmissionError(format!(
+                    "Invalid Apache AGE graph name '{target_graph}': must be 1-63 alphanumeric/underscore characters starting with a letter or underscore"
+                )));
+            }
             let has_vector = node
                 .fields
                 .values()
@@ -963,7 +979,9 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
             if !has_vector && !has_fulltext {
                 return Err(Error::UnsupportedDialect {
                     dialect: "Apache AGE".to_string(),
-                    feature: "Cypher 'CREATE INDEX' queries. Indexes and constraints in Apache AGE must be defined directly on the underlying PostgreSQL relational tables (e.g. CREATE INDEX ON {graph}.\"Label\" USING gin (properties)).".to_string(),
+                    feature: format!(
+                        "Cypher 'CREATE INDEX' queries. Indexes and constraints in Apache AGE must be defined directly on the underlying PostgreSQL relational tables (e.g. CREATE INDEX ON \"{target_graph}\".\"{primary_label}\" USING gin (properties))."
+                    ),
                 });
             }
             for field in node.fields.values() {
@@ -977,7 +995,7 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                         canonical_vector_index_name(primary_label, &field.name, ddl_dialect)
                     });
                     statements.push(format!(
-                        "CREATE INDEX IF NOT EXISTS {idx_name} ON ag_catalog.\"{primary_label}\" USING hnsw ({} {opclass});",
+                        "CREATE INDEX IF NOT EXISTS {idx_name} ON \"{target_graph}\".\"{primary_label}\" USING hnsw ({} {opclass});",
                         field.name
                     ));
                 }
@@ -988,15 +1006,18 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                 } else {
                     ft.name.clone()
                 };
-                let analyzer = ft.analyzer.as_deref().unwrap_or("english");
+                let analyzer = match ft.analyzer.as_deref() {
+                    Some("standard") | None | Some("") => "english",
+                    Some(other) => other,
+                };
                 let expr = ft
                     .properties
                     .iter()
-                    .map(|p| format!("(properties->>'{p}')"))
+                    .map(|p| format!("(properties->>'{p}'::text)"))
                     .collect::<Vec<_>>()
                     .join(" || ' ' || ");
                 statements.push(format!(
-                    "CREATE INDEX IF NOT EXISTS {idx_name} ON ag_catalog.\"{primary_label}\" USING gin (to_tsvector('{analyzer}', {expr}));"
+                    "CREATE INDEX IF NOT EXISTS {idx_name} ON \"{target_graph}\".\"{primary_label}\" USING gin (to_tsvector('{analyzer}', {expr}));"
                 ));
             }
         }
@@ -1032,7 +1053,10 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
                 } else {
                     ft.name.clone()
                 };
-                let analyzer = ft.analyzer.as_deref().unwrap_or("english");
+                let analyzer = match ft.analyzer.as_deref() {
+                    Some("standard") | None | Some("") => "english",
+                    Some(other) => other,
+                };
                 let expr = ft
                     .properties
                     .iter()
@@ -1121,8 +1145,17 @@ pub fn emit_node_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<Strin
     Ok(statements)
 }
 
-/// Emits CREATE INDEX DDL statements for a single relationship across dialects.
+/// Emits CREATE INDEX DDL statements for a single relationship across dialects, using default graph targeting.
 pub fn emit_rel_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Result<Vec<String>> {
+    emit_rel_index_ddl_with_graph(rel, dialect, None)
+}
+
+/// Emits CREATE INDEX DDL statements for a single relationship across dialects with an optional graph name.
+pub fn emit_rel_index_ddl_with_graph(
+    rel: &RelationshipSchema,
+    dialect: &str,
+    graph_name: Option<&str>,
+) -> Result<Vec<String>> {
     let ddl_dialect = ensure_ddl_supported(dialect, DdlOp::CreateIndex)?;
     let mut statements = Vec::new();
     let type_name = &rel.type_name;
@@ -1190,9 +1223,17 @@ pub fn emit_rel_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Result<Vec
             }
         }
         DdlDialect::Age => {
+            let target_graph = graph_name.unwrap_or(DEFAULT_AGE_GRAPH);
+            if !is_valid_age_graph_name(target_graph) {
+                return Err(Error::EmissionError(format!(
+                    "Invalid Apache AGE graph name '{target_graph}': must be 1-63 alphanumeric/underscore characters starting with a letter or underscore"
+                )));
+            }
             return Err(Error::UnsupportedDialect {
                 dialect: "Apache AGE".to_string(),
-                feature: "Cypher 'CREATE INDEX' queries on relationships. Indexes in Apache AGE must be defined directly on the underlying PostgreSQL relational tables.".to_string(),
+                feature: format!(
+                    "Cypher 'CREATE INDEX' queries on relationships. Indexes in Apache AGE must be defined directly on the underlying PostgreSQL relational tables (e.g. CREATE INDEX ON \"{target_graph}\".\"{type_name}\" ...)."
+                ),
             });
         }
         DdlDialect::Sql => {
@@ -1213,7 +1254,10 @@ pub fn emit_rel_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Result<Vec
                 } else {
                     ft.name.clone()
                 };
-                let analyzer = ft.analyzer.as_deref().unwrap_or("english");
+                let analyzer = match ft.analyzer.as_deref() {
+                    Some("standard") | None | Some("") => "english",
+                    Some(other) => other,
+                };
                 let expr = ft
                     .properties
                     .iter()
@@ -1268,18 +1312,39 @@ pub fn emit_node_constraint_ddl(
     dialect: &str,
     include_type_constraints: bool,
 ) -> Result<Vec<String>> {
+    emit_node_constraint_ddl_with_graph(node, dialect, include_type_constraints, None)
+}
+
+/// Emits CREATE CONSTRAINT DDL statements for a single node across dialects with an optional graph name.
+pub fn emit_node_constraint_ddl_with_graph(
+    node: &NodeSchema,
+    dialect: &str,
+    include_type_constraints: bool,
+    graph_name: Option<&str>,
+) -> Result<Vec<String>> {
     let ddl_dialect = ensure_ddl_supported(dialect, DdlOp::CreateConstraint)?;
     let mut statements = Vec::new();
     let primary_label = node.primary_label();
 
     match ddl_dialect {
-        DdlDialect::FalkorDb | DdlDialect::Age => {
-            // Defensive: `ensure_ddl_supported` rejects FalkorDB/Apache AGE for
-            // constraint operations before this match runs; return an error instead of
-            // panicking in case that cross-function invariant is ever relaxed.
+        DdlDialect::FalkorDb => {
             return Err(Error::UnsupportedDialect {
                 dialect: dialect.to_string(),
                 feature: "constraint DDL queries".to_string(),
+            });
+        }
+        DdlDialect::Age => {
+            let target_graph = graph_name.unwrap_or(DEFAULT_AGE_GRAPH);
+            if !is_valid_age_graph_name(target_graph) {
+                return Err(Error::EmissionError(format!(
+                    "Invalid Apache AGE graph name '{target_graph}': must be 1-63 alphanumeric/underscore characters starting with a letter or underscore"
+                )));
+            }
+            return Err(Error::UnsupportedDialect {
+                dialect: "Apache AGE".to_string(),
+                feature: format!(
+                    "Cypher 'CREATE CONSTRAINT' queries. Indexes and constraints in Apache AGE must be defined directly on the underlying PostgreSQL relational tables (e.g. ALTER TABLE \"{target_graph}\".\"{primary_label}\" ADD CONSTRAINT ...)."
+                ),
             });
         }
         DdlDialect::Memgraph => {
@@ -1344,18 +1409,39 @@ pub fn emit_rel_constraint_ddl(
     dialect: &str,
     include_type_constraints: bool,
 ) -> Result<Vec<String>> {
+    emit_rel_constraint_ddl_with_graph(rel, dialect, include_type_constraints, None)
+}
+
+/// Emits CREATE CONSTRAINT DDL statements for a single relationship across dialects with an optional graph name.
+pub fn emit_rel_constraint_ddl_with_graph(
+    rel: &RelationshipSchema,
+    dialect: &str,
+    include_type_constraints: bool,
+    graph_name: Option<&str>,
+) -> Result<Vec<String>> {
     let ddl_dialect = ensure_ddl_supported(dialect, DdlOp::CreateConstraint)?;
     let mut statements = Vec::new();
     let type_name = &rel.type_name;
 
     match ddl_dialect {
-        DdlDialect::FalkorDb | DdlDialect::Age => {
-            // Defensive: `ensure_ddl_supported` rejects FalkorDB/Apache AGE for
-            // constraint operations before this match runs; return an error instead of
-            // panicking in case that cross-function invariant is ever relaxed.
+        DdlDialect::FalkorDb => {
             return Err(Error::UnsupportedDialect {
                 dialect: dialect.to_string(),
                 feature: "constraint DDL queries".to_string(),
+            });
+        }
+        DdlDialect::Age => {
+            let target_graph = graph_name.unwrap_or(DEFAULT_AGE_GRAPH);
+            if !is_valid_age_graph_name(target_graph) {
+                return Err(Error::EmissionError(format!(
+                    "Invalid Apache AGE graph name '{target_graph}': must be 1-63 alphanumeric/underscore characters starting with a letter or underscore"
+                )));
+            }
+            return Err(Error::UnsupportedDialect {
+                dialect: "Apache AGE".to_string(),
+                feature: format!(
+                    "Cypher 'CREATE CONSTRAINT' queries on relationships. Constraints in Apache AGE must be defined directly on the underlying PostgreSQL relational tables (e.g. ALTER TABLE \"{target_graph}\".\"{type_name}\" ADD CONSTRAINT ...)."
+                ),
             });
         }
         DdlDialect::Memgraph => {
@@ -1398,6 +1484,15 @@ pub fn emit_rel_constraint_ddl(
 
 /// Emits DROP INDEX DDL statements for a single node across dialects.
 pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<String>> {
+    emit_node_drop_index_ddl_with_graph(node, dialect, None)
+}
+
+/// Emits DROP INDEX DDL statements for a single node across dialects with an optional graph name.
+pub fn emit_node_drop_index_ddl_with_graph(
+    node: &NodeSchema,
+    dialect: &str,
+    graph_name: Option<&str>,
+) -> Result<Vec<String>> {
     let ddl_dialect = ensure_ddl_supported(dialect, DdlOp::DropIndex)?;
     let mut statements = Vec::new();
     let primary_label = node.primary_label();
@@ -1472,6 +1567,12 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
             }
         }
         DdlDialect::Age => {
+            let target_graph = graph_name.unwrap_or(DEFAULT_AGE_GRAPH);
+            if !is_valid_age_graph_name(target_graph) {
+                return Err(Error::EmissionError(format!(
+                    "Invalid Apache AGE graph name '{target_graph}': must be 1-63 alphanumeric/underscore characters starting with a letter or underscore"
+                )));
+            }
             let has_vector = node
                 .fields
                 .values()
@@ -1480,7 +1581,9 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
             if !has_vector && !has_fulltext {
                 return Err(Error::UnsupportedDialect {
                     dialect: "Apache AGE".to_string(),
-                    feature: "Cypher 'DROP INDEX' queries. Indexes and constraints in Apache AGE must be defined directly on the underlying PostgreSQL relational tables.".to_string(),
+                    feature: format!(
+                        "Cypher 'DROP INDEX' queries. Indexes and constraints in Apache AGE must be defined directly on the underlying PostgreSQL relational tables (e.g. DROP INDEX ON \"{target_graph}\".\"{primary_label}\" or DROP INDEX \"{target_graph}\".<index_name>)."
+                    ),
                 });
             }
             for field in node.fields.values() {
@@ -1492,7 +1595,9 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
                         .unwrap_or_else(|| {
                             canonical_vector_index_name(primary_label, &field.name, ddl_dialect)
                         });
-                    statements.push(format!("DROP INDEX IF EXISTS {idx_name};"));
+                    statements.push(format!(
+                        "DROP INDEX IF EXISTS \"{target_graph}\".{idx_name};"
+                    ));
                 }
             }
             for ft in &node.fulltext_indexes {
@@ -1501,7 +1606,9 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
                 } else {
                     ft.name.clone()
                 };
-                statements.push(format!("DROP INDEX IF EXISTS {idx_name};"));
+                statements.push(format!(
+                    "DROP INDEX IF EXISTS \"{target_graph}\".{idx_name};"
+                ));
             }
         }
         DdlDialect::Sql => {
@@ -1563,6 +1670,15 @@ pub fn emit_node_drop_index_ddl(node: &NodeSchema, dialect: &str) -> Result<Vec<
 
 /// Emits DROP INDEX DDL statements for a single relationship across dialects.
 pub fn emit_rel_drop_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Result<Vec<String>> {
+    emit_rel_drop_index_ddl_with_graph(rel, dialect, None)
+}
+
+/// Emits DROP INDEX DDL statements for a single relationship across dialects with an optional graph name.
+pub fn emit_rel_drop_index_ddl_with_graph(
+    rel: &RelationshipSchema,
+    dialect: &str,
+    graph_name: Option<&str>,
+) -> Result<Vec<String>> {
     let ddl_dialect = ensure_ddl_supported(dialect, DdlOp::DropIndex)?;
     let mut statements = Vec::new();
     let type_name = &rel.type_name;
@@ -1612,9 +1728,17 @@ pub fn emit_rel_drop_index_ddl(rel: &RelationshipSchema, dialect: &str) -> Resul
             }
         }
         DdlDialect::Age => {
+            let target_graph = graph_name.unwrap_or(DEFAULT_AGE_GRAPH);
+            if !is_valid_age_graph_name(target_graph) {
+                return Err(Error::EmissionError(format!(
+                    "Invalid Apache AGE graph name '{target_graph}': must be 1-63 alphanumeric/underscore characters starting with a letter or underscore"
+                )));
+            }
             return Err(Error::UnsupportedDialect {
                 dialect: "Apache AGE".to_string(),
-                feature: "Cypher 'DROP INDEX' queries on relationships. Indexes in Apache AGE must be defined directly on the underlying PostgreSQL relational tables.".to_string(),
+                feature: format!(
+                    "Cypher 'DROP INDEX' queries on relationships. Indexes in Apache AGE must be defined directly on the underlying PostgreSQL relational tables (e.g. DROP INDEX ON \"{target_graph}\".\"{type_name}\" or DROP INDEX \"{target_graph}\".<index_name>)."
+                ),
             });
         }
         DdlDialect::Sql => {
@@ -1659,18 +1783,39 @@ pub fn emit_node_drop_constraint_ddl(
     dialect: &str,
     include_type_constraints: bool,
 ) -> Result<Vec<String>> {
+    emit_node_drop_constraint_ddl_with_graph(node, dialect, include_type_constraints, None)
+}
+
+/// Emits DROP CONSTRAINT DDL statements for a single node across dialects with an optional graph name.
+pub fn emit_node_drop_constraint_ddl_with_graph(
+    node: &NodeSchema,
+    dialect: &str,
+    include_type_constraints: bool,
+    graph_name: Option<&str>,
+) -> Result<Vec<String>> {
     let ddl_dialect = ensure_ddl_supported(dialect, DdlOp::DropConstraint)?;
     let mut statements = Vec::new();
     let primary_label = node.primary_label();
 
     match ddl_dialect {
-        DdlDialect::FalkorDb | DdlDialect::Age => {
-            // Defensive: `ensure_ddl_supported` rejects FalkorDB/Apache AGE for
-            // constraint operations before this match runs; return an error instead of
-            // panicking in case that cross-function invariant is ever relaxed.
+        DdlDialect::FalkorDb => {
             return Err(Error::UnsupportedDialect {
                 dialect: dialect.to_string(),
                 feature: "constraint DDL queries".to_string(),
+            });
+        }
+        DdlDialect::Age => {
+            let target_graph = graph_name.unwrap_or(DEFAULT_AGE_GRAPH);
+            if !is_valid_age_graph_name(target_graph) {
+                return Err(Error::EmissionError(format!(
+                    "Invalid Apache AGE graph name '{target_graph}': must be 1-63 alphanumeric/underscore characters starting with a letter or underscore"
+                )));
+            }
+            return Err(Error::UnsupportedDialect {
+                dialect: "Apache AGE".to_string(),
+                feature: format!(
+                    "Cypher 'DROP CONSTRAINT' queries. Indexes and constraints in Apache AGE must be defined directly on the underlying PostgreSQL relational tables (e.g. ALTER TABLE \"{target_graph}\".\"{primary_label}\" DROP CONSTRAINT ...)."
+                ),
             });
         }
         DdlDialect::Memgraph => {
@@ -1727,18 +1872,39 @@ pub fn emit_rel_drop_constraint_ddl(
     dialect: &str,
     include_type_constraints: bool,
 ) -> Result<Vec<String>> {
+    emit_rel_drop_constraint_ddl_with_graph(rel, dialect, include_type_constraints, None)
+}
+
+/// Emits DROP CONSTRAINT DDL statements for a single relationship across dialects with an optional graph name.
+pub fn emit_rel_drop_constraint_ddl_with_graph(
+    rel: &RelationshipSchema,
+    dialect: &str,
+    include_type_constraints: bool,
+    graph_name: Option<&str>,
+) -> Result<Vec<String>> {
     let ddl_dialect = ensure_ddl_supported(dialect, DdlOp::DropConstraint)?;
     let mut statements = Vec::new();
     let type_name = &rel.type_name;
 
     match ddl_dialect {
-        DdlDialect::FalkorDb | DdlDialect::Age => {
-            // Defensive: `ensure_ddl_supported` rejects FalkorDB/Apache AGE for
-            // constraint operations before this match runs; return an error instead of
-            // panicking in case that cross-function invariant is ever relaxed.
+        DdlDialect::FalkorDb => {
             return Err(Error::UnsupportedDialect {
                 dialect: dialect.to_string(),
                 feature: "constraint DDL queries".to_string(),
+            });
+        }
+        DdlDialect::Age => {
+            let target_graph = graph_name.unwrap_or(DEFAULT_AGE_GRAPH);
+            if !is_valid_age_graph_name(target_graph) {
+                return Err(Error::EmissionError(format!(
+                    "Invalid Apache AGE graph name '{target_graph}': must be 1-63 alphanumeric/underscore characters starting with a letter or underscore"
+                )));
+            }
+            return Err(Error::UnsupportedDialect {
+                dialect: "Apache AGE".to_string(),
+                feature: format!(
+                    "Cypher 'DROP CONSTRAINT' queries on relationships. Constraints in Apache AGE must be defined directly on the underlying PostgreSQL relational tables (e.g. ALTER TABLE \"{target_graph}\".\"{type_name}\" DROP CONSTRAINT ...)."
+                ),
             });
         }
         DdlDialect::Memgraph => {
