@@ -14,8 +14,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import community_compatible_ddl, neo4j_edition
+from conftest import community_compatible_ddl, is_port_open, neo4j_edition
 from neo4j import GraphDatabase
+from neo4j.exceptions import ConstraintError
 from voyager_ogm import (
     Field,
     Node,
@@ -909,3 +910,93 @@ def test_dict_spec_routing_in_schema_manager():
 
     rel_drop_idx = SchemaManager.generate_drop_index_ddl(rel_spec, dialect="cypher")
     assert any("DROP INDEX index_rel_dict_knows_since" in s for s in rel_drop_idx)
+
+
+@pytest.mark.live
+@pytest.mark.skipif(
+    not is_port_open("127.0.0.1", 7687),
+    reason="Neo4j container not reachable on port 7687",
+)
+def test_live_neo4j_relationship_unique_constraint() -> None:
+    """Relationship unique fields emit a uniqueness constraint and reject duplicates live.
+
+    A nullable unique relationship field must not gain an existence constraint, so a
+    relationship whose unique property is absent is still accepted.
+    """
+    pytest.importorskip("neo4j")
+    uri = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
+    user = os.getenv("NEO4J_USER", "neo4j")
+    password = os.getenv("NEO4J_PASSWORD", "voyagerpass123")
+
+    driver = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=1.0)
+    try:
+        driver.verify_connectivity()
+    except Exception:
+        driver.close()
+        pytest.skip(f"Neo4j database not reachable on {uri}")
+
+    @node(label="LiveUniqueAccount")
+    class LiveUniqueAccount(Node):
+        account_id: str = Field(primary_key=True)
+
+    @relationship(
+        type_name="LIVE_UNIQUE_TRANSFER",
+        source_node=LiveUniqueAccount,
+        target_node=LiveUniqueAccount,
+    )
+    class LiveUniqueTransfer(Relationship):
+        ref: str = Field(unique=True)
+
+    session = Session(driver, dialect="cypher")
+    try:
+        session.drop_constraints(LiveUniqueTransfer)
+        session.execute("MATCH (n:LiveUniqueAccount) DETACH DELETE n")
+        session.execute(
+            "CREATE (:LiveUniqueAccount {account_id: 'live-a1'}), "
+            "(:LiveUniqueAccount {account_id: 'live-a2'})"
+        )
+
+        created = session.create_constraints(LiveUniqueTransfer)
+        assert created == [
+            "CREATE CONSTRAINT constraint_rel_live_unique_transfer_ref_unique "
+            "IF NOT EXISTS FOR ()-[r:LIVE_UNIQUE_TRANSFER]-() REQUIRE r.ref IS UNIQUE"
+        ]
+        # unique but nullable: no existence constraint is emitted
+        assert not any("IS NOT NULL" in stmt for stmt in created)
+
+        session.execute(
+            "MATCH (a:LiveUniqueAccount {account_id: 'live-a1'}), "
+            "(b:LiveUniqueAccount {account_id: 'live-a2'}) "
+            "CREATE (a)-[:LIVE_UNIQUE_TRANSFER {ref: 'dup'}]->(b)"
+        )
+        with pytest.raises(ConstraintError):
+            session.execute(
+                "MATCH (a:LiveUniqueAccount {account_id: 'live-a1'}), "
+                "(b:LiveUniqueAccount {account_id: 'live-a2'}) "
+                "CREATE (a)-[:LIVE_UNIQUE_TRANSFER {ref: 'dup'}]->(b)"
+            )
+
+        # The nullable unique property stays optional.
+        session.execute(
+            "MATCH (a:LiveUniqueAccount {account_id: 'live-a1'}), "
+            "(b:LiveUniqueAccount {account_id: 'live-a2'}) "
+            "CREATE (a)-[:LIVE_UNIQUE_TRANSFER]->(b)"
+        )
+
+        dropped = session.drop_constraints(LiveUniqueTransfer)
+        assert dropped == [
+            "DROP CONSTRAINT constraint_rel_live_unique_transfer_ref_unique IF EXISTS"
+        ]
+
+        # After dropping the constraint duplicates are accepted again.
+        session.execute(
+            "MATCH (a:LiveUniqueAccount {account_id: 'live-a1'}), "
+            "(b:LiveUniqueAccount {account_id: 'live-a2'}) "
+            "CREATE (a)-[:LIVE_UNIQUE_TRANSFER {ref: 'dup'}]->(b)"
+        )
+    finally:
+        try:
+            session.drop_constraints(LiveUniqueTransfer)
+            session.execute("MATCH (n:LiveUniqueAccount) DETACH DELETE n")
+        finally:
+            driver.close()

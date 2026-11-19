@@ -252,13 +252,24 @@ pub fn emit_cypher_rel_ddl(
 
     for field in rel.fields.values() {
         let db_name = &field.name;
-        if field.primary_key || field.unique || !field.nullable {
+
+        // Property existence (NOT NULL) constraint
+        if !field.nullable {
             let c_name = cypher_rel_constraint_name(type_name, db_name, "not_null");
             statements.push(format!(
                 "CREATE CONSTRAINT {c_name} IF NOT EXISTS FOR ()-[r:{type_name}]-() REQUIRE r.{db_name} IS NOT NULL"
             ));
         }
 
+        // Unique / Primary Key constraint
+        if field.unique || field.primary_key {
+            let c_name = cypher_rel_constraint_name(type_name, db_name, "unique");
+            statements.push(format!(
+                "CREATE CONSTRAINT {c_name} IF NOT EXISTS FOR ()-[r:{type_name}]-() REQUIRE r.{db_name} IS UNIQUE"
+            ));
+        }
+
+        // Secondary index (only if not already protected by unique constraint)
         if field.indexed && !field.primary_key && !field.unique {
             let i_name = cypher_rel_index_name(type_name, db_name);
             statements.push(format!(
@@ -358,8 +369,12 @@ pub fn emit_cypher_drop_rel_ddl(
 
     for field in rel.fields.values() {
         let db_name = &field.name;
-        if field.primary_key || field.unique || !field.nullable {
+        if !field.nullable {
             let c_name = cypher_rel_constraint_name(type_name, db_name, "not_null");
+            statements.push(format!("DROP CONSTRAINT {c_name} IF EXISTS"));
+        }
+        if field.unique || field.primary_key {
+            let c_name = cypher_rel_constraint_name(type_name, db_name, "unique");
             statements.push(format!("DROP CONSTRAINT {c_name} IF EXISTS"));
         }
         if field.indexed && !field.primary_key && !field.unique {
@@ -1468,10 +1483,16 @@ pub fn emit_rel_constraint_ddl_with_graph(
         DdlDialect::Cypher => {
             for field in rel.fields.values() {
                 let db_name = &field.name;
-                if field.primary_key || field.unique || !field.nullable {
+                if !field.nullable {
                     let c_name = cypher_rel_constraint_name(type_name, db_name, "not_null");
                     statements.push(format!(
                         "CREATE CONSTRAINT {c_name} IF NOT EXISTS FOR ()-[r:{type_name}]-() REQUIRE r.{db_name} IS NOT NULL"
+                    ));
+                }
+                if field.unique || field.primary_key {
+                    let c_name = cypher_rel_constraint_name(type_name, db_name, "unique");
+                    statements.push(format!(
+                        "CREATE CONSTRAINT {c_name} IF NOT EXISTS FOR ()-[r:{type_name}]-() REQUIRE r.{db_name} IS UNIQUE"
                     ));
                 }
                 if include_type_constraints {
@@ -1942,8 +1963,12 @@ pub fn emit_rel_drop_constraint_ddl_with_graph(
         DdlDialect::Cypher => {
             for field in rel.fields.values() {
                 let db_name = &field.name;
-                if field.primary_key || field.unique || !field.nullable {
+                if !field.nullable {
                     let c_name = cypher_rel_constraint_name(type_name, db_name, "not_null");
+                    statements.push(format!("DROP CONSTRAINT {c_name} IF EXISTS"));
+                }
+                if field.unique || field.primary_key {
+                    let c_name = cypher_rel_constraint_name(type_name, db_name, "unique");
                     statements.push(format!("DROP CONSTRAINT {c_name} IF EXISTS"));
                 }
                 if include_type_constraints {

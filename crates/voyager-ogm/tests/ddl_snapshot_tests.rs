@@ -128,6 +128,68 @@ fn test_cypher_rel_ddl_and_drop() {
 }
 
 #[test]
+fn test_cypher_rel_unique_and_primary_key_constraints() {
+    // Unique fields get a uniqueness constraint; existence is emitted only when
+    // the field is actually non-nullable (a nullable unique field stays optional).
+    let rel = RelationshipSchema::new("Transfer", "TRANSFER")
+        .with_endpoints(vec!["Account".to_string()], vec!["Account".to_string()])
+        .with_field(FieldDescriptor::new("code", FieldType::String).nullable(false))
+        .with_field(FieldDescriptor::new("ref", FieldType::String).unique())
+        .with_field(
+            FieldDescriptor::new("slug", FieldType::String)
+                .unique()
+                .indexed(),
+        )
+        .with_field(
+            FieldDescriptor::new("token", FieldType::String)
+                .unique()
+                .nullable(false),
+        )
+        .with_field(FieldDescriptor::new("transfer_id", FieldType::String).primary_key());
+
+    let ddl = emit_cypher_rel_ddl(&rel, false);
+    assert_eq!(
+        ddl,
+        vec![
+            "CREATE CONSTRAINT constraint_rel_transfer_code_not_null IF NOT EXISTS FOR ()-[r:TRANSFER]-() REQUIRE r.code IS NOT NULL",
+            "CREATE CONSTRAINT constraint_rel_transfer_ref_unique IF NOT EXISTS FOR ()-[r:TRANSFER]-() REQUIRE r.ref IS UNIQUE",
+            "CREATE CONSTRAINT constraint_rel_transfer_slug_unique IF NOT EXISTS FOR ()-[r:TRANSFER]-() REQUIRE r.slug IS UNIQUE",
+            "CREATE CONSTRAINT constraint_rel_transfer_token_not_null IF NOT EXISTS FOR ()-[r:TRANSFER]-() REQUIRE r.token IS NOT NULL",
+            "CREATE CONSTRAINT constraint_rel_transfer_token_unique IF NOT EXISTS FOR ()-[r:TRANSFER]-() REQUIRE r.token IS UNIQUE",
+            "CREATE CONSTRAINT constraint_rel_transfer_transfer_id_not_null IF NOT EXISTS FOR ()-[r:TRANSFER]-() REQUIRE r.transfer_id IS NOT NULL",
+            "CREATE CONSTRAINT constraint_rel_transfer_transfer_id_unique IF NOT EXISTS FOR ()-[r:TRANSFER]-() REQUIRE r.transfer_id IS UNIQUE",
+        ]
+    );
+
+    // The uniqueness constraint brings its own index, so no secondary index is emitted.
+    assert!(!ddl.iter().any(|s| s.contains("CREATE INDEX")));
+
+    let drop_ddl = emit_cypher_drop_rel_ddl(&rel, false);
+    assert_eq!(
+        drop_ddl,
+        vec![
+            "DROP CONSTRAINT constraint_rel_transfer_code_not_null IF EXISTS",
+            "DROP CONSTRAINT constraint_rel_transfer_ref_unique IF EXISTS",
+            "DROP CONSTRAINT constraint_rel_transfer_slug_unique IF EXISTS",
+            "DROP CONSTRAINT constraint_rel_transfer_token_not_null IF EXISTS",
+            "DROP CONSTRAINT constraint_rel_transfer_token_unique IF EXISTS",
+            "DROP CONSTRAINT constraint_rel_transfer_transfer_id_not_null IF EXISTS",
+            "DROP CONSTRAINT constraint_rel_transfer_transfer_id_unique IF EXISTS",
+        ]
+    );
+
+    // The per-model constraint/drop-constraint emitters agree with the aggregate ones.
+    assert_eq!(
+        voyager_ogm::emit_rel_constraint_ddl(&rel, "cypher", false).unwrap(),
+        ddl
+    );
+    assert_eq!(
+        voyager_ogm::emit_rel_drop_constraint_ddl(&rel, "cypher", false).unwrap(),
+        drop_ddl
+    );
+}
+
+#[test]
 fn test_cypher25_graph_type_ddl() {
     let node = create_test_node_schema();
     let rel = create_test_rel_schema();
