@@ -1877,6 +1877,13 @@ class Session(_SessionBase):
     ) -> list[str]:
         """Applies only CONSTRAINT creation statements to the database session.
 
+        Uniqueness constraints are emitted before existence (NOT NULL) constraints.
+        If a statement fails because it requires Neo4j Enterprise Edition (for
+        example an existence constraint on Neo4j Community), it is recorded and the
+        remaining statements still run; after the loop one `VoyagerError`
+        (`SCHEMA_ERROR`) lists every skipped statement. Any other error is re-raised
+        immediately.
+
         Args:
             *models: Node and Relationship model classes, schema dicts, or registered model names.
             include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
@@ -1884,8 +1891,15 @@ class Session(_SessionBase):
 
         Returns:
             List of executed constraint queries.
+
+        Raises:
+            VoyagerError: If one or more constraints require Neo4j Enterprise Edition.
         """
-        from voyager_ogm.schema import SchemaManager
+        from voyager_ogm.schema import (
+            SchemaManager,
+            _is_enterprise_only_constraint_error,
+            _raise_enterprise_constraint_error,
+        )
 
         target_graph = graph_name if graph_name is not None else self._graph_name
         if target_graph is not None:
@@ -1897,9 +1911,21 @@ class Session(_SessionBase):
             graph_name=target_graph,
         )
         applied: list[str] = []
+        skipped: list[str] = []
+        first_err: BaseException | None = None
         for stmt in statements:
-            self.execute(stmt)
+            try:
+                self.execute(stmt)
+            except Exception as exc:
+                if _is_enterprise_only_constraint_error(exc):
+                    if first_err is None:
+                        first_err = exc
+                    skipped.append(stmt)
+                    continue
+                raise
             applied.append(stmt)
+        if skipped and first_err is not None:
+            _raise_enterprise_constraint_error(skipped, first_err)
         return applied
 
     def drop_indexes(
@@ -1974,6 +2000,12 @@ class Session(_SessionBase):
         If no models are provided, discovers and applies schema for all models registered
         in the global SchemaRegistry.
 
+        Uniqueness constraints are emitted before existence (NOT NULL) constraints.
+        Constraints that require Neo4j Enterprise Edition (for example existence
+        constraints on Neo4j Community) are recorded while the remaining constraints
+        and indexes are still applied; one `VoyagerError` (`SCHEMA_ERROR`) then lists
+        every skipped statement. Any other error is re-raised immediately.
+
         Args:
             *models: Optional Node and Relationship model classes, schema dicts, or model names.
             include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
@@ -1981,6 +2013,9 @@ class Session(_SessionBase):
 
         Returns:
             List of executed DDL query statements.
+
+        Raises:
+            VoyagerError: If one or more constraints require Neo4j Enterprise Edition.
         """
         from voyager_ogm.schema import SchemaManager
 
@@ -2660,6 +2695,13 @@ class AsyncSession(_SessionBase):
     ) -> list[str]:
         """Asynchronously applies only CONSTRAINT creation statements to the database session.
 
+        Uniqueness constraints are emitted before existence (NOT NULL) constraints.
+        If a statement fails because it requires Neo4j Enterprise Edition (for
+        example an existence constraint on Neo4j Community), it is recorded and the
+        remaining statements still run; after the loop one `VoyagerError`
+        (`SCHEMA_ERROR`) lists every skipped statement. Any other error is re-raised
+        immediately.
+
         Args:
             *models: Node and Relationship model classes, schema dicts, or registered model names.
             include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
@@ -2667,8 +2709,15 @@ class AsyncSession(_SessionBase):
 
         Returns:
             List of executed constraint queries.
+
+        Raises:
+            VoyagerError: If one or more constraints require Neo4j Enterprise Edition.
         """
-        from voyager_ogm.schema import SchemaManager
+        from voyager_ogm.schema import (
+            SchemaManager,
+            _is_enterprise_only_constraint_error,
+            _raise_enterprise_constraint_error,
+        )
 
         target_graph = graph_name if graph_name is not None else self._graph_name
         if target_graph is not None:
@@ -2680,9 +2729,21 @@ class AsyncSession(_SessionBase):
             graph_name=target_graph,
         )
         applied: list[str] = []
+        skipped: list[str] = []
+        first_err: BaseException | None = None
         for stmt in statements:
-            await self.execute(stmt)
+            try:
+                await self.execute(stmt)
+            except Exception as exc:
+                if _is_enterprise_only_constraint_error(exc):
+                    if first_err is None:
+                        first_err = exc
+                    skipped.append(stmt)
+                    continue
+                raise
             applied.append(stmt)
+        if skipped and first_err is not None:
+            _raise_enterprise_constraint_error(skipped, first_err)
         return applied
 
     async def drop_indexes(
@@ -2757,6 +2818,12 @@ class AsyncSession(_SessionBase):
         If no models are provided, discovers and applies schema for all models registered
         in the global SchemaRegistry.
 
+        Uniqueness constraints are emitted before existence (NOT NULL) constraints.
+        Constraints that require Neo4j Enterprise Edition (for example existence
+        constraints on Neo4j Community) are recorded while the remaining constraints
+        and indexes are still applied; one `VoyagerError` (`SCHEMA_ERROR`) then lists
+        every skipped statement. Any other error is re-raised immediately.
+
         Args:
             *models: Optional Node and Relationship model classes, schema dicts, or model names.
             include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
@@ -2764,6 +2831,9 @@ class AsyncSession(_SessionBase):
 
         Returns:
             List of executed DDL query statements.
+
+        Raises:
+            VoyagerError: If one or more constraints require Neo4j Enterprise Edition.
         """
         from voyager_ogm.schema import SchemaManager
 

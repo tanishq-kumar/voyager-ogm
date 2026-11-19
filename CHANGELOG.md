@@ -114,6 +114,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Relationship existence (`REQUIRE r.<prop> IS NOT NULL`) constraints are now emitted only when the field is non-nullable, so a nullable unique relationship field is no longer made mandatory.
   - Every emitted relationship constraint now has a matching `DROP CONSTRAINT ... IF EXISTS` statement, using the `unique` and `not_null` kinds of `cypher_rel_constraint_name`.
   - Relationship secondary indexes are still skipped for unique and primary-key fields, since the uniqueness constraint provides its own index.
+  - Constraint DDL now emits a field's `UNIQUE` statement before its `NOT NULL` (existence) statement; when Neo4j Community rejects Enterprise-only constraints, the remaining constraints still run and one `VoyagerError` (`SCHEMA_ERROR`) reports every skipped statement after confirming the others were applied.
 - **FalkorDB Full-Text Index DDL Syntax and Idempotency (#198)**:
   - Updated FalkorDB full-text index creation and drop DDL emitters to use native declarative Cypher syntax accepted by FalkorDB 6.0.4+: `CREATE FULLTEXT INDEX FOR (n:<label>) ON (n.<prop1>, n.<prop2>)` and `DROP FULLTEXT INDEX FOR (n:<label>) ON (n.<prop1>, n.<prop2>)` for nodes, and `CREATE FULLTEXT INDEX FOR ()-[r:<type>]-() ON (r.<prop1>, ...)` and `DROP FULLTEXT INDEX FOR ()-[r:<type>]-() ON (r.<prop1>, ...)` for relationships.
   - Replaced obsolete procedure calls `CALL db.idx.fulltext.createNodeIndex(...)` and `CALL db.idx.fulltext.drop(...)` which were rejected by FalkorDB 6.0.4.
