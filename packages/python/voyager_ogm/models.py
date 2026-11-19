@@ -162,6 +162,7 @@ class Field(Generic[_T]):
         nullable: bool = True,
         type_annotation: Any = None,
         index_type: str | None = None,
+        description: str | None = None,
     ) -> None:
         """Initializes a graph property Field descriptor.
 
@@ -175,6 +176,7 @@ class Field(Generic[_T]):
             nullable: Whether the field can store null values. Defaults to True (False for primary_key).
             type_annotation: Python type annotation class.
             index_type: Optional index type string ('BTREE', 'TEXT', 'POINT', 'VECTOR').
+            description: Optional human-readable description of this property.
         """
         if default is not ... and default_factory is not None:
             raise TypeError("Field cannot specify both 'default' and 'default_factory'.")
@@ -186,6 +188,7 @@ class Field(Generic[_T]):
         self.index = index or primary_key
         self.nullable = False if primary_key else nullable
         self.index_type = index_type or ("BTREE" if self.index else None)
+        self.description = description
         if isinstance(type_annotation, str) and type_annotation in _BUILTIN_TYPES:
             self.type_annotation = _BUILTIN_TYPES[type_annotation]
         else:
@@ -1022,6 +1025,7 @@ class Node:
     """
 
     __labels__: ClassVar[list[str]] = []
+    __description__: ClassVar[str | None] = None
     _schema_fields: ClassVar[dict[str, Field]] = {}
     _cached_labels: ClassVar[list[str]] = ["Node"]
     _cached_label: ClassVar[str] = "Node"
@@ -1090,11 +1094,14 @@ class Node:
                 ft_list = [
                     ft.to_dict() if hasattr(ft, "to_dict") else ft for ft in fulltext_indexes
                 ]
+            description = cls.__dict__.get("__description__", None)
             register_with_identity = getattr(reg, "register_node_with_identity", None)
             if callable(register_with_identity):
-                register_with_identity(model_id, name, labels, fields, ft_list)
+                register_with_identity(
+                    model_id, name, labels, fields, ft_list, description=description
+                )
             else:
-                reg.register_node(name, labels, fields, None, ft_list)
+                reg.register_node(name, labels, fields, None, ft_list, description=description)
         except Exception as e:
             logger.warning("Failed to register schema for node model %s: %s", cls.__name__, e)
             raise
@@ -1415,6 +1422,7 @@ class Relationship:
     """
 
     __type__: ClassVar[str] = ""
+    __description__: ClassVar[str | None] = None
     __direction__: ClassVar[str] = "outgoing"
     __source_labels__: ClassVar[list[str]] = []
     __target_labels__: ClassVar[list[str]] = []
@@ -1496,6 +1504,7 @@ class Relationship:
                 ft_list = [
                     ft.to_dict() if hasattr(ft, "to_dict") else ft for ft in fulltext_indexes
                 ]
+            description = cls.__dict__.get("__description__", None)
             reg.register_relationship(
                 name,
                 type_name,
@@ -1505,6 +1514,7 @@ class Relationship:
                 directed,
                 ft_list,
                 model_id=model_id,
+                description=description,
             )
         except Exception as e:
             logger.warning(

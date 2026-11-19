@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Description Metadata for Fields, Nodes, and Relationships (#210)**:
+  - Added optional `description: str | None = None` parameter to `Field()` descriptor and `description` attribute to `Field` instances.
+  - Added support for model-level description metadata via `__description__` class attribute on `Node` and `Relationship` models.
+  - Carried descriptions through schema registration into native `FieldDescriptor`, `NodeSchema`, and `RelationshipSchema` structs in Rust and exposed them via PyO3 dictionary bindings.
+  - Updated schema snapshot serialization to include `"description"` fields in JSON snapshots when present, omitting them when `None` via serde `skip_serializing_if` so existing snapshot JSON remains byte-identical.
+  - Ensured backward compatibility: older snapshots without description keys deserialize cleanly via serde default with `description: None`.
 - **Bridge Authentication Credentials Parameter (#193)**:
   - Added keyword-only `auth: tuple[str, str] | Any | None = None` parameter to `create_bridge()` across all overloads.
   - Bolt schemes accept `(username, password)` tuples and custom auth tokens (e.g. `bearer_auth`) passed directly to `GraphDatabase.driver` / `AsyncGraphDatabase.driver`.
@@ -102,6 +108,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Raised Minimum Supported Rust Version (MSRV) to 1.87.
 
 ### Removed
+- **Unused ConstraintType Enum (#209)**:
+  - Removed unused `ConstraintType` enum (`Unique`, `NotNull`, `NodeKey`) from `voyager_ogm` public API and crate root as constraints are declared via boolean flags on `FieldDescriptor` and `NodeKey` is unsupported on Neo4j Community Edition.
 - **Legacy Query Builder & Comprehension Aliases (#131)**:
   - **Breaking:** Removed redundant `Query.add_*` aliases (`add_match`, `add_optional_match`, `add_create`, `add_merge`, `add_unwind`, `add_load_csv`) in favor of direct fluent methods (`match`, `optional_match`, `create`, `merge`, `unwind`, `load_csv`).
   - **Breaking:** Removed `Query.filter` alias on `Query` class in favor of `Query.where`.

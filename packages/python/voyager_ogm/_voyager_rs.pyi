@@ -158,6 +158,7 @@ class NativeSchemaRegistry:
         fields: dict[str, Any] | list[dict[str, Any]],
         primary_key: str | None = None,
         fulltext_indexes: list[Any] | None = None,
+        description: str | None = None,
     ) -> None: ...
     def register_node_with_identity(
         self,
@@ -166,6 +167,7 @@ class NativeSchemaRegistry:
         labels: list[str],
         fields: dict[str, Any] | list[dict[str, Any]],
         fulltext_indexes: list[Any] | None = None,
+        description: str | None = None,
     ) -> None: ...
     def register_node_schema(self, schema: dict[str, Any]) -> None: ...
     def register_relationship(
@@ -178,6 +180,7 @@ class NativeSchemaRegistry:
         directed: bool = True,
         fulltext_indexes: list[Any] | None = None,
         model_id: str | None = None,
+        description: str | None = None,
     ) -> None: ...
     def register_relationship_schema(self, schema: dict[str, Any]) -> None: ...
     def primary_key_for(self, model_id: str) -> str | None: ...
