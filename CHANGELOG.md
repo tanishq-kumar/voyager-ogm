@@ -116,6 +116,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Updated Apache AGE index and drop DDL emitters (`create_indexes`, `drop_indexes`, `apply_schema`) to target the session's resolved graph schema (`"<graph>"."<Label>"`) instead of `ag_catalog`, with explicit `::text` property casting for GIN full-text expressions.
   - Added strict identifier validation via `validate_graph_name()` in Python and `is_valid_age_graph_name` in Rust, rejecting unsafe characters and injection attempts with a `ValueError`.
   - Unified default Apache AGE graph name into a single Rust constant `DEFAULT_AGE_GRAPH` in `voyager-ogm`.
+- **Field Defaults Applied to Instances and Writes (#197)**:
+  - `Field(default=...)` and `Field(default_factory=...)` now populate newly constructed `Node` and `Relationship` instances when no value is supplied; explicit values, including `None`, still win.
+  - Default factories are evaluated per instance instead of once at class definition, so mutable defaults such as lists are never shared between instances.
+  - Declaring both `default` and `default_factory` now raises `TypeError` when the field is created.
+  - Defaults flow through `Query.create`, bulk create plans, identity-map flushes, and `Node.save()`. In `Query.merge` and bulk merge plans they are written only in `ON CREATE SET` for the records that defaulted them, never in the MERGE key or `ON MATCH SET`, so an existing node keeps its stored value. Read applied values with `Node.get()` / `Relationship.get()`; instance attributes remain bound fields for the query DSL.
 - **Bolt URI Embedded Credentials Stripping and Decoding (#181)**:
   - `create_bridge()` now extracts and URL-decodes user and password credentials from Bolt connection URIs, forwarding them as `auth=(user, password)` to `GraphDatabase.driver` / `AsyncGraphDatabase.driver`.
   - Strips `userinfo` from the netloc so the Bolt driver receives a clean `scheme://host:port` string; query parameters are parsed into driver options and removed from the URI, because direct `bolt://` drivers reject them.

@@ -994,6 +994,7 @@ class _SessionBase:
         for model_cls, nodes in dirty_by_model.items():
             resolved_key_field = self._resolve_key_field(model_cls, key_field)
             batch_data: list[dict[str, Any]] = []
+            defaulted_records: list[set[str]] = []
             for n in nodes:
                 record = {k: serialize_param_value(v) for k, v in n.dirty_fields.items()}
                 primary_val = (
@@ -1004,12 +1005,16 @@ class _SessionBase:
                 if primary_val is not None:
                     record[resolved_key_field] = serialize_param_value(primary_val)
                 batch_data.append(record)
+                defaulted_records.append(
+                    {k for k in getattr(n, "_defaulted_fields", set()) if k in record}
+                )
 
             if batch_data:
                 plan = self.bulk_upsert(
                     model=model_cls,
                     data=batch_data,
                     key_field=resolved_key_field,
+                    defaulted_fields=defaulted_records,
                 )
                 plans.append((model_cls, nodes, plan))
         return plans
@@ -1103,8 +1108,13 @@ class _SessionBase:
         batch_size: int = 50_000,
         dialect: str | None = None,
         graph_name: str | None = None,
+        defaulted_fields: Sequence[set[str]] | None = None,
     ) -> BulkIngestionPlan:
-        """Prepares a high-throughput idempotent bulk upsert (MERGE) execution plan."""
+        """Prepares a high-throughput idempotent bulk upsert (MERGE) execution plan.
+
+        ``defaulted_fields`` optionally marks per-record values that were filled
+        from a declared default so they are written only on the create path.
+        """
         target_dialect = dialect or self._dialect
         target_graph_name = graph_name if graph_name is not None else self._graph_name
         return create_bulk_merge_plan(
@@ -1114,6 +1124,7 @@ class _SessionBase:
             batch_size=batch_size,
             dialect=target_dialect,
             graph_name=target_graph_name,
+            defaulted_fields=defaulted_fields,
         )
 
     def bulk_create_relationships(

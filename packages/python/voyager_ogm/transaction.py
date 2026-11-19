@@ -271,7 +271,7 @@ class Transaction:
         for batch_item in plan:
             total_batches += 1
             total_records += len(batch_item.parameters.get("batch", []))
-            self._driver_tx.execute_sync(statement, batch_item.parameters)
+            self._driver_tx.execute_sync(batch_item.statement, batch_item.parameters)
         return BulkExecutionResult(
             total_batches=total_batches,
             total_records=total_records,
@@ -589,7 +589,7 @@ class AsyncTransaction:
             for batch_item in plan:
                 total_batches += 1
                 total_records += len(batch_item.parameters.get("batch", []))
-                await self._driver_tx.execute(statement, batch_item.parameters)
+                await self._driver_tx.execute(batch_item.statement, batch_item.parameters)
             return BulkExecutionResult(
                 total_batches=total_batches,
                 total_records=total_records,
