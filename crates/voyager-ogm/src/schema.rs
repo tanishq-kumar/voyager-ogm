@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 #[cfg(feature = "serde")]
@@ -783,6 +784,24 @@ impl NodeSchema {
             .filter(|f| f.indexed && !f.primary_key && !f.unique)
             .collect()
     }
+
+    /// Derives the primary key property name from the field descriptors.
+    ///
+    /// More than one descriptor marked `primary_key` is rejected because a model
+    /// may only declare a single primary key.
+    pub fn derived_primary_key(&self) -> Result<Option<String>> {
+        derive_primary_key(&self.name, &self.fields, self.primary_key.as_deref())
+    }
+
+    /// Resolves which supplied properties form this node's MERGE key.
+    ///
+    /// The precedence is: a supplied primary key, otherwise supplied unique
+    /// fields, otherwise every supplied non-defaulted property. Properties
+    /// still carrying a declared default are create-only and never participate
+    /// in the key or in the match payload.
+    pub fn merge_key_fields(&self, supplied: &[String], defaulted: &[String]) -> Vec<String> {
+        merge_key_names(&self.fields, supplied, defaulted)
+    }
 }
 
 /// Metadata schema defining a Graph Relationship / Edge entity.
@@ -857,6 +876,23 @@ impl RelationshipSchema {
             .collect()
     }
 
+    /// Derives the primary key property name from the relationship field descriptors.
+    ///
+    /// More than one descriptor marked `primary_key` is rejected because a model
+    /// may only declare a single primary key.
+    pub fn derived_primary_key(&self) -> Result<Option<String>> {
+        derive_primary_key(&self.name, &self.fields, None)
+    }
+
+    /// Resolves which supplied properties form this relationship's MERGE key.
+    ///
+    /// The precedence matches [`NodeSchema::merge_key_fields`]: a supplied
+    /// primary key, otherwise supplied unique fields, otherwise every supplied
+    /// non-defaulted property.
+    pub fn merge_key_fields(&self, supplied: &[String], defaulted: &[String]) -> Vec<String> {
+        merge_key_names(&self.fields, supplied, defaulted)
+    }
+
     /// Checks if the given source and target node labels are allowed by this relationship.
     pub fn allows_endpoints(&self, src_labels: &[String], tgt_labels: &[String]) -> bool {
         let src_ok = self.source_labels.is_empty()
@@ -879,11 +915,97 @@ impl RelationshipSchema {
     }
 }
 
+fn has_duplicate_node_names(nodes: &BTreeMap<String, NodeSchema>) -> bool {
+    let mut names = std::collections::BTreeSet::new();
+    nodes
+        .values()
+        .any(|schema| !names.insert(schema.name.as_str()))
+}
+
+fn has_duplicate_relationship_names(relationships: &BTreeMap<String, RelationshipSchema>) -> bool {
+    let mut names = std::collections::BTreeSet::new();
+    relationships
+        .values()
+        .any(|schema| !names.insert(schema.name.as_str()))
+}
+
+fn derive_primary_key(
+    model_name: &str,
+    fields: &BTreeMap<String, FieldDescriptor>,
+    declared: Option<&str>,
+) -> Result<Option<String>> {
+    let declared_keys: Vec<&str> = fields
+        .values()
+        .filter(|f| f.primary_key)
+        .map(|f| f.name.as_str())
+        .collect();
+    match declared_keys.len() {
+        0 => Ok(declared
+            .filter(|name| fields.contains_key(*name))
+            .map(str::to_string)),
+        1 => Ok(Some(declared_keys[0].to_string())),
+        _ => Err(Error::SchemaError(format!(
+            "Model '{model_name}' declares multiple primary key fields: {}",
+            declared_keys.join(", ")
+        ))),
+    }
+}
+
+fn merge_key_names(
+    fields: &BTreeMap<String, FieldDescriptor>,
+    supplied: &[String],
+    defaulted: &[String],
+) -> Vec<String> {
+    let available: Vec<&String> = supplied
+        .iter()
+        .filter(|name| !defaulted.iter().any(|d| d == *name))
+        .collect();
+    let is_available =
+        |field: &FieldDescriptor| available.iter().any(|name| name.as_str() == field.name);
+
+    let primary: Vec<&str> = fields
+        .values()
+        .filter(|f| f.primary_key && is_available(f))
+        .map(|f| f.name.as_str())
+        .collect();
+    if !primary.is_empty() {
+        return supplied
+            .iter()
+            .filter(|name| primary.contains(&name.as_str()))
+            .cloned()
+            .collect();
+    }
+
+    let unique: Vec<&str> = fields
+        .values()
+        .filter(|f| (f.unique || f.primary_key) && is_available(f))
+        .map(|f| f.name.as_str())
+        .collect();
+    if !unique.is_empty() {
+        return supplied
+            .iter()
+            .filter(|name| unique.contains(&name.as_str()))
+            .cloned()
+            .collect();
+    }
+
+    available.into_iter().cloned().collect()
+}
+
 /// Central, thread-safe registry holding graph entity schemas and property metadata.
+///
+/// Entries are keyed by model identity such as `"package.module.User"` so two
+/// models with the same class name from different modules remain separate.
+/// [`SchemaRegistry::get_node`] and [`SchemaRegistry::get_relationship`] accept
+/// either that identity or a bare class name; when a bare name matches several
+/// registrations, the most recently registered one is returned.
 #[derive(Debug, Default)]
 pub struct SchemaRegistry {
     nodes: RwLock<BTreeMap<String, NodeSchema>>,
     relationships: RwLock<BTreeMap<String, RelationshipSchema>>,
+    node_order: RwLock<BTreeMap<String, u64>>,
+    relationship_order: RwLock<BTreeMap<String, u64>>,
+    next_order: AtomicU64,
 }
 
 impl SchemaRegistry {
@@ -892,82 +1014,197 @@ impl SchemaRegistry {
         Self {
             nodes: RwLock::new(BTreeMap::new()),
             relationships: RwLock::new(BTreeMap::new()),
+            node_order: RwLock::new(BTreeMap::new()),
+            relationship_order: RwLock::new(BTreeMap::new()),
+            next_order: AtomicU64::new(0),
         }
     }
 
-    /// Registers a node schema in the registry.
+    fn next_registration_order(&self) -> u64 {
+        self.next_order.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn node_key_in(
+        nodes: &BTreeMap<String, NodeSchema>,
+        order: &BTreeMap<String, u64>,
+        model: &str,
+    ) -> Option<String> {
+        if nodes.contains_key(model) {
+            return Some(model.to_string());
+        }
+        nodes
+            .iter()
+            .filter(|(_, schema)| schema.name == model)
+            .max_by_key(|(identity, _)| order.get(*identity).copied().unwrap_or(0))
+            .map(|(identity, _)| identity.clone())
+    }
+
+    fn relationship_key_in(
+        rels: &BTreeMap<String, RelationshipSchema>,
+        order: &BTreeMap<String, u64>,
+        model: &str,
+    ) -> Option<String> {
+        if rels.contains_key(model) {
+            return Some(model.to_string());
+        }
+        rels.iter()
+            .filter(|(_, schema)| schema.name == model)
+            .max_by_key(|(identity, _)| order.get(*identity).copied().unwrap_or(0))
+            .map(|(identity, _)| identity.clone())
+    }
+
+    fn node_lookup_key(&self, model: &str) -> Option<String> {
+        let nodes = self.nodes.read().ok()?;
+        let order = self.node_order.read().ok()?;
+        Self::node_key_in(&nodes, &order, model)
+    }
+
+    fn relationship_lookup_key(&self, model: &str) -> Option<String> {
+        let rels = self.relationships.read().ok()?;
+        let order = self.relationship_order.read().ok()?;
+        Self::relationship_key_in(&rels, &order, model)
+    }
+
+    /// Registers a node schema keyed by its class name.
+    ///
+    /// Prefer [`SchemaRegistry::register_node_with_id`] when models from
+    /// different modules may share a class name.
     ///
     /// # Errors
-    /// Returns `Error::SchemaError` if the lock is poisoned.
+    /// Returns `Error::SchemaError` if the lock is poisoned or the schema
+    /// declares more than one primary key field.
     pub fn register_node(&self, schema: NodeSchema) -> Result<()> {
+        let model_id = schema.name.clone();
+        self.register_node_with_id(model_id, schema)
+    }
+
+    /// Registers a node schema under a unique model identity.
+    ///
+    /// The primary key is derived from the field descriptors, so callers cannot
+    /// supply a conflicting declaration.
+    ///
+    /// # Errors
+    /// Returns `Error::SchemaError` if the lock is poisoned or the schema
+    /// declares more than one primary key field.
+    pub fn register_node_with_id(
+        &self,
+        model_id: impl Into<String>,
+        mut schema: NodeSchema,
+    ) -> Result<()> {
+        schema.primary_key = schema.derived_primary_key()?;
+        let model_id = model_id.into();
+        let order = self.next_registration_order();
         let mut nodes = self
             .nodes
             .write()
             .map_err(|e| Error::SchemaError(format!("SchemaRegistry node lock poisoned: {e}")))?;
-        nodes.insert(schema.name.clone(), schema);
+        let mut orders = self.node_order.write().map_err(|e| {
+            Error::SchemaError(format!("SchemaRegistry node order lock poisoned: {e}"))
+        })?;
+        nodes.insert(model_id.clone(), schema);
+        orders.insert(model_id, order);
         Ok(())
     }
 
-    /// Registers a relationship schema in the registry.
+    /// Registers a relationship schema keyed by its class name.
+    ///
+    /// Prefer [`SchemaRegistry::register_relationship_with_id`] when models from
+    /// different modules may share a class name.
     ///
     /// # Errors
-    /// Returns `Error::SchemaError` if the lock is poisoned.
+    /// Returns `Error::SchemaError` if the lock is poisoned or the schema
+    /// declares more than one primary key field.
     pub fn register_relationship(&self, schema: RelationshipSchema) -> Result<()> {
+        let model_id = schema.name.clone();
+        self.register_relationship_with_id(model_id, schema)
+    }
+
+    /// Registers a relationship schema under a unique model identity.
+    ///
+    /// # Errors
+    /// Returns `Error::SchemaError` if the lock is poisoned or the schema
+    /// declares more than one primary key field.
+    pub fn register_relationship_with_id(
+        &self,
+        model_id: impl Into<String>,
+        schema: RelationshipSchema,
+    ) -> Result<()> {
+        schema.derived_primary_key()?;
+        let model_id = model_id.into();
+        let order = self.next_registration_order();
         let mut rels = self.relationships.write().map_err(|e| {
             Error::SchemaError(format!("SchemaRegistry relationship lock poisoned: {e}"))
         })?;
-        rels.insert(schema.name.clone(), schema);
+        let mut orders = self.relationship_order.write().map_err(|e| {
+            Error::SchemaError(format!(
+                "SchemaRegistry relationship order lock poisoned: {e}"
+            ))
+        })?;
+        rels.insert(model_id.clone(), schema);
+        orders.insert(model_id, order);
         Ok(())
     }
 
-    /// Retrieves a node schema by model name.
+    /// Retrieves a node schema by model identity or bare class name.
+    ///
+    /// An exact identity match wins. When `name` is a bare class name shared by
+    /// several registrations, the most recently registered schema is returned.
     pub fn get_node(&self, name: &str) -> Option<NodeSchema> {
+        let key = self.node_lookup_key(name)?;
         let nodes = self.nodes.read().ok()?;
-        nodes.get(name).cloned()
+        nodes.get(&key).cloned()
     }
 
     /// Retrieves a node schema by primary or secondary label (case-insensitive).
+    ///
+    /// If several registrations share a matching label, the most recently
+    /// registered one is returned.
     pub fn get_node_by_label(&self, label: &str) -> Option<NodeSchema> {
         let nodes = self.nodes.read().ok()?;
+        let order = self.node_order.read().ok()?;
         nodes
-            .values()
-            .find(|n| n.labels.iter().any(|l| l.eq_ignore_ascii_case(label)))
-            .cloned()
+            .iter()
+            .filter(|(_, n)| n.labels.iter().any(|l| l.eq_ignore_ascii_case(label)))
+            .max_by_key(|(identity, _)| order.get(*identity).copied().unwrap_or(0))
+            .map(|(_, schema)| schema.clone())
     }
 
-    /// Retrieves a relationship schema by model name.
+    /// Retrieves a relationship schema by model identity or bare class name.
+    ///
+    /// An exact identity match wins. When `name` is a bare class name shared by
+    /// several registrations, the most recently registered schema is returned.
     pub fn get_relationship(&self, name: &str) -> Option<RelationshipSchema> {
+        let key = self.relationship_lookup_key(name)?;
         let rels = self.relationships.read().ok()?;
-        rels.get(name).cloned()
+        rels.get(&key).cloned()
     }
 
     /// Retrieves a relationship schema by graph type name (case-insensitive).
+    ///
+    /// If several registrations share a matching type, the most recently
+    /// registered one is returned.
     pub fn get_relationship_by_type(&self, type_name: &str) -> Option<RelationshipSchema> {
         let rels = self.relationships.read().ok()?;
-        if let Some(rel) = rels
-            .get(type_name)
-            .filter(|r| r.type_name.eq_ignore_ascii_case(type_name))
-        {
-            return Some(rel.clone());
-        }
-        rels.values()
-            .find(|r| r.type_name.eq_ignore_ascii_case(type_name))
-            .cloned()
+        let order = self.relationship_order.read().ok()?;
+        rels.iter()
+            .filter(|(_, r)| r.type_name.eq_ignore_ascii_case(type_name))
+            .max_by_key(|(identity, _)| order.get(*identity).copied().unwrap_or(0))
+            .map(|(_, schema)| schema.clone())
     }
 
-    /// Checks if a node schema is registered by name.
+    /// Checks if a node schema is registered by identity or bare class name.
     pub fn has_node(&self, name: &str) -> bool {
         self.nodes
             .read()
-            .map(|n| n.contains_key(name))
+            .map(|n| n.contains_key(name) || n.values().any(|schema| schema.name == name))
             .unwrap_or(false)
     }
 
-    /// Checks if a relationship schema is registered by name.
+    /// Checks if a relationship schema is registered by identity or bare class name.
     pub fn has_relationship(&self, name: &str) -> bool {
         self.relationships
             .read()
-            .map(|r| r.contains_key(name))
+            .map(|r| r.contains_key(name) || r.values().any(|schema| schema.name == name))
             .unwrap_or(false)
     }
 
@@ -987,26 +1224,97 @@ impl SchemaRegistry {
             .unwrap_or_default()
     }
 
+    /// Returns the primary key property for a node or relationship model.
+    ///
+    /// `model` may be a unique model identity or a bare class name. The value is
+    /// derived from the registered field descriptors.
+    pub fn primary_key_for(&self, model: &str) -> Option<String> {
+        {
+            let nodes = self.nodes.read().ok()?;
+            let order = self.node_order.read().ok()?;
+            if let Some(key) = Self::node_key_in(&nodes, &order, model) {
+                return nodes.get(&key)?.derived_primary_key().ok().flatten();
+            }
+        }
+        let rels = self.relationships.read().ok()?;
+        let order = self.relationship_order.read().ok()?;
+        let key = Self::relationship_key_in(&rels, &order, model)?;
+        rels.get(&key)?.derived_primary_key().ok().flatten()
+    }
+
+    /// Resolves the MERGE key properties for a node or relationship model.
+    ///
+    /// `model` may be a unique model identity or a bare class name. `supplied`
+    /// lists the property names present on the instance and `defaulted` lists
+    /// the subset that only carries a declared default. The primary key wins
+    /// when supplied, then supplied unique fields, then every supplied
+    /// non-defaulted property.
+    pub fn merge_key_for(
+        &self,
+        model: &str,
+        supplied: &[String],
+        defaulted: &[String],
+    ) -> Option<Vec<String>> {
+        {
+            let nodes = self.nodes.read().ok()?;
+            let order = self.node_order.read().ok()?;
+            if let Some(key) = Self::node_key_in(&nodes, &order, model) {
+                return Some(nodes.get(&key)?.merge_key_fields(supplied, defaulted));
+            }
+        }
+        let rels = self.relationships.read().ok()?;
+        let order = self.relationship_order.read().ok()?;
+        let key = Self::relationship_key_in(&rels, &order, model)?;
+        Some(rels.get(&key)?.merge_key_fields(supplied, defaulted))
+    }
+
     /// Clears all registered schemas from this registry.
     pub fn clear(&self) {
         if let Ok(mut nodes) = self.nodes.write() {
             nodes.clear();
         }
+        if let Ok(mut orders) = self.node_order.write() {
+            orders.clear();
+        }
         if let Ok(mut rels) = self.relationships.write() {
             rels.clear();
         }
+        if let Ok(mut orders) = self.relationship_order.write() {
+            orders.clear();
+        }
     }
 
-    /// Removes a registered node schema by model name, returning it if present.
+    /// Removes a registered node schema by identity or bare class name, returning it if present.
     pub fn remove_node(&self, name: &str) -> Option<NodeSchema> {
         let mut nodes = self.nodes.write().ok()?;
-        nodes.remove(name)
+        let mut orders = self.node_order.write().ok()?;
+        let key = if nodes.contains_key(name) {
+            Some(name.to_string())
+        } else {
+            nodes
+                .iter()
+                .filter(|(_, schema)| schema.name == name)
+                .max_by_key(|(identity, _)| orders.get(*identity).copied().unwrap_or(0))
+                .map(|(identity, _)| identity.clone())
+        }?;
+        orders.remove(&key);
+        nodes.remove(&key)
     }
 
-    /// Removes a registered relationship schema by model name, returning it if present.
+    /// Removes a registered relationship schema by identity or bare class name, returning it if present.
     pub fn remove_relationship(&self, name: &str) -> Option<RelationshipSchema> {
         let mut rels = self.relationships.write().ok()?;
-        rels.remove(name)
+        let mut orders = self.relationship_order.write().ok()?;
+        let key = if rels.contains_key(name) {
+            Some(name.to_string())
+        } else {
+            rels.iter()
+                .filter(|(_, schema)| schema.name == name)
+                .max_by_key(|(identity, _)| orders.get(*identity).copied().unwrap_or(0))
+                .map(|(identity, _)| identity.clone())
+        }?;
+        orders.remove(&key);
+        rels.remove(&key)
     }
 
     /// Returns the total count of registered schemas (nodes + relationships).
@@ -1022,6 +1330,11 @@ impl SchemaRegistry {
     }
 
     /// Captures a static clone snapshot of the registry's entire state.
+    ///
+    /// When every node (or relationship) class name is unique, snapshot keys
+    /// stay the bare class names, so serialized output for single-module models
+    /// is unchanged. As soon as a class name is registered more than once, all
+    /// keys in that map become unique model identities so no entry is lost.
     pub fn snapshot(&self) -> SchemaSnapshot {
         let nodes = self.nodes.read().map(|m| m.clone()).unwrap_or_default();
         let relationships = self
@@ -1029,6 +1342,22 @@ impl SchemaRegistry {
             .read()
             .map(|m| m.clone())
             .unwrap_or_default();
+        let nodes = if has_duplicate_node_names(&nodes) {
+            nodes
+        } else {
+            nodes
+                .into_values()
+                .map(|schema| (schema.name.clone(), schema))
+                .collect()
+        };
+        let relationships = if has_duplicate_relationship_names(&relationships) {
+            relationships
+        } else {
+            relationships
+                .into_values()
+                .map(|schema| (schema.name.clone(), schema))
+                .collect()
+        };
         SchemaSnapshot {
             nodes,
             relationships,
@@ -1037,6 +1366,20 @@ impl SchemaRegistry {
 
     /// Restores or overwrites the registry with a previously captured snapshot.
     pub fn restore(&self, snapshot: SchemaSnapshot) -> Result<()> {
+        let node_order: BTreeMap<String, u64> = snapshot
+            .nodes
+            .keys()
+            .enumerate()
+            .map(|(index, key)| (key.clone(), index as u64))
+            .collect();
+        let relationship_order: BTreeMap<String, u64> = snapshot
+            .relationships
+            .keys()
+            .enumerate()
+            .map(|(index, key)| (key.clone(), (index + node_order.len()) as u64))
+            .collect();
+        let next_order = (node_order.len() + relationship_order.len()) as u64;
+
         let mut nodes = self
             .nodes
             .write()
@@ -1044,8 +1387,19 @@ impl SchemaRegistry {
         let mut rels = self.relationships.write().map_err(|e| {
             Error::SchemaError(format!("SchemaRegistry relationship lock poisoned: {e}"))
         })?;
+        let mut node_orders = self.node_order.write().map_err(|e| {
+            Error::SchemaError(format!("SchemaRegistry node order lock poisoned: {e}"))
+        })?;
+        let mut relationship_orders = self.relationship_order.write().map_err(|e| {
+            Error::SchemaError(format!(
+                "SchemaRegistry relationship order lock poisoned: {e}"
+            ))
+        })?;
         *nodes = snapshot.nodes;
         *rels = snapshot.relationships;
+        *node_orders = node_order;
+        *relationship_orders = relationship_order;
+        self.next_order.store(next_order, Ordering::Relaxed);
         Ok(())
     }
 
@@ -1506,11 +1860,11 @@ impl SchemaRegistry {
             let mut recognized_schemas = Vec::new();
 
             for label in &node.labels {
-                if let Some(ns) = all_nodes.iter().find(|n| {
-                    n.labels.iter().any(|l| l.eq_ignore_ascii_case(label))
-                        || n.name.eq_ignore_ascii_case(label)
-                }) {
-                    recognized_schemas.push(ns.clone());
+                if let Some(ns) = self
+                    .get_node(label)
+                    .or_else(|| self.get_node_by_label(label))
+                {
+                    recognized_schemas.push(ns);
                 } else if !all_nodes.is_empty() {
                     let known_labels: Vec<&str> = all_nodes
                         .iter()
@@ -1590,10 +1944,10 @@ impl SchemaRegistry {
                     continue; // Anonymous relationship pattern -[ ]->
                 }
 
-                if let Some(rs) = all_rels.iter().find(|r| {
-                    r.type_name.eq_ignore_ascii_case(rel_type)
-                        || r.name.eq_ignore_ascii_case(rel_type)
-                }) {
+                if let Some(rs) = self
+                    .get_relationship(rel_type)
+                    .or_else(|| self.get_relationship_by_type(rel_type))
+                {
                     // Check endpoints
                     let endpoints_ok = if edge.direction == Direction::Undirected {
                         rs.allows_endpoints(src_labels, tgt_labels)
@@ -1841,9 +2195,11 @@ where
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct SchemaSnapshot {
-    /// Registered node schemas keyed by model name.
+    /// Registered node schemas keyed by bare model name when names are unique,
+    /// otherwise keyed by unique model identity.
     pub nodes: BTreeMap<String, NodeSchema>,
-    /// Registered relationship schemas keyed by model name.
+    /// Registered relationship schemas keyed by bare model name when names are
+    /// unique, otherwise keyed by unique model identity.
     pub relationships: BTreeMap<String, RelationshipSchema>,
 }
 

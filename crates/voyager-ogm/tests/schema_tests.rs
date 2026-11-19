@@ -253,6 +253,188 @@ fn test_schema_snapshot_and_json_serialization() {
 }
 
 #[test]
+fn test_registry_keeps_same_named_models_apart() {
+    let registry = SchemaRegistry::new();
+    let first = NodeSchema::new("User", vec!["User".to_string(), "Actor".to_string()])
+        .with_field(FieldDescriptor::new("actor_id", FieldType::String).primary_key());
+    let second = NodeSchema::new("User", vec!["User".to_string(), "Customer".to_string()])
+        .with_field(FieldDescriptor::new("customer_id", FieldType::String).primary_key());
+
+    registry
+        .register_node_with_id("catalog.User", first)
+        .unwrap();
+    registry
+        .register_node_with_id("billing.User", second)
+        .unwrap();
+
+    assert_eq!(registry.node_schemas().len(), 2);
+    assert_eq!(
+        registry.get_node("catalog.User").unwrap().primary_key,
+        Some("actor_id".to_string())
+    );
+    assert_eq!(
+        registry.get_node("billing.User").unwrap().primary_key,
+        Some("customer_id".to_string())
+    );
+
+    // A bare class name resolves to the most recently registered model.
+    assert_eq!(
+        registry.get_node("User").unwrap().primary_key,
+        Some("customer_id".to_string())
+    );
+    assert!(registry.has_node("User"));
+    assert_eq!(
+        registry.get_node_by_label("actor").unwrap().primary_key,
+        Some("actor_id".to_string())
+    );
+    assert_eq!(
+        registry.get_node_by_label("customer").unwrap().primary_key,
+        Some("customer_id".to_string())
+    );
+
+    // Duplicate class names force identity keys so no snapshot entry is lost.
+    let snapshot = registry.snapshot();
+    assert!(snapshot.nodes.contains_key("catalog.User"));
+    assert!(snapshot.nodes.contains_key("billing.User"));
+
+    let json = registry.to_json().unwrap();
+    assert!(json.contains("catalog.User"));
+    assert!(json.contains("billing.User"));
+    let restored = SchemaRegistry::new();
+    restored.from_json(&json).unwrap();
+    assert_eq!(restored.node_schemas().len(), 2);
+    assert_eq!(
+        restored.get_node("catalog.User").unwrap().primary_key,
+        Some("actor_id".to_string())
+    );
+}
+
+#[test]
+fn test_registry_keeps_same_named_relationships_apart() {
+    let registry = SchemaRegistry::new();
+    let first = RelationshipSchema::new("Follows", "FOLLOWS")
+        .with_field(FieldDescriptor::new("since", FieldType::Int64));
+    let second = RelationshipSchema::new("Follows", "FOLLOWS")
+        .with_field(FieldDescriptor::new("weight", FieldType::Float64));
+
+    registry
+        .register_relationship_with_id("social.Follows", first)
+        .unwrap();
+    registry
+        .register_relationship_with_id("feed.Follows", second)
+        .unwrap();
+
+    assert_eq!(registry.relationship_schemas().len(), 2);
+    assert!(
+        registry
+            .get_relationship("social.Follows")
+            .unwrap()
+            .fields
+            .contains_key("since")
+    );
+    assert!(
+        registry
+            .get_relationship("feed.Follows")
+            .unwrap()
+            .fields
+            .contains_key("weight")
+    );
+    assert!(
+        registry
+            .get_relationship_by_type("follows")
+            .unwrap()
+            .fields
+            .contains_key("weight")
+    );
+    assert!(registry.has_relationship("Follows"));
+    assert_eq!(registry.relationship_schemas().len(), 2);
+}
+
+#[test]
+fn test_primary_key_is_derived_from_field_descriptors() {
+    let registry = SchemaRegistry::new();
+    let schema = NodeSchema::new("Account", vec!["Account".to_string()])
+        .with_field(FieldDescriptor::new("account_id", FieldType::String).primary_key())
+        .with_field(FieldDescriptor::new("name", FieldType::String));
+    registry
+        .register_node_with_id("app.Account", schema)
+        .unwrap();
+
+    assert_eq!(
+        registry.primary_key_for("app.Account"),
+        Some("account_id".to_string())
+    );
+    assert_eq!(
+        registry.get_node("app.Account").unwrap().primary_key,
+        Some("account_id".to_string())
+    );
+
+    let duplicate = NodeSchema::new("Broken", vec!["Broken".to_string()])
+        .with_field(FieldDescriptor::new("first_id", FieldType::String).primary_key())
+        .with_field(FieldDescriptor::new("second_id", FieldType::String).primary_key());
+    let error = registry.register_node(duplicate).unwrap_err();
+    assert!(error.to_string().contains("multiple primary key fields"));
+}
+
+#[test]
+fn test_merge_key_policy_from_schema() {
+    let schema = NodeSchema::new("Account", vec!["Account".to_string()])
+        .with_field(FieldDescriptor::new("account_id", FieldType::String).primary_key())
+        .with_field(FieldDescriptor::new("email", FieldType::String).unique())
+        .with_field(FieldDescriptor::new("name", FieldType::String))
+        .with_field(
+            FieldDescriptor::new("status", FieldType::String)
+                .with_default(LiteralValue::String("PENDING".to_string())),
+        );
+
+    let supplied = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+    let defaulted = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+
+    assert_eq!(
+        schema.merge_key_fields(&supplied(&["name", "account_id", "email"]), &[]),
+        vec!["account_id"]
+    );
+    assert_eq!(
+        schema.merge_key_fields(&supplied(&["name", "email"]), &[]),
+        vec!["email"]
+    );
+    assert_eq!(
+        schema.merge_key_fields(&supplied(&["name", "status"]), &defaulted(&["status"])),
+        vec!["name"]
+    );
+    assert_eq!(
+        schema.merge_key_fields(&supplied(&["status"]), &defaulted(&["status"])),
+        Vec::<String>::new()
+    );
+
+    let registry = SchemaRegistry::new();
+    registry
+        .register_node_with_id("app.Account", schema)
+        .unwrap();
+    assert_eq!(
+        registry.merge_key_for("app.Account", &supplied(&["email", "name"]), &Vec::new()),
+        Some(vec!["email".to_string()])
+    );
+}
+
+#[test]
+fn test_relationship_merge_key_policy_from_schema() {
+    let schema = RelationshipSchema::new("Rated", "RATED")
+        .with_field(FieldDescriptor::new("score", FieldType::Int64))
+        .with_field(FieldDescriptor::new(
+            "tags",
+            FieldType::List(Box::new(FieldType::Any)),
+        ));
+    assert_eq!(
+        schema.merge_key_fields(
+            &["score".to_string(), "tags".to_string()],
+            &["tags".to_string()]
+        ),
+        vec!["score"]
+    );
+}
+
+#[test]
 fn test_validate_topology_conformance() {
     use voyager_ogm::topology::GraphTopology;
 

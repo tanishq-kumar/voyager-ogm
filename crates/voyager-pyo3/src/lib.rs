@@ -4610,41 +4610,14 @@ impl PyNativeSchemaRegistry {
             RegistryStorage::Global => global_schema_registry(),
         }
     }
-}
 
-#[pymethods]
-impl PyNativeSchemaRegistry {
-    #[new]
-    fn new() -> Self {
-        Self {
-            storage: RegistryStorage::Owned(Arc::new(SchemaRegistry::new())),
-        }
-    }
-
-    /// Accesses the global singleton schema registry.
-    #[staticmethod]
-    fn global_registry() -> Self {
-        Self {
-            storage: RegistryStorage::Global,
-        }
-    }
-
-    /// Alias for `global_registry()`.
-    #[staticmethod]
-    fn global_() -> Self {
-        Self::global_registry()
-    }
-
-    /// Registers a node schema with labels, fields, and optional primary key.
-    #[pyo3(signature = (name, labels, fields, primary_key=None, fulltext_indexes=None))]
-    fn register_node(
-        &self,
+    fn build_node_schema(
         name: String,
         labels: Vec<String>,
         fields: &Bound<'_, PyAny>,
         primary_key: Option<String>,
         fulltext_indexes: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<()> {
+    ) -> PyResult<NodeSchema> {
         let mut node_schema = NodeSchema::new(name, labels);
         if let Ok(dict) = fields.cast::<PyDict>() {
             for (k, v) in dict {
@@ -4680,8 +4653,107 @@ impl PyNativeSchemaRegistry {
             }
         }
 
+        Ok(node_schema)
+    }
+
+    fn build_relationship_schema(
+        name: String,
+        type_name: String,
+        source_labels: Option<Vec<String>>,
+        target_labels: Option<Vec<String>>,
+        fields: Option<&Bound<'_, PyAny>>,
+        directed: bool,
+        fulltext_indexes: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<RelationshipSchema> {
+        let mut rel_schema = RelationshipSchema::new(name, type_name).directed(directed);
+        if let (Some(src), Some(tgt)) = (source_labels, target_labels) {
+            rel_schema = rel_schema.with_endpoints(src, tgt);
+        }
+        if let Some(fields_any) = fields {
+            if let Ok(dict) = fields_any.cast::<PyDict>() {
+                for (k, v) in dict {
+                    let field_name: String = if let Ok(s) = k.cast::<PyString>() {
+                        s.to_string_lossy().into_owned()
+                    } else {
+                        k.extract()?
+                    };
+                    let desc = parse_field_descriptor(&field_name, &v)?;
+                    rel_schema = rel_schema.with_field(desc);
+                }
+            } else if let Ok(list) = fields_any.cast::<PyList>() {
+                for item in list {
+                    let desc = parse_field_descriptor("", &item)?;
+                    rel_schema = rel_schema.with_field(desc);
+                }
+            }
+        }
+
+        if let Some(ft_any) = fulltext_indexes {
+            for cfg in extract_fulltext_configs(ft_any)? {
+                rel_schema = rel_schema.with_fulltext_index(cfg);
+            }
+        }
+
+        Ok(rel_schema)
+    }
+}
+
+#[pymethods]
+impl PyNativeSchemaRegistry {
+    #[new]
+    fn new() -> Self {
+        Self {
+            storage: RegistryStorage::Owned(Arc::new(SchemaRegistry::new())),
+        }
+    }
+
+    /// Accesses the global singleton schema registry.
+    #[staticmethod]
+    fn global_registry() -> Self {
+        Self {
+            storage: RegistryStorage::Global,
+        }
+    }
+
+    /// Alias for `global_registry()`.
+    #[staticmethod]
+    fn global_() -> Self {
+        Self::global_registry()
+    }
+
+    /// Registers a node schema with labels, fields, and optional primary key.
+    #[pyo3(signature = (name, labels, fields, primary_key=None, fulltext_indexes=None))]
+    fn register_node(
+        &self,
+        name: String,
+        labels: Vec<String>,
+        fields: &Bound<'_, PyAny>,
+        primary_key: Option<String>,
+        fulltext_indexes: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let node_schema =
+            Self::build_node_schema(name, labels, fields, primary_key, fulltext_indexes)?;
         self.registry()
             .register_node(node_schema)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Registers a node schema under a unique model identity.
+    ///
+    /// The primary key is derived from the field descriptors.
+    #[pyo3(signature = (model_id, name, labels, fields, fulltext_indexes=None))]
+    fn register_node_with_identity(
+        &self,
+        model_id: String,
+        name: String,
+        labels: Vec<String>,
+        fields: &Bound<'_, PyAny>,
+        fulltext_indexes: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let node_schema = Self::build_node_schema(name, labels, fields, None, fulltext_indexes)?;
+        self.registry()
+            .register_node_with_id(model_id, node_schema)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(())
     }
@@ -4716,7 +4788,7 @@ impl PyNativeSchemaRegistry {
 
     /// Registers a relationship schema with endpoints, fields, and direction.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, type_name, source_labels=None, target_labels=None, fields=None, directed=true, fulltext_indexes=None))]
+    #[pyo3(signature = (name, type_name, source_labels=None, target_labels=None, fields=None, directed=true, fulltext_indexes=None, model_id=None))]
     fn register_relationship(
         &self,
         name: String,
@@ -4726,39 +4798,24 @@ impl PyNativeSchemaRegistry {
         fields: Option<&Bound<'_, PyAny>>,
         directed: bool,
         fulltext_indexes: Option<&Bound<'_, PyAny>>,
+        model_id: Option<String>,
     ) -> PyResult<()> {
-        let mut rel_schema = RelationshipSchema::new(name, type_name).directed(directed);
-        if let (Some(src), Some(tgt)) = (source_labels, target_labels) {
-            rel_schema = rel_schema.with_endpoints(src, tgt);
+        let rel_schema = Self::build_relationship_schema(
+            name,
+            type_name,
+            source_labels,
+            target_labels,
+            fields,
+            directed,
+            fulltext_indexes,
+        )?;
+        let registry = self.registry();
+        if let Some(model_id) = model_id {
+            registry.register_relationship_with_id(model_id, rel_schema)
+        } else {
+            registry.register_relationship(rel_schema)
         }
-        if let Some(fields_any) = fields {
-            if let Ok(dict) = fields_any.cast::<PyDict>() {
-                for (k, v) in dict {
-                    let field_name: String = if let Ok(s) = k.cast::<PyString>() {
-                        s.to_string_lossy().into_owned()
-                    } else {
-                        k.extract()?
-                    };
-                    let desc = parse_field_descriptor(&field_name, &v)?;
-                    rel_schema = rel_schema.with_field(desc);
-                }
-            } else if let Ok(list) = fields_any.cast::<PyList>() {
-                for item in list {
-                    let desc = parse_field_descriptor("", &item)?;
-                    rel_schema = rel_schema.with_field(desc);
-                }
-            }
-        }
-
-        if let Some(ft_any) = fulltext_indexes {
-            for cfg in extract_fulltext_configs(ft_any)? {
-                rel_schema = rel_schema.with_fulltext_index(cfg);
-            }
-        }
-
-        self.registry()
-            .register_relationship(rel_schema)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(())
     }
 
@@ -4802,19 +4859,44 @@ impl PyNativeSchemaRegistry {
                 fields_obj.as_ref(),
                 directed,
                 ft_obj.as_ref(),
+                None,
             )
         } else {
             Err(PyTypeError::new_err("schema must be a dict"))
         }
     }
 
-    /// Retrieves a node schema by model name.
+    /// Retrieves a node schema by model identity or bare class name.
+    ///
+    /// When a bare class name is shared by several registrations, the most
+    /// recently registered schema is returned.
     fn get_node<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Option<Bound<'py, PyDict>>> {
         if let Some(node) = self.registry().get_node(name) {
             Ok(Some(node_schema_to_py(py, &node)?))
         } else {
             Ok(None)
         }
+    }
+
+    /// Returns the primary key property name for a node or relationship model.
+    ///
+    /// The value is derived by the native schema from the field descriptors.
+    fn primary_key_for(&self, model_id: &str) -> Option<String> {
+        self.registry().primary_key_for(model_id)
+    }
+
+    /// Resolves the MERGE key property names for a node or relationship model.
+    ///
+    /// `supplied` lists the property names present on the instance and
+    /// `defaulted` lists the subset that only carries a declared default.
+    fn merge_key_for(
+        &self,
+        model_id: &str,
+        supplied: Vec<String>,
+        defaulted: Vec<String>,
+    ) -> Option<Vec<String>> {
+        self.registry()
+            .merge_key_for(model_id, &supplied, &defaulted)
     }
 
     /// Retrieves a node schema by primary label.

@@ -30,6 +30,7 @@ from voyager_ogm.models import (
     PredicateExpr,
     Relationship,
     _get_next_alias,
+    _native_merge_key_fields,
 )
 
 
@@ -297,40 +298,18 @@ class Query:
     def _extract_merge_properties(
         entity: Node,
     ) -> tuple[list[tuple[str, Any]], list[tuple[str, Any]], list[tuple[str, Any]]]:
-        """Extracts key, regular, and default-filled properties for a MERGE node.
+        """Splits instance properties into MERGE key, match, and create-only values.
 
-        Key fields:
-          1. fields with primary_key=True that are set;
-          2. if none, fields with unique=True that are set;
-          3. if none, all set fields (plain pattern MERGE).
-
-        Fields populated from a declared default are never part of the key or
-        the ON MATCH SET payload; they belong to ON CREATE SET only so an
-        existing node is not reset to its default.
+        The native schema registry decides which supplied properties form the
+        key: the primary key when supplied, otherwise supplied unique fields,
+        otherwise every supplied property. Default-filled values are create-only
+        and therefore never participate in the key or the match payload. This
+        helper only partitions the values along that native decision.
         """
         all_props = Query._extract_instance_properties(entity)
-        set_map = dict(all_props)
-        schema = getattr(entity, "_schema_fields", {})
         defaulted = set(getattr(entity, "_defaulted_fields", set()))
-        available = {k: v for k, v in set_map.items() if k not in defaulted}
-
-        pk_names = [
-            f.name
-            for f in schema.values()
-            if getattr(f, "primary_key", False) and f.name in available
-        ]
-        if pk_names:
-            key_names = set(pk_names)
-        else:
-            unique_names = [
-                f.name
-                for f in schema.values()
-                if getattr(f, "unique", False) and f.name in available
-            ]
-            if unique_names:
-                key_names = set(unique_names)
-            else:
-                key_names = set(available.keys())
+        supplied = [name for name, _ in all_props]
+        key_names = set(_native_merge_key_fields(type(entity), supplied, defaulted))
 
         key_props = [(k, v) for k, v in all_props if k in key_names]
         other_props = [(k, v) for k, v in all_props if k not in key_names and k not in defaulted]
