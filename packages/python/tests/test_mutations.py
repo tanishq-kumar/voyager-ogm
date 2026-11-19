@@ -27,8 +27,8 @@ def test_python_create_single_node():
     query = Query.create(p)
     compiled = query.compile("cypher")
 
-    assert compiled.statement == "CREATE (_person_0:Person)"
-    assert compiled.parameters == {}
+    assert compiled.statement == "CREATE (_person_0:Person {status: $p0})"
+    assert compiled.parameters == {"p0": "PENDING"}
 
 
 def test_python_create_relationship_path():
@@ -40,7 +40,9 @@ def test_python_create_relationship_path():
     compiled = query.compile("cypher")
 
     assert (
-        compiled.statement == "CREATE (_person_0:Person)-[_follows_0:FOLLOWS]->(_person_1:Person)"
+        compiled.statement
+        == "CREATE (_person_0:Person {status: $p0})-[_follows_0:FOLLOWS {since: $p1}]->"
+        "(_person_1:Person {status: $p2})"
     )
 
 
@@ -55,13 +57,14 @@ def test_python_merge_with_on_create_and_on_match():
 
     expected_stmt = (
         "MERGE (_person_0:Person) "
-        "ON CREATE SET _person_0.name = $p0, _person_0.age = $p1 "
-        "ON MATCH SET _person_0.status = $p2"
+        "ON CREATE SET _person_0.status = $p0, _person_0.name = $p1, _person_0.age = $p2 "
+        "ON MATCH SET _person_0.status = $p3"
     )
     assert compiled.statement == expected_stmt
-    assert compiled.parameters["p0"] == "Alice"
-    assert compiled.parameters["p1"] == 30
-    assert compiled.parameters["p2"] == "ACTIVE"
+    assert compiled.parameters["p0"] == "PENDING"
+    assert compiled.parameters["p1"] == "Alice"
+    assert compiled.parameters["p2"] == 30
+    assert compiled.parameters["p3"] == "ACTIVE"
 
 
 def test_python_match_then_set_properties():
@@ -108,7 +111,7 @@ def test_python_remove_property():
 
 def test_python_model_dirty_tracking():
     p = Person(name="Alice", age=25)
-    assert p.dirty_fields == {"name": "Alice", "age": 25}
+    assert p.dirty_fields == {"name": "Alice", "age": 25, "status": "PENDING"}
 
     p.clear_dirty()
     assert p.dirty_fields == {}

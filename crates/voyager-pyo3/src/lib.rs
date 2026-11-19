@@ -2840,6 +2840,43 @@ fn compile_bulk_merge<'py>(
     Ok(dict)
 }
 
+/// Compiles a bulk upsert with properties that are assigned only on creation.
+#[pyfunction]
+#[pyo3(signature = (label, key_property, properties, create_only_properties, dialect="cypher", graph_name=None))]
+fn compile_bulk_merge_create_only<'py>(
+    py: Python<'py>,
+    label: String,
+    key_property: String,
+    properties: Vec<String>,
+    create_only_properties: Vec<String>,
+    dialect: &str,
+    graph_name: Option<String>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let prop_refs: Vec<&str> = properties.iter().map(|s| s.as_str()).collect();
+    let create_only_refs: Vec<&str> = create_only_properties.iter().map(|s| s.as_str()).collect();
+    let compiled =
+        voyager_ogm::bulk::compile_bulk_merge_split(&voyager_ogm::bulk::BulkMergeConfig {
+            label: &label,
+            key_property: &key_property,
+            properties: &prop_refs,
+            create_only_properties: &create_only_refs,
+            batch_param: "batch",
+            row_alias: "row",
+            dialect,
+            graph_name: graph_name.as_deref(),
+        })
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    let dict = PyDict::new(py);
+    dict.set_item("statement", compiled.statement)?;
+    let params_dict = PyDict::new(py);
+    for (k, v) in compiled.parameters {
+        params_dict.set_item(k, literal_to_py(&v, py)?)?;
+    }
+    dict.set_item("parameters", params_dict)?;
+    Ok(dict)
+}
+
 /// Compiles a high-speed bulk relationship creation query.
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
@@ -5514,6 +5551,7 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(validate_query_against_schema, m)?)?;
     m.add_function(wrap_pyfunction!(compile_bulk_create, m)?)?;
     m.add_function(wrap_pyfunction!(compile_bulk_merge, m)?)?;
+    m.add_function(wrap_pyfunction!(compile_bulk_merge_create_only, m)?)?;
     m.add_function(wrap_pyfunction!(compile_bulk_create_rel, m)?)?;
     m.add_function(wrap_pyfunction!(get_query_cache_stats, m)?)?;
     m.add_function(wrap_pyfunction!(clear_query_cache, m)?)?;

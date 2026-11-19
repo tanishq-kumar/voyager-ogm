@@ -379,6 +379,14 @@ def compile_bulk_merge(
     dialect: str = "cypher",
     graph_name: str | None = None,
 ) -> dict[str, Any]: ...
+def compile_bulk_merge_create_only(
+    label: str,
+    key_property: str,
+    properties: list[str],
+    create_only_properties: list[str],
+    dialect: str = "cypher",
+    graph_name: str | None = None,
+) -> dict[str, Any]: ...
 def compile_bulk_create_rel(
     rel_type: str,
     properties: list[str],

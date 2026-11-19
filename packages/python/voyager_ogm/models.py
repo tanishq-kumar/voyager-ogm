@@ -176,11 +176,9 @@ class Field(Generic[_T]):
             type_annotation: Python type annotation class.
             index_type: Optional index type string ('BTREE', 'TEXT', 'POINT', 'VECTOR').
         """
-        self.default = (
-            default
-            if default is not ...
-            else (default_factory() if callable(default_factory) else ...)
-        )
+        if default is not ... and default_factory is not None:
+            raise TypeError("Field cannot specify both 'default' and 'default_factory'.")
+        self.default = default
         self.default_factory = default_factory
         self.name = name
         self.primary_key = primary_key
@@ -193,6 +191,21 @@ class Field(Generic[_T]):
         else:
             self.type_annotation = type_annotation
         self._owner: type | None = None
+
+    @property
+    def has_default(self) -> bool:
+        """Returns whether this field declares a default value or factory."""
+        return self.default is not ... or self.default_factory is not None
+
+    def resolve_default(self) -> Any:
+        """Returns a fresh default value for a new instance.
+
+        Plain defaults are returned as-is; a default factory is called for each
+        invocation so mutable values are never shared between instances.
+        """
+        if self.default_factory is not None:
+            return self.default_factory()
+        return self.default
 
     def __class_getitem__(cls, item: Any) -> Any:
         """Enables generic typing support like `Field[str]` or `Field[int]`.
@@ -816,6 +829,32 @@ def _process_type_annotations(cls: Any) -> dict[str, Field]:
     return fields_map
 
 
+def _apply_field_defaults(
+    values: dict[str, Any],
+    schema: dict[str, Field],
+) -> set[str]:
+    """Fills in declared defaults for fields absent from ``values``.
+
+    Explicitly supplied keys, including ones mapped to ``None``, are never
+    overwritten. A ``default_factory`` is invoked once per call so every
+    instance or bulk record receives an independent default value.
+
+    Args:
+        values: Mutable property mapping to complete in place.
+        schema: Field descriptors keyed by model attribute name.
+
+    Returns:
+        Names of the fields that were filled from a declared default.
+    """
+    defaulted: set[str] = set()
+    for attr_name, field in schema.items():
+        if attr_name in values or not field.has_default:
+            continue
+        values[attr_name] = field.resolve_default()
+        defaulted.add(attr_name)
+    return defaulted
+
+
 def _resolve_declared_labels(cls: type) -> list[str] | None:
     """Resolves labels declared directly in a class body.
 
@@ -1074,6 +1113,7 @@ class Node:
         schema = getattr(self, "_schema_fields", {})
         for k, v in values.items():
             hydrated_values[k] = _hydrate_field_value(schema.get(k), v)
+        self._defaulted_fields = _apply_field_defaults(hydrated_values, schema)
         self._values: dict[str, Any] = hydrated_values
         self._dirty_fields: dict[str, Any] = dict(hydrated_values)
         if session is not None and getattr(session, "identity_map_enabled", False):
@@ -1134,6 +1174,7 @@ class Node:
             model=self.__class__,
             data=[record],
             key_field=resolved_key_field,
+            defaulted_fields=[{k for k in self._defaulted_fields if k in record}],
         )
         result = active_session.run_bulk(plan)
         self.clear_dirty()
@@ -1190,6 +1231,7 @@ class Node:
             model=self.__class__,
             data=[record],
             key_field=resolved_key_field,
+            defaulted_fields=[{k for k in self._defaulted_fields if k in record}],
         )
         result = await active_session.run_bulk(plan)
         self.clear_dirty()
@@ -1226,10 +1268,13 @@ class Node:
                 self._values = {}
             if not hasattr(self, "_dirty_fields"):
                 self._dirty_fields = {}
+            if not hasattr(self, "_defaulted_fields"):
+                self._defaulted_fields = set()
             if hasattr(self, "_schema_fields") and name in self._schema_fields:
                 value = _hydrate_field_value(self._schema_fields[name], value)
             self._values[name] = value
             self._dirty_fields[name] = value
+            self._defaulted_fields.discard(name)
 
     def count(self) -> AggregationExpr:
         """Returns a `COUNT(alias)` node aggregation expression."""
@@ -1439,6 +1484,7 @@ class Relationship:
         schema = getattr(self, "_schema_fields", {})
         for k, v in values.items():
             hydrated_values[k] = _hydrate_field_value(schema.get(k), v)
+        self._defaulted_fields = _apply_field_defaults(hydrated_values, schema)
         self._values = hydrated_values
 
     @property
@@ -1463,9 +1509,12 @@ class Relationship:
         else:
             if not hasattr(self, "_values"):
                 self._values = {}
+            if not hasattr(self, "_defaulted_fields"):
+                self._defaulted_fields = set()
             if hasattr(self, "_schema_fields") and name in self._schema_fields:
                 value = _hydrate_field_value(self._schema_fields[name], value)
             self._values[name] = value
+            self._defaulted_fields.discard(name)
 
     def __getattr__(self, name: str) -> BoundField:
         """Dynamically resolves unknown edge property names into BoundField descriptors.

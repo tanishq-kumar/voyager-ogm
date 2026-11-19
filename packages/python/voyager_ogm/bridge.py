@@ -408,7 +408,7 @@ class MockBridge:
                 batch_data = batch_item.parameters.get("batch", [])
                 total_records += len(batch_data)
                 self.executed_queries.append(
-                    (statement, unwrap_spatial_param(batch_item.parameters))
+                    (batch_item.statement, unwrap_spatial_param(batch_item.parameters))
                 )
 
         return BulkExecutionResult(
@@ -750,7 +750,7 @@ class Neo4jBoltBridge:
                     total_batches += 1
                     batch_data = batch_item.parameters.get("batch", [])
                     total_records += len(batch_data)
-                    session.run(statement, _adapt_bolt_parameters(batch_item.parameters))
+                    session.run(batch_item.statement, _adapt_bolt_parameters(batch_item.parameters))
 
         return BulkExecutionResult(
             total_batches=total_batches,
@@ -891,7 +891,9 @@ class Neo4jBoltTransaction:
                 for batch_item in plan_or_statement:
                     total_batches += 1
                     total_records += len(batch_item.parameters.get("batch", []))
-                    self._tx.run(statement, _adapt_bolt_parameters(batch_item.parameters))
+                    self._tx.run(
+                        batch_item.statement, _adapt_bolt_parameters(batch_item.parameters)
+                    )
         except BaseException:
             self._mark_failed()
             raise
@@ -1040,7 +1042,9 @@ class AsyncNeo4jBoltBridge:
                     total_batches += 1
                     batch_data = batch_item.parameters.get("batch", [])
                     total_records += len(batch_data)
-                    await session.run(statement, _adapt_bolt_parameters(batch_item.parameters))
+                    await session.run(
+                        batch_item.statement, _adapt_bolt_parameters(batch_item.parameters)
+                    )
 
         return BulkExecutionResult(
             total_batches=total_batches,
@@ -1193,7 +1197,9 @@ class AsyncNeo4jBoltTransaction:
                 for batch_item in plan_or_statement:
                     total_batches += 1
                     total_records += len(batch_item.parameters.get("batch", []))
-                    await self._tx.run(statement, _adapt_bolt_parameters(batch_item.parameters))
+                    await self._tx.run(
+                        batch_item.statement, _adapt_bolt_parameters(batch_item.parameters)
+                    )
         except BaseException:
             self._mark_failed()
             raise
@@ -1368,9 +1374,9 @@ class DuckDbBridge:
                 batch_data = batch_item.parameters.get("batch", [])
                 total_records += len(batch_data)
                 try:
-                    self.con.execute(statement, batch_item.parameters)
+                    self.con.execute(batch_item.statement, batch_item.parameters)
                 except Exception:
-                    self._fallback_bulk_ingest(statement, batch_data)
+                    self._fallback_bulk_ingest(batch_item.statement, batch_data)
 
         return BulkExecutionResult(
             total_batches=total_batches,
@@ -1926,7 +1932,9 @@ class PostgresBridge:
                     total_batches += 1
                     batch_data = batch_item.parameters.get("batch", [])
                     total_records += len(batch_data)
-                    stmt, params = self._format_pgq_statement(statement, batch_item.parameters)
+                    stmt, params = self._format_pgq_statement(
+                        batch_item.statement, batch_item.parameters
+                    )
                     cur.execute(stmt, params)
         return BulkExecutionResult(
             total_batches=total_batches,
@@ -2096,7 +2104,7 @@ class PostgresBridgeTransaction:
                         total_batches += 1
                         total_records += len(batch_item.parameters.get("batch", []))
                         stmt, params = self._bridge._format_pgq_statement(
-                            statement, batch_item.parameters
+                            batch_item.statement, batch_item.parameters
                         )
                         cur.execute(stmt, params)
         except BaseException:
@@ -2452,7 +2460,9 @@ class FalkorDBBridge:
                 total_batches += 1
                 batch_data = batch_item.parameters.get("batch", [])
                 total_records += len(batch_data)
-                self.graph.query(statement, _adapt_falkordb_parameters(batch_item.parameters))
+                self.graph.query(
+                    batch_item.statement, _adapt_falkordb_parameters(batch_item.parameters)
+                )
 
         return BulkExecutionResult(
             total_batches=total_batches,
@@ -2737,7 +2747,9 @@ class RelateBridge:
                 total_batches += 1
                 batch_data = batch_item.parameters.get("batch", [])
                 total_records += len(batch_data)
-                self.con.execute(statement, _adapt_relate_parameters(batch_item.parameters))
+                self.con.execute(
+                    batch_item.statement, _adapt_relate_parameters(batch_item.parameters)
+                )
 
         return BulkExecutionResult(
             total_batches=total_batches,

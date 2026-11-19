@@ -1,7 +1,10 @@
 //! Unit tests for bulk ingestion query generation and UNWIND clause handling.
 
 use voyager_ogm::builder::QueryBuilder;
-use voyager_ogm::bulk::{compile_bulk_create, compile_bulk_create_rel, compile_bulk_merge};
+use voyager_ogm::bulk::{
+    BulkMergeConfig, compile_bulk_create, compile_bulk_create_rel, compile_bulk_merge,
+    compile_bulk_merge_split,
+};
 use voyager_ogm::emitters::CypherEmitter;
 use voyager_ogm::visitor::AstVisitor;
 
@@ -58,6 +61,28 @@ fn test_compile_bulk_merge_cypher_and_gql() {
     assert_eq!(
         gql_query.statement,
         "UNWIND $batch AS row UPSERT (_person_0:Person {id: row.id}) SET _person_0.name = row.name, _person_0.age = row.age, _person_0.updated_at = row.updated_at, _person_0.name = row.name, _person_0.age = row.age, _person_0.updated_at = row.updated_at"
+    );
+}
+
+#[test]
+fn test_compile_bulk_merge_create_only_properties() {
+    let props = ["name"];
+    let create_only = ["status"];
+    let query = compile_bulk_merge_split(&BulkMergeConfig {
+        label: "Person",
+        key_property: "id",
+        properties: &props,
+        create_only_properties: &create_only,
+        batch_param: "batch",
+        row_alias: "row",
+        dialect: "cypher",
+        graph_name: None,
+    })
+    .unwrap();
+
+    assert_eq!(
+        query.statement,
+        "UNWIND $batch AS row MERGE (_person_0:Person {id: row.id}) ON CREATE SET _person_0.name = row.name, _person_0.status = row.status ON MATCH SET _person_0.name = row.name"
     );
 }
 

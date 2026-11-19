@@ -141,15 +141,16 @@ pub fn compile_bulk_merge(
     row_alias: &str,
     dialect: &str,
 ) -> Result<CompiledQuery> {
-    compile_bulk_merge_with_graph(
+    compile_bulk_merge_split(&BulkMergeConfig {
         label,
         key_property,
         properties,
+        create_only_properties: &[],
         batch_param,
         row_alias,
         dialect,
-        None,
-    )
+        graph_name: None,
+    })
 }
 
 /// Compiles a high-throughput `UNWIND $batch AS row MERGE (n:Label {id: row.id}) ON CREATE/MATCH SET` upsert query with optional graph name.
@@ -162,6 +163,54 @@ pub fn compile_bulk_merge_with_graph(
     dialect: &str,
     graph_name: Option<&str>,
 ) -> Result<CompiledQuery> {
+    compile_bulk_merge_split(&BulkMergeConfig {
+        label,
+        key_property,
+        properties,
+        create_only_properties: &[],
+        batch_param,
+        row_alias,
+        dialect,
+        graph_name,
+    })
+}
+
+/// Configuration options for bulk MERGE query compilation.
+#[derive(Debug, Clone)]
+pub struct BulkMergeConfig<'a> {
+    /// Node label to merge.
+    pub label: &'a str,
+    /// Property used to match an existing node.
+    pub key_property: &'a str,
+    /// Property names assigned on create and match.
+    pub properties: &'a [&'a str],
+    /// Property names assigned only on create.
+    pub create_only_properties: &'a [&'a str],
+    /// Batch parameter identifier name.
+    pub batch_param: &'a str,
+    /// Row alias identifier in the UNWIND clause.
+    pub row_alias: &'a str,
+    /// Target query dialect.
+    pub dialect: &'a str,
+    /// Optional graph name for Apache AGE or SQL:2023 PGQ.
+    pub graph_name: Option<&'a str>,
+}
+
+/// Compiles a bulk upsert where some properties are assigned only on creation.
+///
+/// Properties listed in `create_only_properties` appear in `ON CREATE SET` but
+/// never in `ON MATCH SET`, so an existing node keeps its stored values. They
+/// are also excluded from the MERGE key by the caller.
+pub fn compile_bulk_merge_split(config: &BulkMergeConfig<'_>) -> Result<CompiledQuery> {
+    let label = config.label;
+    let key_property = config.key_property;
+    let properties = config.properties;
+    let create_only_properties = config.create_only_properties;
+    let batch_param = config.batch_param;
+    let row_alias = config.row_alias;
+    let dialect = config.dialect;
+    let graph_name = config.graph_name;
+
     let mut arena = QueryAstArena::new();
     let node_var = format!("_{}_0", label.to_lowercase());
 
@@ -216,6 +265,22 @@ pub fn compile_bulk_merge_with_graph(
         });
         on_create_set.push(item);
         on_match_set.push(item);
+    }
+
+    for &prop in create_only_properties {
+        let target_prop = arena.alloc(AstNode::PropertyAccess {
+            target: node_var_ident,
+            property: prop.to_string(),
+        });
+        let row_prop = arena.alloc(AstNode::PropertyAccess {
+            target: row_alias_ident,
+            property: prop.to_string(),
+        });
+        on_create_set.push(arena.alloc(AstNode::SetItem {
+            target: target_prop,
+            value: row_prop,
+            is_merge: false,
+        }));
     }
 
     let merge_handle = arena.alloc(AstNode::MergeClause {

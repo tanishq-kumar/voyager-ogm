@@ -296,37 +296,46 @@ class Query:
     @staticmethod
     def _extract_merge_properties(
         entity: Node,
-    ) -> tuple[list[tuple[str, Any]], list[tuple[str, Any]]]:
-        """Extracts key properties and non-key properties for a MERGE node instance.
+    ) -> tuple[list[tuple[str, Any]], list[tuple[str, Any]], list[tuple[str, Any]]]:
+        """Extracts key, regular, and default-filled properties for a MERGE node.
 
         Key fields:
           1. fields with primary_key=True that are set;
           2. if none, fields with unique=True that are set;
           3. if none, all set fields (plain pattern MERGE).
+
+        Fields populated from a declared default are never part of the key or
+        the ON MATCH SET payload; they belong to ON CREATE SET only so an
+        existing node is not reset to its default.
         """
         all_props = Query._extract_instance_properties(entity)
         set_map = dict(all_props)
         schema = getattr(entity, "_schema_fields", {})
+        defaulted = set(getattr(entity, "_defaulted_fields", set()))
+        available = {k: v for k, v in set_map.items() if k not in defaulted}
 
         pk_names = [
             f.name
             for f in schema.values()
-            if getattr(f, "primary_key", False) and f.name in set_map
+            if getattr(f, "primary_key", False) and f.name in available
         ]
         if pk_names:
             key_names = set(pk_names)
         else:
             unique_names = [
-                f.name for f in schema.values() if getattr(f, "unique", False) and f.name in set_map
+                f.name
+                for f in schema.values()
+                if getattr(f, "unique", False) and f.name in available
             ]
             if unique_names:
                 key_names = set(unique_names)
             else:
-                key_names = set(set_map.keys())
+                key_names = set(available.keys())
 
         key_props = [(k, v) for k, v in all_props if k in key_names]
-        other_props = [(k, v) for k, v in all_props if k not in key_names]
-        return key_props, other_props
+        other_props = [(k, v) for k, v in all_props if k not in key_names and k not in defaulted]
+        default_props = [(k, v) for k, v in all_props if k in defaulted]
+        return key_props, other_props, default_props
 
     def _resolve_model_alias(self, model_class: type | None) -> str:
         """Resolves a model class reference to the query variable alias generated for it."""
@@ -891,10 +900,12 @@ class Query:
                     props = self._extract_instance_properties(node_or_var)
                     self._native.node(alias, lbls, props)
             elif mode == "merge":
-                key_props, other_props = self._extract_merge_properties(node_or_var)
+                key_props, other_props, default_props = self._extract_merge_properties(node_or_var)
                 self._native.node(alias, lbls, key_props)
                 for prop_name, prop_val in other_props:
                     self._native.on_create_and_match_set(alias, prop_name, prop_val)
+                for prop_name, prop_val in default_props:
+                    self._native.on_create_set(alias, prop_name, prop_val)
             else:
                 self._native.node(alias, lbls)
         elif isinstance(node_or_var, type) and issubclass(node_or_var, Node):
