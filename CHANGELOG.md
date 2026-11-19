@@ -121,6 +121,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Default factories are evaluated per instance instead of once at class definition, so mutable defaults such as lists are never shared between instances.
   - Declaring both `default` and `default_factory` now raises `TypeError` when the field is created.
   - Defaults flow through `Query.create`, bulk create plans, identity-map flushes, and `Node.save()`. In `Query.merge` and bulk merge plans they are written only in `ON CREATE SET` for the records that defaulted them, never in the MERGE key or `ON MATCH SET`, so an existing node keeps its stored value. Read applied values with `Node.get()` / `Relationship.get()`; instance attributes remain bound fields for the query DSL.
+- **Partial Bulk MERGE and Dirty-Field Flush Writes (#205)**:
+  - Bulk MERGE plans now write only the properties each row actually supplies on `ON CREATE SET` and `ON MATCH SET`; an omitted property keeps its stored value, while a property supplied as `null` explicitly clears it.
+  - Records are grouped by both the properties they supply and any fields filled from a declared default. Each group gets its own compiled statement (`BulkIngestionPlan.batch_statements` / `BulkIngestionBatch.statement`), which every bridge, transaction, and session bulk executor now runs per batch. Default-filled fields stay create-only, and every group compiles with the session's configured graph name.
+  - `Session.flush()` / `AsyncSession.flush()` and `Node.save()` / `Node.async_save()` now update only dirty fields instead of nulling every untouched property, while new records still send their default-filled fields as create-only.
+  - For Polars, PyArrow, and pandas inputs, every column present in the frame counts as supplied, so a null cell clears that property; columns absent from the frame are not written.
 - **Bolt URI Embedded Credentials Stripping and Decoding (#181)**:
   - `create_bridge()` now extracts and URL-decodes user and password credentials from Bolt connection URIs, forwarding them as `auth=(user, password)` to `GraphDatabase.driver` / `AsyncGraphDatabase.driver`.
   - Strips `userinfo` from the netloc so the Bolt driver receives a clean `scheme://host:port` string; query parameters are parsed into driver options and removed from the URI, because direct `bolt://` drivers reject them.
