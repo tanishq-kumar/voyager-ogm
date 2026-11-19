@@ -215,6 +215,14 @@ pub const SEMANTIC_PATTERNS: &[SemanticPattern] = &[
         pattern: "violates foreign key constraint",
         code: ErrorCode::IncompatibleEndpoints,
     },
+    SemanticPattern {
+        pattern: "already indexed",
+        code: ErrorCode::SchemaError,
+    },
+    SemanticPattern {
+        pattern: "no such index",
+        code: ErrorCode::SchemaError,
+    },
 ];
 
 /// Finds the first matching semantic pattern in an error message.

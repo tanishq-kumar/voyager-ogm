@@ -956,11 +956,11 @@ pub fn emit_node_index_ddl_with_graph(
                 let props_str = ft
                     .properties
                     .iter()
-                    .map(|p| format!("'{p}'"))
+                    .map(|p| format!("n.{p}"))
                     .collect::<Vec<_>>()
                     .join(", ");
                 statements.push(format!(
-                    "CALL db.idx.fulltext.createNodeIndex('{primary_label}', {props_str})"
+                    "CREATE FULLTEXT INDEX FOR (n:{primary_label}) ON ({props_str})"
                 ));
             }
         }
@@ -1207,12 +1207,6 @@ pub fn emit_rel_index_ddl_with_graph(
             }
         }
         DdlDialect::FalkorDb => {
-            if !rel.fulltext_indexes.is_empty() {
-                return Err(Error::UnsupportedDialect {
-                    dialect: "FalkorDB".to_string(),
-                    feature: "Full-text index creation on relationships. FalkorDB only supports db.idx.fulltext.createNodeIndex for nodes.".to_string(),
-                });
-            }
             for field in rel.fields.values() {
                 if is_pure_index_field(field) {
                     statements.push(format!(
@@ -1220,6 +1214,17 @@ pub fn emit_rel_index_ddl_with_graph(
                         field.name
                     ));
                 }
+            }
+            for ft in &rel.fulltext_indexes {
+                let props_str = ft
+                    .properties
+                    .iter()
+                    .map(|p| format!("r.{p}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                statements.push(format!(
+                    "CREATE FULLTEXT INDEX FOR ()-[r:{type_name}]-() ON ({props_str})"
+                ));
             }
         }
         DdlDialect::Age => {
@@ -1562,8 +1567,16 @@ pub fn emit_node_drop_index_ddl_with_graph(
                     }
                 }
             }
-            for _ in &node.fulltext_indexes {
-                statements.push(format!("CALL db.idx.fulltext.drop('{primary_label}')"));
+            for ft in &node.fulltext_indexes {
+                let props_str = ft
+                    .properties
+                    .iter()
+                    .map(|p| format!("n.{p}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                statements.push(format!(
+                    "DROP FULLTEXT INDEX FOR (n:{primary_label}) ON ({props_str})"
+                ));
             }
         }
         DdlDialect::Age => {
@@ -1711,13 +1724,6 @@ pub fn emit_rel_drop_index_ddl_with_graph(
             }
         }
         DdlDialect::FalkorDb => {
-            if !rel.fulltext_indexes.is_empty() {
-                return Err(Error::UnsupportedDialect {
-                    dialect: "FalkorDB".to_string(),
-                    feature: "Full-text indexes on relationships are not supported by FalkorDB."
-                        .to_string(),
-                });
-            }
             for field in rel.fields.values() {
                 if is_pure_index_field(field) {
                     statements.push(format!(
@@ -1725,6 +1731,17 @@ pub fn emit_rel_drop_index_ddl_with_graph(
                         field.name
                     ));
                 }
+            }
+            for ft in &rel.fulltext_indexes {
+                let props_str = ft
+                    .properties
+                    .iter()
+                    .map(|p| format!("r.{p}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                statements.push(format!(
+                    "DROP FULLTEXT INDEX FOR ()-[r:{type_name}]-() ON ({props_str})"
+                ));
             }
         }
         DdlDialect::Age => {

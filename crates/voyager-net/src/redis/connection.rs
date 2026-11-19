@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use tokio::net::TcpStream;
 
 use crate::config::Auth;
-use crate::engine::{AsyncConnection, QueryResult};
+use crate::engine::{AsyncConnection, QueryResult, QuerySummary};
 use crate::error::{NetError, Result};
 use crate::redis::codec::{read_resp_value, write_command};
 use crate::redis::graph::FalkorQueryResult;
@@ -321,8 +321,25 @@ impl AsyncConnection for RedisConnection {
         params: &HashMap<String, serde_json::Value>,
     ) -> Result<QueryResult> {
         let graph = self.default_graph.clone();
-        let falkor_res = self.graph_query(&graph, query, params).await?;
-        falkor_res.to_query_result()
+        match self.graph_query(&graph, query, params).await {
+            Ok(falkor_res) => falkor_res.to_query_result(),
+            Err(e) => {
+                let q_lower = query.trim().to_ascii_lowercase();
+                let is_index_ddl = q_lower.starts_with("create index")
+                    || q_lower.starts_with("drop index")
+                    || q_lower.starts_with("create fulltext index")
+                    || q_lower.starts_with("drop fulltext index")
+                    || q_lower.starts_with("create vector index")
+                    || q_lower.starts_with("drop vector index");
+                let err_msg = e.to_string().to_ascii_lowercase();
+                if is_index_ddl
+                    && (err_msg.contains("already indexed") || err_msg.contains("no such index"))
+                {
+                    return Ok(QueryResult::empty(QuerySummary::default()));
+                }
+                Err(e)
+            }
+        }
     }
 
     async fn ping(&mut self) -> Result<()> {

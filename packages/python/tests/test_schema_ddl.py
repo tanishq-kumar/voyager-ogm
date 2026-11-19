@@ -816,17 +816,31 @@ def test_falkordb_bridge_idempotency_unit():
     fake_g = FakeGraph()
     bridge = FalkorDBBridge(fake_g)
 
-    # Creating already indexed attribute should be absorbed
+    # Creating already indexed attribute should be absorbed (range, fulltext, vector)
     res = bridge.execute("CREATE INDEX FOR (n:User) ON (n.already_fail)")
     assert res == []
+    res_ft_node = bridge.execute("CREATE FULLTEXT INDEX FOR (n:User) ON (n.already_fail)")
+    assert res_ft_node == []
+    res_ft_rel = bridge.execute("CREATE FULLTEXT INDEX FOR ()-[r:REL]-() ON (r.already_fail)")
+    assert res_ft_rel == []
+    res_vec = bridge.execute("CREATE VECTOR INDEX FOR (n:User) ON (n.already_fail)")
+    assert res_vec == []
 
-    # Dropping non-existent index should be absorbed
+    # Dropping non-existent index should be absorbed (range, fulltext, vector)
     res = bridge.execute("DROP INDEX FOR (n:User) ON (n.no_such_fail)")
     assert res == []
+    res_drop_ft_node = bridge.execute("DROP FULLTEXT INDEX FOR (n:User) ON (n.no_such_fail)")
+    assert res_drop_ft_node == []
+    res_drop_ft_rel = bridge.execute("DROP FULLTEXT INDEX FOR ()-[r:REL]-() ON (r.no_such_fail)")
+    assert res_drop_ft_rel == []
+    res_drop_vec = bridge.execute("DROP VECTOR INDEX FOR (n:User) ON (n.no_such_fail)")
+    assert res_drop_vec == []
 
     # Other queries with syntax errors must NOT be swallowed
     with pytest.raises(RuntimeError, match="Invalid Cypher syntax"):
         bridge.execute("CREATE INDEX FOR (n:User) ON (n.syntax_error)")
+    with pytest.raises(RuntimeError, match="Invalid Cypher syntax"):
+        bridge.execute("CREATE FULLTEXT INDEX FOR (n:User) ON (n.syntax_error)")
 
     # Non-index queries that somehow contain 'already indexed' must NOT be swallowed
     with pytest.raises(RuntimeError, match="already indexed"):
@@ -838,6 +852,14 @@ def test_falkordb_bridge_idempotency_unit():
     async_bridge = AsyncFalkorDBBridge(fake_g)
     res_async = asyncio.run(async_bridge.execute("CREATE INDEX FOR (n:User) ON (n.already_fail)"))
     assert res_async == []
+    res_async_ft = asyncio.run(
+        async_bridge.execute("CREATE FULLTEXT INDEX FOR (n:User) ON (n.already_fail)")
+    )
+    assert res_async_ft == []
+    res_async_drop_ft = asyncio.run(
+        async_bridge.execute("DROP FULLTEXT INDEX FOR (n:User) ON (n.no_such_fail)")
+    )
+    assert res_async_drop_ft == []
 
 
 def test_dict_spec_routing_in_schema_manager():

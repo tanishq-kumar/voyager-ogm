@@ -179,7 +179,7 @@ class TestFullTextModelReflectionAndDDL:
         rel_drop = SchemaManager.generate_drop_index_ddl(Tagged, dialect="memgraph")
         assert any(s == "DROP TEXT INDEX tagged_context_idx;" for s in rel_drop)
 
-    def test_falkordb_node_ddl_and_unsupported_rel(self) -> None:
+    def test_falkordb_node_and_relationship_ddl(self) -> None:
         class Product(Node):
             __fulltext_indexes__ = [
                 FullTextIndex(["name", "description"]),
@@ -196,17 +196,25 @@ class TestFullTextModelReflectionAndDDL:
         # Node CREATE & DROP
         create_stmts = SchemaManager.generate_index_ddl(Product, dialect="falkordb")
         assert any(
-            s == "CALL db.idx.fulltext.createNodeIndex('Product', 'name', 'description')"
+            s == "CREATE FULLTEXT INDEX FOR (n:Product) ON (n.name, n.description)"
             for s in create_stmts
         )
         drop_stmts = SchemaManager.generate_drop_index_ddl(Product, dialect="falkordb")
-        assert any(s == "CALL db.idx.fulltext.drop('Product')" for s in drop_stmts)
+        assert any(
+            s == "DROP FULLTEXT INDEX FOR (n:Product) ON (n.name, n.description)"
+            for s in drop_stmts
+        )
 
-        # Relationship CREATE should raise error (FalkorDB doesn't support rel fulltext index DDL)
-        with pytest.raises(
-            Exception, match="FalkorDB does not support Full-text index creation on relationships"
-        ):
-            SchemaManager.generate_index_ddl(Purchased, dialect="falkordb")
+        # Relationship CREATE & DROP
+        create_rel_stmts = SchemaManager.generate_index_ddl(Purchased, dialect="falkordb")
+        assert any(
+            s == "CREATE FULLTEXT INDEX FOR ()-[r:PURCHASED]-() ON (r.notes)"
+            for s in create_rel_stmts
+        )
+        drop_rel_stmts = SchemaManager.generate_drop_index_ddl(Purchased, dialect="falkordb")
+        assert any(
+            s == "DROP FULLTEXT INDEX FOR ()-[r:PURCHASED]-() ON (r.notes)" for s in drop_rel_stmts
+        )
 
     def test_duckdb_node_ddl(self) -> None:
         class Book(Node):
@@ -774,7 +782,10 @@ class TestLiveEngineFullTextIntegration:
             except Exception:
                 pass
             applied = session.create_indexes(LiveFalkorDoc)
-            assert any("db.idx.fulltext.createNodeIndex" in s for s in applied)
+            assert any(
+                "CREATE FULLTEXT INDEX FOR (n:LiveFalkorDoc) ON (n.title, n.description)" in s
+                for s in applied
+            )
 
             # 2. Populate multi-document corpus
             session.execute("MATCH (a:LiveFalkorDoc) DETACH DELETE a")
@@ -800,6 +811,107 @@ class TestLiveEngineFullTextIntegration:
             try:
                 session.execute("MATCH (a:LiveFalkorDoc) DETACH DELETE a")
                 session.drop_indexes(LiveFalkorDoc)
+            except Exception:
+                pass
+
+    @pytest.mark.live
+    @pytest.mark.skipif(
+        not is_port_open("127.0.0.1", 6379),
+        reason="FalkorDB container not reachable on port 6379",
+    )
+    def test_live_falkordb_lifecycle(self) -> None:
+        pytest.importorskip("falkordb")
+        from falkordb import FalkorDB
+
+        client = FalkorDB(host="127.0.0.1", port=6379)
+        g = client.select_graph("voyager_ft_lifecycle_test")
+        session = Session(g, dialect="falkordb")
+
+        class FalkorLifecycleItem(Node):
+            name: str = Field()
+            summary: str = Field()
+            __fulltext_indexes__ = [TextIndex(["name", "summary"])]
+
+        class FalkorLifecycleRel(Relationship):
+            comment: str = Field()
+            __fulltext_indexes__ = [TextIndex(["comment"])]
+
+        try:
+            # 1. Clean up & Create indexes via session.create_indexes
+            try:
+                session.drop_indexes(FalkorLifecycleItem, FalkorLifecycleRel)
+            except Exception:
+                pass
+            session.execute("MATCH (n:FalkorLifecycleItem) DETACH DELETE n")
+
+            created = session.create_indexes(FalkorLifecycleItem, FalkorLifecycleRel)
+            assert any(
+                "CREATE FULLTEXT INDEX FOR (n:FalkorLifecycleItem) ON (n.name, n.summary)" in s
+                for s in created
+            )
+            assert any(
+                "CREATE FULLTEXT INDEX FOR ()-[r:FALKORLIFECYCLEREL]-() ON (r.comment)" in s
+                for s in created
+            )
+
+            # 2. Re-create indexes to verify idempotency (MUST SUCCEED without raising)
+            created_again = session.create_indexes(FalkorLifecycleItem, FalkorLifecycleRel)
+            assert created_again == created
+
+            # 3. Write nodes and relationship edge
+            session.execute("""
+                CREATE (n1:FalkorLifecycleItem {name: 'Knowledge Graph', summary: 'Semantic entity extraction and search'}),
+                       (n2:FalkorLifecycleItem {name: 'Vector Database', summary: 'Embeddings and approximate nearest neighbor search'}),
+                       (n1)-[:FALKORLIFECYCLEREL {comment: 'stellar comprehensive graph query analysis'}]->(n2)
+            """)
+
+            # 4. Query node full-text index
+            results = session.text_search(FalkorLifecycleItem, "semantic").all()
+            assert len(results) == 1
+            assert results[0]["node"]["name"] == "Knowledge Graph"
+            assert results[0]["score"] > 0
+
+            # 5. Query relationship full-text index via session.text_search
+            rel_results = session.text_search(FalkorLifecycleRel, "stellar").all()
+            assert len(rel_results) == 1
+            assert (
+                rel_results[0]["relationship"]["comment"]
+                == "stellar comprehensive graph query analysis"
+            )
+            assert rel_results[0]["score"] > 0
+
+            # 6. Query relationship full-text index via model entrypoint
+            rel_results_entry = session.execute(
+                FalkorLifecycleRel.text_search("stellar", dialect="falkordb")
+            ).all()
+            assert len(rel_results_entry) == 1
+            assert (
+                rel_results_entry[0]["relationship"]["comment"]
+                == "stellar comprehensive graph query analysis"
+            )
+            assert rel_results_entry[0]["score"] > 0
+
+            # 7. Drop the indexes via the session (1st time)
+            dropped = session.drop_indexes(FalkorLifecycleItem, FalkorLifecycleRel)
+            assert any(
+                "DROP FULLTEXT INDEX FOR (n:FalkorLifecycleItem) ON (n.name, n.summary)" in s
+                for s in dropped
+            )
+            assert any(
+                "DROP FULLTEXT INDEX FOR ()-[r:FALKORLIFECYCLEREL]-() ON (r.comment)" in s
+                for s in dropped
+            )
+
+            # 8. Drop the indexes again to verify idempotency (MUST SUCCEED without raising)
+            dropped_again = session.drop_indexes(FalkorLifecycleItem, FalkorLifecycleRel)
+            assert dropped_again == dropped
+
+            # Clean up the label and nodes
+            session.execute("MATCH (n:FalkorLifecycleItem) DETACH DELETE n")
+        finally:
+            try:
+                session.execute("MATCH (n:FalkorLifecycleItem) DETACH DELETE n")
+                session.drop_indexes(FalkorLifecycleItem, FalkorLifecycleRel)
             except Exception:
                 pass
 
