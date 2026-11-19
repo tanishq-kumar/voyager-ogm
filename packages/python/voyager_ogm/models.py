@@ -747,27 +747,102 @@ class PredicateExpr(BinaryExpr):
         )
 
 
-def get_primary_key_field(model: type[Any]) -> str | None:
-    """Returns the declared primary key property name for a model, if any.
+def _model_identity(model: type[Any]) -> str:
+    """Returns the stable native schema identity for a model class.
 
-    Primary keys are declared with ``Field(primary_key=True)``. The property
-    name is preferred over the Python attribute name so that renamed fields
-    resolve consistently with schema registration and query generation.
+    The identity combines the defining module and qualified class name, so two
+    models with the same class name in different modules stay distinct.
+    """
+    module = str(getattr(model, "__module__", "") or "")
+    qualname = str(getattr(model, "__qualname__", None) or getattr(model, "__name__", ""))
+    return f"{module}.{qualname}" if module else qualname
+
+
+_NATIVE_KEY_CACHE_MISS = object()
+_NATIVE_KEY_CACHE_ATTR = "_native_key_cache"
+
+
+def _native_key_cache(model: type[Any]) -> dict[str, Any]:
+    """Returns this model class's own native key cache, creating it on first use.
+
+    The cache lives directly on the class (``cls.__dict__``) so a subclass never
+    reuses a parent's cached answers.
+    """
+    cache = model.__dict__.get(_NATIVE_KEY_CACHE_ATTR)
+    if cache is None:
+        cache = {"primary_key": _NATIVE_KEY_CACHE_MISS, "merge_keys": {}}
+        setattr(model, _NATIVE_KEY_CACHE_ATTR, cache)
+    return cache
+
+
+def _invalidate_native_key_cache(model: type[Any]) -> None:
+    """Drops cached native key answers for a model class after re-registration."""
+    if _NATIVE_KEY_CACHE_ATTR in model.__dict__:
+        delattr(model, _NATIVE_KEY_CACHE_ATTR)
+
+
+def _ensure_model_registered(model: type[Any], registry: Any) -> str | None:
+    """Ensures the model has a native schema entry and returns its identity."""
+    register_schema = getattr(model, "register_schema", None)
+    if not callable(register_schema):
+        return None
+    identity = _model_identity(model)
+    if not registry.has_node(identity) and not registry.has_relationship(identity):
+        register_schema()
+    return identity
+
+
+def get_primary_key_field(model: type[Any]) -> str | None:
+    """Returns the primary key property name for a model, if any.
+
+    Primary keys are declared with ``Field(primary_key=True)``. The decision is
+    made by the native schema registry from the field descriptors; this helper
+    only maps a model class to its native schema identity.
 
     Args:
         model: Node or Relationship model class to inspect.
 
     Returns:
         The primary key property name, or None when the model declares no
-        primary key.
+        primary key or has no registered native schema.
     """
-    schema = getattr(model, "_schema_fields", None)
-    if not isinstance(schema, dict):
+    if NativeSchemaRegistry is None:
         return None
-    for f_name, f_obj in schema.items():
-        if getattr(f_obj, "primary_key", False):
-            return getattr(f_obj, "name", None) or f_name
-    return None
+    cache = _native_key_cache(model)
+    cached = cache["primary_key"]
+    if cached is not _NATIVE_KEY_CACHE_MISS:
+        return cached
+    registry = NativeSchemaRegistry.global_registry()
+    identity = _ensure_model_registered(model, registry)
+    if identity is None:
+        return None
+    value = registry.primary_key_for(identity)
+    cache["primary_key"] = value
+    return value
+
+
+def _native_merge_key_fields(
+    model: type[Any],
+    supplied: list[str],
+    defaulted: set[str],
+) -> list[str]:
+    """Delegates MERGE key resolution to the native schema registry."""
+    if NativeSchemaRegistry is None:
+        raise RuntimeError("NativeSchemaRegistry is required to resolve MERGE keys")
+    cache = _native_key_cache(model)
+    cache_key = (tuple(supplied), tuple(sorted(defaulted)))
+    cached = cache["merge_keys"].get(cache_key)
+    if cached is not None:
+        return list(cached)
+    registry = NativeSchemaRegistry.global_registry()
+    identity = _ensure_model_registered(model, registry)
+    if identity is None:
+        raise RuntimeError(f"{model!r} is not a registrable graph model")
+    key_fields = registry.merge_key_for(identity, supplied, list(defaulted))
+    if key_fields is None:
+        raise RuntimeError(f"No native schema registered for model '{identity}'")
+    cache["merge_keys"][cache_key] = tuple(key_fields)
+    return list(key_fields)
 
 
 def _process_type_annotations(cls: Any) -> dict[str, Field]:
@@ -992,25 +1067,34 @@ class Node:
     def register_schema(cls, registry: Any = None) -> None:
         """Registers this Node model's schema into the NativeSchemaRegistry.
 
+        The entry is keyed by the model's module-qualified identity, so models
+        with the same class name in different modules stay separate. The native
+        registry derives the primary key from the declared field descriptors.
+
         Args:
             registry: Optional NativeSchemaRegistry instance. If None, registers
                 in the shared global registry (NativeSchemaRegistry.global_registry()).
         """
         if NativeSchemaRegistry is None:
             return
+        _invalidate_native_key_cache(cls)
         try:
             reg = registry if registry is not None else NativeSchemaRegistry.global_registry()
             name = cls.__name__
             labels = list(getattr(cls, "__labels__", [name]))
             fields = getattr(cls, "_schema_fields", {})
-            primary_key = get_primary_key_field(cls)
+            model_id = _model_identity(cls)
             fulltext_indexes = getattr(cls, "__fulltext_indexes__", None)
             ft_list = None
             if fulltext_indexes is not None:
                 ft_list = [
                     ft.to_dict() if hasattr(ft, "to_dict") else ft for ft in fulltext_indexes
                 ]
-            reg.register_node(name, labels, fields, primary_key, ft_list)
+            register_with_identity = getattr(reg, "register_node_with_identity", None)
+            if callable(register_with_identity):
+                register_with_identity(model_id, name, labels, fields, ft_list)
+            else:
+                reg.register_node(name, labels, fields, None, ft_list)
         except Exception as e:
             logger.warning("Failed to register schema for node model %s: %s", cls.__name__, e)
             raise
@@ -1386,12 +1470,16 @@ class Relationship:
     def register_schema(cls, registry: Any = None) -> None:
         """Registers this Relationship model's schema into the NativeSchemaRegistry.
 
+        The entry is keyed by the model's module-qualified identity, so models
+        with the same class name in different modules stay separate.
+
         Args:
             registry: Optional NativeSchemaRegistry instance. If None, registers
                 in the shared global registry (NativeSchemaRegistry.global_registry()).
         """
         if NativeSchemaRegistry is None:
             return
+        _invalidate_native_key_cache(cls)
         try:
             reg = registry if registry is not None else NativeSchemaRegistry.global_registry()
             name = cls.__name__
@@ -1401,6 +1489,7 @@ class Relationship:
             fields = getattr(cls, "_schema_fields", {})
             direction = getattr(cls, "__direction__", "outgoing")
             directed = direction != "undirected"
+            model_id = _model_identity(cls)
             fulltext_indexes = getattr(cls, "__fulltext_indexes__", None)
             ft_list = None
             if fulltext_indexes is not None:
@@ -1415,6 +1504,7 @@ class Relationship:
                 fields,
                 directed,
                 ft_list,
+                model_id=model_id,
             )
         except Exception as e:
             logger.warning(
