@@ -7,12 +7,14 @@ All DDL statements are deterministically emitted via native voyager-ogm Rust emi
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 from voyager_ogm._voyager_rs import (
     NativeSchemaRegistry,
+    VoyagerError,
     emit_cypher25_drop_graph_type_ddl,
     emit_cypher25_graph_type_ddl,
     emit_cypher_drop_node_ddl,
@@ -53,6 +55,71 @@ if TYPE_CHECKING:
 
 # Ergonomic alias for the centralized thread-safe native schema registry
 SchemaRegistry = NativeSchemaRegistry
+
+_ENTERPRISE_ONLY_MARKER = "requires neo4j enterprise edition"
+
+_NODE_CONSTRAINT_DETAIL_RE = re.compile(
+    r"FOR\s+\(\w*:(?P<label>[^)\s]+)\)\s+REQUIRE\s+\w+\.(?P<property>\w+)\s+(?P<requirement>.+)$",
+    re.IGNORECASE,
+)
+_REL_CONSTRAINT_DETAIL_RE = re.compile(
+    r"FOR\s+\(\)-\[\w*:(?P<label>[^\]]+)\]-\(\)\s+REQUIRE\s+\w+\.(?P<property>\w+)\s+"
+    r"(?P<requirement>.+)$",
+    re.IGNORECASE,
+)
+
+
+def _is_enterprise_only_constraint_error(exc: BaseException) -> bool:
+    """Returns True when a database error says the failed constraint needs Neo4j Enterprise.
+
+    Both the Python Neo4j driver bridge and the native voyager-net client surface the
+    server message, so matching the text covers both execution paths.
+    """
+    return _ENTERPRISE_ONLY_MARKER in str(exc).lower()
+
+
+def _constraint_kind_for_requirement(requirement: str) -> str | None:
+    """Derives a human-readable constraint kind from a Cypher REQUIRE clause."""
+    normalized = requirement.strip().rstrip(";").upper()
+    if normalized.startswith("IS UNIQUE"):
+        return "uniqueness"
+    if normalized.startswith("IS NOT NULL") or normalized.startswith("ASSERT EXISTS"):
+        return "existence"
+    if normalized.startswith("::"):
+        return "property type"
+    return None
+
+
+def _describe_skipped_constraint(statement: str) -> str:
+    """Describes a skipped constraint statement using its label/type and property when parseable."""
+    rel_match = _REL_CONSTRAINT_DETAIL_RE.search(statement)
+    node_match = _NODE_CONSTRAINT_DETAIL_RE.search(statement)
+    match = rel_match or node_match
+    if match is None:
+        return statement
+    entity = "relationship type" if rel_match is not None else "label"
+    kind = _constraint_kind_for_requirement(match.group("requirement"))
+    kind_text = f" ({kind} constraint)" if kind else ""
+    return (
+        f"{entity} '{match.group('label')}', property '{match.group('property')}'"
+        f"{kind_text}: {statement}"
+    )
+
+
+def _raise_enterprise_constraint_error(skipped: list[str], first_err: BaseException) -> NoReturn:
+    """Raises one VoyagerError describing every constraint skipped on Neo4j Community."""
+    count = len(skipped)
+    label = "constraint statement" if count == 1 else "constraint statements"
+    verb = "requires" if count == 1 else "require"
+    outcome = "was" if count == 1 else "were"
+    details = "\n".join(f"  - {_describe_skipped_constraint(stmt)}" for stmt in skipped)
+    message = (
+        f"{count} {label} {verb} Neo4j Enterprise Edition and {outcome} skipped; "
+        f"the remaining constraints were applied:\n{details}"
+    )
+    error = VoyagerError(message, code="SCHEMA_ERROR")
+    error.__dict__["skipped"] = list(skipped)
+    raise error from first_err
 
 
 def canonical_vector_index_name(label: str, prop: str, dialect: str = "cypher") -> str:
@@ -607,6 +674,13 @@ class SchemaManager:
     ) -> list[str]:
         """Applies only CONSTRAINT statements to the database session.
 
+        Uniqueness constraints are emitted before existence (NOT NULL) constraints.
+        If a statement fails because it requires Neo4j Enterprise Edition (for
+        example an existence constraint on Neo4j Community), it is recorded and the
+        remaining statements still run; after the loop one `VoyagerError`
+        (`SCHEMA_ERROR`) lists every skipped statement. Any other error is re-raised
+        immediately.
+
         Args:
             session: Active Voyager database session.
             *models: Model classes, schema dicts, or model names.
@@ -615,6 +689,9 @@ class SchemaManager:
 
         Returns:
             List of executed constraint queries.
+
+        Raises:
+            VoyagerError: If one or more constraints require Neo4j Enterprise Edition.
         """
         if hasattr(session, "create_constraints"):
             return session.create_constraints(
@@ -628,14 +705,28 @@ class SchemaManager:
             if graph_name is not None
             else getattr(session, "graph_name", getattr(session, "_graph_name", None))
         )
-        applied = cls.generate_constraint_ddl(
+        statements = cls.generate_constraint_ddl(
             *models,
             dialect=dialect,
             include_type_constraints=include_type_constraints,
             graph_name=target_graph,
         )
-        for stmt in applied:
-            session.execute(stmt)
+        applied: list[str] = []
+        skipped: list[str] = []
+        first_err: BaseException | None = None
+        for stmt in statements:
+            try:
+                session.execute(stmt)
+            except Exception as exc:
+                if _is_enterprise_only_constraint_error(exc):
+                    if first_err is None:
+                        first_err = exc
+                    skipped.append(stmt)
+                    continue
+                raise
+            applied.append(stmt)
+        if skipped and first_err is not None:
+            _raise_enterprise_constraint_error(skipped, first_err)
         return applied
 
     @classmethod
@@ -752,6 +843,12 @@ class SchemaManager:
         If no models are provided, discovers and applies schema for all models registered
         in the global SchemaRegistry.
 
+        Uniqueness constraints are emitted before existence (NOT NULL) constraints.
+        Constraints that require Neo4j Enterprise Edition (for example existence
+        constraints on Neo4j Community) are recorded while the remaining constraints
+        and indexes are still applied; one `VoyagerError` (`SCHEMA_ERROR`) then lists
+        every skipped statement. Any other error is re-raised immediately.
+
         Args:
             session: Active database session.
             *models: Optional Node and Relationship model classes, schema dicts, or model names.
@@ -760,6 +857,9 @@ class SchemaManager:
 
         Returns:
             List of executed DDL query statement strings.
+
+        Raises:
+            VoyagerError: If one or more constraints require Neo4j Enterprise Edition.
         """
         dialect = getattr(session, "dialect", getattr(session, "_dialect", "cypher"))
         target_graph = (
@@ -768,6 +868,8 @@ class SchemaManager:
             else getattr(session, "graph_name", getattr(session, "_graph_name", None))
         )
         applied: list[str] = []
+        skipped: list[str] = []
+        first_err: BaseException | None = None
         try:
             c_stmts = cls.generate_constraint_ddl(
                 *models,
@@ -776,7 +878,15 @@ class SchemaManager:
                 graph_name=target_graph,
             )
             for stmt in c_stmts:
-                session.execute(stmt)
+                try:
+                    session.execute(stmt)
+                except Exception as exc:
+                    if _is_enterprise_only_constraint_error(exc):
+                        if first_err is None:
+                            first_err = exc
+                        skipped.append(stmt)
+                        continue
+                    raise
                 applied.append(stmt)
         except NotImplementedError:
             pass
@@ -785,6 +895,8 @@ class SchemaManager:
         for stmt in i_stmts:
             session.execute(stmt)
             applied.append(stmt)
+        if skipped and first_err is not None:
+            _raise_enterprise_constraint_error(skipped, first_err)
         return applied
 
     @classmethod
@@ -800,6 +912,12 @@ class SchemaManager:
         If no models are provided, discovers and applies schema for all models registered
         in the global SchemaRegistry.
 
+        Uniqueness constraints are emitted before existence (NOT NULL) constraints.
+        Constraints that require Neo4j Enterprise Edition (for example existence
+        constraints on Neo4j Community) are recorded while the remaining constraints
+        and indexes are still applied; one `VoyagerError` (`SCHEMA_ERROR`) then lists
+        every skipped statement. Any other error is re-raised immediately.
+
         Args:
             session: Active asynchronous database session.
             *models: Optional Node and Relationship model classes, schema dicts, or model names.
@@ -808,6 +926,9 @@ class SchemaManager:
 
         Returns:
             List of executed DDL query statement strings.
+
+        Raises:
+            VoyagerError: If one or more constraints require Neo4j Enterprise Edition.
         """
         dialect = getattr(session, "dialect", getattr(session, "_dialect", "cypher"))
         target_graph = (
@@ -816,6 +937,8 @@ class SchemaManager:
             else getattr(session, "graph_name", getattr(session, "_graph_name", None))
         )
         applied: list[str] = []
+        skipped: list[str] = []
+        first_err: BaseException | None = None
         try:
             c_stmts = cls.generate_constraint_ddl(
                 *models,
@@ -824,7 +947,15 @@ class SchemaManager:
                 graph_name=target_graph,
             )
             for stmt in c_stmts:
-                await session.execute(stmt)
+                try:
+                    await session.execute(stmt)
+                except Exception as exc:
+                    if _is_enterprise_only_constraint_error(exc):
+                        if first_err is None:
+                            first_err = exc
+                        skipped.append(stmt)
+                        continue
+                    raise
                 applied.append(stmt)
         except NotImplementedError:
             pass
@@ -833,6 +964,8 @@ class SchemaManager:
         for stmt in i_stmts:
             await session.execute(stmt)
             applied.append(stmt)
+        if skipped and first_err is not None:
+            _raise_enterprise_constraint_error(skipped, first_err)
         return applied
 
     @classmethod

@@ -14,18 +14,20 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import community_compatible_ddl, neo4j_edition
+from conftest import community_compatible_ddl, is_port_open, neo4j_edition
 from neo4j import GraphDatabase
+from neo4j.exceptions import ConstraintError
 from voyager_ogm import (
     Field,
     Node,
     Relationship,
     SchemaManager,
     Session,
+    VoyagerError,
     node,
     relationship,
 )
-from voyager_ogm.bridge import Neo4jBoltBridge
+from voyager_ogm.bridge import AsyncMockBridge, MockBridge, Neo4jBoltBridge
 
 
 def _load_env() -> None:
@@ -106,6 +108,47 @@ def test_schema_drop_ddl_generation():
     assert "DROP CONSTRAINT constraint_user_email_unique IF EXISTS" in drop_statements
     assert "DROP CONSTRAINT constraint_user_age_type IF EXISTS" in drop_statements
     assert "DROP INDEX index_user_age IF EXISTS" in drop_statements
+
+
+def test_unique_constraint_emitted_before_not_null():
+    """Verifies UNIQUE is emitted before NOT NULL for node and relationship constraints."""
+
+    @node(label="OrderedKeyNode")
+    class OrderedKeyNode(Node):
+        uid: str = Field(primary_key=True)
+        alias: str = Field(unique=True, nullable=False)
+
+    @relationship(
+        type_name="ORDERED_KEY_REL",
+        source_node=OrderedKeyNode,
+        target_node=OrderedKeyNode,
+    )
+    class OrderedKeyRel(Relationship):
+        rid: str = Field(primary_key=True)
+
+    node_stmts = SchemaManager.generate_constraint_ddl(OrderedKeyNode)
+    node_unique = next(i for i, s in enumerate(node_stmts) if "uid_unique" in s)
+    node_not_null = next(i for i, s in enumerate(node_stmts) if "uid_not_null" in s)
+    assert node_unique < node_not_null
+    alias_unique = next(i for i, s in enumerate(node_stmts) if "alias_unique" in s)
+    alias_not_null = next(i for i, s in enumerate(node_stmts) if "alias_not_null" in s)
+    assert alias_unique < alias_not_null
+
+    rel_stmts = SchemaManager.generate_constraint_ddl(OrderedKeyRel)
+    rel_unique = next(i for i, s in enumerate(rel_stmts) if "rid_unique" in s)
+    rel_not_null = next(i for i, s in enumerate(rel_stmts) if "rid_not_null" in s)
+    assert rel_unique < rel_not_null
+
+    # Drop order mirrors creation order and stays IF EXISTS-safe.
+    node_drops = SchemaManager.generate_drop_constraint_ddl(OrderedKeyNode)
+    assert next(i for i, s in enumerate(node_drops) if "uid_unique" in s) < next(
+        i for i, s in enumerate(node_drops) if "uid_not_null" in s
+    )
+    rel_drops = SchemaManager.generate_drop_constraint_ddl(OrderedKeyRel)
+    assert next(i for i, s in enumerate(rel_drops) if "rid_unique" in s) < next(
+        i for i, s in enumerate(rel_drops) if "rid_not_null" in s
+    )
+    assert all("IF EXISTS" in s for s in node_drops + rel_drops)
 
 
 def test_cypher25_graph_type_ddl():
@@ -678,6 +721,190 @@ async def test_async_session_ddl_convenience_methods():
         assert stmt in executed_stmts
 
 
+_ENTERPRISE_CONSTRAINT_MESSAGE = (
+    "Neo.ClientError.Schema.ConstraintCreationFailed: Creating constraint requires "
+    "Neo4j Enterprise Edition."
+)
+
+
+class _EnterpriseOnlyMockBridge(MockBridge):
+    """Mock bridge that rejects NOT NULL constraints like Neo4j Community."""
+
+    def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        if "IS NOT NULL" in statement.upper():
+            raise RuntimeError(_ENTERPRISE_CONSTRAINT_MESSAGE)
+        return super().execute(statement, parameters)
+
+
+class _AsyncEnterpriseOnlyMockBridge(AsyncMockBridge):
+    """Async mock bridge that rejects NOT NULL constraints like Neo4j Community."""
+
+    async def execute(
+        self, statement: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        if "IS NOT NULL" in statement.upper():
+            raise RuntimeError(_ENTERPRISE_CONSTRAINT_MESSAGE)
+        return await super().execute(statement, parameters)
+
+
+def _assert_enterprise_constraint_error(error: VoyagerError, generated: list[str]) -> None:
+    """Asserts the single aggregated Enterprise-only constraint error shape."""
+    assert error.code == "SCHEMA_ERROR"
+    skipped = getattr(error, "skipped", None)
+    assert skipped == [s for s in generated if "IS NOT NULL" in s.upper()]
+    message = str(error)
+    assert "Neo4j Enterprise Edition" in message
+    assert "remaining constraints were applied" in message
+    assert "existence constraint" in message
+    assert "label 'EnterpriseDemoNode'" in message
+    assert "relationship type 'ENTERPRISE_DEMO_REL'" in message
+    assert "property 'uid'" in message
+    assert "property 'rid'" in message
+    for stmt in skipped:
+        assert stmt in message
+
+
+@node(label="EnterpriseDemoNode")
+class EnterpriseDemoNode(Node):
+    """Node with a primary key, a unique field, and an indexed field for DDL tests."""
+
+    uid: str = Field(primary_key=True)
+    slug: str = Field(unique=True)
+    rank: int = Field(index=True)
+
+
+@relationship(
+    type_name="ENTERPRISE_DEMO_REL",
+    source_node=EnterpriseDemoNode,
+    target_node=EnterpriseDemoNode,
+)
+class EnterpriseDemoRel(Relationship):
+    """Relationship with a primary key for DDL tests."""
+
+    rid: str = Field(primary_key=True)
+
+
+def test_create_constraints_reports_enterprise_only_and_applies_rest():
+    """Verifies NOT NULL rejections are collected while all other constraints run."""
+    bridge = _EnterpriseOnlyMockBridge()
+    session = Session(bridge=bridge, dialect="cypher")
+    generated = SchemaManager.generate_constraint_ddl(EnterpriseDemoNode, EnterpriseDemoRel)
+
+    with pytest.raises(VoyagerError) as excinfo:
+        session.create_constraints(EnterpriseDemoNode, EnterpriseDemoRel)
+
+    _assert_enterprise_constraint_error(excinfo.value, generated)
+    executed = [stmt for stmt, _ in bridge.executed_queries]
+    assert executed == [s for s in generated if "IS NOT NULL" not in s.upper()]
+    assert any("uid_unique" in s for s in executed)
+    assert any("rid_unique" in s for s in executed)
+
+
+def test_apply_schema_reports_enterprise_only_after_applying_indexes():
+    """Verifies apply_schema still applies indexes before raising the aggregated error."""
+    bridge = _EnterpriseOnlyMockBridge()
+    session = Session(bridge=bridge, dialect="cypher")
+    generated = SchemaManager.generate_constraint_ddl(EnterpriseDemoNode, EnterpriseDemoRel)
+
+    with pytest.raises(VoyagerError) as excinfo:
+        session.apply_schema(EnterpriseDemoNode, EnterpriseDemoRel)
+
+    _assert_enterprise_constraint_error(excinfo.value, generated)
+    expected_constraints = [s for s in generated if "IS NOT NULL" not in s.upper()]
+    executed = [stmt for stmt, _ in bridge.executed_queries]
+    assert executed[: len(expected_constraints)] == expected_constraints
+    assert any("CREATE INDEX index_enterprisedemonode_rank" in s for s in executed)
+
+
+def test_create_constraints_reraises_unrelated_error_immediately():
+    """Verifies non-Enterprise failures abort immediately with the original error."""
+
+    @node(label="UnrelatedFailureNode")
+    class UnrelatedFailureNode(Node):
+        uid: str = Field(primary_key=True)
+
+    class _UnrelatedFailureBridge(MockBridge):
+        def execute(
+            self, statement: str, parameters: dict[str, Any] | None = None
+        ) -> list[dict[str, Any]]:
+            if "constraint_unrelatedfailurenode_uid_unique" in statement:
+                raise RuntimeError("unrelated database failure")
+            return super().execute(statement, parameters)
+
+    bridge = _UnrelatedFailureBridge()
+    session = Session(bridge=bridge, dialect="cypher")
+
+    with pytest.raises(RuntimeError, match="unrelated database failure"):
+        session.create_constraints(UnrelatedFailureNode)
+
+    # The failure happened before the NOT NULL statement; nothing was applied.
+    assert bridge.executed_queries == []
+
+
+@pytest.mark.asyncio
+async def test_async_create_constraints_reports_enterprise_only_and_applies_rest():
+    """Verifies the async path collects NOT NULL rejections and keeps applying the rest."""
+    from voyager_ogm.session import AsyncSession
+
+    bridge = _AsyncEnterpriseOnlyMockBridge()
+    session = AsyncSession(bridge=bridge, dialect="cypher")
+    generated = SchemaManager.generate_constraint_ddl(EnterpriseDemoNode, EnterpriseDemoRel)
+
+    with pytest.raises(VoyagerError) as excinfo:
+        await session.create_constraints(EnterpriseDemoNode, EnterpriseDemoRel)
+
+    _assert_enterprise_constraint_error(excinfo.value, generated)
+    executed = [stmt for stmt, _ in bridge.executed_queries]
+    assert executed == [s for s in generated if "IS NOT NULL" not in s.upper()]
+
+
+@pytest.mark.asyncio
+async def test_async_apply_schema_reports_enterprise_only_after_applying_indexes():
+    """Verifies the async apply_schema still applies indexes before raising."""
+    from voyager_ogm.session import AsyncSession
+
+    bridge = _AsyncEnterpriseOnlyMockBridge()
+    session = AsyncSession(bridge=bridge, dialect="cypher")
+    generated = SchemaManager.generate_constraint_ddl(EnterpriseDemoNode, EnterpriseDemoRel)
+
+    with pytest.raises(VoyagerError) as excinfo:
+        await session.apply_schema(EnterpriseDemoNode, EnterpriseDemoRel)
+
+    _assert_enterprise_constraint_error(excinfo.value, generated)
+    expected_constraints = [s for s in generated if "IS NOT NULL" not in s.upper()]
+    executed = [stmt for stmt, _ in bridge.executed_queries]
+    assert executed[: len(expected_constraints)] == expected_constraints
+    assert any("CREATE INDEX index_enterprisedemonode_rank" in s for s in executed)
+
+
+@pytest.mark.asyncio
+async def test_async_create_constraints_reraises_unrelated_error_immediately():
+    """Verifies non-Enterprise async failures abort immediately with the original error."""
+    from voyager_ogm.session import AsyncSession
+
+    @node(label="AsyncUnrelatedFailureNode")
+    class AsyncUnrelatedFailureNode(Node):
+        uid: str = Field(primary_key=True)
+
+    class _AsyncUnrelatedFailureBridge(AsyncMockBridge):
+        async def execute(
+            self, statement: str, parameters: dict[str, Any] | None = None
+        ) -> list[dict[str, Any]]:
+            if "constraint_asyncunrelatedfailurenode_uid_unique" in statement:
+                raise RuntimeError("unrelated database failure")
+            return await super().execute(statement, parameters)
+
+    bridge = _AsyncUnrelatedFailureBridge()
+    session = AsyncSession(bridge=bridge, dialect="cypher")
+
+    with pytest.raises(RuntimeError, match="unrelated database failure"):
+        await session.create_constraints(AsyncUnrelatedFailureNode)
+
+    assert bridge.executed_queries == []
+
+
 @pytest.mark.live
 def test_live_schema_ddl_multi_engine_integration():
     """Verifies live index and constraint management across live Neo4j, PostgreSQL 19, and FalkorDB engines."""
@@ -909,3 +1136,267 @@ def test_dict_spec_routing_in_schema_manager():
 
     rel_drop_idx = SchemaManager.generate_drop_index_ddl(rel_spec, dialect="cypher")
     assert any("DROP INDEX index_rel_dict_knows_since" in s for s in rel_drop_idx)
+
+
+@pytest.mark.live
+@pytest.mark.skipif(
+    not is_port_open("127.0.0.1", 7687),
+    reason="Neo4j container not reachable on port 7687",
+)
+def test_live_neo4j_relationship_unique_constraint() -> None:
+    """Relationship unique fields emit a uniqueness constraint and reject duplicates live.
+
+    A nullable unique relationship field must not gain an existence constraint, so a
+    relationship whose unique property is absent is still accepted.
+    """
+    pytest.importorskip("neo4j")
+    uri = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
+    user = os.getenv("NEO4J_USER", "neo4j")
+    password = os.getenv("NEO4J_PASSWORD", "voyagerpass123")
+
+    driver = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=1.0)
+    try:
+        driver.verify_connectivity()
+    except Exception:
+        driver.close()
+        pytest.skip(f"Neo4j database not reachable on {uri}")
+
+    @node(label="LiveUniqueAccount")
+    class LiveUniqueAccount(Node):
+        account_id: str = Field(primary_key=True)
+
+    @relationship(
+        type_name="LIVE_UNIQUE_TRANSFER",
+        source_node=LiveUniqueAccount,
+        target_node=LiveUniqueAccount,
+    )
+    class LiveUniqueTransfer(Relationship):
+        ref: str = Field(unique=True)
+
+    session = Session(driver, dialect="cypher")
+    try:
+        session.drop_constraints(LiveUniqueTransfer)
+        session.execute("MATCH (n:LiveUniqueAccount) DETACH DELETE n")
+        session.execute(
+            "CREATE (:LiveUniqueAccount {account_id: 'live-a1'}), "
+            "(:LiveUniqueAccount {account_id: 'live-a2'})"
+        )
+
+        created = session.create_constraints(LiveUniqueTransfer)
+        assert created == [
+            "CREATE CONSTRAINT constraint_rel_live_unique_transfer_ref_unique "
+            "IF NOT EXISTS FOR ()-[r:LIVE_UNIQUE_TRANSFER]-() REQUIRE r.ref IS UNIQUE"
+        ]
+        # unique but nullable: no existence constraint is emitted
+        assert not any("IS NOT NULL" in stmt for stmt in created)
+
+        session.execute(
+            "MATCH (a:LiveUniqueAccount {account_id: 'live-a1'}), "
+            "(b:LiveUniqueAccount {account_id: 'live-a2'}) "
+            "CREATE (a)-[:LIVE_UNIQUE_TRANSFER {ref: 'dup'}]->(b)"
+        )
+        with pytest.raises(ConstraintError):
+            session.execute(
+                "MATCH (a:LiveUniqueAccount {account_id: 'live-a1'}), "
+                "(b:LiveUniqueAccount {account_id: 'live-a2'}) "
+                "CREATE (a)-[:LIVE_UNIQUE_TRANSFER {ref: 'dup'}]->(b)"
+            )
+
+        # The nullable unique property stays optional.
+        session.execute(
+            "MATCH (a:LiveUniqueAccount {account_id: 'live-a1'}), "
+            "(b:LiveUniqueAccount {account_id: 'live-a2'}) "
+            "CREATE (a)-[:LIVE_UNIQUE_TRANSFER]->(b)"
+        )
+
+        dropped = session.drop_constraints(LiveUniqueTransfer)
+        assert dropped == [
+            "DROP CONSTRAINT constraint_rel_live_unique_transfer_ref_unique IF EXISTS"
+        ]
+
+        # After dropping the constraint duplicates are accepted again.
+        session.execute(
+            "MATCH (a:LiveUniqueAccount {account_id: 'live-a1'}), "
+            "(b:LiveUniqueAccount {account_id: 'live-a2'}) "
+            "CREATE (a)-[:LIVE_UNIQUE_TRANSFER {ref: 'dup'}]->(b)"
+        )
+    finally:
+        try:
+            session.drop_constraints(LiveUniqueTransfer)
+            session.execute("MATCH (n:LiveUniqueAccount) DETACH DELETE n")
+        finally:
+            driver.close()
+
+
+def _skip_unless_community(driver: Any, uri: str) -> None:
+    """Skips the caller when the live Neo4j server is not Community Edition."""
+    if neo4j_edition(driver) != "community":
+        driver.close()
+        pytest.skip(f"Requires Neo4j Community Edition on {uri}")
+
+
+def _assert_community_constraints_created(session: Session, node_name: str, rel_name: str) -> None:
+    """Asserts both UNIQUE constraints exist and no NOT NULL constraint was created."""
+    names = [c.get("name", "") for c in session.execute("SHOW CONSTRAINTS")]
+    assert any(f"{node_name.lower()}_uid_unique" in name for name in names)
+    assert any(f"{rel_name.lower()}_rid_unique" in name for name in names)
+    assert not any("not_null" in name for name in names)
+
+
+@pytest.mark.live
+@pytest.mark.skipif(
+    not is_port_open("127.0.0.1", 7687),
+    reason="Neo4j container not reachable on port 7687",
+)
+def test_live_community_enterprise_only_constraints_are_reported() -> None:
+    """On Community, UNIQUE constraints apply and Enterprise-only ones are reported once."""
+    pytest.importorskip("neo4j")
+    uri = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
+    user = os.getenv("NEO4J_USER", "neo4j")
+    password = os.getenv("NEO4J_PASSWORD", "voyagerpass123")
+
+    driver = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=1.0)
+    try:
+        driver.verify_connectivity()
+    except Exception:
+        driver.close()
+        pytest.skip(f"Neo4j database not reachable on {uri}")
+    _skip_unless_community(driver, uri)
+
+    @node(label="LiveCommunityKeyNode")
+    class LiveCommunityKeyNode(Node):
+        uid: str = Field(primary_key=True)
+
+    @relationship(
+        type_name="LIVE_COMMUNITY_KEY_REL",
+        source_node=LiveCommunityKeyNode,
+        target_node=LiveCommunityKeyNode,
+    )
+    class LiveCommunityKeyRel(Relationship):
+        rid: str = Field(primary_key=True)
+
+    session = Session(driver, dialect="cypher")
+    try:
+        session.drop_constraints(LiveCommunityKeyNode, LiveCommunityKeyRel)
+        session.execute("MATCH (n:LiveCommunityKeyNode) DETACH DELETE n")
+
+        with pytest.raises(VoyagerError) as excinfo:
+            session.create_constraints(LiveCommunityKeyNode, LiveCommunityKeyRel)
+
+        error = excinfo.value
+        assert error.code == "SCHEMA_ERROR"
+        skipped = getattr(error, "skipped", [])
+        assert len(skipped) == 2
+        assert all("IS NOT NULL" in stmt for stmt in skipped)
+        assert "Neo4j Enterprise Edition" in str(error)
+        _assert_community_constraints_created(
+            session, "LiveCommunityKeyNode", "LIVE_COMMUNITY_KEY_REL"
+        )
+
+        # UNIQUE constraints reject duplicate node and relationship primary keys.
+        session.execute("CREATE (:LiveCommunityKeyNode {uid: 'dup'})")
+        with pytest.raises(ConstraintError):
+            session.execute("CREATE (:LiveCommunityKeyNode {uid: 'dup'})")
+
+        session.execute(
+            "CREATE (:LiveCommunityKeyNode {uid: 'rel-a'}), (:LiveCommunityKeyNode {uid: 'rel-b'})"
+        )
+        session.execute(
+            "MATCH (a:LiveCommunityKeyNode {uid: 'rel-a'}), "
+            "(b:LiveCommunityKeyNode {uid: 'rel-b'}) "
+            "CREATE (a)-[:LIVE_COMMUNITY_KEY_REL {rid: 'dup-rel'}]->(b)"
+        )
+        with pytest.raises(ConstraintError):
+            session.execute(
+                "MATCH (a:LiveCommunityKeyNode {uid: 'rel-a'}), "
+                "(b:LiveCommunityKeyNode {uid: 'rel-b'}) "
+                "CREATE (a)-[:LIVE_COMMUNITY_KEY_REL {rid: 'dup-rel'}]->(b)"
+            )
+
+        dropped = session.drop_constraints(LiveCommunityKeyNode, LiveCommunityKeyRel)
+        assert len(dropped) == 4
+        # Drops of the never-created NOT NULL constraints use IF EXISTS and do not fail.
+        assert all("IF EXISTS" in stmt for stmt in dropped)
+        names = [c.get("name", "") for c in session.execute("SHOW CONSTRAINTS")]
+        assert not any("live_community_key" in name for name in names)
+    finally:
+        try:
+            session.drop_constraints(LiveCommunityKeyNode, LiveCommunityKeyRel)
+            session.execute("MATCH (n:LiveCommunityKeyNode) DETACH DELETE n")
+        finally:
+            driver.close()
+
+
+@pytest.mark.live
+@pytest.mark.skipif(
+    not is_port_open("127.0.0.1", 7687),
+    reason="Neo4j container not reachable on port 7687",
+)
+def test_live_native_community_enterprise_only_constraints_are_reported() -> None:
+    """The native voyager-net path reports Enterprise-only constraints the same way."""
+    pytest.importorskip("neo4j")
+    uri = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
+    user = os.getenv("NEO4J_USER", "neo4j")
+    password = os.getenv("NEO4J_PASSWORD", "voyagerpass123")
+    native_uri = os.getenv(
+        "NEO4J_NATIVE_URI",
+        f"bolt://{user}:{password}@127.0.0.1:7687?connect_timeout=2",
+    )
+
+    driver = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=1.0)
+    try:
+        driver.verify_connectivity()
+    except Exception:
+        driver.close()
+        pytest.skip(f"Neo4j database not reachable on {uri}")
+    _skip_unless_community(driver, uri)
+    driver.close()
+
+    @node(label="LiveNativeCommunityKeyNode")
+    class LiveNativeCommunityKeyNode(Node):
+        uid: str = Field(primary_key=True)
+
+    @relationship(
+        type_name="LIVE_NATIVE_COMMUNITY_KEY_REL",
+        source_node=LiveNativeCommunityKeyNode,
+        target_node=LiveNativeCommunityKeyNode,
+    )
+    class LiveNativeCommunityKeyRel(Relationship):
+        rid: str = Field(primary_key=True)
+
+    try:
+        session = Session(native_uri, dialect="cypher", backend="native")
+    except Exception as exc:
+        pytest.skip(f"Native backend unavailable: {exc}")
+
+    try:
+        session.drop_constraints(LiveNativeCommunityKeyNode, LiveNativeCommunityKeyRel)
+        session.execute("MATCH (n:LiveNativeCommunityKeyNode) DETACH DELETE n")
+
+        with pytest.raises(VoyagerError) as excinfo:
+            session.create_constraints(LiveNativeCommunityKeyNode, LiveNativeCommunityKeyRel)
+
+        error = excinfo.value
+        assert error.code == "SCHEMA_ERROR"
+        skipped = getattr(error, "skipped", [])
+        assert len(skipped) == 2
+        assert all("IS NOT NULL" in stmt for stmt in skipped)
+        assert "Neo4j Enterprise Edition" in str(error)
+        _assert_community_constraints_created(
+            session, "LiveNativeCommunityKeyNode", "LIVE_NATIVE_COMMUNITY_KEY_REL"
+        )
+
+        session.execute("CREATE (:LiveNativeCommunityKeyNode {uid: 'dup'})")
+        with pytest.raises(Exception, match="already exists|constraint"):
+            session.execute("CREATE (:LiveNativeCommunityKeyNode {uid: 'dup'})")
+
+        dropped = session.drop_constraints(LiveNativeCommunityKeyNode, LiveNativeCommunityKeyRel)
+        assert len(dropped) == 4
+        names = [c.get("name", "") for c in session.execute("SHOW CONSTRAINTS")]
+        assert not any("live_native_community_key" in name for name in names)
+    finally:
+        try:
+            session.drop_constraints(LiveNativeCommunityKeyNode, LiveNativeCommunityKeyRel)
+            session.execute("MATCH (n:LiveNativeCommunityKeyNode) DETACH DELETE n")
+        finally:
+            session.close()
