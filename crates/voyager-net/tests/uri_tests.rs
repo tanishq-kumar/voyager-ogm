@@ -152,6 +152,37 @@ fn test_parse_optional_prefixes() {
 }
 
 #[test]
+fn test_postgres_graph_params_do_not_override_database() {
+    // Apache AGE selects a graph inside the connected catalog; ?graph= / ?graph_name=
+    // must not become the PostgreSQL database in the startup message.
+    let uri = ParsedUri::parse(
+        "postgresql://postgres:secret@127.0.0.1:5455/voyager_graph?graph=age_graph&sslmode=disable",
+    )
+    .expect("Failed to parse postgresql URI with graph parameter");
+    assert_eq!(uri.protocol, DatabaseProtocol::Postgres);
+    assert_eq!(uri.database, Some("voyager_graph".to_string()));
+    assert_eq!(uri.params.get("graph"), Some(&"age_graph".to_string()));
+
+    let uri = ParsedUri::parse(
+        "age://postgres:secret@127.0.0.1:5455/voyager_graph?graph_name=tenant_graph",
+    )
+    .expect("Failed to parse age URI with graph_name parameter");
+    assert_eq!(uri.database, Some("voyager_graph".to_string()));
+    assert_eq!(
+        uri.params.get("graph_name"),
+        Some(&"tenant_graph".to_string())
+    );
+}
+
+#[test]
+fn test_redis_graph_param_still_selects_graph_database() {
+    let uri = ParsedUri::parse("falkordb://localhost:6379?graph=social_network")
+        .expect("Failed to parse falkordb URI");
+    assert_eq!(uri.protocol, DatabaseProtocol::Redis);
+    assert_eq!(uri.database, Some("social_network".to_string()));
+}
+
+#[test]
 fn test_parse_invalid_uris() {
     assert!(ParsedUri::parse("").is_err());
     assert!(ParsedUri::parse("http://localhost:8080").is_err());

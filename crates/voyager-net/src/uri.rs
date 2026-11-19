@@ -187,11 +187,20 @@ impl ParsedUri {
             None
         };
 
-        // Override database if ?database= or ?graph= is in query parameters
-        if let Some(db_param) = params.get("database").or_else(|| params.get("graph"))
+        // Override the target database if ?database= is present. For Redis/FalkorDB,
+        // ?graph= selects the graph database and therefore also sets `database`.
+        // For PostgreSQL/AGE, ?graph= / ?graph_name= name an Apache AGE graph inside
+        // the connected catalog; they must not replace the database sent in the
+        // startup message. They stay available in `params` for AGE initialization.
+        if let Some(db_param) = params.get("database")
             && !db_param.is_empty()
         {
             database = Some(db_param.clone());
+        } else if protocol == DatabaseProtocol::Redis
+            && let Some(graph_param) = params.get("graph")
+            && !graph_param.is_empty()
+        {
+            database = Some(graph_param.clone());
         }
 
         // Resolve TLS mode from query parameters if present (e.g. ?ssl=true or ?sslmode=require)

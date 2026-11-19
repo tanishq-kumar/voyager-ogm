@@ -95,6 +95,7 @@ impl PostgresConnection {
         // If target protocol or parameters indicate Apache AGE, initialize AGE extension
         if uri.raw.starts_with("age:")
             || uri.params.contains_key("graph")
+            || uri.params.contains_key("graph_name")
             || uri.params.contains_key("age")
             || uri.params.get("dialect").map(|s| s.as_str()) == Some("age")
         {

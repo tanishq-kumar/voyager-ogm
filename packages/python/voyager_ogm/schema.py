@@ -118,7 +118,7 @@ def _raise_enterprise_constraint_error(skipped: list[str], first_err: BaseExcept
         f"the remaining constraints were applied:\n{details}"
     )
     error = VoyagerError(message, code="SCHEMA_ERROR")
-    error.__dict__["skipped"] = list(skipped)
+    error.skipped = list(skipped)
     raise error from first_err
 
 
