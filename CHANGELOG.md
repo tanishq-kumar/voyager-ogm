@@ -15,13 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **PyPI package page**: `voyager-ogm` now uses a Python-focused `packages/python/README.md` as its PyPI long description instead of the repository-wide root README.
-- **ISO GQL quantified edges (#267)**: a path with a single quantified edge now emits the same per-edge form as multi-edge paths (`(a:Person)-[r:KNOWS]->{1,3}(b:Person)`) instead of wrapping the whole path (`((a:Person)-[r:KNOWS]->(b:Person)){1,3}`), preserving endpoint labels, direction, edge properties, open bounds and path variables. Hop bounds with `max_hops < min_hops` are now rejected by the builder with `INVALID_CLAUSE` for every dialect and both the Rust and Python APIs.
-- **ISO GQL unsupported constructs (#269)**: ISO GQL now raises `UNSUPPORTED_FEATURE` instead of silently dropping or changing the meaning of `LOAD CSV`, `DETACH DELETE`, `MERGE` with distinct `ON CREATE SET` / `ON MATCH SET` assignments, and the regular-expression operator `=~`. **Behaviour change**: queries that previously compiled to incomplete or semantically different GQL now fail with a clear error. `MERGE` with empty or identical `ON CREATE SET` / `ON MATCH SET` assignments continues to emit `UPSERT ... SET`. This includes `Session` saves with `dialect="iso_gql"` of models that have create-only defaults: they previously compiled to a single `SET` that overwrote create-only fields (such as creation timestamps) on every update, and now raise instead.
-- **SQL/PGQ emitter silent drops (#268)**: `OPTIONAL MATCH`, `LOAD CSV`, `EXISTS`/`COUNT` subqueries, list and pattern comprehensions, and the `=~` regex operator now raise a clear `UnsupportedFeature` error in the SQL/PGQ and DuckPGQ dialects instead of being silently dropped, emitting invalid syntax, or leaking a Rust AST debug dump. `RETURN DISTINCT` now emits `SELECT DISTINCT`, and a query with no projections raises a clear error instead of emitting `COLUMNS ()`.
-- **SQL/PGQ graph name validation (security, #270)**: the graph name interpolated into `GRAPH_TABLE (...)` is now validated as a plain identifier (ASCII letters, digits, and underscores, 1-63 characters) in the emitter, covering the fluent API and `compile_query_from_spec(graph_name=...)`, so names containing SQL metacharacters, quotes, semicolons, spaces, or an empty name are rejected instead of being written into the statement.
-
-### Security
-- **Identifier injection (#186)**: every identifier written into emitted query text (node and edge variables, labels, relationship types, property names, aliases, path, unwind, and let variables, delete targets, parameter names, function and procedure names, and procedure yield items) is now validated at a single pre-emission choke point shared by the Cypher, AGE, ISO GQL, and SQL/PGQ emitters, so both the fluent API and `compile_query_from_spec` reject values that are not plain identifiers (`_` or a Unicode letter first, then Unicode letters, digits, or `_`; function and procedure names may join identifiers with single dots). **Behaviour change**: names containing spaces, quotes, backticks, parentheses, braces, `$`, `/`, `-`, `;`, or empty names now raise `INVALID_CLAUSE` instead of being written into the query; delimited (backtick-quoted) identifiers are not supported in this patch. Valid Unicode labels and existing generated aliases such as `_person_0`, `p0`, and `apoc.coll.sum` are unchanged. Expression depth is also carried through `exists`/`count`/nested-spec re-entry, so deeply nested subqueries raise the existing depth error instead of exhausting the stack.
+- **Query Spec v1 Accepts JSON Arrays at Every Position (#185)**:
+  - The spec consumer now accepts Python lists (the JSON array form produced by `json.loads`/`json.dumps`) and Python tuples interchangeably at every array position, so any schema-valid JSON document compiles instead of raising `TypeError: 'list' object is not an instance of 'tuple'`.
+  - Fixed list-rejected positions: `load_csv`, `unwinds` entries, `case` branches, merge `ON CREATE SET` / `ON MATCH SET` entries, `order_by` entries (root and inside `with_clauses`), `linear_clauses` entries, path steps, mutations and projections.
+  - Fixed tuple-rejected positions for uniformity: `fn` arguments, `case` branch lists, `list` literal items, and the array containers `matches`, `paths`, `unwinds`, `mutations`, `with_clauses`, `projections`, `order_by`, merge set lists and `linear_clauses`.
+  - Malformed shapes at these positions (non-sequences and too-short arrays) now raise `VoyagerError` with code `INVALID_CLAUSE` naming the field, instead of bare `TypeError`/`IndexError` from the FFI layer.
+  - `order_by` direction accepts a boolean (`true` = ascending, `false` = descending) or the uppercase strings `"ASC"`/`"DESC"`, for both the `[variable, property, direction]` and `[expression, direction]` entry variants; the schema documents both forms. Other spellings (for example `"asc"`, `"up"` or `1`) raise `INVALID_CLAUSE`, and an `['alias', expr, name]` projection now keeps its alias in the JSON list spelling, matching the tuple spelling.
 
 ## [0.4.0] - 2026-11-20
 
@@ -362,9 +361,6 @@ Breaking changes in the 0.4 line are marked **Breaking** in the sections below (
   - PyO3 C-extensions bridging Rust core with Python 3.11+.
   - Typed entity models: `@node`, `@relationship`, `Node`, `Relationship`, and `Field[T]` descriptors.
   - Constructor auto-aliasing (`p = Person()` -> `_person_0`) and fluent query compiler.
-
-
-
 
 [Unreleased]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0...HEAD
 [0.4.0]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0-alpha.8...v0.4.0

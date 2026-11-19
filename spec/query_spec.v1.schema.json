@@ -209,7 +209,7 @@
       ]
     },
     "OrderByItem": {
-      "description": "Ordering specification: [variable, property, ascending] or [expression_spec, ascending]",
+      "description": "Ordering specification: [variable, property, direction] or [expression_spec, direction]. direction is true (ascending), false (descending), or the string \"ASC\" / \"DESC\".",
       "oneOf": [
         {
           "type": "array",
@@ -218,7 +218,7 @@
           "items": [
             { "type": "string" },
             { "type": "string" },
-            { "type": "boolean" }
+            { "$ref": "#/$defs/OrderDirection" }
           ]
         },
         {
@@ -227,9 +227,16 @@
           "maxItems": 2,
           "items": [
             { "$ref": "#/$defs/Expression" },
-            { "type": "boolean" }
+            { "$ref": "#/$defs/OrderDirection" }
           ]
         }
+      ]
+    },
+    "OrderDirection": {
+      "description": "Ordering direction: true / \"ASC\" for ascending, false / \"DESC\" for descending. The string spellings are uppercase only.",
+      "oneOf": [
+        { "type": "boolean" },
+        { "type": "string", "enum": ["ASC", "DESC"] }
       ]
     },
     "MutationClause": {

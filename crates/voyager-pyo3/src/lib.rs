@@ -204,6 +204,31 @@ fn parse_unary_op(s: &str) -> PyResult<UnaryOp> {
     }
 }
 
+/// Parses the direction of an `order_by` entry. The schema defines it as a
+/// boolean (`true` = ascending) or the uppercase strings `"ASC"`/`"DESC"`, and
+/// this function accepts exactly those values so consumer and schema agree.
+/// Any other spelling (including lowercase `"asc"`) is rejected with a
+/// field-named `INVALID_CLAUSE` error.
+fn parse_order_asc(val: &Bound<'_, PyAny>, field: &str) -> PyResult<bool> {
+    if let Ok(asc) = val.extract::<bool>() {
+        return Ok(asc);
+    }
+    if let Ok(s) = val.extract::<String>() {
+        match s.as_str() {
+            "ASC" => return Ok(true),
+            "DESC" => return Ok(false),
+            _ => {}
+        }
+    }
+    Err(make_voyager_err(
+        voyager_ogm::ErrorCode::InvalidClause,
+        format!(
+            "Invalid '{field}': expected a boolean or 'ASC'/'DESC', got {}.",
+            val.get_type()
+        ),
+    ))
+}
+
 /// Native AST Expression node handle wrapping a lightweight AST arena.
 #[pyclass(name = "AstExpr", from_py_object)]
 #[derive(Clone)]
@@ -688,6 +713,76 @@ fn extract_expr_tuple<'a>(val: &Bound<'a, PyAny>) -> Option<Bound<'a, PyTuple>> 
     }
 }
 
+/// Reads a Query Spec v1 array position as a sequence of items, accepting both
+/// spellings the protocol allows: a Python `list` (the JSON array form, e.g.
+/// after `json.loads`/`json.dumps`) and a Python `tuple` (the form the Python
+/// SDK emits). The two are interchangeable, so every array position goes
+/// through here instead of ad-hoc `PyTuple`/`PyList` casts.
+/// Returns `None` for non-sequence values (callers that historically skip
+/// malformed collections keep doing so).
+fn as_spec_sequence<'a>(val: &Bound<'a, PyAny>) -> Option<Bound<'a, PyTuple>> {
+    if let Ok(tuple) = val.cast::<PyTuple>() {
+        Some(tuple.clone())
+    } else if let Ok(list) = val.cast::<PyList>() {
+        Some(list.to_tuple())
+    } else {
+        None
+    }
+}
+
+/// Fallible variant of [`as_spec_sequence`] for spec array positions whose
+/// shape is part of the v1 contract: a non-sequence value fails with a clear,
+/// field-named `INVALID_CLAUSE` error instead of a bare PyO3 `TypeError`.
+fn expect_spec_array<'a>(val: &Bound<'a, PyAny>, field: &str) -> PyResult<Bound<'a, PyTuple>> {
+    as_spec_sequence(val).ok_or_else(|| {
+        make_voyager_err(
+            voyager_ogm::ErrorCode::InvalidClause,
+            format!(
+                "Invalid '{field}': expected a JSON array (list or tuple), got {}.",
+                val.get_type()
+            ),
+        )
+    })
+}
+
+/// Validates the item count of a fixed-arity spec array so a too-short
+/// sequence fails with a clear, field-named error instead of the bare
+/// `IndexError` a later `get_item` would raise.
+fn check_spec_arity(
+    tuple: &Bound<'_, PyTuple>,
+    field: &str,
+    min_items: usize,
+    shape: &str,
+) -> PyResult<()> {
+    let len = tuple.len();
+    if len < min_items {
+        return Err(make_voyager_err(
+            voyager_ogm::ErrorCode::InvalidClause,
+            format!("Invalid '{field}': expected at least {min_items} item(s) {shape}, got {len}."),
+        ));
+    }
+    Ok(())
+}
+
+/// Recovers the alias of an `['alias', inner_expression, name]` expression spec
+/// when a projection carries no explicit alias. Sequence-agnostic: works for
+/// the tuple spelling and the JSON list spelling alike, so a round-tripped
+/// spec keeps its alias.
+fn extract_alias_from_expr_spec(expr_spec: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
+    if let Some(seq) = extract_expr_tuple(expr_spec)
+        && !seq.is_empty()
+        && seq
+            .get_item(0)?
+            .extract::<String>()
+            .map(|t| t == "alias")
+            .unwrap_or(false)
+    {
+        check_spec_arity(&seq, "expression 'alias'", 3, "[alias, expression, name]")?;
+        return Ok(seq.get_item(2)?.extract().ok());
+    }
+    Ok(None)
+}
+
 #[inline(never)]
 fn handle_prop_tuple(
     builder: &mut QueryBuilder,
@@ -732,10 +827,9 @@ fn handle_fn_tuple(
     depth: usize,
 ) -> PyResult<NodeHandle> {
     let name: String = tuple.get_item(1)?.extract()?;
-    let args_py = tuple.get_item(2)?;
-    let args_list = args_py.cast::<PyList>()?;
-    let mut arg_handles = Vec::with_capacity(args_list.len());
-    for arg in args_list {
+    let args_seq = expect_spec_array(&tuple.get_item(2)?, "fn args")?;
+    let mut arg_handles = Vec::with_capacity(args_seq.len());
+    for arg in args_seq {
         arg_handles.push(py_to_node_handle_depth(builder, &arg, depth + 1)?);
     }
     Ok(builder.function(name, arg_handles))
@@ -747,18 +841,25 @@ fn handle_case_tuple(
     tuple: &Bound<'_, PyTuple>,
     depth: usize,
 ) -> PyResult<NodeHandle> {
+    check_spec_arity(
+        tuple,
+        "expression 'case'",
+        4,
+        "[case, operand, branches, else_branch]",
+    )?;
     let op_item = tuple.get_item(1)?;
     let operand = if op_item.is_none() {
         None
     } else {
         Some(py_to_node_handle_depth(builder, &op_item, depth + 1)?)
     };
-    let branches_list = tuple.get_item(2)?.cast::<PyList>()?.clone();
-    let mut branches = Vec::with_capacity(branches_list.len());
-    for item in &branches_list {
-        let branch_tuple = item.cast::<PyTuple>()?;
-        let w = py_to_node_handle_depth(builder, &branch_tuple.get_item(0)?, depth + 1)?;
-        let t = py_to_node_handle_depth(builder, &branch_tuple.get_item(1)?, depth + 1)?;
+    let branches_seq = expect_spec_array(&tuple.get_item(2)?, "case branches")?;
+    let mut branches = Vec::with_capacity(branches_seq.len());
+    for item in branches_seq {
+        let branch = expect_spec_array(&item, "case branch")?;
+        check_spec_arity(&branch, "case branch", 2, "[when, then]")?;
+        let w = py_to_node_handle_depth(builder, &branch.get_item(0)?, depth + 1)?;
+        let t = py_to_node_handle_depth(builder, &branch.get_item(1)?, depth + 1)?;
         branches.push((w, t));
     }
     let else_item = tuple.get_item(3)?;
@@ -839,9 +940,9 @@ fn handle_list_literal_tuple(
     tuple: &Bound<'_, PyTuple>,
     depth: usize,
 ) -> PyResult<NodeHandle> {
-    let items_list = tuple.get_item(1)?.cast::<PyList>()?.clone();
-    let mut item_handles = Vec::with_capacity(items_list.len());
-    for item in &items_list {
+    let items_seq = expect_spec_array(&tuple.get_item(1)?, "list items")?;
+    let mut item_handles = Vec::with_capacity(items_seq.len());
+    for item in items_seq {
         item_handles.push(py_to_node_handle_depth(builder, &item, depth + 1)?);
     }
     Ok(builder.list_literal(item_handles))
@@ -945,27 +1046,25 @@ fn parse_direction(dir_str: &str) -> PyResult<Direction> {
 
 fn build_path_steps_into_builder(
     builder: &mut QueryBuilder,
-    steps: &Bound<'_, PyList>,
+    steps: &Bound<'_, PyTuple>,
 ) -> PyResult<()> {
     for step in steps {
-        let tuple = if let Ok(t) = step.cast::<PyTuple>() {
-            t.clone()
-        } else if let Ok(l) = step.cast::<PyList>() {
-            l.to_tuple()
-        } else {
-            return Err(make_voyager_err(
-                voyager_ogm::ErrorCode::InvalidClause,
-                "Expected path step tuple or list",
-            ));
-        };
+        let tuple = expect_spec_array(&step, "path step")?;
         let tag: String = tuple.get_item(0)?.extract()?;
         match tag.as_str() {
             "node" => {
+                check_spec_arity(&tuple, "path step 'node'", 3, "[node, variable, labels]")?;
                 let var: Option<String> = tuple.get_item(1)?.extract()?;
                 let labels: Vec<String> = tuple.get_item(2)?.extract()?;
                 builder.node(var, labels);
             }
             "edge" => {
+                check_spec_arity(
+                    &tuple,
+                    "path step 'edge'",
+                    6,
+                    "[edge, direction, types, variable, min_hops, max_hops]",
+                )?;
                 let dir_str: String = tuple.get_item(1)?.extract()?;
                 let dir = parse_direction(&dir_str)?;
                 let edge_types: Vec<String> = tuple.get_item(2)?.extract()?;
@@ -994,11 +1093,32 @@ fn build_path_steps_into_builder(
     Ok(())
 }
 
-fn build_path_from_py(
+/// Parses one `order_by` entry: `[variable, property, direction]` or
+/// `[expression, direction]`, where `direction` is a boolean or `"ASC"`/
+/// `"DESC"`. Accepts the tuple spelling and the JSON list spelling alike, and
+/// fails with a clear, field-named error on wrong shapes or directions.
+fn build_order_by_entry(
     builder: &mut QueryBuilder,
-    spec: &Bound<'_, PyAny>,
-    depth: usize,
-) -> PyResult<NodeHandle> {
+    item: &Bound<'_, PyAny>,
+    field: &str,
+) -> PyResult<()> {
+    let tuple = expect_spec_array(item, field)?;
+    let first = tuple.get_item(0)?;
+    if let Ok(var) = first.extract::<String>() {
+        check_spec_arity(&tuple, field, 3, "[variable, property, direction]")?;
+        let prop: String = tuple.get_item(1)?.extract()?;
+        let asc = parse_order_asc(&tuple.get_item(2)?, field)?;
+        builder.order_by_property(var, prop, asc);
+    } else {
+        check_spec_arity(&tuple, field, 2, "[expression, direction]")?;
+        let expr_h = py_to_node_handle(builder, &first)?;
+        let asc = parse_order_asc(&tuple.get_item(1)?, field)?;
+        builder.order_by(expr_h, asc);
+    }
+    Ok(())
+}
+
+fn build_path_from_py(builder: &mut QueryBuilder, spec: &Bound<'_, PyAny>) -> PyResult<NodeHandle> {
     let target = if let Ok(native) = spec.getattr("_native") {
         native
     } else {
@@ -1011,10 +1131,10 @@ fn build_path_from_py(
         return Ok(sub_h);
     }
     if let Ok(list) = spec.cast::<PyList>() {
-        let list_cloned = list.clone();
+        let steps = list.to_tuple();
         let mut err: Option<PyErr> = None;
         let sub_h = builder.subquery(|q| {
-            if let Err(e) = build_path_steps_into_builder(q, &list_cloned) {
+            if let Err(e) = build_path_steps_into_builder(q, &steps) {
                 err = Some(e);
             }
         });
@@ -1056,11 +1176,11 @@ fn build_subquery_from_py(
         }
         Ok(sub_h)
     } else if let Ok(list) = spec.cast::<PyList>() {
-        let list_cloned = list.clone();
+        let steps = list.to_tuple();
         let mut err: Option<PyErr> = None;
         let sub_h = builder.subquery(|q| {
             q.r#match();
-            if let Err(e) = build_path_steps_into_builder(q, &list_cloned) {
+            if let Err(e) = build_path_steps_into_builder(q, &steps) {
                 err = Some(e);
             }
         });
@@ -1106,7 +1226,8 @@ fn build_query_from_spec_internal(
 
     if let Some(load_csv_item) = spec.get_item("load_csv")? {
         if !load_csv_item.is_none() {
-            let tuple = load_csv_item.cast::<PyTuple>()?;
+            let tuple = expect_spec_array(&load_csv_item, "load_csv")?;
+            check_spec_arity(&tuple, "load_csv", 3, "[url, with_headers, alias]")?;
             let url: String = tuple.get_item(0)?.extract()?;
             let with_headers: bool = tuple.get_item(1)?.extract()?;
             let alias: String = tuple.get_item(2)?.extract()?;
@@ -1115,9 +1236,10 @@ fn build_query_from_spec_internal(
     }
 
     if let Some(unwinds_item) = spec.get_item("unwinds")? {
-        if let Ok(unwinds_list) = unwinds_item.cast::<PyList>() {
-            for item in unwinds_list {
-                let tuple = item.cast::<PyTuple>()?;
+        if let Some(unwinds_seq) = as_spec_sequence(&unwinds_item) {
+            for item in unwinds_seq {
+                let tuple = expect_spec_array(&item, "unwinds entry")?;
+                check_spec_arity(&tuple, "unwinds entry", 2, "[param, alias]")?;
                 let param_name: String = tuple.get_item(0)?.extract()?;
                 let alias: String = tuple.get_item(1)?.extract()?;
                 builder.unwind_param(param_name, alias);
@@ -1126,8 +1248,8 @@ fn build_query_from_spec_internal(
     }
 
     if let Some(matches_item) = spec.get_item("matches")? {
-        if let Ok(matches_list) = matches_item.cast::<PyList>() {
-            for m in matches_list {
+        if let Some(matches_seq) = as_spec_sequence(&matches_item) {
+            for m in matches_seq {
                 let m_dict = m.cast::<PyDict>()?;
                 if let Some(m_ver_item) = m_dict.get_item("spec_version")? {
                     let m_ver: u32 = m_ver_item.extract().map_err(|_| {
@@ -1174,13 +1296,13 @@ fn build_query_from_spec_internal(
                 }
 
                 if let Some(paths_item) = m_dict.get_item("paths")? {
-                    if let Ok(paths_list) = paths_item.cast::<PyList>() {
-                        for (p_idx, p_steps) in paths_list.iter().enumerate() {
+                    if let Some(paths_seq) = as_spec_sequence(&paths_item) {
+                        for (p_idx, p_steps) in paths_seq.iter().enumerate() {
                             if p_idx > 0 {
                                 builder.pattern();
                             }
-                            if let Ok(steps_list) = p_steps.cast::<PyList>() {
-                                build_path_steps_into_builder(builder, steps_list)?;
+                            if let Some(steps) = as_spec_sequence(&p_steps) {
+                                build_path_steps_into_builder(builder, &steps)?;
                             }
                         }
                     }
@@ -1204,39 +1326,46 @@ fn build_query_from_spec_internal(
     }
 
     if let Some(mutations_item) = spec.get_item("mutations")? {
-        if let Ok(mutations_list) = mutations_item.cast::<PyList>() {
-            for mut_item in mutations_list {
-                let tuple = if let Ok(t) = mut_item.cast::<PyTuple>() {
-                    t.clone()
-                } else if let Ok(l) = mut_item.cast::<PyList>() {
-                    l.to_tuple()
-                } else {
-                    return Err(make_voyager_err(
-                        voyager_ogm::ErrorCode::InvalidClause,
-                        "Expected mutation tuple or list",
-                    ));
-                };
+        if let Some(mutations_seq) = as_spec_sequence(&mutations_item) {
+            for mut_item in mutations_seq {
+                let tuple = expect_spec_array(&mut_item, "mutation")?;
                 let tag: String = tuple.get_item(0)?.extract()?;
                 match tag.as_str() {
                     "create" => {
+                        check_spec_arity(&tuple, "mutation 'create'", 2, "[create, paths]")?;
                         builder.create();
-                        let paths_list = tuple.get_item(1)?.cast::<PyList>()?.clone();
-                        for (p_idx, p_steps) in paths_list.iter().enumerate() {
+                        let paths =
+                            expect_spec_array(&tuple.get_item(1)?, "mutation 'create' paths")?;
+                        for (p_idx, p_steps) in paths.iter().enumerate() {
                             if p_idx > 0 {
                                 builder.pattern();
                             }
-                            if let Ok(steps_list) = p_steps.cast::<PyList>() {
-                                build_path_steps_into_builder(builder, steps_list)?;
+                            if let Some(steps) = as_spec_sequence(&p_steps) {
+                                build_path_steps_into_builder(builder, &steps)?;
                             }
                         }
                     }
                     "merge" => {
+                        check_spec_arity(
+                            &tuple,
+                            "mutation 'merge'",
+                            4,
+                            "[merge, path, on_create_set, on_match_set]",
+                        )?;
                         builder.merge();
-                        let path_steps = tuple.get_item(1)?.cast::<PyList>()?.clone();
+                        let path_steps =
+                            expect_spec_array(&tuple.get_item(1)?, "mutation 'merge' path")?;
                         build_path_steps_into_builder(builder, &path_steps)?;
-                        if let Ok(on_creates) = tuple.get_item(2)?.cast::<PyList>() {
+                        if let Some(on_creates) = as_spec_sequence(&tuple.get_item(2)?) {
                             for item in on_creates {
-                                let s_tuple = item.cast::<PyTuple>()?;
+                                let s_tuple =
+                                    expect_spec_array(&item, "merge 'on_create_set' entry")?;
+                                check_spec_arity(
+                                    &s_tuple,
+                                    "merge 'on_create_set' entry",
+                                    3,
+                                    "[variable, property, value]",
+                                )?;
                                 let var: String = s_tuple.get_item(0)?.extract()?;
                                 let prop: String = s_tuple.get_item(1)?.extract()?;
                                 let val_h =
@@ -1244,9 +1373,16 @@ fn build_query_from_spec_internal(
                                 builder.on_create_set_expr(var, prop, val_h);
                             }
                         }
-                        if let Ok(on_matches) = tuple.get_item(3)?.cast::<PyList>() {
+                        if let Some(on_matches) = as_spec_sequence(&tuple.get_item(3)?) {
                             for item in on_matches {
-                                let s_tuple = item.cast::<PyTuple>()?;
+                                let s_tuple =
+                                    expect_spec_array(&item, "merge 'on_match_set' entry")?;
+                                check_spec_arity(
+                                    &s_tuple,
+                                    "merge 'on_match_set' entry",
+                                    3,
+                                    "[variable, property, value]",
+                                )?;
                                 let var: String = s_tuple.get_item(0)?.extract()?;
                                 let prop: String = s_tuple.get_item(1)?.extract()?;
                                 let val_h =
@@ -1256,12 +1392,24 @@ fn build_query_from_spec_internal(
                         }
                     }
                     "set" => {
+                        check_spec_arity(
+                            &tuple,
+                            "mutation 'set'",
+                            4,
+                            "[set, variable, property, value]",
+                        )?;
                         let var: String = tuple.get_item(1)?.extract()?;
                         let prop: String = tuple.get_item(2)?.extract()?;
                         let val_h = py_to_node_handle_depth(builder, &tuple.get_item(3)?, depth)?;
                         builder.set_property_expr(var, prop, val_h);
                     }
                     "delete" => {
+                        check_spec_arity(
+                            &tuple,
+                            "mutation 'delete'",
+                            3,
+                            "[delete, detach, targets]",
+                        )?;
                         let detach: bool = tuple.get_item(1)?.extract()?;
                         let targets: Vec<String> = tuple.get_item(2)?.extract()?;
                         if detach {
@@ -1271,6 +1419,12 @@ fn build_query_from_spec_internal(
                         }
                     }
                     "remove" => {
+                        check_spec_arity(
+                            &tuple,
+                            "mutation 'remove'",
+                            3,
+                            "[remove, variable, property]",
+                        )?;
                         let var: String = tuple.get_item(1)?.extract()?;
                         let prop: String = tuple.get_item(2)?.extract()?;
                         builder.remove_property(var, prop);
@@ -1287,8 +1441,8 @@ fn build_query_from_spec_internal(
     }
 
     if let Some(with_item) = spec.get_item("with_clauses")? {
-        if let Ok(with_list) = with_item.cast::<PyList>() {
-            for item in with_list {
+        if let Some(with_seq) = as_spec_sequence(&with_item) {
+            for item in with_seq {
                 let with_dict = item.cast::<PyDict>()?;
                 if let Some(w_ver_item) = with_dict.get_item("spec_version")? {
                     let w_ver: u32 = w_ver_item.extract().map_err(|_| {
@@ -1315,46 +1469,45 @@ fn build_query_from_spec_internal(
                     }
                 }
                 if let Some(proj_item) = with_dict.get_item("projections")? {
-                    if let Ok(proj_list) = proj_item.cast::<PyList>() {
-                        for p in proj_list {
-                            let tuple = if let Ok(t) = p.cast::<PyTuple>() {
-                                t.clone()
-                            } else if let Ok(l) = p.cast::<PyList>() {
-                                l.to_tuple()
-                            } else {
-                                return Err(make_voyager_err(
-                                    voyager_ogm::ErrorCode::InvalidClause,
-                                    "Expected projection tuple or list",
-                                ));
-                            };
+                    if let Some(proj_seq) = as_spec_sequence(&proj_item) {
+                        for p in proj_seq {
+                            let tuple = expect_spec_array(&p, "projection")?;
                             let tag: String = tuple.get_item(0)?.extract()?;
                             match tag.as_str() {
                                 "field" => {
+                                    check_spec_arity(
+                                        &tuple,
+                                        "projection 'field'",
+                                        4,
+                                        "[field, variable, property, alias]",
+                                    )?;
                                     let var: String = tuple.get_item(1)?.extract()?;
                                     let prop: String = tuple.get_item(2)?.extract()?;
                                     let alias: Option<String> = tuple.get_item(3)?.extract()?;
                                     builder.field(var, prop, alias);
                                 }
                                 "expr" => {
+                                    check_spec_arity(
+                                        &tuple,
+                                        "projection 'expr'",
+                                        3,
+                                        "[expr, expression, alias]",
+                                    )?;
                                     let expr_spec = tuple.get_item(1)?;
                                     let mut alias: Option<String> = tuple.get_item(2)?.extract()?;
                                     if alias.is_none() {
-                                        if let Ok(spec_tuple) = expr_spec.cast::<PyTuple>() {
-                                            if !spec_tuple.is_empty()
-                                                && spec_tuple
-                                                    .get_item(0)?
-                                                    .extract::<String>()
-                                                    .map(|t| t == "alias")
-                                                    .unwrap_or(false)
-                                            {
-                                                alias = spec_tuple.get_item(2)?.extract().ok();
-                                            }
-                                        }
+                                        alias = extract_alias_from_expr_spec(&expr_spec)?;
                                     }
                                     let h = py_to_node_handle_depth(builder, &expr_spec, depth)?;
                                     builder.select_expr(h, alias);
                                 }
                                 "agg" => {
+                                    check_spec_arity(
+                                        &tuple,
+                                        "projection 'agg'",
+                                        5,
+                                        "[agg, variable, property, func, alias]",
+                                    )?;
                                     let var: String = tuple.get_item(1)?.extract()?;
                                     let prop: String = tuple.get_item(2)?.extract()?;
                                     let func_str: String = tuple.get_item(3)?.extract()?;
@@ -1407,19 +1560,9 @@ fn build_query_from_spec_internal(
                     }
                 }
                 if let Some(order_item) = with_dict.get_item("order_by")? {
-                    if let Ok(order_list) = order_item.cast::<PyList>() {
-                        for item in order_list {
-                            let tuple = item.cast::<PyTuple>()?;
-                            if let Ok(var) = tuple.get_item(0)?.extract::<String>() {
-                                let prop: String = tuple.get_item(1)?.extract()?;
-                                let asc: bool = tuple.get_item(2)?.extract()?;
-                                builder.order_by_property(var, prop, asc);
-                            } else {
-                                let expr_h =
-                                    py_to_node_handle_depth(builder, &tuple.get_item(0)?, depth)?;
-                                let asc: bool = tuple.get_item(1)?.extract()?;
-                                builder.order_by(expr_h, asc);
-                            }
+                    if let Some(order_seq) = as_spec_sequence(&order_item) {
+                        for item in order_seq {
+                            build_order_by_entry(builder, &item, "with_clauses 'order_by' entry")?;
                         }
                     }
                 }
@@ -1438,29 +1581,32 @@ fn build_query_from_spec_internal(
     }
 
     if let Some(proj_item) = spec.get_item("projections")? {
-        if let Ok(proj_list) = proj_item.cast::<PyList>() {
-            if !proj_list.is_empty() {
+        if let Some(proj_seq) = as_spec_sequence(&proj_item) {
+            if !proj_seq.is_empty() {
                 builder.r#return();
-                for item in proj_list {
-                    let tuple = if let Ok(t) = item.cast::<PyTuple>() {
-                        t.clone()
-                    } else if let Ok(l) = item.cast::<PyList>() {
-                        l.to_tuple()
-                    } else {
-                        return Err(make_voyager_err(
-                            voyager_ogm::ErrorCode::InvalidClause,
-                            "Expected projection tuple or list",
-                        ));
-                    };
+                for item in proj_seq {
+                    let tuple = expect_spec_array(&item, "projection")?;
                     let tag: String = tuple.get_item(0)?.extract()?;
                     match tag.as_str() {
                         "field" => {
+                            check_spec_arity(
+                                &tuple,
+                                "projection 'field'",
+                                4,
+                                "[field, variable, property, alias]",
+                            )?;
                             let var: String = tuple.get_item(1)?.extract()?;
                             let prop: String = tuple.get_item(2)?.extract()?;
                             let alias: Option<String> = tuple.get_item(3)?.extract()?;
                             builder.field(var, prop, alias);
                         }
                         "agg" => {
+                            check_spec_arity(
+                                &tuple,
+                                "projection 'agg'",
+                                5,
+                                "[agg, variable, property, func, alias]",
+                            )?;
                             let var: String = tuple.get_item(1)?.extract()?;
                             let prop: String = tuple.get_item(2)?.extract()?;
                             let func_str: String = tuple.get_item(3)?.extract()?;
@@ -1490,20 +1636,16 @@ fn build_query_from_spec_internal(
                             }
                         }
                         "expr" => {
+                            check_spec_arity(
+                                &tuple,
+                                "projection 'expr'",
+                                3,
+                                "[expr, expression, alias]",
+                            )?;
                             let expr_spec = tuple.get_item(1)?;
                             let mut alias: Option<String> = tuple.get_item(2)?.extract()?;
                             if alias.is_none() {
-                                if let Ok(spec_tuple) = expr_spec.cast::<PyTuple>() {
-                                    if !spec_tuple.is_empty()
-                                        && spec_tuple
-                                            .get_item(0)?
-                                            .extract::<String>()
-                                            .map(|t| t == "alias")
-                                            .unwrap_or(false)
-                                    {
-                                        alias = spec_tuple.get_item(2)?.extract().ok();
-                                    }
-                                }
+                                alias = extract_alias_from_expr_spec(&expr_spec)?;
                             }
                             let h = py_to_node_handle_depth(builder, &expr_spec, depth)?;
                             builder.select_expr(h, alias);
@@ -1531,18 +1673,9 @@ fn build_query_from_spec_internal(
     }
 
     if let Some(order_item) = spec.get_item("order_by")? {
-        if let Ok(order_list) = order_item.cast::<PyList>() {
-            for item in order_list {
-                let tuple = item.cast::<PyTuple>()?;
-                if let Ok(var) = tuple.get_item(0)?.extract::<String>() {
-                    let prop: String = tuple.get_item(1)?.extract()?;
-                    let asc: bool = tuple.get_item(2)?.extract()?;
-                    builder.order_by_property(var, prop, asc);
-                } else {
-                    let expr_h = py_to_node_handle_depth(builder, &tuple.get_item(0)?, depth)?;
-                    let asc: bool = tuple.get_item(1)?.extract()?;
-                    builder.order_by(expr_h, asc);
-                }
+        if let Some(order_seq) = as_spec_sequence(&order_item) {
+            for item in order_seq {
+                build_order_by_entry(builder, &item, "order_by entry")?;
             }
         }
     }
@@ -1566,18 +1699,30 @@ fn build_query_from_spec_internal(
     }
 
     if let Some(linear_item) = spec.get_item("linear_clauses")? {
-        if let Ok(linear_list) = linear_item.cast::<PyList>() {
-            for item in linear_list {
-                let tuple = item.cast::<PyTuple>()?;
+        if let Some(linear_seq) = as_spec_sequence(&linear_item) {
+            for item in linear_seq {
+                let tuple = expect_spec_array(&item, "linear_clauses entry")?;
                 let tag: String = tuple.get_item(0)?.extract()?;
                 match tag.as_str() {
                     "let" => {
+                        check_spec_arity(
+                            &tuple,
+                            "linear clause 'let'",
+                            3,
+                            "[let, variable, expression]",
+                        )?;
                         let var: String = tuple.get_item(1)?.extract()?;
                         let expr_h = py_to_node_handle_depth(builder, &tuple.get_item(2)?, depth)?;
                         builder.let_(var, expr_h);
                     }
                     "filter" => {
-                        let pred_h = py_to_node_handle_depth(builder, &tuple.get_item(1)?, depth)?;
+                        check_spec_arity(
+                            &tuple,
+                            "linear clause 'filter'",
+                            2,
+                            "[filter, predicate]",
+                        )?;
+                        let pred_h = py_to_node_handle(builder, &tuple.get_item(1)?)?;
                         builder.filter_(pred_h);
                     }
                     _ => {}

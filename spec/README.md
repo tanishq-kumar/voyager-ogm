@@ -88,6 +88,17 @@ Every query spec dictionary **must** carry a top-level integer attribute:
 }
 ```
 
+### ORDER BY entries
+
+`order_by` appears at the root and inside each `with_clauses[i]`. Every entry is one of two shapes:
+
+| Shape | Description |
+| :--- | :--- |
+| `[variable, property, direction]` | Sort by a property of a bound variable, e.g. `["p", "name", true]`. |
+| `[expression, direction]` | Sort by an expression descriptor, e.g. `[["fn", "size", [["prop", "p", "name"]]], "DESC"]`. |
+
+`direction` accepts both a boolean and a string: `true` means ascending, `false` means descending, and the strings `"ASC"` / `"DESC"` are exact, uppercase spellings of the same two directions. A boolean and its string counterpart compile to the same statement, so `["p", "name", true]` and `["p", "name", "ASC"]` are equivalent. Any other value (for example `"asc"`, `"up"` or `1`) is rejected with an `INVALID_CLAUSE` error.
+
 ---
 
 ## 3. Path Step Tuples
