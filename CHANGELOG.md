@@ -108,6 +108,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Breaking:** Removed module-level free functions `unwind()` and `load_csv()` from `voyager_ogm` and `voyager_ogm.query`. Use `Query.unwind()` and `Query.load_csv()`.
 
 ### Fixed
+- **Configurable Apache AGE Graph Name (#179)**:
+  - Made the Apache AGE graph name configurable on `Session` and `AsyncSession` via `graph_name="custom_graph"`.
+  - Added support for `graph_name` on `PostgresBridge`, `AsyncPostgresBridge`, and URI query strings (`?graph=...` / `?graph_name=...`) parsed by `create_bridge()`.
+  - Established a single source of truth per session: explicit `Session.graph_name` takes precedence over bridge or URI graph names, falling back to bridge graph name, defaulting to `"age_graph"` when the session dialect is Apache AGE (`"age"`, `"apache_age"`, `"postgres_age"`).
+  - Forwarded the session graph name through all query compilation paths (`Session.execute`, `AsyncSession.execute`), bulk ingestion operations (`bulk_create`, `bulk_upsert`, `bulk_create_relationships`, `ingest_parquet`, `ingest_csv`, `ingest_parquet_relationships`, `ingest_csv_relationships`), transactions (`session.transaction()`), identity map flush batches, and Active Record `.save()` / `.async_save()`.
+  - Updated Apache AGE index and drop DDL emitters (`create_indexes`, `drop_indexes`, `apply_schema`) to target the session's resolved graph schema (`"<graph>"."<Label>"`) instead of `ag_catalog`, with explicit `::text` property casting for GIN full-text expressions.
+  - Added strict identifier validation via `validate_graph_name()` in Python and `is_valid_age_graph_name` in Rust, rejecting unsafe characters and injection attempts with a `ValueError`.
+  - Unified default Apache AGE graph name into a single Rust constant `DEFAULT_AGE_GRAPH` in `voyager-ogm`.
 - **Bolt URI Embedded Credentials Stripping and Decoding (#181)**:
   - `create_bridge()` now extracts and URL-decodes user and password credentials from Bolt connection URIs, forwarding them as `auth=(user, password)` to `GraphDatabase.driver` / `AsyncGraphDatabase.driver`.
   - Strips `userinfo` from the netloc so the Bolt driver receives a clean `scheme://host:port` string; query parameters are parsed into driver options and removed from the URI, because direct `bolt://` drivers reject them.

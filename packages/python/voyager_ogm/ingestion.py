@@ -149,6 +149,7 @@ def create_bulk_create_plan(
     data: list[dict[str, Any]] | pl.DataFrame | Any,
     batch_size: int = 50_000,
     dialect: str = "cypher",
+    graph_name: str | None = None,
 ) -> BulkIngestionPlan:
     """Creates a bulk creation execution plan.
 
@@ -157,6 +158,7 @@ def create_bulk_create_plan(
         data: Records or DataFrame to ingest.
         batch_size: Number of entities per batch transaction.
         dialect: Target graph query dialect ('cypher', 'iso_gql').
+        graph_name: Optional graph name for Apache AGE or SQL:2023 PGQ.
 
     Returns:
         The generated execution plan with chunked parameter batches.
@@ -179,6 +181,7 @@ def create_bulk_create_plan(
         batch_param="batch",
         row_alias="row",
         dialect=dialect,
+        graph_name=graph_name,
     )
 
     return BulkIngestionPlan(
@@ -196,6 +199,7 @@ def create_bulk_merge_plan(
     data: list[dict[str, Any]] | pl.DataFrame | Any,
     batch_size: int = 50_000,
     dialect: str = "cypher",
+    graph_name: str | None = None,
 ) -> BulkIngestionPlan:
     """Creates an idempotent bulk upsert (MERGE) execution plan.
 
@@ -205,6 +209,7 @@ def create_bulk_merge_plan(
         data: Records or DataFrame to upsert.
         batch_size: Number of entities per batch transaction.
         dialect: Target graph query dialect ('cypher', 'iso_gql').
+        graph_name: Optional graph name for Apache AGE or SQL:2023 PGQ.
 
     Returns:
         The generated execution plan with chunked parameter batches.
@@ -228,6 +233,7 @@ def create_bulk_merge_plan(
         batch_param="batch",
         row_alias="row",
         dialect=dialect,
+        graph_name=graph_name,
     )
 
     return BulkIngestionPlan(
@@ -249,6 +255,7 @@ def create_bulk_create_rel_plan(
     batch_size: int = 50_000,
     dialect: str = "cypher",
     properties: list[str] | None = None,
+    graph_name: str | None = None,
 ) -> BulkIngestionPlan:
     """Creates a bulk relationship ingestion execution plan.
 
@@ -262,6 +269,7 @@ def create_bulk_create_rel_plan(
         batch_size: Number of edges per batch transaction.
         dialect: Target graph query dialect ('cypher', 'iso_gql').
         properties: Explicit list of edge properties to set, or None to infer.
+        graph_name: Optional graph name for Apache AGE or SQL:2023 PGQ.
 
     Returns:
         The generated execution plan.
@@ -317,6 +325,7 @@ def create_bulk_create_rel_plan(
         batch_param="batch",
         row_alias="row",
         dialect=dialect,
+        graph_name=graph_name,
     )
 
     return BulkIngestionPlan(
@@ -336,6 +345,7 @@ def create_parquet_ingest_plan(
     batch_size: int = 50_000,
     dialect: str = "cypher",
     storage_options: dict[str, Any] | None = None,
+    graph_name: str | None = None,
     **kwargs: Any,
 ) -> BulkIngestionPlan:
     """Creates a bulk ingestion plan from local or cloud Parquet file sources.
@@ -348,6 +358,7 @@ def create_parquet_ingest_plan(
         batch_size: Number of records per batch transaction.
         dialect: Target graph query dialect ('cypher', 'iso_gql').
         storage_options: Multi-cloud credentials and filesystem options passed to Polars.
+        graph_name: Optional graph name for Apache AGE or SQL:2023 PGQ.
         **kwargs: Extra arguments forwarded to `pl.scan_parquet`.
 
     Returns:
@@ -365,10 +376,17 @@ def create_parquet_ingest_plan(
 
     lazy_df = pl.scan_parquet(scan_source, **scan_kwargs)
     if mode == "create":
-        return create_bulk_create_plan(model, lazy_df, batch_size=batch_size, dialect=dialect)
+        return create_bulk_create_plan(
+            model, lazy_df, batch_size=batch_size, dialect=dialect, graph_name=graph_name
+        )
     elif mode == "upsert":
         return create_bulk_merge_plan(
-            model, key_field=key_field, data=lazy_df, batch_size=batch_size, dialect=dialect
+            model,
+            key_field=key_field,
+            data=lazy_df,
+            batch_size=batch_size,
+            dialect=dialect,
+            graph_name=graph_name,
         )
     else:
         raise ValueError(
@@ -384,6 +402,7 @@ def create_csv_ingest_plan(
     batch_size: int = 50_000,
     dialect: str = "cypher",
     storage_options: dict[str, Any] | None = None,
+    graph_name: str | None = None,
     **kwargs: Any,
 ) -> BulkIngestionPlan:
     """Creates a bulk ingestion plan from local or cloud CSV file sources.
@@ -402,6 +421,7 @@ def create_csv_ingest_plan(
         batch_size: Number of records per batch transaction.
         dialect: Target graph query dialect ('cypher', 'iso_gql').
         storage_options: Multi-cloud credentials and filesystem options passed to Polars.
+        graph_name: Optional graph name for Apache AGE or SQL:2023 PGQ.
         **kwargs: Extra arguments forwarded to `pl.scan_csv`.
 
     Returns:
@@ -419,10 +439,17 @@ def create_csv_ingest_plan(
 
     lazy_df = pl.scan_csv(scan_source, **scan_kwargs)
     if mode == "create":
-        return create_bulk_create_plan(model, lazy_df, batch_size=batch_size, dialect=dialect)
+        return create_bulk_create_plan(
+            model, lazy_df, batch_size=batch_size, dialect=dialect, graph_name=graph_name
+        )
     elif mode == "upsert":
         return create_bulk_merge_plan(
-            model, key_field=key_field, data=lazy_df, batch_size=batch_size, dialect=dialect
+            model,
+            key_field=key_field,
+            data=lazy_df,
+            batch_size=batch_size,
+            dialect=dialect,
+            graph_name=graph_name,
         )
     else:
         raise ValueError(
@@ -443,6 +470,7 @@ def create_parquet_rel_ingest_plan(
     from_source_field: str | None = None,
     to_source_field: str | None = None,
     storage_options: dict[str, Any] | None = None,
+    graph_name: str | None = None,
     **kwargs: Any,
 ) -> BulkIngestionPlan:
     """Creates a bulk relationship ingestion plan from local or cloud Parquet file sources.
@@ -460,6 +488,7 @@ def create_parquet_rel_ingest_plan(
         from_source_field: Optional column name in file to map to `from_<from_key>`.
         to_source_field: Optional column name in file to map to `to_<to_key>`.
         storage_options: Multi-cloud credentials and filesystem options passed to Polars.
+        graph_name: Optional graph name for Apache AGE or SQL:2023 PGQ.
         **kwargs: Extra arguments forwarded to `pl.scan_parquet`.
 
     Returns:
@@ -497,6 +526,7 @@ def create_parquet_rel_ingest_plan(
         batch_size=batch_size,
         dialect=dialect,
         properties=properties,
+        graph_name=graph_name,
     )
 
 
@@ -513,6 +543,7 @@ def create_csv_rel_ingest_plan(
     from_source_field: str | None = None,
     to_source_field: str | None = None,
     storage_options: dict[str, Any] | None = None,
+    graph_name: str | None = None,
     **kwargs: Any,
 ) -> BulkIngestionPlan:
     """Creates a bulk relationship ingestion plan from local or cloud CSV file sources.
@@ -536,6 +567,7 @@ def create_csv_rel_ingest_plan(
         from_source_field: Optional column name in file to map to `from_<from_key>`.
         to_source_field: Optional column name in file to map to `to_<to_key>`.
         storage_options: Multi-cloud credentials and filesystem options passed to Polars.
+        graph_name: Optional graph name for Apache AGE or SQL:2023 PGQ.
         **kwargs: Extra arguments forwarded to `pl.scan_csv`.
 
     Returns:
@@ -573,6 +605,7 @@ def create_csv_rel_ingest_plan(
         batch_size=batch_size,
         dialect=dialect,
         properties=properties,
+        graph_name=graph_name,
     )
 
 

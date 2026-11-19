@@ -1705,8 +1705,8 @@ class Query:
         """Compiles the AST query into a parameterized dialect query statement.
 
         Args:
-            dialect: Target dialect name ('cypher', 'sql_pgq', 'iso_gql').
-            graph_name: Optional graph table name for SQL:2023 PGQ queries.
+            dialect: Target dialect name ('cypher', 'sql_pgq', 'iso_gql', 'age', 'apache_age').
+            graph_name: Optional graph name for SQL:2023 PGQ or Apache AGE queries.
             optimize: Optional override to enable/disable AST optimization.
             optimization_level: Optional override for optimization level ('none', 'standard', 'aggressive').
 
@@ -1714,11 +1714,16 @@ class Query:
             CompiledQuery containing the parameterized statement and parameter map.
 
         Raises:
-            ValueError: If the requested dialect is unsupported.
+            ValueError: If the requested dialect is unsupported or graph_name is invalid.
 
         Example:
             >>> compiled = query.compile("cypher", optimize=True)
         """
+        if graph_name is not None:
+            from voyager_ogm.bridge import validate_graph_name
+
+            validate_graph_name(graph_name)
+
         from voyager_ogm.config import get_config
 
         cfg = get_config()

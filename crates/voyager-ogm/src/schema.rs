@@ -1307,16 +1307,30 @@ impl SchemaRegistry {
         dialect: &str,
         model_names: Option<&[&str]>,
     ) -> Result<Vec<String>> {
+        self.generate_index_ddl_with_graph(dialect, model_names, None)
+    }
+
+    /// Generates multi-dialect CREATE INDEX DDL statements for registered entities or specified models with an optional graph name.
+    pub fn generate_index_ddl_with_graph(
+        &self,
+        dialect: &str,
+        model_names: Option<&[&str]>,
+        graph_name: Option<&str>,
+    ) -> Result<Vec<String>> {
         let all_nodes = self.node_schemas();
         let all_rels = self.relationship_schemas();
         let (nodes, rels) = Self::filter_models(&all_nodes, &all_rels, model_names);
 
         let mut stmts = Vec::new();
         for node in nodes {
-            stmts.extend(crate::emitters::ddl::emit_node_index_ddl(node, dialect)?);
+            stmts.extend(crate::emitters::ddl::emit_node_index_ddl_with_graph(
+                node, dialect, graph_name,
+            )?);
         }
         for rel in rels {
-            stmts.extend(crate::emitters::ddl::emit_rel_index_ddl(rel, dialect)?);
+            stmts.extend(crate::emitters::ddl::emit_rel_index_ddl_with_graph(
+                rel, dialect, graph_name,
+            )?);
         }
         Ok(stmts)
     }
@@ -1328,23 +1342,41 @@ impl SchemaRegistry {
         model_names: Option<&[&str]>,
         include_type_constraints: bool,
     ) -> Result<Vec<String>> {
+        self.generate_constraint_ddl_with_graph(
+            dialect,
+            model_names,
+            include_type_constraints,
+            None,
+        )
+    }
+
+    /// Generates multi-dialect CREATE CONSTRAINT DDL statements for registered entities or specified models with an optional graph name.
+    pub fn generate_constraint_ddl_with_graph(
+        &self,
+        dialect: &str,
+        model_names: Option<&[&str]>,
+        include_type_constraints: bool,
+        graph_name: Option<&str>,
+    ) -> Result<Vec<String>> {
         let all_nodes = self.node_schemas();
         let all_rels = self.relationship_schemas();
         let (nodes, rels) = Self::filter_models(&all_nodes, &all_rels, model_names);
 
         let mut stmts = Vec::new();
         for node in nodes {
-            stmts.extend(crate::emitters::ddl::emit_node_constraint_ddl(
+            stmts.extend(crate::emitters::ddl::emit_node_constraint_ddl_with_graph(
                 node,
                 dialect,
                 include_type_constraints,
+                graph_name,
             )?);
         }
         for rel in rels {
-            stmts.extend(crate::emitters::ddl::emit_rel_constraint_ddl(
+            stmts.extend(crate::emitters::ddl::emit_rel_constraint_ddl_with_graph(
                 rel,
                 dialect,
                 include_type_constraints,
+                graph_name,
             )?);
         }
         Ok(stmts)
@@ -1356,18 +1388,30 @@ impl SchemaRegistry {
         dialect: &str,
         model_names: Option<&[&str]>,
     ) -> Result<Vec<String>> {
+        self.generate_drop_index_ddl_with_graph(dialect, model_names, None)
+    }
+
+    /// Generates multi-dialect DROP INDEX DDL statements for registered entities or specified models with an optional graph name.
+    pub fn generate_drop_index_ddl_with_graph(
+        &self,
+        dialect: &str,
+        model_names: Option<&[&str]>,
+        graph_name: Option<&str>,
+    ) -> Result<Vec<String>> {
         let all_nodes = self.node_schemas();
         let all_rels = self.relationship_schemas();
         let (nodes, rels) = Self::filter_models(&all_nodes, &all_rels, model_names);
 
         let mut stmts = Vec::new();
         for node in nodes {
-            stmts.extend(crate::emitters::ddl::emit_node_drop_index_ddl(
-                node, dialect,
+            stmts.extend(crate::emitters::ddl::emit_node_drop_index_ddl_with_graph(
+                node, dialect, graph_name,
             )?);
         }
         for rel in rels {
-            stmts.extend(crate::emitters::ddl::emit_rel_drop_index_ddl(rel, dialect)?);
+            stmts.extend(crate::emitters::ddl::emit_rel_drop_index_ddl_with_graph(
+                rel, dialect, graph_name,
+            )?);
         }
         Ok(stmts)
     }
@@ -1379,24 +1423,46 @@ impl SchemaRegistry {
         model_names: Option<&[&str]>,
         include_type_constraints: bool,
     ) -> Result<Vec<String>> {
+        self.generate_drop_constraint_ddl_with_graph(
+            dialect,
+            model_names,
+            include_type_constraints,
+            None,
+        )
+    }
+
+    /// Generates multi-dialect DROP CONSTRAINT DDL statements for registered entities or specified models with an optional graph name.
+    pub fn generate_drop_constraint_ddl_with_graph(
+        &self,
+        dialect: &str,
+        model_names: Option<&[&str]>,
+        include_type_constraints: bool,
+        graph_name: Option<&str>,
+    ) -> Result<Vec<String>> {
         let all_nodes = self.node_schemas();
         let all_rels = self.relationship_schemas();
         let (nodes, rels) = Self::filter_models(&all_nodes, &all_rels, model_names);
 
         let mut stmts = Vec::new();
         for node in nodes {
-            stmts.extend(crate::emitters::ddl::emit_node_drop_constraint_ddl(
-                node,
-                dialect,
-                include_type_constraints,
-            )?);
+            stmts.extend(
+                crate::emitters::ddl::emit_node_drop_constraint_ddl_with_graph(
+                    node,
+                    dialect,
+                    include_type_constraints,
+                    graph_name,
+                )?,
+            );
         }
         for rel in rels {
-            stmts.extend(crate::emitters::ddl::emit_rel_drop_constraint_ddl(
-                rel,
-                dialect,
-                include_type_constraints,
-            )?);
+            stmts.extend(
+                crate::emitters::ddl::emit_rel_drop_constraint_ddl_with_graph(
+                    rel,
+                    dialect,
+                    include_type_constraints,
+                    graph_name,
+                )?,
+            );
         }
         Ok(stmts)
     }

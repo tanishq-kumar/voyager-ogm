@@ -18,6 +18,7 @@ from voyager_ogm.bridge import (
     DatabaseBridge,
     MockBridge,
     create_bridge,
+    validate_graph_name,
 )
 from voyager_ogm.config import get_config
 from voyager_ogm.ingestion import (
@@ -609,6 +610,7 @@ class _SessionBase:
         circuit_cooldown_seconds: float = 30.0,
         circuit_failure_threshold: int = 1,
         fallback: str | None = None,
+        graph_name: str | None = None,
     ) -> None:
         cfg = get_config()
         self._dialect = dialect or cfg.default_dialect
@@ -677,20 +679,26 @@ class _SessionBase:
                     from voyager_ogm._voyager_rs import NativeClient
 
                     self._native_client = NativeClient(bridge, min_idle=1, max_size=pool_size)
-                    self._bridge = create_bridge(bridge, is_async=is_async)
+                    self._bridge = create_bridge(bridge, is_async=is_async, graph_name=graph_name)
                 except Exception as e:
                     if self._requested_backend == "native":
                         raise RuntimeError(f"Failed to initialize native backend: {e}") from e
                     self._circuit_router.trip()
-                    self._bridge = create_bridge(bridge, is_async=is_async)
+                    self._bridge = create_bridge(bridge, is_async=is_async, graph_name=graph_name)
         elif self._requested_backend == "native":
             raise ValueError(
                 f"Native backend requires a valid URI string, got: {type(bridge).__name__}"
             )
         elif bridge is None:
-            self._bridge = AsyncMockBridge() if is_async else MockBridge()
+            self._bridge = (
+                AsyncMockBridge(graph_name=graph_name)
+                if is_async
+                else MockBridge(graph_name=graph_name)
+            )
         else:
-            self._bridge = create_bridge(bridge, is_async=is_async, fallback=fallback)
+            self._bridge = create_bridge(
+                bridge, is_async=is_async, fallback=fallback, graph_name=graph_name
+            )
 
         self._identity_map: weakref.WeakValueDictionary[tuple[type[Any], Any], Any] = (
             weakref.WeakValueDictionary()
@@ -703,6 +711,27 @@ class _SessionBase:
             or (isinstance(bridge, str) and bridge.startswith("mock://"))
             or isinstance(bridge, (MockBridge, AsyncMockBridge))
         )
+
+        # Single source of truth for graph name:
+        # 1. Explicit graph_name parameter passed to Session / AsyncSession.
+        # 2. Configured graph_name on the underlying bridge (if any).
+        # 3. Default "age_graph" if the dialect is Apache AGE ("age", "apache_age", "postgres_age").
+        # 4. Otherwise None.
+        resolved_graph = (
+            graph_name if graph_name is not None else getattr(self._bridge, "graph_name", None)
+        )
+        if resolved_graph is None and self._dialect in ("age", "apache_age", "postgres_age"):
+            resolved_graph = "age_graph"
+
+        if resolved_graph is not None:
+            validate_graph_name(resolved_graph)
+
+        self._graph_name = resolved_graph
+
+    @property
+    def graph_name(self) -> str | None:
+        """The active graph name configured for this session (single source of truth)."""
+        return self._graph_name
 
     @property
     def circuit_router(self) -> Any:
@@ -1034,6 +1063,7 @@ class _SessionBase:
             )
             compiled = query_or_statement.compile(
                 dialect=self._dialect,
+                graph_name=self._graph_name,
                 optimize=opt,
                 optimization_level=lvl,
             )
@@ -1052,14 +1082,17 @@ class _SessionBase:
         data: list[dict[str, Any]] | pl.DataFrame | Any,
         batch_size: int = 50_000,
         dialect: str | None = None,
+        graph_name: str | None = None,
     ) -> BulkIngestionPlan:
         """Prepares a high-throughput bulk node creation execution plan."""
         target_dialect = dialect or self._dialect
+        target_graph_name = graph_name if graph_name is not None else self._graph_name
         return create_bulk_create_plan(
             model=model,
             data=data,
             batch_size=batch_size,
             dialect=target_dialect,
+            graph_name=target_graph_name,
         )
 
     def bulk_upsert(
@@ -1069,15 +1102,18 @@ class _SessionBase:
         key_field: str,
         batch_size: int = 50_000,
         dialect: str | None = None,
+        graph_name: str | None = None,
     ) -> BulkIngestionPlan:
         """Prepares a high-throughput idempotent bulk upsert (MERGE) execution plan."""
         target_dialect = dialect or self._dialect
+        target_graph_name = graph_name if graph_name is not None else self._graph_name
         return create_bulk_merge_plan(
             model=model,
             key_field=key_field,
             data=data,
             batch_size=batch_size,
             dialect=target_dialect,
+            graph_name=target_graph_name,
         )
 
     def bulk_create_relationships(
@@ -1091,9 +1127,11 @@ class _SessionBase:
         batch_size: int = 50_000,
         dialect: str | None = None,
         properties: list[str] | None = None,
+        graph_name: str | None = None,
     ) -> BulkIngestionPlan:
         """Prepares a high-throughput bulk relationship creation execution plan."""
         target_dialect = dialect or self._dialect
+        target_graph_name = graph_name if graph_name is not None else self._graph_name
         return create_bulk_create_rel_plan(
             rel_model=rel_model,
             data=data,
@@ -1104,6 +1142,7 @@ class _SessionBase:
             batch_size=batch_size,
             dialect=target_dialect,
             properties=properties,
+            graph_name=target_graph_name,
         )
 
 
@@ -1241,6 +1280,7 @@ class Session(_SessionBase):
         circuit_cooldown_seconds: float = 30.0,
         circuit_failure_threshold: int = 1,
         fallback: str | None = None,
+        graph_name: str | None = None,
     ) -> None:
         """Initializes a new Voyager Session.
 
@@ -1249,7 +1289,7 @@ class Session(_SessionBase):
                 If omitted or None, explicitly defaults to an in-memory MockBridge as a zero-config sandbox.
                 Note: Passing an invalid or typo'd URI string fails loudly unless fallback="mock" is passed.
             dialect: Default query dialect for statements generated by this session
-                ('cypher', 'iso_gql', 'sql_pgq'). If None, defaults to global config setting.
+                ('cypher', 'iso_gql', 'sql_pgq', 'age', 'apache_age'). If None, defaults to global config setting.
             enable_identity_map: [Experimental] Opt-in flag to enable the hybrid Active Record & Data Mapper
                 Identity Map. When True, entities registered in this session are tracked via
                 weak references, enabling coalesced single-batch UNWIND flushes (eliminating N+1
@@ -1264,6 +1304,9 @@ class Session(_SessionBase):
             circuit_cooldown_seconds: Cooldown duration in seconds before attempting to probe native re-enablement.
             circuit_failure_threshold: Number of consecutive transient failures before opening the circuit breaker (default 1).
             fallback: Strategy when connection initialization fails (e.g. fallback="mock" for testing).
+            graph_name: Apache AGE or SQL:2023 PGQ graph name to target for queries, bulk ingestion,
+                transactions, and session flushes. Serves as the single source of truth for this session,
+                overriding any bridge or URI graph name. For Apache AGE, defaults to "age_graph".
         """
         super().__init__(
             bridge=bridge,
@@ -1277,6 +1320,7 @@ class Session(_SessionBase):
             circuit_cooldown_seconds=circuit_cooldown_seconds,
             circuit_failure_threshold=circuit_failure_threshold,
             fallback=fallback,
+            graph_name=graph_name,
         )
 
     @property
@@ -1582,6 +1626,7 @@ class Session(_SessionBase):
             key_field=key_field,
             batch_size=batch_size,
             dialect=self.dialect,
+            graph_name=self._graph_name,
             storage_options=storage_options,
             **kwargs,
         )
@@ -1624,6 +1669,7 @@ class Session(_SessionBase):
             key_field=key_field,
             batch_size=batch_size,
             dialect=self.dialect,
+            graph_name=self._graph_name,
             storage_options=storage_options,
             **kwargs,
         )
@@ -1672,6 +1718,7 @@ class Session(_SessionBase):
             to_key=to_key,
             batch_size=batch_size,
             dialect=self.dialect,
+            graph_name=self._graph_name,
             properties=properties,
             from_source_field=from_source_field,
             to_source_field=to_source_field,
@@ -1729,6 +1776,7 @@ class Session(_SessionBase):
             to_key=to_key,
             batch_size=batch_size,
             dialect=self.dialect,
+            graph_name=self._graph_name,
             properties=properties,
             from_source_field=from_source_field,
             to_source_field=to_source_field,
@@ -1785,18 +1833,25 @@ class Session(_SessionBase):
     def create_indexes(
         self,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Applies only INDEX creation statements to the database session.
 
         Args:
             *models: Node and Relationship model classes, schema dicts, or registered model names.
+            graph_name: Optional Apache AGE graph schema target (defaults to session graph name).
 
         Returns:
             List of executed index queries.
         """
         from voyager_ogm.schema import SchemaManager
 
-        statements = SchemaManager.generate_index_ddl(*models, dialect=self._dialect)
+        target_graph = graph_name if graph_name is not None else self._graph_name
+        if target_graph is not None:
+            validate_graph_name(target_graph)
+        statements = SchemaManager.generate_index_ddl(
+            *models, dialect=self._dialect, graph_name=target_graph
+        )
         applied: list[str] = []
         for stmt in statements:
             self.execute(stmt)
@@ -1807,20 +1862,28 @@ class Session(_SessionBase):
         self,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
         include_type_constraints: bool = False,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Applies only CONSTRAINT creation statements to the database session.
 
         Args:
             *models: Node and Relationship model classes, schema dicts, or registered model names.
             include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
+            graph_name: Optional Apache AGE graph schema target (defaults to session graph name).
 
         Returns:
             List of executed constraint queries.
         """
         from voyager_ogm.schema import SchemaManager
 
+        target_graph = graph_name if graph_name is not None else self._graph_name
+        if target_graph is not None:
+            validate_graph_name(target_graph)
         statements = SchemaManager.generate_constraint_ddl(
-            *models, dialect=self._dialect, include_type_constraints=include_type_constraints
+            *models,
+            dialect=self._dialect,
+            include_type_constraints=include_type_constraints,
+            graph_name=target_graph,
         )
         applied: list[str] = []
         for stmt in statements:
@@ -1831,18 +1894,25 @@ class Session(_SessionBase):
     def drop_indexes(
         self,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Drops only INDEX statements from the database session.
 
         Args:
             *models: Node and Relationship model classes, schema dicts, or registered model names.
+            graph_name: Optional Apache AGE graph schema target (defaults to session graph name).
 
         Returns:
             List of executed drop index queries.
         """
         from voyager_ogm.schema import SchemaManager
 
-        statements = SchemaManager.generate_drop_index_ddl(*models, dialect=self._dialect)
+        target_graph = graph_name if graph_name is not None else self._graph_name
+        if target_graph is not None:
+            validate_graph_name(target_graph)
+        statements = SchemaManager.generate_drop_index_ddl(
+            *models, dialect=self._dialect, graph_name=target_graph
+        )
         dropped: list[str] = []
         for stmt in statements:
             self.execute(stmt)
@@ -1853,20 +1923,28 @@ class Session(_SessionBase):
         self,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
         include_type_constraints: bool = False,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Drops only CONSTRAINT statements from the database session.
 
         Args:
             *models: Node and Relationship model classes, schema dicts, or registered model names.
             include_type_constraints: Whether to drop Property Type constraints.
+            graph_name: Optional Apache AGE graph schema target (defaults to session graph name).
 
         Returns:
             List of executed drop constraint queries.
         """
         from voyager_ogm.schema import SchemaManager
 
+        target_graph = graph_name if graph_name is not None else self._graph_name
+        if target_graph is not None:
+            validate_graph_name(target_graph)
         statements = SchemaManager.generate_drop_constraint_ddl(
-            *models, dialect=self._dialect, include_type_constraints=include_type_constraints
+            *models,
+            dialect=self._dialect,
+            include_type_constraints=include_type_constraints,
+            graph_name=target_graph,
         )
         dropped: list[str] = []
         for stmt in statements:
@@ -1878,6 +1956,7 @@ class Session(_SessionBase):
         self,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
         include_type_constraints: bool = False,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Applies declarative constraints and indexes (including vector indexes) to the database session.
 
@@ -1887,14 +1966,21 @@ class Session(_SessionBase):
         Args:
             *models: Optional Node and Relationship model classes, schema dicts, or model names.
             include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
+            graph_name: Optional Apache AGE graph schema target (defaults to session graph name).
 
         Returns:
             List of executed DDL query statements.
         """
         from voyager_ogm.schema import SchemaManager
 
+        target_graph = graph_name if graph_name is not None else self._graph_name
+        if target_graph is not None:
+            validate_graph_name(target_graph)
         return SchemaManager.apply_schema(
-            self, *models, include_type_constraints=include_type_constraints
+            self,
+            *models,
+            include_type_constraints=include_type_constraints,
+            graph_name=target_graph,
         )
 
     def vector_search(
@@ -2000,6 +2086,7 @@ class AsyncSession(_SessionBase):
         circuit_cooldown_seconds: float = 30.0,
         circuit_failure_threshold: int = 1,
         fallback: str | None = None,
+        graph_name: str | None = None,
     ) -> None:
         """Initializes a new asynchronous Voyager Session.
 
@@ -2007,8 +2094,8 @@ class AsyncSession(_SessionBase):
             bridge: Pluggable async database driver (neo4j.AsyncDriver, AsyncMockBridge, or URI string).
                 If omitted or None, explicitly defaults to an in-memory AsyncMockBridge as a zero-config sandbox.
                 Note: Passing an invalid or typo'd URI string fails loudly unless fallback="mock" is passed.
-            dialect: Default query dialect for statements generated by this session.
-                If None, defaults to global config setting.
+            dialect: Default query dialect for statements generated by this session
+                ('cypher', 'iso_gql', 'sql_pgq', 'age', 'apache_age'). If None, defaults to global config setting.
             enable_identity_map: [Experimental] Opt-in flag to enable the hybrid Active Record & Data Mapper
                 Identity Map with weak references and vectorized batch flushes.
             optimize: Enable/disable AST query optimization, or specify level ('standard', 'aggressive', 'none', True, False).
@@ -2021,6 +2108,9 @@ class AsyncSession(_SessionBase):
             circuit_cooldown_seconds: Cooldown duration in seconds before attempting to probe native re-enablement.
             circuit_failure_threshold: Number of consecutive transient failures before opening the circuit breaker (default 1).
             fallback: Strategy when connection initialization fails (e.g. fallback="mock" for testing).
+            graph_name: Apache AGE or SQL:2023 PGQ graph name to target for queries, bulk ingestion,
+                transactions, and session flushes. Serves as the single source of truth for this session,
+                overriding any bridge or URI graph name. For Apache AGE, defaults to "age_graph".
         """
         super().__init__(
             bridge=bridge,
@@ -2034,6 +2124,7 @@ class AsyncSession(_SessionBase):
             circuit_cooldown_seconds=circuit_cooldown_seconds,
             circuit_failure_threshold=circuit_failure_threshold,
             fallback=fallback,
+            graph_name=graph_name,
         )
 
     @property
@@ -2343,6 +2434,7 @@ class AsyncSession(_SessionBase):
             key_field=key_field,
             batch_size=batch_size,
             dialect=self.dialect,
+            graph_name=self._graph_name,
             storage_options=storage_options,
             **kwargs,
         )
@@ -2385,6 +2477,7 @@ class AsyncSession(_SessionBase):
             key_field=key_field,
             batch_size=batch_size,
             dialect=self.dialect,
+            graph_name=self._graph_name,
             storage_options=storage_options,
             **kwargs,
         )
@@ -2433,6 +2526,7 @@ class AsyncSession(_SessionBase):
             to_key=to_key,
             batch_size=batch_size,
             dialect=self.dialect,
+            graph_name=self._graph_name,
             properties=properties,
             from_source_field=from_source_field,
             to_source_field=to_source_field,
@@ -2490,6 +2584,7 @@ class AsyncSession(_SessionBase):
             to_key=to_key,
             batch_size=batch_size,
             dialect=self.dialect,
+            graph_name=self._graph_name,
             properties=properties,
             from_source_field=from_source_field,
             to_source_field=to_source_field,
@@ -2521,18 +2616,25 @@ class AsyncSession(_SessionBase):
     async def create_indexes(
         self,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Asynchronously applies only INDEX creation statements to the database session.
 
         Args:
             *models: Node and Relationship model classes, schema dicts, or registered model names.
+            graph_name: Optional Apache AGE graph schema target (defaults to session graph name).
 
         Returns:
             List of executed index queries.
         """
         from voyager_ogm.schema import SchemaManager
 
-        statements = SchemaManager.generate_index_ddl(*models, dialect=self._dialect)
+        target_graph = graph_name if graph_name is not None else self._graph_name
+        if target_graph is not None:
+            validate_graph_name(target_graph)
+        statements = SchemaManager.generate_index_ddl(
+            *models, dialect=self._dialect, graph_name=target_graph
+        )
         applied: list[str] = []
         for stmt in statements:
             await self.execute(stmt)
@@ -2543,20 +2645,28 @@ class AsyncSession(_SessionBase):
         self,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
         include_type_constraints: bool = False,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Asynchronously applies only CONSTRAINT creation statements to the database session.
 
         Args:
             *models: Node and Relationship model classes, schema dicts, or registered model names.
             include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
+            graph_name: Optional Apache AGE graph schema target (defaults to session graph name).
 
         Returns:
             List of executed constraint queries.
         """
         from voyager_ogm.schema import SchemaManager
 
+        target_graph = graph_name if graph_name is not None else self._graph_name
+        if target_graph is not None:
+            validate_graph_name(target_graph)
         statements = SchemaManager.generate_constraint_ddl(
-            *models, dialect=self._dialect, include_type_constraints=include_type_constraints
+            *models,
+            dialect=self._dialect,
+            include_type_constraints=include_type_constraints,
+            graph_name=target_graph,
         )
         applied: list[str] = []
         for stmt in statements:
@@ -2567,18 +2677,25 @@ class AsyncSession(_SessionBase):
     async def drop_indexes(
         self,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Asynchronously drops only INDEX statements from the database session.
 
         Args:
             *models: Node and Relationship model classes, schema dicts, or registered model names.
+            graph_name: Optional Apache AGE graph schema target (defaults to session graph name).
 
         Returns:
             List of executed drop index queries.
         """
         from voyager_ogm.schema import SchemaManager
 
-        statements = SchemaManager.generate_drop_index_ddl(*models, dialect=self._dialect)
+        target_graph = graph_name if graph_name is not None else self._graph_name
+        if target_graph is not None:
+            validate_graph_name(target_graph)
+        statements = SchemaManager.generate_drop_index_ddl(
+            *models, dialect=self._dialect, graph_name=target_graph
+        )
         dropped: list[str] = []
         for stmt in statements:
             await self.execute(stmt)
@@ -2589,20 +2706,28 @@ class AsyncSession(_SessionBase):
         self,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
         include_type_constraints: bool = False,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Asynchronously drops only CONSTRAINT statements from the database session.
 
         Args:
             *models: Node and Relationship model classes, schema dicts, or registered model names.
             include_type_constraints: Whether to drop Property Type constraints.
+            graph_name: Optional Apache AGE graph schema target (defaults to session graph name).
 
         Returns:
             List of executed drop constraint queries.
         """
         from voyager_ogm.schema import SchemaManager
 
+        target_graph = graph_name if graph_name is not None else self._graph_name
+        if target_graph is not None:
+            validate_graph_name(target_graph)
         statements = SchemaManager.generate_drop_constraint_ddl(
-            *models, dialect=self._dialect, include_type_constraints=include_type_constraints
+            *models,
+            dialect=self._dialect,
+            include_type_constraints=include_type_constraints,
+            graph_name=target_graph,
         )
         dropped: list[str] = []
         for stmt in statements:
@@ -2614,6 +2739,7 @@ class AsyncSession(_SessionBase):
         self,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
         include_type_constraints: bool = False,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Asynchronously applies declarative constraints and indexes (including vector indexes) to the database session.
 
@@ -2623,14 +2749,21 @@ class AsyncSession(_SessionBase):
         Args:
             *models: Optional Node and Relationship model classes, schema dicts, or model names.
             include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
+            graph_name: Optional Apache AGE graph schema target (defaults to session graph name).
 
         Returns:
             List of executed DDL query statements.
         """
         from voyager_ogm.schema import SchemaManager
 
+        target_graph = graph_name if graph_name is not None else self._graph_name
+        if target_graph is not None:
+            validate_graph_name(target_graph)
         return await SchemaManager.apply_schema_async(
-            self, *models, include_type_constraints=include_type_constraints
+            self,
+            *models,
+            include_type_constraints=include_type_constraints,
+            graph_name=target_graph,
         )
 
     async def vector_search(

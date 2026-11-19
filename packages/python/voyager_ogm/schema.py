@@ -466,20 +466,22 @@ class SchemaManager:
         cls,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
         dialect: str = "cypher",
+        graph_name: str | None = None,
     ) -> list[str]:
         """Generates CREATE INDEX DDL statements without executing them.
 
-        Supports multi-dialect generation via native Rust emitters (RFC-0004 §4.4):
+        Supports multi-dialect generation via native Rust emitters:
         - 'cypher': openCypher / Neo4j 5+ index syntax
         - 'memgraph': Memgraph vector index and openCypher index syntax
         - 'duckdb': DuckDB vss HNSW vector index and relational SQL index syntax
         - 'postgres' / 'pgq': standard SQL relational index syntax
         - 'falkordb': FalkorDB Cypher index syntax
-        - 'age': Apache AGE relational index syntax
+        - 'age': Apache AGE relational index syntax (targets graph schema)
 
         Args:
             *models: Node and Relationship model classes, schema dicts, or registered model names.
             dialect: Target dialect ('cypher', 'memgraph', 'duckdb', 'postgres', 'falkordb', 'age', 'pgq'). Defaults to 'cypher'.
+            graph_name: Optional Apache AGE graph schema target (defaults to session / DEFAULT_AGE_GRAPH).
 
         Returns:
             List of executable CREATE INDEX statement strings.
@@ -487,9 +489,9 @@ class SchemaManager:
         stmts: list[str] = []
         for kind, spec in _resolve_model_specs(*models):
             if kind == "node":
-                stmts.extend(emit_node_index_ddl(spec, dialect))
+                stmts.extend(emit_node_index_ddl(spec, dialect, graph_name=graph_name))
             else:
-                stmts.extend(emit_rel_index_ddl(spec, dialect))
+                stmts.extend(emit_rel_index_ddl(spec, dialect, graph_name=graph_name))
         return stmts
 
     @classmethod
@@ -498,10 +500,11 @@ class SchemaManager:
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
         dialect: str = "cypher",
         include_type_constraints: bool = False,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Generates CREATE CONSTRAINT DDL statements without executing them.
 
-        Supports multi-dialect generation via native Rust emitters (RFC-0004 §4.4):
+        Supports multi-dialect generation via native Rust emitters:
         - 'cypher': openCypher / Neo4j UNIQUE, NOT NULL, and Property Type constraints
         - 'postgres' / 'duckdb' / 'pgq': standard SQL UNIQUE table constraints
 
@@ -509,6 +512,7 @@ class SchemaManager:
             *models: Node and Relationship model classes, schema dicts, or registered model names.
             dialect: Target dialect ('cypher', 'postgres', etc.). Defaults to 'cypher'.
             include_type_constraints: Whether to include Property Type constraints (:: STRING).
+            graph_name: Optional Apache AGE graph schema target.
 
         Returns:
             List of executable CREATE CONSTRAINT statement strings.
@@ -516,9 +520,17 @@ class SchemaManager:
         stmts: list[str] = []
         for kind, spec in _resolve_model_specs(*models):
             if kind == "node":
-                stmts.extend(emit_node_constraint_ddl(spec, dialect, include_type_constraints))
+                stmts.extend(
+                    emit_node_constraint_ddl(
+                        spec, dialect, include_type_constraints, graph_name=graph_name
+                    )
+                )
             else:
-                stmts.extend(emit_rel_constraint_ddl(spec, dialect, include_type_constraints))
+                stmts.extend(
+                    emit_rel_constraint_ddl(
+                        spec, dialect, include_type_constraints, graph_name=graph_name
+                    )
+                )
         return stmts
 
     @classmethod
@@ -526,14 +538,16 @@ class SchemaManager:
         cls,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
         dialect: str = "cypher",
+        graph_name: str | None = None,
     ) -> list[str]:
         """Generates DROP INDEX DDL statements without executing them.
 
-        Supports multi-dialect generation via native Rust emitters (RFC-0004 §4.4).
+        Supports multi-dialect generation via native Rust emitters.
 
         Args:
             *models: Node and Relationship model classes, schema dicts, or registered model names.
             dialect: Target dialect ('cypher', 'postgres', 'falkordb', etc.). Defaults to 'cypher'.
+            graph_name: Optional Apache AGE graph schema target.
 
         Returns:
             List of executable DROP INDEX statement strings.
@@ -541,9 +555,9 @@ class SchemaManager:
         stmts: list[str] = []
         for kind, spec in _resolve_model_specs(*models):
             if kind == "node":
-                stmts.extend(emit_node_drop_index_ddl(spec, dialect))
+                stmts.extend(emit_node_drop_index_ddl(spec, dialect, graph_name=graph_name))
             else:
-                stmts.extend(emit_rel_drop_index_ddl(spec, dialect))
+                stmts.extend(emit_rel_drop_index_ddl(spec, dialect, graph_name=graph_name))
         return stmts
 
     @classmethod
@@ -552,15 +566,17 @@ class SchemaManager:
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
         dialect: str = "cypher",
         include_type_constraints: bool = False,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Generates DROP CONSTRAINT DDL statements without executing them.
 
-        Supports multi-dialect generation via native Rust emitters (RFC-0004 §4.4).
+        Supports multi-dialect generation via native Rust emitters.
 
         Args:
             *models: Node and Relationship model classes, schema dicts, or registered model names.
             dialect: Target dialect ('cypher', 'postgres', etc.). Defaults to 'cypher'.
             include_type_constraints: Whether to include Property Type constraints.
+            graph_name: Optional Apache AGE graph schema target.
 
         Returns:
             List of executable DROP CONSTRAINT statement strings.
@@ -568,9 +584,17 @@ class SchemaManager:
         stmts: list[str] = []
         for kind, spec in _resolve_model_specs(*models):
             if kind == "node":
-                stmts.extend(emit_node_drop_constraint_ddl(spec, dialect, include_type_constraints))
+                stmts.extend(
+                    emit_node_drop_constraint_ddl(
+                        spec, dialect, include_type_constraints, graph_name=graph_name
+                    )
+                )
             else:
-                stmts.extend(emit_rel_drop_constraint_ddl(spec, dialect, include_type_constraints))
+                stmts.extend(
+                    emit_rel_drop_constraint_ddl(
+                        spec, dialect, include_type_constraints, graph_name=graph_name
+                    )
+                )
         return stmts
 
     @classmethod
@@ -579,6 +603,7 @@ class SchemaManager:
         session: Session,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
         include_type_constraints: bool = False,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Applies only CONSTRAINT statements to the database session.
 
@@ -586,17 +611,28 @@ class SchemaManager:
             session: Active Voyager database session.
             *models: Model classes, schema dicts, or model names.
             include_type_constraints: Whether to include Property Type constraints.
+            graph_name: Optional Apache AGE graph schema target.
 
         Returns:
             List of executed constraint queries.
         """
         if hasattr(session, "create_constraints"):
             return session.create_constraints(
-                *models, include_type_constraints=include_type_constraints
+                *models,
+                include_type_constraints=include_type_constraints,
+                graph_name=graph_name,
             )
         dialect = getattr(session, "dialect", "cypher")
+        target_graph = (
+            graph_name
+            if graph_name is not None
+            else getattr(session, "graph_name", getattr(session, "_graph_name", None))
+        )
         applied = cls.generate_constraint_ddl(
-            *models, dialect=dialect, include_type_constraints=include_type_constraints
+            *models,
+            dialect=dialect,
+            include_type_constraints=include_type_constraints,
+            graph_name=target_graph,
         )
         for stmt in applied:
             session.execute(stmt)
@@ -607,20 +643,27 @@ class SchemaManager:
         cls,
         session: Session,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Applies only INDEX creation statements to the database session.
 
         Args:
             session: Active Voyager database session.
             *models: Model classes, schema dicts, or model names.
+            graph_name: Optional Apache AGE graph schema target.
 
         Returns:
             List of executed index queries.
         """
         if hasattr(session, "create_indexes"):
-            return session.create_indexes(*models)
+            return session.create_indexes(*models, graph_name=graph_name)
         dialect = getattr(session, "dialect", "cypher")
-        applied = cls.generate_index_ddl(*models, dialect=dialect)
+        target_graph = (
+            graph_name
+            if graph_name is not None
+            else getattr(session, "graph_name", getattr(session, "_graph_name", None))
+        )
+        applied = cls.generate_index_ddl(*models, dialect=dialect, graph_name=target_graph)
         for stmt in applied:
             session.execute(stmt)
         return applied
@@ -631,6 +674,7 @@ class SchemaManager:
         session: Session,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
         include_type_constraints: bool = False,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Drops only CONSTRAINT statements from the database session.
 
@@ -638,17 +682,28 @@ class SchemaManager:
             session: Active Voyager database session.
             *models: Model classes, schema dicts, or model names.
             include_type_constraints: Whether to drop Property Type constraints.
+            graph_name: Optional Apache AGE graph schema target.
 
         Returns:
             List of executed drop constraint queries.
         """
         if hasattr(session, "drop_constraints"):
             return session.drop_constraints(
-                *models, include_type_constraints=include_type_constraints
+                *models,
+                include_type_constraints=include_type_constraints,
+                graph_name=graph_name,
             )
         dialect = getattr(session, "dialect", "cypher")
+        target_graph = (
+            graph_name
+            if graph_name is not None
+            else getattr(session, "graph_name", getattr(session, "_graph_name", None))
+        )
         dropped = cls.generate_drop_constraint_ddl(
-            *models, dialect=dialect, include_type_constraints=include_type_constraints
+            *models,
+            dialect=dialect,
+            include_type_constraints=include_type_constraints,
+            graph_name=target_graph,
         )
         for stmt in dropped:
             session.execute(stmt)
@@ -659,20 +714,27 @@ class SchemaManager:
         cls,
         session: Session,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Drops only INDEX statements from the database session.
 
         Args:
             session: Active Voyager database session.
             *models: Model classes, schema dicts, or model names.
+            graph_name: Optional Apache AGE graph schema target.
 
         Returns:
             List of executed drop index queries.
         """
         if hasattr(session, "drop_indexes"):
-            return session.drop_indexes(*models)
+            return session.drop_indexes(*models, graph_name=graph_name)
         dialect = getattr(session, "dialect", "cypher")
-        dropped = cls.generate_drop_index_ddl(*models, dialect=dialect)
+        target_graph = (
+            graph_name
+            if graph_name is not None
+            else getattr(session, "graph_name", getattr(session, "_graph_name", None))
+        )
+        dropped = cls.generate_drop_index_ddl(*models, dialect=dialect, graph_name=target_graph)
         for stmt in dropped:
             session.execute(stmt)
         return dropped
@@ -683,6 +745,7 @@ class SchemaManager:
         session: Session,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
         include_type_constraints: bool = False,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Applies declarative constraints and indexes (including vector indexes) to the session.
 
@@ -693,15 +756,24 @@ class SchemaManager:
             session: Active database session.
             *models: Optional Node and Relationship model classes, schema dicts, or model names.
             include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
+            graph_name: Optional Apache AGE graph schema target.
 
         Returns:
             List of executed DDL query statement strings.
         """
         dialect = getattr(session, "dialect", getattr(session, "_dialect", "cypher"))
+        target_graph = (
+            graph_name
+            if graph_name is not None
+            else getattr(session, "graph_name", getattr(session, "_graph_name", None))
+        )
         applied: list[str] = []
         try:
             c_stmts = cls.generate_constraint_ddl(
-                *models, dialect=dialect, include_type_constraints=include_type_constraints
+                *models,
+                dialect=dialect,
+                include_type_constraints=include_type_constraints,
+                graph_name=target_graph,
             )
             for stmt in c_stmts:
                 session.execute(stmt)
@@ -709,7 +781,7 @@ class SchemaManager:
         except NotImplementedError:
             pass
 
-        i_stmts = cls.generate_index_ddl(*models, dialect=dialect)
+        i_stmts = cls.generate_index_ddl(*models, dialect=dialect, graph_name=target_graph)
         for stmt in i_stmts:
             session.execute(stmt)
             applied.append(stmt)
@@ -721,6 +793,7 @@ class SchemaManager:
         session: Any,
         *models: type[Node] | type[Relationship] | dict[str, Any] | str,
         include_type_constraints: bool = False,
+        graph_name: str | None = None,
     ) -> list[str]:
         """Asynchronously applies declarative constraints and indexes (including vector indexes) to the session.
 
@@ -731,15 +804,24 @@ class SchemaManager:
             session: Active asynchronous database session.
             *models: Optional Node and Relationship model classes, schema dicts, or model names.
             include_type_constraints: Whether to include Property Type constraints (e.g. :: STRING).
+            graph_name: Optional Apache AGE graph schema target.
 
         Returns:
             List of executed DDL query statement strings.
         """
         dialect = getattr(session, "dialect", getattr(session, "_dialect", "cypher"))
+        target_graph = (
+            graph_name
+            if graph_name is not None
+            else getattr(session, "graph_name", getattr(session, "_graph_name", None))
+        )
         applied: list[str] = []
         try:
             c_stmts = cls.generate_constraint_ddl(
-                *models, dialect=dialect, include_type_constraints=include_type_constraints
+                *models,
+                dialect=dialect,
+                include_type_constraints=include_type_constraints,
+                graph_name=target_graph,
             )
             for stmt in c_stmts:
                 await session.execute(stmt)
@@ -747,7 +829,7 @@ class SchemaManager:
         except NotImplementedError:
             pass
 
-        i_stmts = cls.generate_index_ddl(*models, dialect=dialect)
+        i_stmts = cls.generate_index_ddl(*models, dialect=dialect, graph_name=target_graph)
         for stmt in i_stmts:
             await session.execute(stmt)
             applied.append(stmt)

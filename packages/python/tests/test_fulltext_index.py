@@ -233,9 +233,36 @@ class TestFullTextModelReflectionAndDDL:
             body: str = Field()
 
         create_stmts = SchemaManager.generate_index_ddl(Message, dialect="age")
-        assert any("idx_message_subject_body_fts" in s and "USING gin" in s for s in create_stmts)
+        assert any(
+            "idx_message_subject_body_fts" in s
+            and '"age_graph"."Message"' in s
+            and "USING gin" in s
+            and "(properties->>'subject'::text)" in s
+            for s in create_stmts
+        )
         drop_stmts = SchemaManager.generate_drop_index_ddl(Message, dialect="age")
-        assert any(s == "DROP INDEX IF EXISTS idx_message_subject_body_fts;" for s in drop_stmts)
+        assert any(
+            s == 'DROP INDEX IF EXISTS "age_graph".idx_message_subject_body_fts;'
+            for s in drop_stmts
+        )
+
+        # Custom graph DDL
+        custom_create = SchemaManager.generate_index_ddl(
+            Message, dialect="age", graph_name="production_graph"
+        )
+        assert any(
+            "idx_message_subject_body_fts" in s
+            and '"production_graph"."Message"' in s
+            and "USING gin" in s
+            for s in custom_create
+        )
+        custom_drop = SchemaManager.generate_drop_index_ddl(
+            Message, dialect="age", graph_name="production_graph"
+        )
+        assert any(
+            s == 'DROP INDEX IF EXISTS "production_graph".idx_message_subject_body_fts;'
+            for s in custom_drop
+        )
 
 
 class TestCanonicalFullTextIndexName:

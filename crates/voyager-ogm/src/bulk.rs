@@ -4,9 +4,32 @@
 //! for million-row bulk creations and upserts across graph dialects.
 
 use crate::ast::{AstNode, Direction, ExecutionMode, LabelExpression, QueryAstArena};
-use crate::emitters::{CypherEmitter, IsoGqlEmitter};
+use crate::emitters::{AgeEmitter, CypherEmitter, DEFAULT_AGE_GRAPH, IsoGqlEmitter};
 use crate::error::Result;
 use crate::visitor::{AstVisitor, CompiledQuery};
+
+fn emit_bulk_query(
+    dialect: &str,
+    graph_name: Option<&str>,
+    arena: &QueryAstArena,
+    root_handle: crate::ast::NodeHandle,
+) -> Result<CompiledQuery> {
+    match dialect.to_lowercase().as_str() {
+        "iso_gql" | "gql" => {
+            let mut emitter = IsoGqlEmitter::new();
+            emitter.visit_query(arena, root_handle)
+        }
+        "age" | "apache_age" | "postgres_age" => {
+            let name = graph_name.unwrap_or(DEFAULT_AGE_GRAPH);
+            let mut emitter = AgeEmitter::new(name);
+            emitter.visit_query(arena, root_handle)
+        }
+        _ => {
+            let mut emitter = CypherEmitter::new();
+            emitter.visit_query(arena, root_handle)
+        }
+    }
+}
 
 /// Compiles a high-throughput `UNWIND $batch AS row CREATE (n:Label) SET n.prop = row.prop` query.
 ///
@@ -26,6 +49,18 @@ pub fn compile_bulk_create(
     batch_param: &str,
     row_alias: &str,
     dialect: &str,
+) -> Result<CompiledQuery> {
+    compile_bulk_create_with_graph(label, properties, batch_param, row_alias, dialect, None)
+}
+
+/// Compiles a high-throughput `UNWIND $batch AS row CREATE (n:Label) SET n.prop = row.prop` query with optional graph name.
+pub fn compile_bulk_create_with_graph(
+    label: &str,
+    properties: &[&str],
+    batch_param: &str,
+    row_alias: &str,
+    dialect: &str,
+    graph_name: Option<&str>,
 ) -> Result<CompiledQuery> {
     let mut arena = QueryAstArena::new();
     let node_var = format!("_{}_0", label.to_lowercase());
@@ -86,16 +121,7 @@ pub fn compile_bulk_create(
         return_clause: None,
     });
 
-    match dialect.to_lowercase().as_str() {
-        "iso_gql" | "gql" => {
-            let mut emitter = IsoGqlEmitter::new();
-            emitter.visit_query(&arena, root_handle)
-        }
-        _ => {
-            let mut emitter = CypherEmitter::new();
-            emitter.visit_query(&arena, root_handle)
-        }
-    }
+    emit_bulk_query(dialect, graph_name, &arena, root_handle)
 }
 
 /// Compiles a high-throughput `UNWIND $batch AS row MERGE (n:Label {id: row.id}) ON CREATE/MATCH SET` upsert query.
@@ -114,6 +140,27 @@ pub fn compile_bulk_merge(
     batch_param: &str,
     row_alias: &str,
     dialect: &str,
+) -> Result<CompiledQuery> {
+    compile_bulk_merge_with_graph(
+        label,
+        key_property,
+        properties,
+        batch_param,
+        row_alias,
+        dialect,
+        None,
+    )
+}
+
+/// Compiles a high-throughput `UNWIND $batch AS row MERGE (n:Label {id: row.id}) ON CREATE/MATCH SET` upsert query with optional graph name.
+pub fn compile_bulk_merge_with_graph(
+    label: &str,
+    key_property: &str,
+    properties: &[&str],
+    batch_param: &str,
+    row_alias: &str,
+    dialect: &str,
+    graph_name: Option<&str>,
 ) -> Result<CompiledQuery> {
     let mut arena = QueryAstArena::new();
     let node_var = format!("_{}_0", label.to_lowercase());
@@ -188,55 +235,60 @@ pub fn compile_bulk_merge(
         return_clause: None,
     });
 
-    match dialect.to_lowercase().as_str() {
-        "iso_gql" | "gql" => {
-            let mut emitter = IsoGqlEmitter::new();
-            emitter.visit_query(&arena, root_handle)
-        }
-        _ => {
-            let mut emitter = CypherEmitter::new();
-            emitter.visit_query(&arena, root_handle)
-        }
-    }
+    emit_bulk_query(dialect, graph_name, &arena, root_handle)
 }
 
-/// Compiles a high-throughput relationship bulk ingestion query.
-#[allow(clippy::too_many_arguments)]
-pub fn compile_bulk_create_rel(
-    rel_type: &str,
-    properties: &[&str],
-    from_label: &str,
-    from_key: &str,
-    to_label: &str,
-    to_key: &str,
-    batch_param: &str,
-    row_alias: &str,
-    dialect: &str,
-) -> Result<CompiledQuery> {
+/// Configuration options for bulk relationship query compilation.
+#[derive(Debug, Clone)]
+pub struct BulkRelConfig<'a> {
+    /// Relationship type label (e.g. "KNOWS").
+    pub rel_type: &'a str,
+    /// Property names to extract from the batch records.
+    pub properties: &'a [&'a str],
+    /// Source node label.
+    pub from_label: &'a str,
+    /// Source node primary/matching key property name.
+    pub from_key: &'a str,
+    /// Target node label.
+    pub to_label: &'a str,
+    /// Target node primary/matching key property name.
+    pub to_key: &'a str,
+    /// Batch parameter identifier name.
+    pub batch_param: &'a str,
+    /// Row alias identifier in the UNWIND clause.
+    pub row_alias: &'a str,
+    /// Target query dialect.
+    pub dialect: &'a str,
+    /// Optional graph name for Apache AGE or SQL:2023 PGQ.
+    pub graph_name: Option<&'a str>,
+}
+
+/// Compiles a high-throughput relationship bulk ingestion query with config.
+pub fn compile_bulk_create_rel_with_config(config: &BulkRelConfig<'_>) -> Result<CompiledQuery> {
     let mut arena = QueryAstArena::new();
-    let from_var = format!("_from_{}_0", from_label.to_lowercase());
-    let to_var = format!("_to_{}_0", to_label.to_lowercase());
-    let rel_var = format!("_{}_0", rel_type.to_lowercase());
+    let from_var = format!("_from_{}_0", config.from_label.to_lowercase());
+    let to_var = format!("_to_{}_0", config.to_label.to_lowercase());
+    let rel_var = format!("_{}_0", config.rel_type.to_lowercase());
 
     // 1. UNWIND $batch AS row
-    let batch_param_handle = arena.alloc(AstNode::Parameter(batch_param.to_string()));
+    let batch_param_handle = arena.alloc(AstNode::Parameter(config.batch_param.to_string()));
     let unwind_handle = arena.alloc(AstNode::UnwindClause {
         expression: batch_param_handle,
-        alias: row_alias.to_string(),
+        alias: config.row_alias.to_string(),
     });
 
     // 2. MATCH from_node, to_node
     let from_var_ident = arena.alloc(AstNode::Identifier(from_var.clone()));
     let to_var_ident = arena.alloc(AstNode::Identifier(to_var.clone()));
-    let row_alias_ident = arena.alloc(AstNode::Identifier(row_alias.to_string()));
+    let row_alias_ident = arena.alloc(AstNode::Identifier(config.row_alias.to_string()));
 
     let from_key_prop = arena.alloc(AstNode::PropertyAccess {
         target: from_var_ident,
-        property: from_key.to_string(),
+        property: config.from_key.to_string(),
     });
     let row_from_key_prop = arena.alloc(AstNode::PropertyAccess {
         target: row_alias_ident,
-        property: format!("from_{from_key}"),
+        property: format!("from_{}", config.from_key),
     });
     let from_pred = arena.alloc(AstNode::BinaryExpression {
         left: from_key_prop,
@@ -245,17 +297,17 @@ pub fn compile_bulk_create_rel(
     });
     let from_node_handle = arena.alloc(AstNode::NodePattern {
         variable: Some(from_var.clone()),
-        label_expression: Some(LabelExpression::Label(from_label.to_string())),
+        label_expression: Some(LabelExpression::Label(config.from_label.to_string())),
         predicates: vec![from_pred],
     });
 
     let to_key_prop = arena.alloc(AstNode::PropertyAccess {
         target: to_var_ident,
-        property: to_key.to_string(),
+        property: config.to_key.to_string(),
     });
     let row_to_key_prop = arena.alloc(AstNode::PropertyAccess {
         target: row_alias_ident,
-        property: format!("to_{to_key}"),
+        property: format!("to_{}", config.to_key),
     });
     let to_pred = arena.alloc(AstNode::BinaryExpression {
         left: to_key_prop,
@@ -264,7 +316,7 @@ pub fn compile_bulk_create_rel(
     });
     let to_node_handle = arena.alloc(AstNode::NodePattern {
         variable: Some(to_var.clone()),
-        label_expression: Some(LabelExpression::Label(to_label.to_string())),
+        label_expression: Some(LabelExpression::Label(config.to_label.to_string())),
         predicates: vec![to_pred],
     });
 
@@ -282,7 +334,7 @@ pub fn compile_bulk_create_rel(
     });
     let edge_pattern = arena.alloc(AstNode::EdgePattern {
         variable: Some(rel_var.clone()),
-        label_expression: Some(LabelExpression::Label(rel_type.to_string())),
+        label_expression: Some(LabelExpression::Label(config.rel_type.to_string())),
         direction: Direction::Outgoing,
         min_hops: None,
         max_hops: None,
@@ -307,7 +359,7 @@ pub fn compile_bulk_create_rel(
     // 4. SET rel properties
     let mut set_items = Vec::new();
     let rel_var_ident = arena.alloc(AstNode::Identifier(rel_var));
-    for &prop in properties {
+    for &prop in config.properties {
         let target_prop = arena.alloc(AstNode::PropertyAccess {
             target: rel_var_ident,
             property: prop.to_string(),
@@ -341,14 +393,32 @@ pub fn compile_bulk_create_rel(
         return_clause: None,
     });
 
-    match dialect.to_lowercase().as_str() {
-        "iso_gql" | "gql" => {
-            let mut emitter = IsoGqlEmitter::new();
-            emitter.visit_query(&arena, root_handle)
-        }
-        _ => {
-            let mut emitter = CypherEmitter::new();
-            emitter.visit_query(&arena, root_handle)
-        }
-    }
+    emit_bulk_query(config.dialect, config.graph_name, &arena, root_handle)
+}
+
+/// Compiles a high-throughput relationship bulk ingestion query.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_bulk_create_rel(
+    rel_type: &str,
+    properties: &[&str],
+    from_label: &str,
+    from_key: &str,
+    to_label: &str,
+    to_key: &str,
+    batch_param: &str,
+    row_alias: &str,
+    dialect: &str,
+) -> Result<CompiledQuery> {
+    compile_bulk_create_rel_with_config(&BulkRelConfig {
+        rel_type,
+        properties,
+        from_label,
+        from_key,
+        to_label,
+        to_key,
+        batch_param,
+        row_alias,
+        dialect,
+        graph_name: None,
+    })
 }

@@ -406,14 +406,36 @@ fn test_vector_index_schema_and_ddl_emission() {
     // 3. Apache AGE DDL
     let age_create = emit_node_index_ddl(&schema, "age").unwrap();
     assert!(
-        age_create.iter().any(|s| s.contains("CREATE INDEX IF NOT EXISTS art_vec_idx ON ag_catalog.\"Article\" USING hnsw (embedding vector_cosine_ops);"))
+        age_create.iter().any(|s| s.contains("CREATE INDEX IF NOT EXISTS art_vec_idx ON \"age_graph\".\"Article\" USING hnsw (embedding vector_cosine_ops);"))
     );
     let age_drop = emit_node_drop_index_ddl(&schema, "age").unwrap();
     assert!(
         age_drop
             .iter()
-            .any(|s| s.contains("DROP INDEX IF EXISTS art_vec_idx;"))
+            .any(|s| s.contains("DROP INDEX IF EXISTS \"age_graph\".art_vec_idx;"))
     );
+
+    // Apache AGE with custom graph
+    let age_custom =
+        voyager_ogm::emit_node_index_ddl_with_graph(&schema, "age", Some("production_graph"))
+            .unwrap();
+    assert!(
+        age_custom.iter().any(|s| s.contains("CREATE INDEX IF NOT EXISTS art_vec_idx ON \"production_graph\".\"Article\" USING hnsw (embedding vector_cosine_ops);"))
+    );
+    let age_custom_drop =
+        voyager_ogm::emit_node_drop_index_ddl_with_graph(&schema, "age", Some("production_graph"))
+            .unwrap();
+    assert!(
+        age_custom_drop
+            .iter()
+            .any(|s| s.contains("DROP INDEX IF EXISTS \"production_graph\".art_vec_idx;"))
+    );
+
+    // Apache AGE invalid graph name rejected
+    assert!(
+        voyager_ogm::emit_node_index_ddl_with_graph(&schema, "age", Some("invalid; DROP")).is_err()
+    );
+    assert!(voyager_ogm::emit_node_drop_index_ddl_with_graph(&schema, "age", Some("")).is_err());
 
     // 4. PostgreSQL / SQL DDL
     let sql_create = emit_node_index_ddl(&schema, "postgres").unwrap();
@@ -657,7 +679,7 @@ fn test_fulltext_index_ddl_and_naming() {
     assert_eq!(
         sql_ddl,
         vec![
-            "CREATE INDEX IF NOT EXISTS article_ft_idx ON \"article\" USING gin (to_tsvector('standard', \"title\" || ' ' || \"content\"));"
+            "CREATE INDEX IF NOT EXISTS article_ft_idx ON \"article\" USING gin (to_tsvector('english', \"title\" || ' ' || \"content\"));"
         ]
     );
 
@@ -666,7 +688,18 @@ fn test_fulltext_index_ddl_and_naming() {
     assert_eq!(
         age_ddl,
         vec![
-            "CREATE INDEX IF NOT EXISTS article_ft_idx ON ag_catalog.\"Article\" USING gin (to_tsvector('standard', (properties->>'title') || ' ' || (properties->>'content')));"
+            "CREATE INDEX IF NOT EXISTS article_ft_idx ON \"age_graph\".\"Article\" USING gin (to_tsvector('english', (properties->>'title'::text) || ' ' || (properties->>'content'::text)));"
+        ]
+    );
+
+    // Apache AGE Node DDL with custom graph
+    let age_custom_ddl =
+        voyager_ogm::emit_node_index_ddl_with_graph(&node_schema, "age", Some("production_graph"))
+            .unwrap();
+    assert_eq!(
+        age_custom_ddl,
+        vec![
+            "CREATE INDEX IF NOT EXISTS article_ft_idx ON \"production_graph\".\"Article\" USING gin (to_tsvector('english', (properties->>'title'::text) || ' ' || (properties->>'content'::text)));"
         ]
     );
 
@@ -693,7 +726,16 @@ fn test_fulltext_index_ddl_and_naming() {
     );
     assert_eq!(
         emit_node_drop_index_ddl(&node_schema, "age").unwrap(),
-        vec!["DROP INDEX IF EXISTS article_ft_idx;"]
+        vec!["DROP INDEX IF EXISTS \"age_graph\".article_ft_idx;"]
+    );
+    assert_eq!(
+        voyager_ogm::emit_node_drop_index_ddl_with_graph(
+            &node_schema,
+            "age",
+            Some("production_graph")
+        )
+        .unwrap(),
+        vec!["DROP INDEX IF EXISTS \"production_graph\".article_ft_idx;"]
     );
 
     // 4. RelationshipSchema with FullTextIndexConfig DDL emission across dialects
