@@ -80,7 +80,11 @@ def chunk_dataframe(df: Any, batch_size: int = 50_000) -> Iterator[list[dict[str
         total_rows = len(df)
         for offset in range(0, total_rows, batch_size):
             slice_df = df.iloc[offset : offset + batch_size]
-            yield slice_df.to_dict(orient="records")
+            # Pandas represents missing scalars as NaN/NaT/pd.NA. Convert them to
+            # None so a null cell is an explicit null rather than an opaque value;
+            # the column itself still counts as supplied.
+            normalized = slice_df.astype(object).where(slice_df.notna(), None)
+            yield normalized.to_dict(orient="records")
         return
 
     if isinstance(df, Sequence):
@@ -254,13 +258,15 @@ def create_bulk_create_plan(
         dialect=dialect,
         graph_name=graph_name,
     )
+    statement = compiled["statement"]
 
     return BulkIngestionPlan(
-        statement=compiled["statement"],
+        statement=statement,
         total_records=total_records,
         batch_size=batch_size,
         dialect=dialect,
         batches_data=batches,
+        batch_statements=[statement] * len(batches),
     )
 
 
@@ -275,19 +281,33 @@ def create_bulk_merge_plan(
 ) -> BulkIngestionPlan:
     """Creates an idempotent bulk upsert (MERGE) execution plan.
 
-    Fields that were filled from a declared default are only assigned in
-    ``ON CREATE SET`` for the records that defaulted them. They never
-    participate in the MERGE key and are never written in ``ON MATCH SET``, so
-    an existing node keeps its stored values. Records are grouped by their
-    create-only field set so one record defaulting a field cannot make that
-    field create-only for explicit records of the same key in the same input.
+    Only properties a record actually supplies are written to ``ON CREATE SET``
+    and ``ON MATCH SET``, so merging a partial row preserves properties the row
+    omits. A property present in a record with the value ``None`` is supplied
+    explicitly and therefore clears the stored property.
+
+    Fields that were filled from a declared default are create-only: they are
+    assigned in ``ON CREATE SET`` and never in ``ON MATCH SET``, so an existing
+    node keeps its stored value. A default-filled field is still a supplied
+    property for the row that defaulted it.
+
+    Records are grouped by both their supplied property names (excluding
+    ``key_field``) and their default-filled property names, so one record
+    defaulting a field cannot change how another record with a different
+    property set is compiled. Groups keep first-appearance order, rows keep
+    their input order inside a group, and each group is chunked independently
+    by ``batch_size``.
+
+    DataFrame inputs (Polars, PyArrow, or pandas) cannot express per-row
+    absence: every column present in the frame counts as supplied for every row,
+    so a null cell clears that property. Columns absent from the frame are not
+    written.
 
     Args:
         model: The Voyager OGM Node class.
         key_field: The unique identifier field name to match on.
         data: Records or DataFrame to upsert.
-        batch_size: Number of entities per batch transaction. The limit applies
-            within each create-only group.
+        batch_size: Number of entities per batch transaction within each group.
         dialect: Target graph query dialect ('cypher', 'iso_gql').
         graph_name: Optional graph name for Apache AGE or SQL:2023 PGQ.
         defaulted_fields: Optional per-record sets naming values that were
@@ -310,18 +330,28 @@ def create_bulk_merge_plan(
         for record, create_only in chunk
     ]
 
-    grouped: dict[frozenset[str], list[dict[str, Any]]] = {}
+    if merge_field_names:
+        known_names = merge_field_names
+    else:
+        known_names = frozenset(
+            name for record, _ in prepared for name in record if name != key_field
+        )
+
+    grouped: dict[tuple[frozenset[str], frozenset[str]], list[dict[str, Any]]] = {}
     for record, create_only in prepared:
-        grouped.setdefault(frozenset(create_only), []).append(record)
+        supplied = frozenset(name for name in record if name != key_field and name in known_names)
+        defaulted = frozenset(create_only & supplied)
+        grouped.setdefault((supplied, defaulted), []).append(record)
 
     batches: list[list[dict[str, Any]]] = []
     batch_statements: list[str] = []
-    for create_only, records in grouped.items():
-        properties = [name for name in merge_fields if name not in create_only]
-        create_only_properties = [name for name in merge_fields if name in create_only]
-
-        if not properties and not create_only_properties:
-            properties = [k for k in records[0].keys() if k != key_field]
+    for (supplied, defaulted), records in grouped.items():
+        if merge_field_names:
+            ordered = [name for name in merge_fields if name in supplied]
+        else:
+            ordered = [name for name in records[0] if name != key_field and name in supplied]
+        properties = [name for name in ordered if name not in defaulted]
+        create_only_properties = [name for name in ordered if name in defaulted]
 
         compiled = _rs_compile_bulk_merge(
             label=label,
@@ -448,13 +478,15 @@ def create_bulk_create_rel_plan(
         dialect=dialect,
         graph_name=graph_name,
     )
+    statement = compiled["statement"]
 
     return BulkIngestionPlan(
-        statement=compiled["statement"],
+        statement=statement,
         total_records=total_records,
         batch_size=batch_size,
         dialect=dialect,
         batches_data=batches,
+        batch_statements=[statement] * len(batches),
     )
 
 
