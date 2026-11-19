@@ -2382,8 +2382,16 @@ class FalkorDBBridge:
             res = self.graph.query(statement, params)
         except Exception as e:
             stmt_lower = statement.strip().lower()
-            is_index_ddl = stmt_lower.startswith("create index") or stmt_lower.startswith(
-                "drop index"
+            leading = " ".join(stmt_lower.split()[:3])
+            is_index_ddl = leading.startswith(
+                (
+                    "create index",
+                    "drop index",
+                    "create fulltext index",
+                    "drop fulltext index",
+                    "create vector index",
+                    "drop vector index",
+                )
             )
             err_msg = str(e).lower()
             if is_index_ddl and ("already indexed" in err_msg or "no such index" in err_msg):

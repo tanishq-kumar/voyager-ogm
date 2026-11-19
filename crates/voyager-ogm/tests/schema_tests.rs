@@ -664,7 +664,7 @@ fn test_fulltext_index_ddl_and_naming() {
     let falkor_ddl = emit_node_index_ddl(&node_schema, "falkordb").unwrap();
     assert_eq!(
         falkor_ddl,
-        vec!["CALL db.idx.fulltext.createNodeIndex('Article', 'title', 'content')"]
+        vec!["CREATE FULLTEXT INDEX FOR (n:Article) ON (n.title, n.content)"]
     );
 
     // DuckDB Node DDL
@@ -714,7 +714,7 @@ fn test_fulltext_index_ddl_and_naming() {
     );
     assert_eq!(
         emit_node_drop_index_ddl(&node_schema, "falkordb").unwrap(),
-        vec!["CALL db.idx.fulltext.drop('Article')"]
+        vec!["DROP FULLTEXT INDEX FOR (n:Article) ON (n.title, n.content)"]
     );
     assert_eq!(
         emit_node_drop_index_ddl(&node_schema, "duckdb").unwrap(),
@@ -759,9 +759,15 @@ fn test_fulltext_index_ddl_and_naming() {
         vec!["CREATE TEXT EDGE INDEX rel_notes_idx ON :REVIEWED(notes);"]
     );
 
-    // FalkorDB Rel DDL returns UnsupportedDialect error
-    assert!(emit_rel_index_ddl(&rel_schema, "falkordb").is_err());
-    assert!(emit_rel_drop_index_ddl(&rel_schema, "falkordb").is_err());
+    // FalkorDB Rel DDL
+    assert_eq!(
+        emit_rel_index_ddl(&rel_schema, "falkordb").unwrap(),
+        vec!["CREATE FULLTEXT INDEX FOR ()-[r:REVIEWED]-() ON (r.notes)"]
+    );
+    assert_eq!(
+        emit_rel_drop_index_ddl(&rel_schema, "falkordb").unwrap(),
+        vec!["DROP FULLTEXT INDEX FOR ()-[r:REVIEWED]-() ON (r.notes)"]
+    );
 
     // DuckDB Rel DDL
     assert_eq!(
@@ -998,5 +1004,74 @@ fn test_query_builder_fulltext_search_ast_and_emission() {
     assert_eq!(
         mg_compiled.parameters.get("p1"),
         Some(&LiteralValue::String("data.title:rust".into()))
+    );
+}
+
+#[test]
+fn test_falkordb_fulltext_single_and_multi_property_ddl() {
+    let single_ft = FullTextIndexConfig::new("single_idx", vec!["title".to_string()]);
+    let single_node = NodeSchema::new("Doc", vec!["Doc".to_string()])
+        .with_field(FieldDescriptor::new("title", FieldType::String))
+        .with_fulltext_index(single_ft);
+
+    assert_eq!(
+        emit_node_index_ddl(&single_node, "falkordb").unwrap(),
+        vec!["CREATE FULLTEXT INDEX FOR (n:Doc) ON (n.title)"]
+    );
+    assert_eq!(
+        emit_node_drop_index_ddl(&single_node, "falkordb").unwrap(),
+        vec!["DROP FULLTEXT INDEX FOR (n:Doc) ON (n.title)"]
+    );
+
+    let multi_ft = FullTextIndexConfig::new(
+        "multi_idx",
+        vec!["title".to_string(), "description".to_string()],
+    );
+    let multi_node = NodeSchema::new("Doc", vec!["Doc".to_string()])
+        .with_field(FieldDescriptor::new("title", FieldType::String))
+        .with_field(FieldDescriptor::new("description", FieldType::String))
+        .with_fulltext_index(multi_ft);
+
+    assert_eq!(
+        emit_node_index_ddl(&multi_node, "falkordb").unwrap(),
+        vec!["CREATE FULLTEXT INDEX FOR (n:Doc) ON (n.title, n.description)"]
+    );
+    assert_eq!(
+        emit_node_drop_index_ddl(&multi_node, "falkordb").unwrap(),
+        vec!["DROP FULLTEXT INDEX FOR (n:Doc) ON (n.title, n.description)"]
+    );
+
+    // Relationship single property full-text DDL
+    let single_rel_ft = FullTextIndexConfig::new("single_rel_idx", vec!["comment".to_string()]);
+    let single_rel = RelationshipSchema::new("Reviewed", "REVIEWED")
+        .with_field(FieldDescriptor::new("comment", FieldType::String))
+        .with_fulltext_index(single_rel_ft);
+
+    assert_eq!(
+        emit_rel_index_ddl(&single_rel, "falkordb").unwrap(),
+        vec!["CREATE FULLTEXT INDEX FOR ()-[r:REVIEWED]-() ON (r.comment)"]
+    );
+    assert_eq!(
+        emit_rel_drop_index_ddl(&single_rel, "falkordb").unwrap(),
+        vec!["DROP FULLTEXT INDEX FOR ()-[r:REVIEWED]-() ON (r.comment)"]
+    );
+
+    // Relationship multi-property full-text DDL
+    let multi_rel_ft = FullTextIndexConfig::new(
+        "multi_rel_idx",
+        vec!["notes".to_string(), "context".to_string()],
+    );
+    let multi_rel = RelationshipSchema::new("Annotated", "ANNOTATED")
+        .with_field(FieldDescriptor::new("notes", FieldType::String))
+        .with_field(FieldDescriptor::new("context", FieldType::String))
+        .with_fulltext_index(multi_rel_ft);
+
+    assert_eq!(
+        emit_rel_index_ddl(&multi_rel, "falkordb").unwrap(),
+        vec!["CREATE FULLTEXT INDEX FOR ()-[r:ANNOTATED]-() ON (r.notes, r.context)"]
+    );
+    assert_eq!(
+        emit_rel_drop_index_ddl(&multi_rel, "falkordb").unwrap(),
+        vec!["DROP FULLTEXT INDEX FOR ()-[r:ANNOTATED]-() ON (r.notes, r.context)"]
     );
 }
