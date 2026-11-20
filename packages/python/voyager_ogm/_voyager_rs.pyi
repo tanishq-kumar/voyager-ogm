@@ -586,4 +586,5 @@ class VoyagerError(ValueError):
     """Voyager OGM exception carrying a structured error code."""
 
     code: str | None
+    skipped: list[str]
     def __init__(self, message: str, code: str | None = None) -> None: ...

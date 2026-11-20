@@ -5818,8 +5818,11 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("VoyagerError", m.py().get_type::<VoyagerError>())?;
     // pyo3::create_exception! generates a standard PyErr type whose C-level tp_init rejects keyword arguments.
     // We install a custom Python __init__ so callers can instantiate VoyagerError(message, code="...") ergonomics.
+    // `skipped` is initialized to an empty list on every instance; schema helpers replace it with the
+    // statements skipped on Neo4j Community. The class-level default also covers errors raised from Rust,
+    // which bypass this Python __init__.
     m.py().run(
-        c"def _init(self, message='', *args, code=None, **kwargs):\n    super(type(self), self).__init__(message, *args, **kwargs)\n    self.code = code\nVoyagerError.__init__ = _init\n",
+        c"def _init(self, message='', *args, code=None, **kwargs):\n    super(type(self), self).__init__(message, *args, **kwargs)\n    self.code = code\n    self.skipped = []\nVoyagerError.__init__ = _init\nVoyagerError.skipped = []\n",
         Some(&m.dict()),
         None,
     )?;

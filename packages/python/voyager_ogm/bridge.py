@@ -3464,7 +3464,7 @@ def create_bridge(
                     f"The 'psycopg' Python package is required to connect to URI '{mask_uri_password(driver_or_connection)}'. "
                     f"Install it with 'pip install psycopg[binary]', or pass fallback='mock' for offline testing."
                 ) from e
-            from urllib.parse import parse_qs, urlsplit, urlunsplit
+            from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
             is_age_scheme = scheme in ("age", "age+s", "age+ssc")
             is_ssl_scheme = scheme in (
@@ -3478,20 +3478,22 @@ def create_bridge(
 
             parsed_pg = urlsplit(driver_or_connection)
             target_scheme = "postgresql" if (is_age_scheme or is_ssl_scheme) else parsed_pg.scheme
-            new_query = parsed_pg.query
             qs = parse_qs(parsed_pg.query)
             uri_graph = qs.get("graph", qs.get("graph_name", [None]))[0]
             resolved_graph = graph_name if graph_name is not None else uri_graph
             if resolved_graph is not None:
                 validate_graph_name(resolved_graph)
 
-            if is_ssl_scheme:
-                if "sslmode" not in qs and "ssl" not in qs:
-                    new_query = (
-                        f"{parsed_pg.query}&sslmode=require"
-                        if parsed_pg.query
-                        else "sslmode=require"
-                    )
+            # psycopg rejects unknown libpq keywords, so the graph selectors are
+            # consumed here and must not reach the connection string.
+            pg_query_pairs = [
+                (key, value)
+                for key, value in parse_qsl(parsed_pg.query, keep_blank_values=True)
+                if key not in ("graph", "graph_name")
+            ]
+            if is_ssl_scheme and "sslmode" not in qs and "ssl" not in qs:
+                pg_query_pairs.append(("sslmode", "require"))
+            new_query = urlencode(pg_query_pairs)
 
             clean_pg_uri = urlunsplit(
                 (target_scheme, parsed_pg.netloc, parsed_pg.path, new_query, parsed_pg.fragment)
