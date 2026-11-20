@@ -211,6 +211,8 @@ Following the cleanup in `#131`, Voyager maintains a strict policy regarding API
    Labels are read when a CI run starts, not when the PR is opened. Add them when you open the PR (or before a manual re-run); a label added later needs a CI re-run to take effect.
 8. CI runs once per opened or reopened pull request and once per push; label-only changes do not start a new run.
 
+If a fix should also ship on an older release line, add a `backport-X.Y` label (for example `backport-0.4`) to the PR or issue. See [RELEASING.md section 4](RELEASING.md#4-maintenance-branches-releasexy-and-backports) for what qualifies as a backportable bug fix and how the change lands on `release/X.Y`; it always lands on `main` first.
+
 ---
 
 ## 11. Releasing
@@ -219,7 +221,9 @@ Voyager OGM follows SemVer with pre-1.0 rules and a tag-driven, trusted-publishi
 
 1. From an up-to-date `main`, create a release branch (`chore/release-<version>`) and run `just release-prepare <version>` — it runs full CI, bumps the workspace version, refreshes lockfiles, cuts the changelog section, and creates the `chore(release): v<version>` commit.
 2. Open the release PR to `main` with the labels `full-ci` and `skip-changelog`, and merge it once green.
-3. On `main`, run `just release-tag <version>` and push the annotated tag. `.github/workflows/release.yml` then builds the wheels, creates the GitHub Release, and publishes via OIDC trusted publishing — TestPyPI for pre-release tags; PyPI and crates.io for stable tags. `voyager-pyo3` is never published as a crate (it ships as the Python wheel).
+3. On `main`, run `just release-tag <version>` and push the annotated tag. `.github/workflows/release.yml` then builds the wheels, creates the GitHub Release, and publishes via OIDC trusted publishing — TestPyPI and crates.io for every tag; PyPI for stable tags only. `voyager-pyo3` is never published as a crate (it ships as the Python wheel).
+
+Patch releases for an older line (`X.Y`) use a `chore/release-X.Y.N` branch off `release/X.Y` and tag on `release/X.Y` instead of `main`; see [RELEASING.md section 4](RELEASING.md#4-maintenance-branches-releasexy-and-backports).
 
 ---
 
