@@ -24,7 +24,7 @@ Voyager OGM follows [Semantic Versioning 2.0.0](https://semver.org/), with stand
 ### Pre-Releases vs. Stable Releases
 
 - **Pre-releases**: Tagged as `vX.Y.Z-alpha.N`, `vX.Y.Z-beta.N`, or `vX.Y.Z-rc.N` in Cargo. Maturin automatically maps these to PEP 440 formats on PyPI (`X.Y.ZaN`, `X.Y.ZbN`, `X.Y.ZrcN`).
-  - Pre-releases are marked as **Pre-release** on GitHub Releases and are published only to TestPyPI (see section 6), never to PyPI or crates.io. This clearly demarcates upcoming development builds from production-ready releases.
+  - Pre-releases are marked as **Pre-release** on GitHub Releases and are published to TestPyPI and crates.io (see section 6), never to PyPI. Cargo only resolves a pre-release when its exact version is requested, so crates.io pre-releases do not reach users of stable requirements. This clearly demarcates upcoming development builds from production-ready releases.
 - **Stable releases**: Plain tags without suffixes (`vX.Y.Z`). These become GitHub "Latest" releases and the default pip installs.
 
 ---
@@ -77,9 +77,9 @@ Set these under **Settings → Secrets and variables → Actions → Variables**
 | --- | --- | --- |
 | `TESTPYPI_PUBLISH` | The TestPyPI pending publisher is configured | TestPyPI on every tag (pre-releases included) |
 | `PYPI_PUBLISH` | The PyPI pending publisher is configured and a stable release is ready | PyPI on stable tags only |
-| `CRATES_PUBLISH` | Every crate has had its first manual publish and the trusted publishers are configured | crates.io on stable tags only |
+| `CRATES_PUBLISH` | Every crate has had its first manual publish and the trusted publishers are configured | crates.io on every tag (pre-releases included) |
 
-A pre-release tag (`vX.Y.Z-alpha.N`, `-beta.N`, `-rc.N`) publishes to TestPyPI only. A stable tag (`vX.Y.Z`) publishes to TestPyPI and, when enabled, to PyPI and crates.io.
+A pre-release tag (`vX.Y.Z-alpha.N`, `-beta.N`, `-rc.N`) publishes to TestPyPI and crates.io. A stable tag (`vX.Y.Z`) publishes to TestPyPI, PyPI and crates.io (each when enabled).
 
 ### 6.3 Trusted Publishers
 
@@ -91,7 +91,7 @@ crates.io versions are **permanent**: a version can be yanked (`cargo yank --ver
 
 - PyPI and TestPyPI use `skip-existing: true`, so a re-run does not fail on files already uploaded.
 - The crates.io job queries `https://crates.io/api/v1/crates/<crate>/<version>` before each publish and skips versions that already exist.
-- Pre-releases stop at TestPyPI; PyPI and crates.io receive stable tags only.
+- Pre-releases go to TestPyPI and crates.io; PyPI receives stable tags only.
 - npm is not published yet.
 
 ---

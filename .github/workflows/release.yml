@@ -291,12 +291,12 @@ jobs:
           skip-existing: true
 
   # =========================================================================
-  # 7. crates.io Publish (Trusted Publishing, Stable Tags Only)
+  # 7. crates.io Publish (Trusted Publishing, Every Tag)
   # =========================================================================
   publish-crates:
     name: Publish to crates.io
     needs: [verify, release]
-    if: needs.verify.outputs.prerelease == 'false' && vars.CRATES_PUBLISH == 'true'
+    if: vars.CRATES_PUBLISH == 'true'
     runs-on: ubuntu-latest
     environment:
       name: crates-io
