@@ -216,7 +216,7 @@ query = (
 # 1. Compile to openCypher (Neo4j, Memgraph, FalkorDB)
 cypher = query.compile("cypher")
 print(cypher.statement)
-# MATCH (_person_0:Person)-[_worksat_0:WORKS_AT]->(_company_0:Company)
+# MATCH (_person_0:Person)-[_works_at_0:WORKS_AT]->(_company_0:Company)
 # WHERE (_person_0.age >= $p0) AND (_company_0.name = $p1)
 # RETURN _person_0.name, _person_0.age, _company_0.name AS company_name
 # ORDER BY _person_0.name ASC LIMIT 10
