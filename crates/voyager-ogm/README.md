@@ -1,5 +1,11 @@
 # voyager-ogm
 
+[![crates.io](https://img.shields.io/crates/v/voyager-ogm.svg)](https://crates.io/crates/voyager-ogm)
+[![docs.rs](https://img.shields.io/docsrs/voyager-ogm.svg)](https://docs.rs/voyager-ogm)
+[![CI](https://github.com/tanishq-kumar/voyager/actions/workflows/ci.yml/badge.svg)](https://github.com/tanishq-kumar/voyager/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/tanishq-kumar/voyager/blob/main/LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.87-blue.svg)](https://github.com/tanishq-kumar/voyager/blob/main/Cargo.toml)
+
 `voyager-ogm` is the core of Voyager OGM: a vendor-neutral Object-Graph Mapper and AST query compiler in safe Rust (`#![forbid(unsafe_code)]`). Build a query once with the fluent `QueryBuilder`, optimize it, and compile it to openCypher 9/25, SQL:2023 PGQ (`GRAPH_TABLE`, DuckDB/DuckPGQ), ISO GQL, or Apache AGE.
 
 > Status: pre-1.0. Breaking changes may land in minor releases.
