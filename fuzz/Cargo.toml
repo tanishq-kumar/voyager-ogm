@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-voyager-drivers = { path = "../crates/voyager-drivers" }
+voyager-drivers = { path = "../crates/voyager-drivers", default-features = false, features = ["redis"] }
 bytes = "1.9"
 
 [[bin]]

@@ -2490,11 +2490,11 @@ impl PyQueryBuilder {
 }
 
 fn record_batch_to_py_dicts<'py>(
-    batch: &arrow::record_batch::RecordBatch,
+    batch: &arrow_array::RecordBatch,
     py: Python<'py>,
 ) -> PyResult<Bound<'py, PyList>> {
-    use arrow::array::*;
-    use arrow::datatypes::DataType;
+    use arrow_array::*;
+    use arrow_schema::DataType;
 
     let num_rows = batch.num_rows();
     let num_cols = batch.num_columns();
@@ -2554,13 +2554,13 @@ fn record_batch_to_py_dicts<'py>(
 #[pyclass(name = "ArrowStream", from_py_object)]
 #[derive(Clone)]
 pub struct PyArrowStream {
-    batch: arrow::record_batch::RecordBatch,
+    batch: arrow_array::RecordBatch,
     consumed: Arc<AtomicBool>,
 }
 
 impl PyArrowStream {
     /// Creates a new `PyArrowStream` wrapping an Arrow `RecordBatch`.
-    pub fn from_batch(batch: arrow::record_batch::RecordBatch) -> Self {
+    pub fn from_batch(batch: arrow_array::RecordBatch) -> Self {
         Self {
             batch,
             consumed: Arc::new(AtomicBool::new(false)),
@@ -3197,9 +3197,7 @@ fn query_result_to_py(query_result: voyager_drivers::QueryResult) -> PyResult<Py
         .into_single_batch()
         .map_err(|e| PyValueError::new_err(e.to_string()))?
         .unwrap_or_else(|| {
-            arrow::record_batch::RecordBatch::new_empty(std::sync::Arc::new(
-                arrow::datatypes::Schema::empty(),
-            ))
+            arrow_array::RecordBatch::new_empty(std::sync::Arc::new(arrow_schema::Schema::empty()))
         });
 
     Ok(PyNativeQueryResult {
@@ -3317,8 +3315,8 @@ impl PyNativeClient {
             .into_single_batch()
             .map_err(|e| PyValueError::new_err(e.to_string()))?
             .unwrap_or_else(|| {
-                arrow::record_batch::RecordBatch::new_empty(std::sync::Arc::new(
-                    arrow::datatypes::Schema::empty(),
+                arrow_array::RecordBatch::new_empty(std::sync::Arc::new(
+                    arrow_schema::Schema::empty(),
                 ))
             });
 
@@ -3352,8 +3350,8 @@ impl PyNativeClient {
                 .into_single_batch()
                 .map_err(|e| PyValueError::new_err(e.to_string()))?
                 .unwrap_or_else(|| {
-                    arrow::record_batch::RecordBatch::new_empty(std::sync::Arc::new(
-                        arrow::datatypes::Schema::empty(),
+                    arrow_array::RecordBatch::new_empty(std::sync::Arc::new(
+                        arrow_schema::Schema::empty(),
                     ))
                 });
 

@@ -58,7 +58,7 @@ pub enum NetError {
 
     /// Apache Arrow record batch or schema serialization error.
     #[error("Arrow serialization error: {0}")]
-    ArrowError(#[from] arrow::error::ArrowError),
+    ArrowError(#[from] arrow_schema::ArrowError),
 }
 
 impl NetError {

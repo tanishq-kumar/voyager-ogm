@@ -36,6 +36,8 @@ Define models with Python type annotations and build queries once. Voyager compi
 - **SQL:2023 PGQ (`GRAPH_TABLE`)**: DuckDB DuckPGQ, PostgreSQL (19+).
 - **ISO GQL (ISO/IEC 39075:2024)**: The official international graph query standard.
 
+**Example:** [Multi-dialect compilation](examples/python/08_multi_dialect_compilation.py) and [enterprise dialects & multi-label DDL](examples/python/09_enterprise_dialects.py).
+
 ```python
 from voyager_ogm import Node, Relationship, Query, node, relationship
 
@@ -92,6 +94,8 @@ print(gql.statement)
 
 Traditional Python OGMs instantiate thousands of Python objects when fetching query results, creating a major serialization bottleneck. Voyager uses the **Apache Arrow C Data Interface** (`__arrow_c_stream__`) to convert graph database records directly into **Polars DataFrames** at memory speed without Python serialization overhead.
 
+**Example:** [Zero-copy Polars & Arrow streaming](examples/python/21_data_science_polars_streaming.py).
+
 ```python
 import polars as pl
 from voyager_ogm import generate_synthetic_stream, to_polars
@@ -122,6 +126,8 @@ Before queries are emitted to the database, Voyager runs optimization passes ove
 - **Constant Folding**: Pre-computes arithmetic and static sub-expressions at compile time in Rust, even when combined with dynamic variables. The database engine never re-evaluates static formulas across millions of graph records.
 - **Dead Clause Elimination**: Prunes unused query fragments and redundant traversals.
 
+**Example:** [Compile-time constant folding & query optimizer](examples/python/10_query_optimizer_constant_folding.py).
+
 #### Optimization Example:
 
 ```python
@@ -149,6 +155,8 @@ query = (
 
 Instead of limiting queries to flat equality checks (`p.age == 25`), Voyager's expression AST supports nested computations, arithmetic trees, string operations, and graph built-in functions:
 
+**Example:** [Vector & full-text graph functions](examples/python/12_vector_and_fulltext_search.py) and [expression spec interchange](examples/python/16_spec_interchange.py).
+
 ```python
 # Complex expressions in projections and filters:
 from voyager_ogm import fn
@@ -175,6 +183,8 @@ Voyager separates **database transactions** from the **in-memory unit of work**:
 - **Active Record Ergonomics**: Work with graph nodes and relationships as natural Python objects—read, update, and modify fields directly in your application code.
 - **Data Mapper Cleanliness**: Instead of firing an immediate database query on every property modification, `session.unit_of_work()` tracks dirty fields in memory and flushes them in a single, minimal batched update.
 - **Identity Map Consistency**: If the same graph node is loaded across multiple queries or traversals within a transaction, Voyager returns the exact same in-memory object. Changes made in one place are immediately visible everywhere without stale reads or duplicate database lookups.
+
+**Example:** [Real transactions, unit of work & identity map](examples/python/18_transactions_and_identity_map.py).
 
 #### Example:
 
@@ -218,9 +228,9 @@ show(query)  # or explore(records)
 
 Explore the runnable interactive demos in the repository:
 
-- [**Marimo GraphRAG Demo**](examples/python/07_marimo_graphrag_demo.py) — Interactive dashboard with schema filters, neighborhood spotlights, and inspector drawer (`marimo run examples/python/07_marimo_graphrag_demo.py`).
-- [**Jupyter & VS Code Notebook**](examples/python/08_jupyter_vscode_graph_demo.ipynb) — Interactive `.ipynb` notebook demonstrating graph exploration directly within cell outputs.
-- [**Query Path Visualizer**](examples/python/09_query_path_visualization.py) — Visualizes multi-hop path traversals and graph pattern matching.
+- [**Marimo GraphRAG Demo**](examples/python/27_marimo_graphrag_demo.py) — Interactive dashboard with schema filters, neighborhood spotlights, and inspector drawer (`marimo run examples/python/27_marimo_graphrag_demo.py`).
+- [**Jupyter & VS Code Notebook**](examples/python/28_jupyter_vscode_graph_demo.ipynb) — Interactive `.ipynb` notebook demonstrating graph exploration directly within cell outputs.
+- [**Query Path Visualizer**](examples/python/26_query_path_visualization.py) — Visualizes multi-hop path traversals and graph pattern matching.
 
 ---
 
@@ -267,19 +277,6 @@ Voyager is verified against 6 database backends:
 | **PostgreSQL**       | Relational / Recursive SQL (14–18)<br>SQL:2023 PGQ (19+) | PostgreSQL Wire Protocol |
 
 > **Neo4j Community Edition:** uniqueness constraints are supported, but existence (`IS NOT NULL`) and key constraints require Neo4j Enterprise Edition. `create_constraints()` and `apply_schema()` apply every statement the server accepts, then raise one `VoyagerError` with code `SCHEMA_ERROR`; its `skipped` attribute lists the Enterprise-only constraint statements that were not applied. The accepted constraints (and any indexes applied by `apply_schema()`) stay in place.
-
----
-
-## Roadmap
-
-Voyager's development is organized into focused milestone phases. You can track active progress, issues, and completion percentages directly on [**GitHub Milestones**](https://github.com/tanishq-kumar/voyager/milestones):
-
-- **[Milestone 1: v0.1.0-alpha](https://github.com/tanishq-kumar/voyager/milestone/1)** — Core Read AST Engine _(Completed)_
-- **[Milestone 2: v0.2.0-alpha](https://github.com/tanishq-kumar/voyager/milestone/2)** — Mutations, Ingestion & Arrow Streaming _(Completed)_
-- **[Milestone 3: v0.3.0-alpha](https://github.com/tanishq-kumar/voyager/milestone/3)** — Multi-Dialect Syntax Conformance _(Completed)_
-- **[Milestone 4: v0.4.0-alpha](https://github.com/tanishq-kumar/voyager/milestone/4)** — Python Integrations, Rich Expressions & Query Optimizer _(Active)_
-- **[Milestone 5: v0.5.0-alpha](https://github.com/tanishq-kumar/voyager/milestone/5)** — TypeScript SDK _(Planned)_
-- **[Milestone 6: v0.6.0-alpha](https://github.com/tanishq-kumar/voyager/milestone/6)** — Voyager CLI (`voy`) _(Planned)_
 
 ---
 

@@ -61,6 +61,19 @@ test-falkordb-official:
 check:
     cargo check --workspace --all-targets
 
+# Check every supported Cargo feature combination with clippy (warnings are errors)
+check-features:
+    cargo clippy -p voyager-ogm --no-default-features -- -D warnings
+    cargo clippy -p voyager-ogm --no-default-features --features serde -- -D warnings
+    cargo clippy -p voyager-ogm --no-default-features --features arrow -- -D warnings
+    cargo clippy -p voyager-ogm -- -D warnings
+    cargo clippy -p voyager-drivers --no-default-features --features bolt -- -D warnings
+    cargo clippy -p voyager-drivers --no-default-features --features postgres -- -D warnings
+    cargo clippy -p voyager-drivers --no-default-features --features redis -- -D warnings
+    cargo clippy -p voyager-drivers --no-default-features --features arrow -- -D warnings
+    cargo clippy -p voyager-drivers -- -D warnings
+    cargo clippy -p voyager-drivers --all-features -- -D warnings
+
 # Rebuild only the Python native extension into the venv (inner dev loop)
 dev:
     uv run maturin develop

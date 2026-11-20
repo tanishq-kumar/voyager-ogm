@@ -379,8 +379,8 @@ fn test_falkor_query_result_to_arrow_record_batch() {
     assert_eq!(batch.num_columns(), 4);
     assert_eq!(batch.num_rows(), 3);
 
-    use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, StringArray};
-    use arrow::datatypes::DataType;
+    use arrow_array::{Array, BooleanArray, Float64Array, Int64Array, StringArray};
+    use arrow_schema::DataType;
 
     // Col 0: Utf8
     assert_eq!(batch.schema().field(0).data_type(), &DataType::Utf8);

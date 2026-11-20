@@ -37,9 +37,9 @@ url = "2.5"
 # Serialization & Data
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-arrow = { version = "57.3", default-features = false, features = ["ffi", "ipc", "json"] }
 arrow-schema = "57.3"
 arrow-array = "57.3"
+arrow-select = "57.3"
 
 # Cryptography & Auth (PostgreSQL MD5 & SCRAM-SHA-256)
 md-5 = "0.10"
@@ -71,6 +71,9 @@ opt-level = 0
 # Dependencies (polars, arrow, tokio, ...): optimised once, then served from sccache
 [profile.dev.package."*"]
 opt-level = 2
+# No debug info for dependencies: backtraces keep file:line for workspace crates,
+# while target/ shrinks by ~30% (991 MB -> 694 MB for a clean debug build).
+debug = false
 
 # Deep-recursion parsers need frame reuse to stay inside 1-2 MB stacks
 [profile.dev.package.voyager-drivers]

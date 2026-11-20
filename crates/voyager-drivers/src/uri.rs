@@ -39,6 +39,37 @@ impl DatabaseProtocol {
             Self::DuckDb => false,
         }
     }
+
+    /// Returns the Cargo feature that enables this protocol, if one is required.
+    pub const fn cargo_feature(&self) -> Option<&'static str> {
+        match self {
+            Self::Bolt => Some("bolt"),
+            Self::Postgres => Some("postgres"),
+            Self::Redis => Some("redis"),
+            Self::DuckDb => None,
+        }
+    }
+
+    /// Returns whether the current build compiled support for this protocol.
+    pub const fn is_enabled(&self) -> bool {
+        match self {
+            Self::Bolt => cfg!(feature = "bolt"),
+            Self::Postgres => cfg!(feature = "postgres"),
+            Self::Redis => cfg!(feature = "redis"),
+            Self::DuckDb => true,
+        }
+    }
+
+    /// Returns a clear error when the current build lacks support for this protocol.
+    pub fn ensure_enabled(&self) -> Result<()> {
+        match self.cargo_feature() {
+            Some(feature) if !self.is_enabled() => Err(NetError::ProtocolError(format!(
+                "voyager-drivers was built without the `{feature}` feature; cannot use {} connections (rebuild with --features {feature})",
+                self
+            ))),
+            _ => Ok(()),
+        }
+    }
 }
 
 impl fmt::Display for DatabaseProtocol {
@@ -224,6 +255,8 @@ impl ParsedUri {
             }
         }
 
+        protocol.ensure_enabled()?;
+
         Ok(Self {
             protocol,
             host,
@@ -267,5 +300,35 @@ impl fmt::Display for ParsedUri {
             "{} ({}) [db: {:?}, tls: {:?}]",
             self.raw, self.protocol, self.database, self.tls
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_protocol_available(uri: &str, expected: DatabaseProtocol, feature: &str) {
+        match ParsedUri::parse(uri) {
+            Ok(parsed) => assert_eq!(parsed.protocol, expected),
+            Err(NetError::ProtocolError(message)) => {
+                assert!(!expected.is_enabled());
+                assert!(
+                    message.contains(&format!("`{feature}` feature")),
+                    "error does not name the missing feature: {message}"
+                );
+            }
+            Err(other) => panic!("unexpected parse error for {uri}: {other}"),
+        }
+    }
+
+    #[test]
+    fn disabled_protocols_report_the_missing_feature() {
+        assert_protocol_available("bolt://localhost:7687", DatabaseProtocol::Bolt, "bolt");
+        assert_protocol_available(
+            "postgresql://localhost:5432/graph",
+            DatabaseProtocol::Postgres,
+            "postgres",
+        );
+        assert_protocol_available("redis://localhost:6379", DatabaseProtocol::Redis, "redis");
     }
 }

@@ -13,9 +13,9 @@ readme = "README.md"
 autobenches = false
 
 [dependencies]
-voyager-ogm = { workspace = true, features = ["serde", "arrow"] }
+voyager-ogm = { workspace = true, features = ["serde"] }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, optional = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 parking_lot = { workspace = true }
@@ -24,51 +24,163 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-arrow = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-array = { workspace = true }
-md-5 = { workspace = true }
-sha2 = { workspace = true }
-hmac = { workspace = true }
-base64 = { workspace = true }
-hex = { workspace = true }
-
-# Optional dependency for head-to-head comparative driver benchmarks
-neo4rs = { version = "0.8.0", optional = true }
+arrow-select = { workspace = true, optional = true }
+md-5 = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
 
 [lints]
 workspace = true
 
 [features]
-default = []
-bench-driver = ["dep:neo4rs"]
+default = ["bolt", "postgres", "redis", "arrow"]
+bolt = []
+postgres = ["dep:md-5", "dep:sha2", "dep:hmac", "dep:base64", "dep:hex"]
+redis = ["dep:tokio-util"]
+arrow = ["voyager-ogm/arrow", "dep:arrow-select"]
+testkit = ["bolt"]
+bench-driver = []
 
 [dev-dependencies]
+voyager-drivers = { path = ".", default-features = false, features = ["testkit"] }
 tokio = { workspace = true, features = ["test-util", "macros"] }
 proptest = "1.6"
+# Used only by the head-to-head comparative driver benchmarks
+neo4rs = "0.8.0"
+
+[[bin]]
+name = "testkit_backend"
+path = "src/bin/testkit_backend.rs"
+required-features = ["testkit"]
+
+[[bin]]
+name = "adversarial_probe"
+path = "src/bin/adversarial_probe.rs"
+required-features = ["testkit"]
+
+[[example]]
+name = "live_connect_and_query"
+path = "examples/live_connect_and_query.rs"
+required-features = ["bolt"]
+
+[[example]]
+name = "live_explain_and_profile"
+path = "examples/live_explain_and_profile.rs"
+required-features = ["bolt"]
 
 [[bench]]
 name = "bench_security_overhead"
 harness = false
+required-features = ["testkit", "postgres", "redis"]
 
 [[bench]]
 name = "bench_driver_vs_voyager_drivers"
 harness = false
-required-features = ["bench-driver"]
+required-features = ["bench-driver", "bolt"]
 
 [[bench]]
 name = "bench_1m_driver_vs_voyager"
 harness = false
-required-features = ["bench-driver"]
+required-features = ["bench-driver", "bolt"]
 
 [[bench]]
 name = "bench_live_bolt"
 harness = false
+required-features = ["bolt"]
 
 [[bench]]
 name = "bench_jumbo_payloads"
 harness = false
+required-features = ["bolt"]
 
+[[test]]
+name = "age_official_regress_tests"
+path = "tests/age_official_regress_tests.rs"
+required-features = ["postgres"]
+
+[[test]]
+name = "bolt_tests"
+path = "tests/bolt_tests.rs"
+required-features = ["bolt", "testkit"]
+
+[[test]]
+name = "live_age_tests"
+path = "tests/live_age_tests.rs"
+required-features = ["postgres"]
+
+[[test]]
+name = "live_circuit_tests"
+path = "tests/live_circuit_tests.rs"
+required-features = ["bolt", "testkit"]
+
+[[test]]
+name = "live_falkordb_tests"
+path = "tests/live_falkordb_tests.rs"
+required-features = ["redis"]
+
+[[test]]
+name = "live_memgraph_tests"
+path = "tests/live_memgraph_tests.rs"
+required-features = ["bolt"]
+
+[[test]]
+name = "live_neo4j_tests"
+path = "tests/live_neo4j_tests.rs"
+required-features = ["bolt"]
+
+[[test]]
+name = "live_postgres19_tests"
+path = "tests/live_postgres19_tests.rs"
+required-features = ["postgres"]
+
+[[test]]
+name = "official_age_regress_runner"
+path = "tests/official_age_regress_runner.rs"
+required-features = ["postgres"]
+
+[[test]]
+name = "official_falkordb_tests"
+path = "tests/official_falkordb_tests.rs"
+required-features = ["redis"]
+
+[[test]]
+name = "pool_tests"
+path = "tests/pool_tests.rs"
+required-features = ["testkit"]
+
+[[test]]
+name = "postgres_tests"
+path = "tests/postgres_tests.rs"
+required-features = ["postgres"]
+
+[[test]]
+name = "redis_tests"
+path = "tests/redis_tests.rs"
+required-features = ["redis"]
+
+[[test]]
+name = "security_audit_tests"
+path = "tests/security_audit_tests.rs"
+required-features = ["bolt", "postgres", "redis", "testkit"]
+
+[[test]]
+name = "testkit_tests"
+path = "tests/testkit_tests.rs"
+required-features = ["testkit"]
+
+[[test]]
+name = "uri_tests"
+path = "tests/uri_tests.rs"
+required-features = ["bolt", "postgres", "redis"]
+
+[[test]]
+name = "wire_fuzz_tests"
+path = "tests/wire_fuzz_tests.rs"
+required-features = ["bolt", "redis"]
 
 # md-5 is imported as `md5`; neo4rs is used only by benches behind the bench-driver feature
 [package.metadata.cargo-machete]

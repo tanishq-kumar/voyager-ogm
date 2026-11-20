@@ -19,12 +19,13 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-arrow = { workspace = true, optional = true }
+arrow-array = { workspace = true, optional = true, features = ["ffi"] }
+arrow-schema = { workspace = true, optional = true }
 
 [features]
 default = ["serde", "arrow"]
 serde = ["dep:serde", "dep:serde_json"]
-arrow = ["dep:arrow"]
+arrow = ["dep:arrow-array", "dep:arrow-schema"]
 
 [dev-dependencies]
 insta = { workspace = true }
