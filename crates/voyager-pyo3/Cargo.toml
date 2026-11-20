@@ -10,6 +10,8 @@ repository.workspace = true
 keywords = ["python", "pyo3", "arrow", "bindings", "ffi"]
 categories = ["api-bindings", "database"]
 readme = "README.md"
+# Ships as the Python wheel/sdist via maturin, not as a standalone crates.io crate.
+publish = false
 
 [lib]
 name = "_voyager_rs"
