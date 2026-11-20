@@ -90,6 +90,45 @@ The following are rejected:
   with content. `{"spec_version": 1}` and `{"spec_version": 1, "matches": []}`
   are both empty. Pagination and `execution_mode` alone do not make a spec
   non-empty.
+- Root `distinct`, `order_by`, `skip`, `offset` or `limit` without a non-empty
+  root `projections` list. These belong to the final `RETURN`: without one they
+  would be dropped, or (when `with_clauses` are present) fold into the last
+  `WITH`, silently changing the query. The error is at the first offending key,
+  for example `/limit`, and names `projections` in the message.
+- A spec whose emitted statement would end in `WITH`: `with_clauses` without
+  root `projections` and without mutations. Error at `/projections` ("a query
+  ending in WITH needs root projections"). Mutations emit after `WITH`, so a
+  spec that ends in a mutation is still valid.
+- A `with_clauses[i].projections: []` empty list (error at
+  `/with_clauses/i/projections`) and a `matches[i].paths: []` empty list (error
+  at `/matches/i/paths`). Both would otherwise drop or misattach their
+  `where`/pagination.
+- Any item past a fixed-arity shape (see the shapes below): `load_csv`,
+  `unwinds` entries, every mutation tag, every projection tag, `order_by`
+  entries, `linear_clauses` entries, merge `ON CREATE SET` / `ON MATCH SET`
+  entries, `case` branches, and every expression tag. The error is at the extra
+  item's own path, for example `/projections/0/4`. Path steps keep their
+  separate documented trailing-`null` tolerance.
+- A non-string `alias` name in `["alias", expression, name]`.
+- An empty variable in `["prop", "", property]`, and an empty name in
+  `["ident", ""]` or `["param", ""]`.
+- A JSON object in an expression position that has no `expr` key. Only the
+  `exists`, `count` and `pattern_comp` payloads accept a nested query spec or
+  path spec; every other object must be written as
+  `{"spec_version": 1, "expr": ...}`.
+- A compile-time build or emission failure. These raise `VoyagerError` too:
+  `INVALID_SPEC` at the document root (`path == ""`) when the AST cannot be
+  built or emitted, or `UNSUPPORTED_FEATURE` / `UNSUPPORTED_DIALECT` when the
+  core error identifies a dialect limitation. Messages name the AST node kind
+  only, never a Rust debug dump.
+
+Parameter names may be written with or without one leading `$`: `["param",
+"$name"]` and `["param", "name"]` both bind `$name`, and an `unwinds` entry
+`["$batch", "row"]` compiles to `UNWIND $batch AS row`, matching the Python
+SDK's `param()`. Exactly one `$` is stripped. An `["alias", expression, name]`
+name only takes effect where a projection carries an alias (the `expr`
+projection item); elsewhere the alias is validated and the inner expression is
+used.
 
 `INVALID_CLAUSE` remains the code for non-spec callers, such as the fluent
 Python/Rust builder API.
@@ -133,7 +172,7 @@ Python/Rust builder API.
         ["bin", "gte", ["ident", "friend_count"], ["lit", 5]]
       ],
       "order_by": [
-        ["friend_count", "friend_count", false]
+        [["ident", "friend_count"], false]
       ],
       "limit": 10
     }
@@ -144,7 +183,7 @@ Python/Rust builder API.
   ],
   "distinct": false,
   "order_by": [
-    ["user_name", "user_name", true]
+    [["ident", "user_name"], true]
   ],
   "skip": 0,
   "limit": 50,
@@ -163,6 +202,13 @@ Python/Rust builder API.
 
 `direction` accepts both a boolean and a string: `true` means ascending, `false` means descending, and the strings `"ASC"` / `"DESC"` are exact, uppercase spellings of the same two directions. A boolean and its string counterpart compile to the same statement, so `["p", "name", true]` and `["p", "name", "ASC"]` are equivalent. Any other value (for example `"asc"`, `"up"` or `1`) is rejected with an `INVALID_SPEC` error at the direction element (for example `/order_by/0/2`).
 
+The `[variable, property, direction]` form reads `variable.property`, so it only
+works for a variable bound by a pattern. To sort by a `WITH`/`RETURN` alias, use
+the expression form with an identifier:
+`[["ident", "friend_count"], false]`. Writing `["friend_count",
+"friend_count", false]` compiles to `ORDER BY friend_count.friend_count`, which
+is not the alias.
+
 ---
 
 ## 3. Path Step Tuples
@@ -172,7 +218,7 @@ Paths within `matches[i].paths` or `create`/`merge` mutations are sequences of s
 | Step Type | Shape | Description |
 | :--- | :--- | :--- |
 | **Node** | `["node", variable, labels, properties]` | Node pattern, e.g. `["node", "u", ["User", "Admin"]]`. `variable` can be `null` for anonymous nodes. `properties` is optional: an object mapping property names to [expressions](#4-expression-ast-descriptors), for example `{"name": ["lit", "Alice"]}`. Omitted, `null`, and `{}` all mean no properties; any other non-object is rejected. |
-| **Edge** | `["edge", dir, types, variable, min_hops, max_hops, properties]` | Directed or undirected relationship traversal. `dir` is `"outgoing"`, `"incoming"`, or `"undirected"`. `min_hops` and `max_hops` specify variable-length paths (`null` for 1 hop). `variable`, `min_hops`, `max_hops` and `properties` may be omitted (`["edge", dir, types]`) and default to `null`. `properties` follows the same rules as the node step. A non-null item after `properties` is rejected. |
+| **Edge** | `["edge", dir, types, variable, min_hops, max_hops, properties]` | Directed or undirected relationship traversal. `dir` accepts `"outgoing"` (`"out"`, `"->"`), `"incoming"` (`"in"`, `"<-"`), and `"undirected"` (`"both"`, `"-"`, `"--"`), case-insensitively. `min_hops` and `max_hops` specify variable-length paths (`null` for 1 hop). `variable`, `min_hops`, `max_hops` and `properties` may be omitted (`["edge", dir, types]`) and default to `null`. `properties` follows the same rules as the node step. A non-null item after `properties` is rejected. |
 
 Property values follow the same strict rule as every other expression
 position: each value must be a tagged expression such as `["lit", "Alice"]` or
@@ -195,8 +241,8 @@ Expression trees used in `where`, `set`, and projections support fine-grained op
 | **Identifier** | `["ident", name]` | Variable or alias identifier: `friend_count` |
 | **Parameter** | `["param", name]` | Query parameter reference: `$param` |
 | **Literal** | `["lit", value]` | Scalar literal (`42`, `"Alice"`, `true`, `null`) |
-| **Binary Op** | `["bin", op, left, right]` | Binary operators: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `and`, `or`, `xor`, `add`, `sub`, `mul`, `div`, `mod`, `contains`, `starts_with`, `ends_with`, `regex`, `in` |
-| **Unary Op** | `["unary", op, operand]` | `not`, `negate`, `is_null`, `is_not_null` |
+| **Binary Op** | `["bin", op, left, right]` | Binary operators: `eq` (`=`), `neq` (`!=`, `ne`, `<>`), `gt` (`>`), `gte` (`>=`, `ge`), `lt` (`<`), `lte` (`<=`, `le`), `and` (`&`), `or` (`\|`), `xor` (`^`), `add` (`+`), `sub` (`-`), `mul` (`*`), `div` (`/`), `mod` (`%`), `concat` (`\|\|`), `contains`, `starts_with` (`startswith`), `ends_with` (`endswith`), `regex` (`=~`), `in`, `not_in` (`not in`) |
+| **Unary Op** | `["unary", op, operand]` | `not` (`~`), `neg` (`-`), `is_null` (`is null`), `is_not_null` (`is not null`) |
 | **Function** | `["fn", name, [args...]]` | Function call: `["fn", "toUpper", [["prop", "u", "name"]]]` |
 | **CASE WHEN** | `["case", operand, [[when, then]...], else]` | Conditional branching |
 | **List Literal** | `["list", [items...]]` | Literal list of expressions |
@@ -254,6 +300,34 @@ The rule is the same for `matches[i].where` and `with_clauses[i].where`, and for
 the Python tuple spelling of either form. An empty array remains an empty
 predicate list in both spellings.
 
+### Projection items
+
+Root `projections` and `with_clauses[i].projections` both contain projection
+items with one of three exact shapes:
+
+| Shape | Description |
+| :--- | :--- |
+| `["field", variable, property, alias]` | Project `variable.property` as `alias`. `alias` is a string or `null`. |
+| `["expr", expression, alias]` | Project an expression as `alias`. `alias` is a string or `null`; when it is `null`, an outer `["alias", expression, name]` supplies it. |
+| `["agg", variable, property, func, alias]` | Aggregate `variable.property`. `func` is one of `count`, `count_distinct`, `sum`, `avg`, `min`, `max`, `collect`. A `property` of `"*"` (or `""`) aggregates the variable itself, so `["agg", "p", "*", "count", "n"]` compiles to `COUNT(p) AS n`. |
+
+An `["alias", expression, name]` name takes effect in an `expr` projection (or
+as the projection's explicit alias); in any other expression position the name
+is validated and the inner expression is used. Every shape above is exact: an
+item past the documented length is `INVALID_SPEC` at the extra item's path.
+
+### Linear clauses
+
+`linear_clauses` is an ordered list of clause entries emitted between the
+`MATCH` clauses and the first `WITH`:
+
+| Shape | Description |
+| :--- | :--- |
+| `["let", variable, expression]` | Bind `variable` to `expression` (`LET` in ISO GQL, a projected expression in openCypher-style output). |
+| `["filter", predicate]` | Filter the current rows by `predicate` (a bare `WHERE`/`FILTER`). |
+
+Neither entry accepts extra items.
+
 ---
 
 ## 5. DML Mutations
@@ -271,3 +345,34 @@ Mutation tuples within `mutations`:
 ## 6. Target Dialect Parity
 
 Any valid `spec` compiled with `compile_query_from_spec(spec, dialect="cypher" | "iso_gql" | "sql_pgq" | "apache_age")` produces the exact same parameter-isolated SQL/Cypher statement as the fluent `Query` builder API.
+
+### Dialect names
+
+The `dialect` argument is matched case-insensitively and accepts these aliases:
+
+| Emitter | Accepted names |
+| :--- | :--- |
+| openCypher | `cypher`, `opencypher`, `neo4j`, `memgraph`, `falkordb`, `falkor` |
+| ISO GQL | `iso_gql`, `gql` |
+| SQL:PGQ | `sql_pgq`, `pgq`, `duckpgq`, `sql` |
+| Apache AGE | `age`, `apache_age`, `postgres_age` |
+
+### Per-dialect limits
+
+Not every construct is available in every dialect. Some are rejected with
+`UNSUPPORTED_FEATURE` (for example `UNWIND`, `WITH`, `LET`/`FILTER` and DML
+mutations in SQL:PGQ); others are known gaps in the SQL:PGQ and ISO GQL
+emitters and are tracked as bugs, so do not rely on them:
+
+- `load_csv` currently renders only in openCypher and Apache AGE; SQL:PGQ and
+  ISO GQL omit it.
+- SQL:PGQ currently drops `optional: true` on a match and root `distinct: true`.
+- ISO GQL currently merges `MERGE ... ON CREATE SET` / `ON MATCH SET` into one
+  `SET`, and `["delete", true, [...]]` emits `DELETE` without `DETACH`.
+- ISO GQL renders a single quantified edge differently from the per-edge
+  openCypher form, and SQL:PGQ does not support `exists`/`count` subqueries,
+  `list_comp` or `pattern_comp` expressions.
+
+A compile-time failure in any dialect still raises `VoyagerError` with
+`UNSUPPORTED_FEATURE`/`UNSUPPORTED_DIALECT` or `INVALID_SPEC`, never a bare
+`ValueError`.

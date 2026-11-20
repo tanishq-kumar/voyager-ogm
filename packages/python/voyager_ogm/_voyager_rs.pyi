@@ -447,12 +447,17 @@ def compile_query_from_spec(
     Any structural failure raises :class:`VoyagerError` with
     ``code == "INVALID_SPEC"``. The JSON Pointer to the offending element is
     available as ``err.path`` and also appears in the message, for example
-    ``/matches/0/paths/1/2``.
+    ``/matches/0/paths/1/2``. Root ``distinct`` / ``order_by`` / ``skip`` /
+    ``offset`` / ``limit`` require a non-empty root ``projections`` list, and a
+    query may not end in ``WITH``. Every fixed-arity array rejects items past
+    its documented shape at the extra item's path.
 
     In an expression position every array must be a tagged expression: bare or
     untagged arrays (empty arrays, non-string first elements, or unknown tags)
     are rejected at the array's path. Write a literal list as ``["lit", [...]]``
-    and a list of expressions as ``["list", [...]]``.
+    and a list of expressions as ``["list", [...]]``. A JSON object there must
+    carry an ``expr`` key; only the ``exists`` / ``count`` / ``pattern_comp``
+    payloads accept a nested query or path spec.
 
     Node and edge path steps accept an optional properties object (the 4th node
     item and the 7th edge item) whose values are expressions. Omitted, ``null``
@@ -460,9 +465,12 @@ def compile_query_from_spec(
 
     A ``where`` array whose first element is a string is one expression; one
     whose first element is an array or object is a list of predicates; an empty
-    array is an empty predicate list. Both forms compile identically. Error
-    messages name JSON types (``string``, ``number``, ``array``, ...), not
-    Python type reprs.
+    array is an empty predicate list. Both forms compile identically. Parameter
+    names accept one optional leading ``$``. Error messages name JSON types
+    (``string``, ``number``, ``array``, ...), not Python type reprs. Build and
+    emission failures also raise :class:`VoyagerError` (``INVALID_SPEC`` at the
+    document root, or the core ``UNSUPPORTED_FEATURE`` / ``UNSUPPORTED_DIALECT``
+    code) with AST node kinds named rather than Rust debug dumps.
     """
     ...
 

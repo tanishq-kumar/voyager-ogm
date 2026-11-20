@@ -124,6 +124,29 @@ fn json_type_name(val: &Bound<'_, PyAny>) -> &'static str {
     }
 }
 
+/// Renders a scalar Python value the way JSON spells it, for error messages.
+///
+/// Containers and arbitrary objects fall back to their JSON type name, so a
+/// Python `repr` (single quotes, tuple parentheses) never leaks into a spec
+/// message.
+fn render_json_scalar(val: &Bound<'_, PyAny>) -> Option<String> {
+    if val.is_none() {
+        Some("null".to_string())
+    } else if let Ok(boolean) = val.extract::<bool>() {
+        Some(boolean.to_string())
+    } else if let Ok(integer) = val.extract::<i64>() {
+        Some(integer.to_string())
+    } else if let Ok(float) = val.extract::<f64>() {
+        Some(float.to_string())
+    } else if val.is_instance_of::<PyString>() {
+        val.extract::<String>()
+            .ok()
+            .map(|s| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")))
+    } else {
+        None
+    }
+}
+
 /// Builds a [`VoyagerError`] with code `INVALID_SPEC`, the JSON Pointer on
 /// `err.path`, and the same pointer in the message.
 fn make_spec_err(path: &SpecPath, msg: impl Into<String>) -> PyErr {
@@ -871,6 +894,17 @@ fn handle_dict_expr(
         }
         return py_to_node_handle_depth(builder, &inner_expr, depth + 1, &path.key("expr"));
     }
+    if path.is_spec() {
+        // A bare object in an expression position is not a query spec: nested
+        // query specs are only accepted by the dedicated `exists`/`count`
+        // payload and `pattern_comp` path readers, which call the subquery
+        // builder directly. Everywhere else an object must wrap its expression
+        // under an "expr" key.
+        return Err(make_spec_err(
+            path,
+            "expected an object-wrapped expression with an 'expr' key; a nested query spec is only accepted by the 'exists', 'count', and 'pattern_comp' payloads",
+        ));
+    }
     let dict_cloned = dict.clone();
     let mut subquery_err: Option<PyErr> = None;
     let sub_h = builder.subquery(|q| {
@@ -936,6 +970,45 @@ fn check_spec_arity(
         ));
     }
     Ok(())
+}
+
+/// Validates the item count of a fixed-arity spec array against both bounds.
+///
+/// Every fixed shape in the v1 schema carries `maxItems`; an item past the
+/// documented shape is a spec error at the extra item's own path instead of
+/// being read and silently dropped. Path steps use the narrower
+/// [`reject_extra_step_items`] tolerance, which still accepts trailing `null`
+/// placeholders.
+fn check_spec_arity_bounded(
+    tuple: &Bound<'_, PyTuple>,
+    path: &SpecPath,
+    field: &str,
+    min_items: usize,
+    max_items: usize,
+    shape: &str,
+) -> PyResult<()> {
+    check_spec_arity(tuple, path, field, min_items, shape)?;
+    if tuple.len() > max_items {
+        let extra = tuple.get_item(max_items)?;
+        return Err(path_error(
+            &path.index(max_items),
+            format!(
+                "Invalid '{field}': unexpected {} after the documented shape {shape}. This position accepts at most {max_items} item(s).",
+                json_type_name(&extra)
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Strips one leading `$` from a parameter name, matching the Python SDK's
+/// `param()` helper (`param("$batch")` and `param("batch")` are the same
+/// parameter). Exactly one `$` is removed; `"$$x"` still names `"$x"`.
+fn strip_leading_dollar(name: String) -> String {
+    match name.strip_prefix('$') {
+        Some(stripped) => stripped.to_string(),
+        None => name,
+    }
 }
 
 /// Rejects items past a path step's documented shape unless they are `null`.
@@ -1042,14 +1115,17 @@ fn extract_alias_from_expr_spec(
             .map(|t| t == "alias")
             .unwrap_or(false)
     {
-        check_spec_arity(
+        check_spec_arity_bounded(
             &seq,
             path,
             "expression 'alias'",
             3,
+            3,
             "[alias, expression, name]",
         )?;
-        return Ok(seq.get_item(2)?.extract().ok());
+        let name: String =
+            extract_required(&seq.get_item(2)?, &path.index(2), "a string alias name")?;
+        return Ok(Some(name));
     }
     Ok(None)
 }
@@ -1060,14 +1136,21 @@ fn handle_prop_tuple(
     tuple: &Bound<'_, PyTuple>,
     path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    check_spec_arity(
+    check_spec_arity_bounded(
         tuple,
         path,
         "expression 'prop'",
         3,
+        3,
         "[prop, variable, property]",
     )?;
     let var: String = extract_required(&tuple.get_item(1)?, &path.index(1), "a string variable")?;
+    if var.is_empty() {
+        return Err(path_error(
+            &path.index(1),
+            "Invalid 'prop': the variable must be a non-empty string.",
+        ));
+    }
     let prop: String = extract_required(&tuple.get_item(2)?, &path.index(2), "a string property")?;
     Ok(builder.prop(var, prop))
 }
@@ -1078,8 +1161,14 @@ fn handle_ident_tuple(
     tuple: &Bound<'_, PyTuple>,
     path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    check_spec_arity(tuple, path, "expression 'ident'", 2, "[ident, name]")?;
+    check_spec_arity_bounded(tuple, path, "expression 'ident'", 2, 2, "[ident, name]")?;
     let name: String = extract_required(&tuple.get_item(1)?, &path.index(1), "a string name")?;
+    if name.is_empty() {
+        return Err(path_error(
+            &path.index(1),
+            "Invalid 'ident': the identifier must be a non-empty string.",
+        ));
+    }
     Ok(builder.ident(name))
 }
 
@@ -1089,8 +1178,15 @@ fn handle_param_tuple(
     tuple: &Bound<'_, PyTuple>,
     path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    check_spec_arity(tuple, path, "expression 'param'", 2, "[param, name]")?;
+    check_spec_arity_bounded(tuple, path, "expression 'param'", 2, 2, "[param, name]")?;
     let name: String = extract_required(&tuple.get_item(1)?, &path.index(1), "a string name")?;
+    let name = strip_leading_dollar(name);
+    if name.is_empty() {
+        return Err(path_error(
+            &path.index(1),
+            "Invalid 'param': the parameter name must be a non-empty string.",
+        ));
+    }
     Ok(builder.param(name))
 }
 
@@ -1100,7 +1196,7 @@ fn handle_lit_tuple(
     tuple: &Bound<'_, PyTuple>,
     path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    check_spec_arity(tuple, path, "expression 'lit'", 2, "[lit, value]")?;
+    check_spec_arity_bounded(tuple, path, "expression 'lit'", 2, 2, "[lit, value]")?;
     let value_path = path.index(1);
     let lit = py_to_literal(&tuple.get_item(1)?)
         .map_err(|e| path_value_error(&value_path, e.to_string()))?;
@@ -1114,7 +1210,7 @@ fn handle_fn_tuple(
     depth: usize,
     path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    check_spec_arity(tuple, path, "expression 'fn'", 3, "[fn, name, args]")?;
+    check_spec_arity_bounded(tuple, path, "expression 'fn'", 3, 3, "[fn, name, args]")?;
     let name: String = extract_required(&tuple.get_item(1)?, &path.index(1), "a string name")?;
     let args_path = path.index(2);
     let args_seq = expect_spec_array(&tuple.get_item(2)?, &args_path, "fn args")?;
@@ -1137,10 +1233,11 @@ fn handle_case_tuple(
     depth: usize,
     path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    check_spec_arity(
+    check_spec_arity_bounded(
         tuple,
         path,
         "expression 'case'",
+        4,
         4,
         "[case, operand, branches, else_branch]",
     )?;
@@ -1161,7 +1258,7 @@ fn handle_case_tuple(
     for (idx, item) in branches_seq.iter().enumerate() {
         let branch_path = branches_path.index(idx);
         let branch = expect_spec_array(&item, &branch_path, "case branch")?;
-        check_spec_arity(&branch, &branch_path, "case branch", 2, "[when, then]")?;
+        check_spec_arity_bounded(&branch, &branch_path, "case branch", 2, 2, "[when, then]")?;
         let w = py_to_node_handle_depth(
             builder,
             &branch.get_item(0)?,
@@ -1197,10 +1294,11 @@ fn handle_list_comp_tuple(
     depth: usize,
     path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    check_spec_arity(
+    check_spec_arity_bounded(
         tuple,
         path,
         "expression 'list_comp'",
+        5,
         5,
         "[list_comp, variable, list_expr, where_filter, map_expr]",
     )?;
@@ -1238,10 +1336,11 @@ fn handle_pattern_comp_tuple(
     depth: usize,
     path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    check_spec_arity(
+    check_spec_arity_bounded(
         tuple,
         path,
         "expression 'pattern_comp'",
+        4,
         4,
         "[pattern_comp, path_spec, where_filter, proj_expr]",
     )?;
@@ -1268,10 +1367,11 @@ fn handle_exists_tuple(
     tuple: &Bound<'_, PyTuple>,
     path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    check_spec_arity(
+    check_spec_arity_bounded(
         tuple,
         path,
         "expression 'exists'",
+        2,
         2,
         "[exists, subquery_spec]",
     )?;
@@ -1286,10 +1386,11 @@ fn handle_count_tuple(
     tuple: &Bound<'_, PyTuple>,
     path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    check_spec_arity(
+    check_spec_arity_bounded(
         tuple,
         path,
         "expression 'count'",
+        2,
         2,
         "[count, subquery_spec]",
     )?;
@@ -1305,7 +1406,7 @@ fn handle_list_literal_tuple(
     depth: usize,
     path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    check_spec_arity(tuple, path, "expression 'list'", 2, "[list, items]")?;
+    check_spec_arity_bounded(tuple, path, "expression 'list'", 2, 2, "[list, items]")?;
     let items_path = path.index(1);
     let items_seq = expect_spec_array(&tuple.get_item(1)?, &items_path, "list items")?;
     let mut item_handles = Vec::with_capacity(items_seq.len());
@@ -1405,15 +1506,15 @@ fn expression_tag(tuple: &Bound<'_, PyTuple>, path: &SpecPath) -> PyResult<Strin
     let tag = match first.extract::<String>() {
         Ok(tag) => tag,
         Err(_) => {
-            let rendered: String = first
-                .repr()
-                .and_then(|value| value.extract())
-                .unwrap_or_else(|_| "<unprintable>".to_string());
+            let type_name = json_type_name(&first);
+            let rendered = match render_json_scalar(&first) {
+                Some(value) => format!("got {value} ({type_name})"),
+                None => format!("got {type_name}"),
+            };
             return Err(path_error(
                 path,
                 format!(
-                    "Invalid expression array: the first element must be a known expression tag string, got {rendered} ({}). {}",
-                    json_type_name(&first),
+                    "Invalid expression array: the first element must be a known expression tag string, {rendered}. {}",
                     EXPRESSION_ARRAY_HINT
                 ),
             ));
@@ -1445,10 +1546,11 @@ fn handle_expr_sequence(
         "param" => handle_param_tuple(builder, &tuple, path),
         "lit" | "literal" => handle_lit_tuple(builder, &tuple, path),
         "bin" => {
-            check_spec_arity(
+            check_spec_arity_bounded(
                 &tuple,
                 path,
                 "expression 'bin'",
+                4,
                 4,
                 "[bin, operator, left, right]",
             )?;
@@ -1464,10 +1566,11 @@ fn handle_expr_sequence(
             Ok(builder.binary_expr(left, op, right))
         }
         "unary" => {
-            check_spec_arity(
+            check_spec_arity_bounded(
                 &tuple,
                 path,
                 "expression 'unary'",
+                3,
                 3,
                 "[unary, operator, operand]",
             )?;
@@ -1488,13 +1591,16 @@ fn handle_expr_sequence(
         "count" => handle_count_tuple(builder, &tuple, path),
         "list" => handle_list_literal_tuple(builder, &tuple, depth, path),
         "alias" => {
-            check_spec_arity(
+            check_spec_arity_bounded(
                 &tuple,
                 path,
                 "expression 'alias'",
                 3,
+                3,
                 "[alias, expression, name]",
             )?;
+            let _: String =
+                extract_required(&tuple.get_item(2)?, &path.index(2), "a string alias name")?;
             py_to_node_handle_depth(builder, &tuple.get_item(1)?, depth + 1, &path.index(1))
         }
         other => Err(path_error(
@@ -1666,12 +1772,13 @@ fn build_order_by_entry(
     )?;
     let first = tuple.get_item(0)?;
     if let Ok(var) = first.extract::<String>() {
-        check_spec_arity(&tuple, path, field, 3, "[variable, property, direction]")?;
+        check_spec_arity_bounded(&tuple, path, field, 3, 3, "[variable, property, direction]")?;
         let prop: String =
             extract_required(&tuple.get_item(1)?, &path.index(1), "a string property")?;
         let asc = parse_order_asc(&tuple.get_item(2)?, &path.index(2), field)?;
         builder.order_by_property(var, prop, asc);
     } else {
+        check_spec_arity_bounded(&tuple, path, field, 2, 2, "[expression, direction]")?;
         let expr_h = py_to_node_handle_at(builder, &first, &path.index(0))?;
         let asc = parse_order_asc(&tuple.get_item(1)?, &path.index(1), field)?;
         builder.order_by(expr_h, asc);
@@ -1717,15 +1824,15 @@ fn build_where_predicates(
             }
             return Ok(());
         }
-        let rendered: String = first
-            .repr()
-            .and_then(|value| value.extract())
-            .unwrap_or_else(|_| "<unprintable>".to_string());
+        let type_name = json_type_name(&first);
+        let rendered = match render_json_scalar(&first) {
+            Some(value) => format!("first element {value} ({type_name})"),
+            None => format!("first element of type {type_name}"),
+        };
         return Err(make_spec_err(
             path,
             format!(
-                "Invalid 'where': a 'where' array must be one expression (starting with a string tag) or an array of expressions (starting with an array or object), got first element {rendered} ({}). {}",
-                json_type_name(&first),
+                "Invalid 'where': a 'where' array must be one expression (starting with a string tag) or an array of expressions (starting with an array or object), got {rendered}. {}",
                 EXPRESSION_ARRAY_HINT
             ),
         ));
@@ -1751,8 +1858,7 @@ fn build_path_from_py(
         let sub_h = builder.import_subarena(sub_arena, sub_handle);
         return Ok(sub_h);
     }
-    if let Ok(list) = spec.cast::<PyList>() {
-        let steps = list.to_tuple();
+    if let Some(steps) = as_spec_sequence(spec) {
         let mut err: Option<PyErr> = None;
         let sub_h = builder.subquery(|q| {
             if let Err(e) = build_path_steps_into_builder(q, &steps, path) {
@@ -1796,8 +1902,7 @@ fn build_subquery_from_py(
             return Err(e);
         }
         Ok(sub_h)
-    } else if let Ok(list) = spec.cast::<PyList>() {
-        let steps = list.to_tuple();
+    } else if let Some(steps) = as_spec_sequence(spec) {
         let mut err: Option<PyErr> = None;
         let sub_h = builder.subquery(|q| {
             q.r#match();
@@ -1860,8 +1965,18 @@ fn reject_unknown_keys(
     what: &str,
 ) -> PyResult<()> {
     for (key, _value) in dict.iter() {
-        let key_path = path.key("<key>");
-        let key_str: String = extract_required(&key, &key_path, "a string object key")?;
+        let key_str: String = match key.extract() {
+            Ok(key_str) => key_str,
+            Err(_) => {
+                return Err(make_spec_err(
+                    path,
+                    format!(
+                        "invalid {what}: object keys must be strings, got {}",
+                        json_type_name(&key)
+                    ),
+                ));
+            }
+        };
         if !allowed.contains(&key_str.as_str()) {
             return Err(make_spec_err(
                 &path.key(&key_str),
@@ -1909,10 +2024,11 @@ fn build_projection_item(
     let tag: String = extract_required(&tuple.get_item(0)?, &tag_path, "a string projection tag")?;
     match tag.as_str() {
         "field" => {
-            check_spec_arity(
+            check_spec_arity_bounded(
                 &tuple,
                 path,
                 "projection 'field'",
+                4,
                 4,
                 "[field, variable, property, alias]",
             )?;
@@ -1928,10 +2044,11 @@ fn build_projection_item(
             builder.field(var, prop, alias);
         }
         "agg" => {
-            check_spec_arity(
+            check_spec_arity_bounded(
                 &tuple,
                 path,
                 "projection 'agg'",
+                5,
                 5,
                 "[agg, variable, property, func, alias]",
             )?;
@@ -1975,10 +2092,11 @@ fn build_projection_item(
             }
         }
         "expr" => {
-            check_spec_arity(
+            check_spec_arity_bounded(
                 &tuple,
                 path,
                 "projection 'expr'",
+                3,
                 3,
                 "[expr, expression, alias]",
             )?;
@@ -2041,15 +2159,19 @@ fn build_query_from_spec_internal(
     reject_unknown_keys(spec, path, ROOT_SPEC_KEYS, "top-level query spec")?;
 
     let mut produced_clause = false;
+    let mut mutation_count = 0usize;
+    let mut with_clause_count = 0usize;
+    let mut has_root_projections = false;
 
     if let Some(load_csv_item) = spec.get_item("load_csv")? {
         if !load_csv_item.is_none() {
             let item_path = path.key("load_csv");
             let tuple = expect_spec_array(&load_csv_item, &item_path, "load_csv")?;
-            check_spec_arity(
+            check_spec_arity_bounded(
                 &tuple,
                 &item_path,
                 "load_csv",
+                3,
                 3,
                 "[url, with_headers, alias]",
             )?;
@@ -2070,12 +2192,19 @@ fn build_query_from_spec_internal(
         for (idx, item) in unwinds_seq.iter().enumerate() {
             let item_path = key_path.index(idx);
             let tuple = expect_spec_array(&item, &item_path, "unwinds entry")?;
-            check_spec_arity(&tuple, &item_path, "unwinds entry", 2, "[param, alias]")?;
+            check_spec_arity_bounded(&tuple, &item_path, "unwinds entry", 2, 2, "[param, alias]")?;
             let param_name: String = extract_required(
                 &tuple.get_item(0)?,
                 &item_path.index(0),
                 "a string parameter name",
             )?;
+            let param_name = strip_leading_dollar(param_name);
+            if param_name.is_empty() {
+                return Err(make_spec_err(
+                    &item_path.index(0),
+                    "Invalid 'unwinds entry': the parameter name must be a non-empty string.",
+                ));
+            }
             let alias: String =
                 extract_required(&tuple.get_item(1)?, &item_path.index(1), "a string alias")?;
             builder.unwind_param(param_name, alias);
@@ -2172,6 +2301,12 @@ fn build_query_from_spec_internal(
                     builder.path_variable(v_str);
                 }
             }
+            if paths_seq.is_empty() {
+                return Err(make_spec_err(
+                    &paths_path,
+                    "a match clause needs at least one path; an empty 'paths' list has no pattern and would leave its predicates unattached",
+                ));
+            }
 
             for (p_idx, p_steps) in paths_seq.iter().enumerate() {
                 if p_idx > 0 {
@@ -2196,6 +2331,7 @@ fn build_query_from_spec_internal(
     if let Some(mutations_item) = spec.get_item("mutations")? {
         let key_path = path.key("mutations");
         let mutations_seq = expect_spec_array(&mutations_item, &key_path, "mutations")?;
+        mutation_count = mutations_seq.len();
         for (idx, mut_item) in mutations_seq.iter().enumerate() {
             let mut_path = key_path.index(idx);
             let tuple = expect_spec_array(&mut_item, &mut_path, "mutation")?;
@@ -2205,7 +2341,14 @@ fn build_query_from_spec_internal(
                 extract_required(&tuple.get_item(0)?, &tag_path, "a string mutation tag")?;
             match tag.as_str() {
                 "create" => {
-                    check_spec_arity(&tuple, &mut_path, "mutation 'create'", 2, "[create, paths]")?;
+                    check_spec_arity_bounded(
+                        &tuple,
+                        &mut_path,
+                        "mutation 'create'",
+                        2,
+                        2,
+                        "[create, paths]",
+                    )?;
                     builder.create();
                     let paths_path = mut_path.index(1);
                     let paths = expect_spec_array(
@@ -2223,10 +2366,11 @@ fn build_query_from_spec_internal(
                     }
                 }
                 "merge" => {
-                    check_spec_arity(
+                    check_spec_arity_bounded(
                         &tuple,
                         &mut_path,
                         "mutation 'merge'",
+                        4,
                         4,
                         "[merge, path, on_create_set, on_match_set]",
                     )?;
@@ -2249,10 +2393,11 @@ fn build_query_from_spec_internal(
                         let item_path = on_create_path.index(s_idx);
                         let s_tuple =
                             expect_spec_array(&item, &item_path, "merge 'on_create_set' entry")?;
-                        check_spec_arity(
+                        check_spec_arity_bounded(
                             &s_tuple,
                             &item_path,
                             "merge 'on_create_set' entry",
+                            3,
                             3,
                             "[variable, property, value]",
                         )?;
@@ -2284,10 +2429,11 @@ fn build_query_from_spec_internal(
                         let item_path = on_match_path.index(s_idx);
                         let s_tuple =
                             expect_spec_array(&item, &item_path, "merge 'on_match_set' entry")?;
-                        check_spec_arity(
+                        check_spec_arity_bounded(
                             &s_tuple,
                             &item_path,
                             "merge 'on_match_set' entry",
+                            3,
                             3,
                             "[variable, property, value]",
                         )?;
@@ -2310,10 +2456,11 @@ fn build_query_from_spec_internal(
                     }
                 }
                 "set" => {
-                    check_spec_arity(
+                    check_spec_arity_bounded(
                         &tuple,
                         &mut_path,
                         "mutation 'set'",
+                        4,
                         4,
                         "[set, variable, property, value]",
                     )?;
@@ -2332,10 +2479,11 @@ fn build_query_from_spec_internal(
                     builder.set_property_expr(var, prop, val_h);
                 }
                 "delete" => {
-                    check_spec_arity(
+                    check_spec_arity_bounded(
                         &tuple,
                         &mut_path,
                         "mutation 'delete'",
+                        3,
                         3,
                         "[delete, detach, targets]",
                     )?;
@@ -2353,10 +2501,11 @@ fn build_query_from_spec_internal(
                     }
                 }
                 "remove" => {
-                    check_spec_arity(
+                    check_spec_arity_bounded(
                         &tuple,
                         &mut_path,
                         "mutation 'remove'",
+                        3,
                         3,
                         "[remove, variable, property]",
                     )?;
@@ -2388,6 +2537,7 @@ fn build_query_from_spec_internal(
     if let Some(with_item) = spec.get_item("with_clauses")? {
         let key_path = path.key("with_clauses");
         let with_seq = expect_spec_array(&with_item, &key_path, "with_clauses")?;
+        with_clause_count = with_seq.len();
         for (idx, item) in with_seq.iter().enumerate() {
             let item_path = key_path.index(idx);
             let with_dict = item.cast::<PyDict>().map_err(|_| {
@@ -2430,10 +2580,14 @@ fn build_query_from_spec_internal(
             }
             let proj_path = item_path.key("projections");
             let proj_seq = expect_spec_array(&proj_item, &proj_path, "with_clauses 'projections'")?;
-            builder.r#with();
-            if !proj_seq.is_empty() {
-                produced_clause = true;
+            if proj_seq.is_empty() {
+                return Err(make_spec_err(
+                    &proj_path,
+                    "a with clause needs at least one projection; an empty projection list would drop its where, order_by, skip and limit",
+                ));
             }
+            builder.r#with();
+            produced_clause = true;
             if let Some(distinct_item) = with_dict.get_item("distinct")? {
                 if !distinct_item.is_none() {
                     let distinct: bool =
@@ -2488,10 +2642,37 @@ fn build_query_from_spec_internal(
             if !proj_seq.is_empty() {
                 builder.r#return();
                 produced_clause = true;
+                has_root_projections = true;
             }
             for (idx, item) in proj_seq.iter().enumerate() {
                 build_projection_item(builder, &item, &proj_path.index(idx))?;
             }
+        }
+    }
+
+    // Root pagination and DISTINCT belong to the final RETURN. Without one they
+    // would either be dropped or fold into the last pending WITH, silently
+    // changing the query's meaning, so reject them at the first offending key.
+    if !has_root_projections {
+        for key in ["distinct", "order_by", "skip", "offset", "limit"] {
+            if let Some(item) = spec.get_item(key)?
+                && !item.is_none()
+            {
+                return Err(make_spec_err(
+                    &path.key(key),
+                    format!(
+                        "root-level '{key}' requires 'projections'; add a non-empty root projection list (a RETURN clause) or move it into a with clause"
+                    ),
+                ));
+            }
+        }
+        // A statement that ends in WITH is not a complete query. Mutations emit
+        // after WITH, so a mutation-only tail is fine.
+        if with_clause_count > 0 && mutation_count == 0 {
+            return Err(make_spec_err(
+                &path.key("projections"),
+                "a query ending in WITH needs root projections; add a non-empty root 'projections' list to close the statement with RETURN",
+            ));
         }
     }
 
@@ -2553,10 +2734,11 @@ fn build_query_from_spec_internal(
                 extract_required(&tuple.get_item(0)?, &tag_path, "a string linear clause tag")?;
             match tag.as_str() {
                 "let" => {
-                    check_spec_arity(
+                    check_spec_arity_bounded(
                         &tuple,
                         &item_path,
                         "linear clause 'let'",
+                        3,
                         3,
                         "[let, variable, expression]",
                     )?;
@@ -2570,10 +2752,11 @@ fn build_query_from_spec_internal(
                     builder.let_(var, expr_h);
                 }
                 "filter" => {
-                    check_spec_arity(
+                    check_spec_arity_bounded(
                         &tuple,
                         &item_path,
                         "linear clause 'filter'",
+                        2,
                         2,
                         "[filter, predicate]",
                     )?;
@@ -3671,6 +3854,68 @@ fn generate_synthetic_stream(count: usize) -> PyResult<PyArrowStream> {
     Ok(PyArrowStream::from_batch(batch))
 }
 
+/// Replaces a Rust `Debug` rendering of an AST node in a compile error message
+/// with the node kind alone.
+///
+/// Emitters report failures such as `Unsupported expression node:
+/// QueryStatement(..)`; a spec author cannot act on the arena indexes and field
+/// values inside that dump, so only the variant name survives.
+fn sanitize_compile_message(message: &str) -> String {
+    fn node_kind(text: &str) -> Option<&str> {
+        let mut end = 0;
+        for (idx, ch) in text.char_indices() {
+            let allowed = if idx == 0 {
+                ch.is_ascii_uppercase()
+            } else {
+                ch.is_ascii_alphanumeric() || ch == '_'
+            };
+            if allowed {
+                end = idx + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if end == 0 {
+            return None;
+        }
+        let rest = &text[end..];
+        if rest.starts_with('(') || rest.starts_with('{') || rest.starts_with(" {") {
+            Some(&text[..end])
+        } else {
+            None
+        }
+    }
+    for marker in [": ", " got "] {
+        for (idx, _) in message.match_indices(marker) {
+            let tail = &message[idx + marker.len()..];
+            if let Some(kind) = node_kind(tail) {
+                return format!("{}{kind} (AST node kind)", &message[..idx + marker.len()]);
+            }
+        }
+    }
+    message.to_string()
+}
+
+/// Maps a core `try_build` or emitter failure from `compile_query_from_spec`.
+///
+/// Build and emission failures are spec failures: they surface as
+/// `VoyagerError` with a code and a sanitized message. Dialect limitations keep
+/// their `UNSUPPORTED_FEATURE` / `UNSUPPORTED_DIALECT` codes; every other
+/// failure is `INVALID_SPEC` at the document root.
+fn map_compile_error(err: voyager_ogm::Error) -> PyErr {
+    let message = sanitize_compile_message(&err.to_string());
+    match err.code() {
+        voyager_ogm::ErrorCode::UnsupportedFeature | voyager_ogm::ErrorCode::UnsupportedDialect => {
+            let py_err = make_voyager_err(err.code(), message);
+            Python::attach(|py| {
+                let _ = py_err.value(py).setattr("path", "");
+            });
+            py_err
+        }
+        _ => make_spec_err(&SpecPath::spec_root(), message),
+    }
+}
+
 /// Compiles a query spec dictionary directly into a target dialect query with parameters in a single FFI call.
 ///
 /// The spec must be a Query Spec v1 object (`spec_version: 1`). Any malformed
@@ -3729,16 +3974,14 @@ fn compile_query_from_spec<'py>(
     let mut builder = QueryBuilder::new();
     build_query_from_spec_internal(&mut builder, spec, &SpecPath::spec_root())?;
     check_warn_cypher_path_mode(py, dialect, builder.get_path_mode().as_deref())?;
-    let (mut arena, root) = builder
-        .try_build()
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let (mut arena, root) = builder.try_build().map_err(map_compile_error)?;
 
     if optimize {
         let opt_level = OptimizationLevel::from_str_opt(optimization_level);
         let optimizer = AstOptimizer::new(opt_level);
         optimizer
             .optimize(&mut arena, root)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(map_compile_error)?;
     }
 
     let compiled = match dialect.to_lowercase().as_str() {
@@ -3746,20 +3989,20 @@ fn compile_query_from_spec<'py>(
             let mut emitter = CypherEmitter::new();
             emitter
                 .visit_query(&arena, root)
-                .map_err(|e| PyValueError::new_err(e.to_string()))?
+                .map_err(map_compile_error)?
         }
         "sql_pgq" | "pgq" | "duckpgq" | "sql" => {
             let name = graph_name.unwrap_or_else(|| "graph_table".into());
             let mut emitter = SqlPgqEmitter::new(name);
             emitter
                 .visit_query(&arena, root)
-                .map_err(|e| PyValueError::new_err(e.to_string()))?
+                .map_err(map_compile_error)?
         }
         "iso_gql" | "gql" => {
             let mut emitter = IsoGqlEmitter::new();
             emitter
                 .visit_query(&arena, root)
-                .map_err(|e| PyValueError::new_err(e.to_string()))?
+                .map_err(map_compile_error)?
         }
         "age" | "apache_age" | "postgres_age" => {
             let name =
@@ -3767,7 +4010,7 @@ fn compile_query_from_spec<'py>(
             let mut emitter = AgeEmitter::new(name);
             emitter
                 .visit_query(&arena, root)
-                .map_err(|e| PyValueError::new_err(e.to_string()))?
+                .map_err(map_compile_error)?
         }
         other => {
             return Err(make_voyager_err(

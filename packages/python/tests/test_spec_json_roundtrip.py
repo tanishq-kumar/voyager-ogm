@@ -334,14 +334,46 @@ def test_mixed_tuple_and_list_arrays_compile_identically() -> None:
             "/mutations/0/3/0",
         ),
         # order_by entry: wrong length, non-sequence and bad direction spelling.
-        ({"spec_version": 1, "order_by": [("p", "name")]}, "order_by entry", "/order_by/0"),
-        ({"spec_version": 1, "order_by": [["p", "name"]]}, "order_by entry", "/order_by/0"),
         (
-            {"spec_version": 1, "order_by": [["p", "name", "sideways"]]},
+            {
+                "spec_version": 1,
+                "matches": PERSON_MATCH,
+                "projections": [("field", "p", "name", None)],
+                "order_by": [("p", "name")],
+            },
+            "order_by entry",
+            "/order_by/0",
+        ),
+        (
+            {
+                "spec_version": 1,
+                "matches": PERSON_MATCH,
+                "projections": [("field", "p", "name", None)],
+                "order_by": [["p", "name"]],
+            },
+            "order_by entry",
+            "/order_by/0",
+        ),
+        (
+            {
+                "spec_version": 1,
+                "matches": PERSON_MATCH,
+                "projections": [("field", "p", "name", None)],
+                "order_by": [["p", "name", "sideways"]],
+            },
             "order_by entry",
             "/order_by/0/2",
         ),
-        ({"spec_version": 1, "order_by": [42]}, "order_by entry", "/order_by/0"),
+        (
+            {
+                "spec_version": 1,
+                "matches": PERSON_MATCH,
+                "projections": [("field", "p", "name", None)],
+                "order_by": [42],
+            },
+            "order_by entry",
+            "/order_by/0",
+        ),
         # linear_clauses entry: wrong length.
         (
             {"spec_version": 1, "linear_clauses": [("let", "x")]},

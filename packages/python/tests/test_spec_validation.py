@@ -70,7 +70,10 @@ def test_issue_187_empty_spec_is_rejected() -> None:
         # Empty containers do not count as clauses.
         ({"spec_version": 1, "matches": []}, ""),
         ({"spec_version": 1, "projections": []}, ""),
-        ({"spec_version": 1, "with_clauses": [{"projections": []}]}, ""),
+        (
+            {"spec_version": 1, "with_clauses": [{"projections": []}]},
+            "/with_clauses/0/projections",
+        ),
         # Unknown keys at every object level.
         ({"spec_version": 1, "matches": [{"paths": [], "bogus": 1}]}, "/matches/0/bogus"),
         (
@@ -451,7 +454,7 @@ RAW_VALUE_POSITIONS: dict[str, tuple[str, str, str]] = {
         '"matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
         '"projections": [["field", "p", "name", null]]}',
         "cypher",
-        "UNWIND $$batch AS row",
+        "UNWIND $batch AS row",
     ),
     "match.optional": (
         '{"spec_version": 1, "matches": [{"optional": true, '
@@ -780,13 +783,14 @@ def test_where_rejections_use_json_types_and_hints(
         ),
         pytest.param(
             '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
-            '"skip": true}',
+            '"projections": [["field", "p", "name", null]], "skip": true}',
             "/skip",
             "got boolean",
             id="skip-boolean",
         ),
         pytest.param(
             '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+            '"projections": [["field", "p", "name", null]], '
             '"order_by": [["p", "age", 1]]}',
             "/order_by/0/2",
             "got number",
