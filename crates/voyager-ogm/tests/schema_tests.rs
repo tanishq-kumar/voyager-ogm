@@ -310,6 +310,55 @@ fn test_registry_keeps_same_named_models_apart() {
 }
 
 #[test]
+fn test_same_named_models_with_descriptions_preserve_in_registry_and_snapshot() {
+    let registry = SchemaRegistry::new();
+    let first = NodeSchema::new("User", vec!["User".to_string()])
+        .with_description("Catalog user profile")
+        .with_field(FieldDescriptor::new("actor_id", FieldType::String).primary_key());
+    let second = NodeSchema::new("User", vec!["User".to_string()])
+        .with_description("Billing user account")
+        .with_field(FieldDescriptor::new("customer_id", FieldType::String).primary_key());
+
+    registry
+        .register_node_with_id("catalog.User", first)
+        .unwrap();
+    registry
+        .register_node_with_id("billing.User", second)
+        .unwrap();
+
+    assert_eq!(
+        registry.get_node("catalog.User").unwrap().description,
+        Some("Catalog user profile".to_string())
+    );
+    assert_eq!(
+        registry.get_node("billing.User").unwrap().description,
+        Some("Billing user account".to_string())
+    );
+
+    let snapshot = registry.snapshot();
+    assert_eq!(
+        snapshot.nodes.get("catalog.User").unwrap().description,
+        Some("Catalog user profile".to_string())
+    );
+    assert_eq!(
+        snapshot.nodes.get("billing.User").unwrap().description,
+        Some("Billing user account".to_string())
+    );
+
+    let json = registry.to_json().unwrap();
+    let restored = SchemaRegistry::new();
+    restored.from_json(&json).unwrap();
+    assert_eq!(
+        restored.get_node("catalog.User").unwrap().description,
+        Some("Catalog user profile".to_string())
+    );
+    assert_eq!(
+        restored.get_node("billing.User").unwrap().description,
+        Some("Billing user account".to_string())
+    );
+}
+
+#[test]
 fn test_registry_keeps_same_named_relationships_apart() {
     let registry = SchemaRegistry::new();
     let first = RelationshipSchema::new("Follows", "FOLLOWS")
@@ -1256,4 +1305,192 @@ fn test_falkordb_fulltext_single_and_multi_property_ddl() {
         emit_rel_drop_index_ddl(&multi_rel, "falkordb").unwrap(),
         vec!["DROP FULLTEXT INDEX FOR ()-[r:ANNOTATED]-() ON (r.notes, r.context)"]
     );
+}
+
+#[test]
+fn test_schema_description_metadata_and_snapshot_serialization() {
+    let registry = SchemaRegistry::new();
+
+    let user_schema = NodeSchema::new("User", vec!["User".to_string()])
+        .with_description("Represents an authenticated user account")
+        .with_field(
+            FieldDescriptor::new("id", FieldType::String)
+                .primary_key()
+                .with_description("Unique identifier for the user account"),
+        )
+        .with_field(
+            FieldDescriptor::new("email", FieldType::String)
+                .unique()
+                .with_description("Primary email contact"),
+        );
+    registry.register_node(user_schema).unwrap();
+
+    let follows_schema = RelationshipSchema::new("Follows", "FOLLOWS")
+        .with_description("Social follow relationship between users")
+        .with_endpoints(vec!["User".to_string()], vec!["User".to_string()])
+        .with_field(
+            FieldDescriptor::new("since", FieldType::Int64)
+                .with_description("Timestamp when the follow relationship began"),
+        );
+    registry.register_relationship(follows_schema).unwrap();
+
+    let node = registry.get_node("User").unwrap();
+    assert_eq!(
+        node.description,
+        Some("Represents an authenticated user account".to_string())
+    );
+    assert_eq!(
+        node.fields.get("id").unwrap().description,
+        Some("Unique identifier for the user account".to_string())
+    );
+    assert_eq!(
+        node.fields.get("email").unwrap().description,
+        Some("Primary email contact".to_string())
+    );
+
+    let rel = registry.get_relationship("Follows").unwrap();
+    assert_eq!(
+        rel.description,
+        Some("Social follow relationship between users".to_string())
+    );
+    assert_eq!(
+        rel.fields.get("since").unwrap().description,
+        Some("Timestamp when the follow relationship began".to_string())
+    );
+
+    let json_str = registry.to_json().unwrap();
+    assert!(json_str.contains("\"description\":\"Represents an authenticated user account\""));
+    assert!(json_str.contains("\"description\":\"Unique identifier for the user account\""));
+    assert!(json_str.contains("\"description\":\"Social follow relationship between users\""));
+
+    let restored = SchemaRegistry::new();
+    restored.from_json(&json_str).unwrap();
+    let r_node = restored.get_node("User").unwrap();
+    assert_eq!(
+        r_node.description,
+        Some("Represents an authenticated user account".to_string())
+    );
+    assert_eq!(
+        r_node.fields.get("id").unwrap().description,
+        Some("Unique identifier for the user account".to_string())
+    );
+    let r_rel = restored.get_relationship("Follows").unwrap();
+    assert_eq!(
+        r_rel.description,
+        Some("Social follow relationship between users".to_string())
+    );
+}
+
+#[test]
+fn test_old_snapshot_json_without_description_deserializes() {
+    let old_snapshot_json = r#"{
+        "nodes": {
+            "User": {
+                "name": "User",
+                "labels": ["User"],
+                "fields": {
+                    "id": {
+                        "name": "id",
+                        "field_type": "String",
+                        "nullable": false,
+                        "primary_key": true,
+                        "unique": true,
+                        "indexed": false,
+                        "index_type": null,
+                        "default_value": null,
+                        "vector_config": null
+                    }
+                },
+                "primary_key": "id",
+                "fulltext_indexes": []
+            }
+        },
+        "relationships": {
+            "Follows": {
+                "name": "Follows",
+                "type_name": "FOLLOWS",
+                "source_labels": ["User"],
+                "target_labels": ["User"],
+                "fields": {
+                    "since": {
+                        "name": "since",
+                        "field_type": "Int64",
+                        "nullable": true,
+                        "primary_key": false,
+                        "unique": false,
+                        "indexed": false,
+                        "index_type": null,
+                        "default_value": null,
+                        "vector_config": null
+                    }
+                },
+                "directed": true,
+                "fulltext_indexes": []
+            }
+        }
+    }"#;
+
+    let registry = SchemaRegistry::new();
+    registry.from_json(old_snapshot_json).unwrap();
+    assert_eq!(registry.len(), 2);
+
+    let node = registry.get_node("User").unwrap();
+    assert_eq!(node.name, "User");
+    assert_eq!(node.description, None);
+    assert_eq!(node.fields.get("id").unwrap().description, None);
+
+    let rel = registry.get_relationship("Follows").unwrap();
+    assert_eq!(rel.name, "Follows");
+    assert_eq!(rel.description, None);
+    assert_eq!(rel.fields.get("since").unwrap().description, None);
+}
+
+#[test]
+fn test_snapshot_for_model_without_descriptions_is_unchanged() {
+    let registry = SchemaRegistry::new();
+    let node = NodeSchema::new("Article", vec!["Article".to_string()])
+        .with_field(FieldDescriptor::new("id", FieldType::String).primary_key());
+    registry.register_node(node).unwrap();
+
+    let json_str = registry.to_json().unwrap();
+    assert!(
+        !json_str.contains("\"description\""),
+        "Snapshots without descriptions must omit the description field"
+    );
+
+    let expected_exact_json = r#"{"nodes":{"Article":{"name":"Article","labels":["Article"],"fields":{"id":{"name":"id","field_type":"String","nullable":false,"primary_key":true,"unique":true,"indexed":false,"index_type":null,"default_value":null,"vector_config":null}},"primary_key":"id","fulltext_indexes":[]}},"relationships":{}}"#;
+    assert_eq!(json_str, expected_exact_json);
+}
+
+#[test]
+fn test_node_primary_key_ddl_does_not_emit_node_key() {
+    use voyager_ogm::emit_cypher_node_ddl;
+
+    let node_schema = NodeSchema::new("Account", vec!["Account".to_string()])
+        .with_field(FieldDescriptor::new("account_id", FieldType::String).primary_key())
+        .with_description("User financial account entity");
+
+    let statements = emit_cypher_node_ddl(&node_schema, false);
+    for stmt in &statements {
+        assert!(
+            !stmt.contains("IS NODE KEY"),
+            "Statements must not contain Enterprise-only IS NODE KEY: {stmt}"
+        );
+    }
+
+    assert!(
+        statements
+            .iter()
+            .any(|s| s.contains("REQUIRE n.account_id IS NOT NULL"))
+    );
+    assert!(
+        statements
+            .iter()
+            .any(|s| s.contains("REQUIRE n.account_id IS UNIQUE"))
+    );
+
+    let undescribed_node = NodeSchema::new("Account", vec!["Account".to_string()])
+        .with_field(FieldDescriptor::new("account_id", FieldType::String).primary_key());
+    let undescribed_statements = emit_cypher_node_ddl(&undescribed_node, false);
+    assert_eq!(statements, undescribed_statements);
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import types
 
 import pytest
 from conftest import is_port_open as _is_port_open
@@ -19,6 +20,7 @@ from voyager_ogm import (
     node,
     relationship,
 )
+from voyager_ogm.models import _model_identity
 
 # ---------------------------------------------------------------------------
 # Unit Tests (No Database Required)
@@ -325,6 +327,260 @@ def test_error_handling() -> None:
     # Invalid fields argument type
     with pytest.raises(TypeError, match="fields must be a dict or list"):
         reg.register_node("Invalid", ["Invalid"], 12345)  # type: ignore[arg-type]
+
+
+def test_description_metadata_in_schema_registry_and_snapshot() -> None:
+    """Verifies that Field and model descriptions are stored in registry and snapshot JSON."""
+    reg = NativeSchemaRegistry()
+
+    reg.register_node(
+        "Document",
+        ["Document"],
+        {
+            "doc_id": {
+                "type": "STRING",
+                "primary_key": True,
+                "description": "Unique document identifier",
+            },
+            "title": {"type": "STRING", "indexed": True, "description": "Document title"},
+            "body": {"type": "STRING", "description": "Full document content"},
+        },
+        description="A formal document or publication",
+    )
+
+    reg.register_relationship(
+        "Cites",
+        "CITES",
+        source_labels=["Document"],
+        target_labels=["Document"],
+        fields={"weight": {"type": "INTEGER", "description": "Citation relevance score"}},
+        description="Directed citation reference between documents",
+    )
+
+    doc = reg.get_node("Document")
+    assert doc is not None
+    assert doc["description"] == "A formal document or publication"
+    assert doc["fields"]["doc_id"]["description"] == "Unique document identifier"
+    assert doc["fields"]["title"]["description"] == "Document title"
+    assert doc["fields"]["body"]["description"] == "Full document content"
+
+    cites = reg.get_relationship("Cites")
+    assert cites is not None
+    assert cites["description"] == "Directed citation reference between documents"
+    assert cites["fields"]["weight"]["description"] == "Citation relevance score"
+
+    # Serialize to JSON snapshot and verify metadata
+    json_str = reg.to_json()
+    assert "A formal document or publication" in json_str
+    assert "Unique document identifier" in json_str
+    assert "Directed citation reference between documents" in json_str
+
+    parsed = json.loads(json_str)
+    assert parsed["nodes"]["Document"]["description"] == "A formal document or publication"
+    assert (
+        parsed["nodes"]["Document"]["fields"]["doc_id"]["description"]
+        == "Unique document identifier"
+    )
+    assert (
+        parsed["relationships"]["Cites"]["description"]
+        == "Directed citation reference between documents"
+    )
+
+    # Restore in new registry
+    reg2 = NativeSchemaRegistry()
+    reg2.from_json(json_str)
+    doc2 = reg2.get_node("Document")
+    assert doc2 is not None
+    assert doc2["description"] == "A formal document or publication"
+    assert doc2["fields"]["doc_id"]["description"] == "Unique document identifier"
+    cites2 = reg2.get_relationship("Cites")
+    assert cites2 is not None
+    assert cites2["description"] == "Directed citation reference between documents"
+
+
+def test_model_level_description_and_field_description_reflection() -> None:
+    """Verifies __description__ on Node/Relationship and Field(description=...) reach native registry."""
+
+    class DescribedReport(Node):
+        __description__ = "Quarterly financial summary report"
+        __labels__ = ["Report"]
+        report_id: str = Field(primary_key=True, description="Report identifier code")
+        summary: str = Field(index=True, description="Executive summary")
+
+    class DescribedMentions(Relationship, type_name="MENTIONS"):
+        __description__ = "Mentions of entities inside reports"
+        source_labels = ["Report"]
+        target_labels = ["Entity"]
+        count: int = Field(default=1, description="Number of mentions")
+
+    local_reg = NativeSchemaRegistry()
+    DescribedReport.register_schema(local_reg)
+    DescribedMentions.register_schema(local_reg)
+
+    node = local_reg.get_node("DescribedReport")
+    assert node is not None
+    assert node["description"] == "Quarterly financial summary report"
+    assert node["fields"]["report_id"]["description"] == "Report identifier code"
+    assert node["fields"]["summary"]["description"] == "Executive summary"
+
+    rel = local_reg.get_relationship("DescribedMentions")
+    assert rel is not None
+    assert rel["description"] == "Mentions of entities inside reports"
+    assert rel["fields"]["count"]["description"] == "Number of mentions"
+
+    snap = local_reg.to_json()
+    assert "Quarterly financial summary report" in snap
+    assert "Report identifier code" in snap
+    assert "Mentions of entities inside reports" in snap
+
+
+def test_ddl_and_query_compile_parity_for_described_vs_undescribed_models() -> None:
+    """Verifies DDL and Query.compile output is byte-identical for described vs undescribed models."""
+
+    class PlainItem(Node):
+        __labels__ = ["Item"]
+        item_id: str = Field(primary_key=True)
+        name: str = Field(index=True)
+
+    class DescribedItem(Node):
+        __description__ = "Catalog item entity"
+        __labels__ = ["Item"]
+        item_id: str = Field(primary_key=True, description="Primary item UUID")
+        name: str = Field(index=True, description="Item display name")
+
+    reg_plain = NativeSchemaRegistry()
+    PlainItem.register_schema(reg_plain)
+    ddl_plain = reg_plain.generate_cypher_ddl(model_name="PlainItem")
+
+    reg_described = NativeSchemaRegistry()
+    DescribedItem.register_schema(reg_described)
+    ddl_described = reg_described.generate_cypher_ddl(model_name="DescribedItem")
+
+    assert ddl_plain == ddl_described
+
+    # Query compilation parity
+    p = PlainItem(alias="n")
+    d = DescribedItem(alias="n")
+    q_plain = Query.match(p).where(p.name == "Widget").return_(p.name).compile("cypher")
+    q_described = Query.match(d).where(d.name == "Widget").return_(d.name).compile("cypher")
+
+    assert q_plain.statement == q_described.statement
+    assert q_plain.parameters == q_described.parameters
+
+    # Snapshot JSON for plain model contains no description key
+    plain_json = reg_plain.to_json()
+    assert '"description"' not in plain_json
+
+
+def test_same_named_nodes_in_different_modules_keep_distinct_descriptions_in_registry_and_snapshot() -> (
+    None
+):
+    """Verifies that two same-named Node models in different modules keep their own descriptions in registry and snapshot."""
+    mod1 = types.ModuleType("app.catalog")
+    exec(
+        "\n".join(
+            [
+                "from voyager_ogm import Field, Node",
+                "",
+                "class Item(Node):",
+                '    __description__ = "Catalog item inventory record"',
+                "    item_id: str = Field(primary_key=True, description='SKU identifier')",
+                "    price: float = Field()",
+            ]
+        ),
+        mod1.__dict__,
+    )
+
+    mod2 = types.ModuleType("app.billing")
+    exec(
+        "\n".join(
+            [
+                "from voyager_ogm import Field, Node",
+                "",
+                "class Item(Node):",
+                '    __description__ = "Invoice line item record"',
+                "    item_id: str = Field(primary_key=True, description='Billing item ID')",
+                "    amount: float = Field()",
+            ]
+        ),
+        mod2.__dict__,
+    )
+
+    catalog_item = mod1.Item
+    billing_item = mod2.Item
+
+    reg = NativeSchemaRegistry()
+    catalog_item.register_schema(reg)
+    billing_item.register_schema(reg)
+
+    cat_id = _model_identity(catalog_item)
+    bill_id = _model_identity(billing_item)
+
+    cat_schema = reg.get_node(cat_id)
+    bill_schema = reg.get_node(bill_id)
+
+    assert cat_schema is not None
+    assert bill_schema is not None
+    assert cat_schema["name"] == "Item"
+    assert bill_schema["name"] == "Item"
+    assert cat_schema["description"] == "Catalog item inventory record"
+    assert bill_schema["description"] == "Invoice line item record"
+    assert cat_schema["fields"]["item_id"]["description"] == "SKU identifier"
+    assert bill_schema["fields"]["item_id"]["description"] == "Billing item ID"
+
+    # Snapshot retains identity keys when duplicate class names exist
+    json_str = reg.to_json()
+    assert "Catalog item inventory record" in json_str
+    assert "Invoice line item record" in json_str
+
+    parsed = json.loads(json_str)
+    assert cat_id in parsed["nodes"]
+    assert bill_id in parsed["nodes"]
+    assert parsed["nodes"][cat_id]["description"] == "Catalog item inventory record"
+    assert parsed["nodes"][bill_id]["description"] == "Invoice line item record"
+
+    # Restore from snapshot preserves separate descriptions
+    reg2 = NativeSchemaRegistry()
+    reg2.from_json(json_str)
+    restored_cat = reg2.get_node(cat_id)
+    restored_bill = reg2.get_node(bill_id)
+    assert restored_cat is not None
+    assert restored_bill is not None
+    assert restored_cat["description"] == "Catalog item inventory record"
+    assert restored_bill["description"] == "Invoice line item record"
+
+
+def test_subclasses_do_not_inherit_parent_description() -> None:
+    """Verifies that subclasses do not inherit __description__ from parent models unless explicitly declared."""
+
+    class ParentModel(Node):
+        __description__ = "Parent entity description"
+        id: str = Field(primary_key=True)
+
+    class ChildWithoutDesc(ParentModel):
+        extra: str = Field(default="")
+
+    class ChildWithDesc(ParentModel):
+        __description__ = "Child entity description"
+        extra: str = Field(default="")
+
+    reg = NativeSchemaRegistry()
+    ParentModel.register_schema(reg)
+    ChildWithoutDesc.register_schema(reg)
+    ChildWithDesc.register_schema(reg)
+
+    parent_schema = reg.get_node("ParentModel")
+    child_no_desc = reg.get_node("ChildWithoutDesc")
+    child_with_desc = reg.get_node("ChildWithDesc")
+
+    assert parent_schema is not None
+    assert parent_schema["description"] == "Parent entity description"
+
+    assert child_no_desc is not None
+    assert child_no_desc["description"] is None
+
+    assert child_with_desc is not None
+    assert child_with_desc["description"] == "Child entity description"
 
 
 # ---------------------------------------------------------------------------

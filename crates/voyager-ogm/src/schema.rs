@@ -110,45 +110,6 @@ impl fmt::Display for FieldType {
     }
 }
 
-/// Supported constraint types on graph schema fields.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum ConstraintType {
-    /// Unique constraint enforcing distinct property values across entities.
-    Unique,
-    /// Property existence / NOT NULL constraint.
-    NotNull,
-    /// Combined primary key / Node Key constraint (Unique + NotNull).
-    NodeKey,
-}
-
-impl ConstraintType {
-    /// Returns the canonical constraint name.
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Unique => "UNIQUE",
-            Self::NotNull => "NOT_NULL",
-            Self::NodeKey => "NODE_KEY",
-        }
-    }
-
-    /// Parses a case-insensitive constraint string.
-    pub fn parse_str(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_uppercase().as_str() {
-            "UNIQUE" => Some(Self::Unique),
-            "NOT_NULL" | "NOT NULL" | "MANDATORY" => Some(Self::NotNull),
-            "NODE_KEY" | "NODE KEY" | "KEY" | "PRIMARY_KEY" | "PRIMARY KEY" => Some(Self::NodeKey),
-            _ => None,
-        }
-    }
-}
-
-impl fmt::Display for ConstraintType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
 /// Supported secondary index types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -631,6 +592,12 @@ pub struct FieldDescriptor {
     pub default_value: Option<LiteralValue>,
     /// Optional configuration when backed by a vector index.
     pub vector_config: Option<VectorIndexConfig>,
+    /// Optional human-readable description of this property.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub description: Option<String>,
 }
 
 impl FieldDescriptor {
@@ -646,7 +613,14 @@ impl FieldDescriptor {
             index_type: None,
             default_value: None,
             vector_config: None,
+            description: None,
         }
+    }
+
+    /// Sets an optional human-readable description for this field.
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
     }
 
     /// Marks this field as a primary key (implies unique and non-nullable).
@@ -727,6 +701,12 @@ pub struct NodeSchema {
     /// Full-text search index configurations (single or multi-property).
     #[cfg_attr(feature = "serde", serde(default))]
     pub fulltext_indexes: Vec<FullTextIndexConfig>,
+    /// Optional human-readable description of this node model.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub description: Option<String>,
 }
 
 impl NodeSchema {
@@ -738,7 +718,14 @@ impl NodeSchema {
             fields: BTreeMap::new(),
             primary_key: None,
             fulltext_indexes: Vec::new(),
+            description: None,
         }
+    }
+
+    /// Sets an optional human-readable description for this node schema.
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
     }
 
     /// Appends a field descriptor to this node schema.
@@ -823,6 +810,12 @@ pub struct RelationshipSchema {
     /// Full-text search index configurations (single or multi-property).
     #[cfg_attr(feature = "serde", serde(default))]
     pub fulltext_indexes: Vec<FullTextIndexConfig>,
+    /// Optional human-readable description of this relationship model.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub description: Option<String>,
 }
 
 impl RelationshipSchema {
@@ -836,7 +829,14 @@ impl RelationshipSchema {
             fields: BTreeMap::new(),
             directed: true,
             fulltext_indexes: Vec::new(),
+            description: None,
         }
+    }
+
+    /// Sets an optional human-readable description for this relationship schema.
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
     }
 
     /// Sets the allowed source and target node labels for this relationship.

@@ -51,7 +51,7 @@ pub use emitters::{
 pub use error::{Error, ErrorCode, Result};
 pub use optimizer::{AstOptimizer, OptimizationLevel};
 pub use schema::{
-    ConformanceDiagnostic, ConformanceReport, ConstraintType, DEFAULT_MEMGRAPH_VECTOR_CAPACITY,
+    ConformanceDiagnostic, ConformanceReport, DEFAULT_MEMGRAPH_VECTOR_CAPACITY,
     DEFAULT_VECTOR_DIMENSIONS, DdlDialect, DiagnosticSeverity, FieldDescriptor, FieldType,
     FullTextIndexConfig, IndexType, NodeSchema, RelationshipSchema, ResolvedFullTextSearch,
     SchemaRegistry, SchemaSnapshot, VectorIndexConfig, VectorSimilarity, adapt_tantivy_query,

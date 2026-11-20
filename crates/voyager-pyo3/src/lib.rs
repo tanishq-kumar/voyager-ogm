@@ -4034,6 +4034,16 @@ fn parse_field_descriptor(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<FieldD
             });
         }
 
+        let description = if let Some(d) = dict.get_item("description")? {
+            if d.is_none() {
+                None
+            } else {
+                d.extract::<String>().ok()
+            }
+        } else {
+            None
+        };
+
         Ok(FieldDescriptor {
             name: field_name,
             field_type,
@@ -4044,6 +4054,7 @@ fn parse_field_descriptor(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<FieldD
             index_type,
             default_value,
             vector_config,
+            description,
         })
     } else {
         let field_name = if obj.hasattr("name")? {
@@ -4202,6 +4213,17 @@ fn parse_field_descriptor(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<FieldD
             });
         }
 
+        let description = if obj.hasattr("description")? {
+            let d = obj.getattr("description")?;
+            if d.is_none() {
+                None
+            } else {
+                d.extract::<String>().ok()
+            }
+        } else {
+            None
+        };
+
         Ok(FieldDescriptor {
             name: field_name,
             field_type,
@@ -4212,6 +4234,7 @@ fn parse_field_descriptor(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<FieldD
             index_type,
             default_value,
             vector_config,
+            description,
         })
     }
 }
@@ -4246,6 +4269,11 @@ fn field_descriptor_to_py<'py>(
             dict.set_item("index_name", py.None())?;
         }
     }
+    if let Some(ref d) = field.description {
+        dict.set_item("description", d)?;
+    } else {
+        dict.set_item("description", py.None())?;
+    }
     Ok(dict)
 }
 
@@ -4253,6 +4281,11 @@ fn node_schema_to_py<'py>(py: Python<'py>, node: &NodeSchema) -> PyResult<Bound<
     let dict = PyDict::new(py);
     dict.set_item("name", &node.name)?;
     dict.set_item("labels", &node.labels)?;
+    if let Some(ref d) = node.description {
+        dict.set_item("description", d)?;
+    } else {
+        dict.set_item("description", py.None())?;
+    }
     if let Some(ref pk) = node.primary_key {
         dict.set_item("primary_key", pk)?;
     } else {
@@ -4286,6 +4319,11 @@ fn relationship_schema_to_py<'py>(
     let dict = PyDict::new(py);
     dict.set_item("name", &rel.name)?;
     dict.set_item("type_name", &rel.type_name)?;
+    if let Some(ref d) = rel.description {
+        dict.set_item("description", d)?;
+    } else {
+        dict.set_item("description", py.None())?;
+    }
     dict.set_item("source_labels", &rel.source_labels)?;
     dict.set_item("target_labels", &rel.target_labels)?;
     dict.set_item("directed", rel.directed)?;
@@ -4617,8 +4655,12 @@ impl PyNativeSchemaRegistry {
         fields: &Bound<'_, PyAny>,
         primary_key: Option<String>,
         fulltext_indexes: Option<&Bound<'_, PyAny>>,
+        description: Option<String>,
     ) -> PyResult<NodeSchema> {
         let mut node_schema = NodeSchema::new(name, labels);
+        if let Some(desc) = description {
+            node_schema = node_schema.with_description(desc);
+        }
         if let Ok(dict) = fields.cast::<PyDict>() {
             for (k, v) in dict {
                 let field_name: String = if let Ok(s) = k.cast::<PyString>() {
@@ -4659,14 +4701,17 @@ impl PyNativeSchemaRegistry {
     fn build_relationship_schema(
         name: String,
         type_name: String,
-        source_labels: Option<Vec<String>>,
-        target_labels: Option<Vec<String>>,
+        endpoints: (Option<Vec<String>>, Option<Vec<String>>),
         fields: Option<&Bound<'_, PyAny>>,
         directed: bool,
         fulltext_indexes: Option<&Bound<'_, PyAny>>,
+        description: Option<String>,
     ) -> PyResult<RelationshipSchema> {
         let mut rel_schema = RelationshipSchema::new(name, type_name).directed(directed);
-        if let (Some(src), Some(tgt)) = (source_labels, target_labels) {
+        if let Some(desc) = description {
+            rel_schema = rel_schema.with_description(desc);
+        }
+        if let (Some(src), Some(tgt)) = endpoints {
             rel_schema = rel_schema.with_endpoints(src, tgt);
         }
         if let Some(fields_any) = fields {
@@ -4722,7 +4767,7 @@ impl PyNativeSchemaRegistry {
     }
 
     /// Registers a node schema with labels, fields, and optional primary key.
-    #[pyo3(signature = (name, labels, fields, primary_key=None, fulltext_indexes=None))]
+    #[pyo3(signature = (name, labels, fields, primary_key=None, fulltext_indexes=None, description=None))]
     fn register_node(
         &self,
         name: String,
@@ -4730,9 +4775,16 @@ impl PyNativeSchemaRegistry {
         fields: &Bound<'_, PyAny>,
         primary_key: Option<String>,
         fulltext_indexes: Option<&Bound<'_, PyAny>>,
+        description: Option<String>,
     ) -> PyResult<()> {
-        let node_schema =
-            Self::build_node_schema(name, labels, fields, primary_key, fulltext_indexes)?;
+        let node_schema = Self::build_node_schema(
+            name,
+            labels,
+            fields,
+            primary_key,
+            fulltext_indexes,
+            description,
+        )?;
         self.registry()
             .register_node(node_schema)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -4742,7 +4794,7 @@ impl PyNativeSchemaRegistry {
     /// Registers a node schema under a unique model identity.
     ///
     /// The primary key is derived from the field descriptors.
-    #[pyo3(signature = (model_id, name, labels, fields, fulltext_indexes=None))]
+    #[pyo3(signature = (model_id, name, labels, fields, fulltext_indexes=None, description=None))]
     fn register_node_with_identity(
         &self,
         model_id: String,
@@ -4750,8 +4802,10 @@ impl PyNativeSchemaRegistry {
         labels: Vec<String>,
         fields: &Bound<'_, PyAny>,
         fulltext_indexes: Option<&Bound<'_, PyAny>>,
+        description: Option<String>,
     ) -> PyResult<()> {
-        let node_schema = Self::build_node_schema(name, labels, fields, None, fulltext_indexes)?;
+        let node_schema =
+            Self::build_node_schema(name, labels, fields, None, fulltext_indexes, description)?;
         self.registry()
             .register_node_with_id(model_id, node_schema)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -4780,7 +4834,10 @@ impl PyNativeSchemaRegistry {
                 empty_dict.into_any()
             };
             let ft_obj = dict.get_item("fulltext_indexes")?;
-            self.register_node(name, labels, &fields_obj, pk, ft_obj.as_ref())
+            let description: Option<String> = dict
+                .get_item("description")?
+                .and_then(|v| if v.is_none() { None } else { v.extract().ok() });
+            self.register_node(name, labels, &fields_obj, pk, ft_obj.as_ref(), description)
         } else {
             Err(PyTypeError::new_err("schema must be a dict"))
         }
@@ -4788,7 +4845,7 @@ impl PyNativeSchemaRegistry {
 
     /// Registers a relationship schema with endpoints, fields, and direction.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, type_name, source_labels=None, target_labels=None, fields=None, directed=true, fulltext_indexes=None, model_id=None))]
+    #[pyo3(signature = (name, type_name, source_labels=None, target_labels=None, fields=None, directed=true, fulltext_indexes=None, model_id=None, description=None))]
     fn register_relationship(
         &self,
         name: String,
@@ -4799,15 +4856,16 @@ impl PyNativeSchemaRegistry {
         directed: bool,
         fulltext_indexes: Option<&Bound<'_, PyAny>>,
         model_id: Option<String>,
+        description: Option<String>,
     ) -> PyResult<()> {
         let rel_schema = Self::build_relationship_schema(
             name,
             type_name,
-            source_labels,
-            target_labels,
+            (source_labels, target_labels),
             fields,
             directed,
             fulltext_indexes,
+            description,
         )?;
         let registry = self.registry();
         if let Some(model_id) = model_id {
@@ -4851,6 +4909,12 @@ impl PyNativeSchemaRegistry {
                 .unwrap_or(true);
             let fields_obj = dict.get_item("fields")?;
             let ft_obj = dict.get_item("fulltext_indexes")?;
+            let model_id: Option<String> = dict
+                .get_item("model_id")?
+                .and_then(|v| if v.is_none() { None } else { v.extract().ok() });
+            let description: Option<String> = dict
+                .get_item("description")?
+                .and_then(|v| if v.is_none() { None } else { v.extract().ok() });
             self.register_relationship(
                 name,
                 type_name,
@@ -4859,7 +4923,8 @@ impl PyNativeSchemaRegistry {
                 fields_obj.as_ref(),
                 directed,
                 ft_obj.as_ref(),
-                None,
+                model_id,
+                description,
             )
         } else {
             Err(PyTypeError::new_err("schema must be a dict"))
