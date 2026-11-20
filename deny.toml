@@ -9,7 +9,7 @@ all-features = true
 yanked = "deny"
 ignore = [
     # Unmaintained crates pulled in only by neo4rs, an optional bench-only dependency
-    # (voyager-net `bench-driver` feature, comparison benchmarks). Not in shipped builds.
+    # (voyager-drivers `bench-driver` feature, comparison benchmarks). Not in shipped builds.
     { id = "RUSTSEC-2025-0012", reason = "backoff: via neo4rs, bench-only" },
     { id = "RUSTSEC-2024-0384", reason = "instant: via neo4rs/backoff, bench-only" },
     { id = "RUSTSEC-2024-0436", reason = "paste: via neo4rs, bench-only" },

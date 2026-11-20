@@ -584,7 +584,7 @@ def _is_query_semantic_error(exc: Exception) -> bool:
 
     In async web servers, semantic query errors must NEVER trigger permanent backend degradation,
     as they are query-specific defects that would fail identically across all drivers.
-    Delegates directly to the native voyager-net error classification engine.
+    Delegates directly to the native voyager-drivers error classification engine.
     """
     from voyager_ogm._voyager_rs import NativeCircuitRouter
 
@@ -1309,7 +1309,7 @@ class Session(_SessionBase):
                 If None, defaults to global config setting.
             optimization_level: Explicit optimization level ('standard', 'aggressive', 'none').
             backend: Query execution engine ('native', 'bridge', or 'auto'). When 'native' or 'auto',
-                uses the native Rust async network engine (`voyager-net`) over raw sockets with connection
+                uses the native Rust async network engine (`voyager-drivers`) over raw sockets with connection
                 pooling and direct wire-to-Arrow streaming, falling back to 'bridge' if unavailable.
             pool_size: Connection pool capacity for native network engine connections (default 10).
             circuit_cooldown_seconds: Cooldown duration in seconds before attempting to probe native re-enablement.
@@ -2148,7 +2148,7 @@ class AsyncSession(_SessionBase):
                 If None, defaults to global config setting.
             optimization_level: Explicit optimization level ('standard', 'aggressive', 'none').
             backend: Query execution engine ('native', 'bridge', or 'auto'). When 'native' or 'auto',
-                uses the native Rust async network engine (`voyager-net`) over raw sockets with connection
+                uses the native Rust async network engine (`voyager-drivers`) over raw sockets with connection
                 pooling and direct wire-to-Arrow streaming, falling back to 'bridge' if unavailable.
             pool_size: Connection pool capacity for native network engine connections (default 10).
             circuit_cooldown_seconds: Cooldown duration in seconds before attempting to probe native re-enablement.

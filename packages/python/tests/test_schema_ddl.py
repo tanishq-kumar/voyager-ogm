@@ -1333,7 +1333,7 @@ def test_live_community_enterprise_only_constraints_are_reported() -> None:
     reason="Neo4j container not reachable on port 7687",
 )
 def test_live_native_community_enterprise_only_constraints_are_reported() -> None:
-    """The native voyager-net path reports Enterprise-only constraints the same way."""
+    """The native voyager-drivers path reports Enterprise-only constraints the same way."""
     pytest.importorskip("neo4j")
     uri = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
     user = os.getenv("NEO4J_USER", "neo4j")

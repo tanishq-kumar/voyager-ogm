@@ -2,7 +2,7 @@
 
 use bytes::BytesMut;
 use libfuzzer_sys::fuzz_target;
-use voyager_net::redis::RespValue;
+use voyager_drivers::redis::RespValue;
 
 fuzz_target!(|data: &[u8]| {
     let mut buf = BytesMut::from(data);

@@ -80,7 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added vector search query builder `Query.vector_search(index_or_model, query_vector, k=10, yield_node="node", yield_score="score", dialect="cypher")` supporting Neo4j (`db.index.vector.queryNodes`) and live-verified 3-argument Memgraph (`vector_search.search`), plus convenience execution wrappers `Session.vector_search()` and `AsyncSession.vector_search()`.
   - Added `parse_field_descriptor` BTree default inference when `index=True` is specified without explicit `index_type`.
 - **Temporal Types Normalization, Timezone Semantics & Dialect Roundtrips (#115)**:
-  - Added Bolt wire protocol PackStream typed structures for all 7 temporal specifications (`BoltDate`, `BoltTime`, `BoltLocalTime`, `BoltDateTime`, `BoltLocalDateTime`, `BoltDateTimeZoneId`, `BoltDuration`) in `voyager-net`.
+  - Added Bolt wire protocol PackStream typed structures for all 7 temporal specifications (`BoltDate`, `BoltTime`, `BoltLocalTime`, `BoltDateTime`, `BoltLocalDateTime`, `BoltDateTimeZoneId`, `BoltDuration`) in `voyager-drivers`.
   - Implemented Howard Hinnant Gregorian calendar algorithms without external dependencies for $O(1)$ day-to-YMD and YMD-to-day calculations.
   - Implemented bidirectional mapping in `voyager_ogm.types` with sub-millisecond precision, RFC 9557 timezone handling, instant preservation, and ISO-8601 duration parser/formatter (`parse_iso_duration`, `to_iso_duration`).
   - Added dialect parameter adaptation for FalkorDB and Apache AGE.
@@ -96,6 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added explicit, loud errors on mock bridge fallback in production configurations.
 
 ### Changed
+- **Crate Rename: `voyager-net` -> `voyager-drivers` (#217)**: renamed the Rust crate `voyager-net` to `voyager-drivers` (Rust path `voyager_net` -> `voyager_drivers`, `RUST_LOG`/tracing targets now use `voyager_drivers`) and moved `crates/voyager-net` to `crates/voyager-drivers`; the Python package and `voyager_ogm` import are unchanged. The connection-URI prefix, Bolt user-agent product string, and PostgreSQL `application_name` now use `voyager-drivers`; `voy:` is accepted as a shorthand prefix alongside `vn:`, and `create_bridge()` now accepts these namespace prefixes (`voyager:`, `voyager+native:`, `voyager+bridge:`, `voyager-drivers:`, `voy:`, `vn:`) like the native parser instead of rejecting them. Added crate-specific crates.io `keywords` and `categories` to every workspace crate and removed the unused workspace-level metadata.
 - **v0.4.0 behaviour documentation (#216)**: documented `Field` defaults, partial bulk upserts, Apache AGE graph-name precedence, Neo4j Community constraint handling, module-qualified model identity, and `Field`/model description metadata in the README and Python examples, and fixed the live Neo4j example to continue past Enterprise-only constraints. Also corrected the benchmark documentation: removed claims with no measuring code (memory chart and RSS figures, official-driver throughput, p95 values), labelled the remaining captures with method, sample size and capture date plus a note that they predate the v0.4.0 changes, deleted the duplicate head-to-head copy, and fixed `just bench-python` to collect the `bench_*.py` files.
 - **Native Schema Identity and Key Policy (#200)**: the schema registry now keys entries by module-qualified model identity, so same-named models in different modules get separate schema entries while label and relationship-type lookups keep working. Primary-key and MERGE-key resolution now come from the Rust schema from the registered field descriptors; the Python helpers delegate to the native registry instead of scanning `_schema_fields`; bare-class-name and label/type lookups resolve to the most recently registered model when several match.
 - **Breaking:** `session.transaction()` is now a real database transaction, and the in-memory API is `UnitOfWork` / `unit_of_work()` (#177):
@@ -191,11 +192,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Stack Overflow in Recursion Depth Guards on Windows and macOS (#166)**:
   - Shrank the per-level stack frames of the RESP parser (`parse_resp_slice`) and the Python AST converter (`py_to_node_handle_depth`) by moving match arms into small helpers, so depth guards trigger before the stack is exhausted on 1 MB (Windows) and 2 MiB (macOS) stacks.
   - Lowered `MAX_RESP_DEPTH` from 128 to 64, matching `MAX_PACKSTREAM_DEPTH`.
-  - Enabled `opt-level = 1` in the dev profile for `voyager-net` and `voyager-pyo3`.
+  - Enabled `opt-level = 1` in the dev profile for `voyager-drivers` and `voyager-pyo3`.
   - Depth-guard tests now run on an explicit 1 MB stack on every platform.
 - **Panic Safety on Malformed and Non-ASCII Inputs (#158)**:
   - Eliminated panics on malformed query topologies (such as incomplete `MATCH (`, `MATCH (n)-[`, and `MATCH (n)-[r]->(`) by parsing in byte space with bounds-checked Unicode helpers.
-  - Hardened `agtype` string cleaning in `voyager-net` to be UTF-8 safe across multi-byte inputs.
+  - Hardened `agtype` string cleaning in `voyager-drivers` to be UTF-8 safe across multi-byte inputs.
   - Replaced reachable `unreachable!()` arms in connection pool drop and handover routines with recovery and warnings.
   - Replaced `unreachable!()` arms in DDL emitters with explicit `UnsupportedDialect` errors.
 

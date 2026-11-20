@@ -7,6 +7,8 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords = ["cli", "graph", "cypher", "database", "ogm"]
+categories = ["command-line-utilities", "database"]
 readme = "README.md"
 
 [[bin]]

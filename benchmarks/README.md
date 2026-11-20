@@ -21,7 +21,7 @@ Source: `packages/python/benches/bench_head_to_head.py`. Captured 2026-09-13 (`b
 | Voyager native Bolt client | 12.5 ms | 49.5 ms | Same live Neo4j, same statement, 20 concurrent clients x 1,000 point reads; single run |
 | `neo4rs` 0.8.0 (community Rust driver) | 12.1 ms | 123.8 ms | Same scenario |
 
-Source: `crates/voyager-net/benches/bench_driver_vs_voyager_net.rs`. Captured on or before 2026-09-12 (when these numbers were first committed). This is a Rust-client comparison, not a comparison against an official Neo4j driver. The script writes its JSON results to a gitignored path, so p95 is deliberately not published.
+Source: `crates/voyager-drivers/benches/bench_driver_vs_voyager_drivers.rs`. Captured on or before 2026-09-12 (when these numbers were first committed). This is a Rust-client comparison, not a comparison against an official Neo4j driver. The script writes its JSON results to a gitignored path, so p95 is deliberately not published.
 
 ### Not published
 
@@ -59,9 +59,9 @@ just bench-charts            # regenerate the SVGs from benchmark_summary.json
 `bench_live_bolt` seeds the data the other driver benches assume:
 
 1. Start the stack: `just up`.
-2. Seed and run the live scenarios: `cargo bench -p voyager-net --bench bench_live_bolt` (creates 10,000 `BenchPerson` nodes and 20,000 `KNOWS` edges).
-3. Run the comparison: `cargo bench -p voyager-net --features bench-driver --bench bench_driver_vs_voyager_net` (asserts 10,000 rows).
-4. For the 1M comparison: `uv run python scripts/seed_1m_dataset.py`, then `cargo bench -p voyager-net --features bench-driver --bench bench_1m_driver_vs_voyager`.
+2. Seed and run the live scenarios: `cargo bench -p voyager-drivers --bench bench_live_bolt` (creates 10,000 `BenchPerson` nodes and 20,000 `KNOWS` edges).
+3. Run the comparison: `cargo bench -p voyager-drivers --features bench-driver --bench bench_driver_vs_voyager_drivers` (asserts 10,000 rows).
+4. For the 1M comparison: `uv run python scripts/seed_1m_dataset.py`, then `cargo bench -p voyager-drivers --features bench-driver --bench bench_1m_driver_vs_voyager`.
 
 `just bench-ogm` seeds a different label (`BenchmarkPerson`) and does not prepare the Rust benches.
 
@@ -79,11 +79,11 @@ just bench-charts            # regenerate the SVGs from benchmark_summary.json
 | `packages/python/benches/bench_hydration.py` | Synthetic stream → Arrow/Polars and pure-Python object construction | Live wire hydration | `just bench-python` | Offline |
 | `packages/python/benches/bench_ingestion.py` | Bulk-ingestion plan generation and chunking | Execution throughput (no database calls) | `just bench-python` | Offline |
 | `packages/python/benches/bench_network.py` | Native-client point-query latency, QPS, Arrow decode and GIL behaviour | Official Python drivers; Voyager vs driver comparison | `just bench-python` | Neo4j and FalkorDB; live modules skip when offline |
-| `crates/voyager-net/benches/bench_live_bolt.rs` | Live native Bolt scenarios, including ingestion, and seeds the 10k dataset | Comparison against another driver | `cargo bench -p voyager-net --bench bench_live_bolt` | Neo4j; seeds 10,000 nodes + 20,000 edges |
-| `crates/voyager-net/benches/bench_driver_vs_voyager_net.rs` | Native Bolt client vs `neo4rs` 0.8.0 on identical queries | Official Neo4j driver; committed results (JSON is gitignored) | `cargo bench -p voyager-net --features bench-driver --bench bench_driver_vs_voyager_net` | Neo4j; needs the 10k seed above |
-| `crates/voyager-net/benches/bench_1m_driver_vs_voyager.rs` | Native Bolt client vs `neo4rs` 0.8.0 at 1M nodes / 2M edges | Seeding automation | `uv run python scripts/seed_1m_dataset.py` then `cargo bench -p voyager-net --features bench-driver --bench bench_1m_driver_vs_voyager` | Neo4j; 1M-node seed |
-| `crates/voyager-net/benches/bench_jumbo_payloads.rs` | 10/25/50 MB payload transport over the native Bolt stream | Ingestion semantics or driver comparison | `cargo bench -p voyager-net --bench bench_jumbo_payloads` | Neo4j |
-| `crates/voyager-net/benches/bench_security_overhead.rs` | PackStream, Redis and PostgreSQL security-hardening overhead | Live database behaviour | `cargo bench -p voyager-net --bench bench_security_overhead` | Offline |
+| `crates/voyager-drivers/benches/bench_live_bolt.rs` | Live native Bolt scenarios, including ingestion, and seeds the 10k dataset | Comparison against another driver | `cargo bench -p voyager-drivers --bench bench_live_bolt` | Neo4j; seeds 10,000 nodes + 20,000 edges |
+| `crates/voyager-drivers/benches/bench_driver_vs_voyager_drivers.rs` | Native Bolt client vs `neo4rs` 0.8.0 on identical queries | Official Neo4j driver; committed results (JSON is gitignored) | `cargo bench -p voyager-drivers --features bench-driver --bench bench_driver_vs_voyager_drivers` | Neo4j; needs the 10k seed above |
+| `crates/voyager-drivers/benches/bench_1m_driver_vs_voyager.rs` | Native Bolt client vs `neo4rs` 0.8.0 at 1M nodes / 2M edges | Seeding automation | `uv run python scripts/seed_1m_dataset.py` then `cargo bench -p voyager-drivers --features bench-driver --bench bench_1m_driver_vs_voyager` | Neo4j; 1M-node seed |
+| `crates/voyager-drivers/benches/bench_jumbo_payloads.rs` | 10/25/50 MB payload transport over the native Bolt stream | Ingestion semantics or driver comparison | `cargo bench -p voyager-drivers --bench bench_jumbo_payloads` | Neo4j |
+| `crates/voyager-drivers/benches/bench_security_overhead.rs` | PackStream, Redis and PostgreSQL security-hardening overhead | Live database behaviour | `cargo bench -p voyager-drivers --bench bench_security_overhead` | Offline |
 | `crates/voyager-ogm/benches/arena_bench.rs` | Criterion AST arena allocation and fluent builder construction | Emission or database access | `cargo bench -p voyager-ogm --bench arena_bench` | Offline |
 | `crates/voyager-ogm/benches/emitter_bench.rs` | Criterion Cypher, ISO GQL and SQL/PGQ emitter throughput | Apache AGE emitter; live database | `cargo bench -p voyager-ogm --bench emitter_bench` | Offline |
 
