@@ -6,7 +6,7 @@ use voyager_net::bolt::packstream::{BoltValue, PackStream};
 use voyager_net::config::PoolConfig;
 use voyager_net::mock::MockConnectionFactory;
 use voyager_net::pool::ConnectionPool;
-use voyager_net::postgres::connection::format_postgres_query;
+use voyager_net::postgres::prepare_postgres_statement;
 use voyager_net::redis::resp::RespValue;
 use voyager_net::redis::transaction::format_cypher_with_params;
 
@@ -73,7 +73,7 @@ async fn main() {
         );
     }
 
-    // 3. PostgreSQL Parameter Sorting & Escaping Benchmark (100,000 queries)
+    // 3. PostgreSQL Parameter Binding Preparation Benchmark (100,000 queries)
     {
         let mut params = HashMap::new();
         params.insert("p1".to_string(), serde_json::json!(42));
@@ -88,13 +88,13 @@ async fn main() {
         let iters = 100_000;
         let start = Instant::now();
         for _ in 0..iters {
-            let _ = format_postgres_query(query, &params);
+            let _ = prepare_postgres_statement(query, &params);
         }
         let elapsed = start.elapsed();
         let per_op_us = elapsed.as_secs_f64() * 1_000_000.0 / iters as f64;
         let qps = iters as f64 / elapsed.as_secs_f64();
         println!(
-            "PostgreSQL Param Formatting (Sorted Keys + Escaping):            {:>6.2} µs/op | {:>10.0} qps",
+            "PostgreSQL Param Binding Preparation (Positional Rewrite):      {:>6.2} µs/op | {:>10.0} qps",
             per_op_us, qps
         );
     }

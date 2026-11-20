@@ -1,11 +1,18 @@
 //! Unit tests for PostgreSQL Frontend/Backend v3.0 message codec, authentication, and AGE agtype parser.
 
 use bytes::BytesMut;
+use std::collections::HashMap;
 use voyager_net::postgres::{
     AgeValue, AuthenticationRequest, BackendMessage, FrontendMessage, PG_PROTOCOL_V3, ScramClient,
     StartupMessage, TransactionStatus, clean_agtype_string, compute_md5_password, parse_agtype,
-    rows_to_record_batch,
+    prepare_postgres_statement, rows_to_record_batch,
 };
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
 
 #[test]
 fn test_startup_message_encoding() {
@@ -315,4 +322,73 @@ fn test_clean_agtype_string_unicode_regression() {
     let batch =
         rows_to_record_batch(&cols, &rows).expect("Failed to infer record batch with Renée");
     assert_eq!(batch.num_rows(), 1);
+}
+
+#[test]
+fn test_prepared_age_statement_parse_and_bind_encoding() {
+    let query =
+        "SELECT * FROM cypher('g', $$ MATCH (n) WHERE n.name = $p0 RETURN n $$, %s) AS (n agtype)";
+    let mut params = HashMap::new();
+    params.insert("p0".to_string(), serde_json::json!("Alice"));
+    let prepared = prepare_postgres_statement(query, &params).unwrap();
+
+    let parse = FrontendMessage::Parse {
+        name: String::new(),
+        query: prepared.statement.clone(),
+        param_types: prepared.parameter_oids.clone(),
+    };
+    let mut buf = BytesMut::new();
+    parse.encode(&mut buf);
+    assert_eq!(buf[0], b'P');
+    assert!(contains_bytes(&buf, b"$1) AS (n agtype)"));
+    assert!(contains_bytes(
+        &buf,
+        b"$$ MATCH (n) WHERE n.name = $p0 RETURN n $$"
+    ));
+    assert!(!contains_bytes(&buf, b", %s)"));
+
+    let bind = FrontendMessage::Bind {
+        portal: String::new(),
+        statement: String::new(),
+        param_formats: vec![0; prepared.parameter_values.len()],
+        params: prepared.parameter_values.clone(),
+        result_formats: vec![0],
+    };
+    let mut buf = BytesMut::new();
+    bind.encode(&mut buf);
+    assert_eq!(buf[0], b'B');
+    assert!(contains_bytes(&buf, br#"{"p0":"Alice"}"#));
+    assert!(!contains_bytes(&buf, b"Alice';"));
+}
+
+#[test]
+fn test_prepared_sql_statement_parse_and_bind_encoding() {
+    let query = "SELECT * FROM t WHERE a = $p10 AND b = $p1 AND c = $p10";
+    let mut params = HashMap::new();
+    params.insert("p1".to_string(), serde_json::json!(42));
+    params.insert("p10".to_string(), serde_json::json!("x' OR 1=1 --"));
+    let prepared = prepare_postgres_statement(query, &params).unwrap();
+
+    let parse = FrontendMessage::Parse {
+        name: String::new(),
+        query: prepared.statement.clone(),
+        param_types: prepared.parameter_oids.clone(),
+    };
+    let mut buf = BytesMut::new();
+    parse.encode(&mut buf);
+    assert_eq!(buf[0], b'P');
+    assert!(contains_bytes(&buf, b"WHERE a = $1 AND b = $2 AND c = $1"));
+    assert!(!contains_bytes(&buf, b"OR 1=1"));
+
+    let bind = FrontendMessage::Bind {
+        portal: String::new(),
+        statement: String::new(),
+        param_formats: vec![0; prepared.parameter_values.len()],
+        params: prepared.parameter_values.clone(),
+        result_formats: vec![0],
+    };
+    let mut buf = BytesMut::new();
+    bind.encode(&mut buf);
+    assert_eq!(buf[0], b'B');
+    assert!(contains_bytes(&buf, b"x' OR 1=1 --"));
 }
