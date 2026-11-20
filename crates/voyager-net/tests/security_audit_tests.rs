@@ -6,7 +6,7 @@ use voyager_net::bolt::stream::{MAX_BOLT_MESSAGE_SIZE, read_message_frame_buffer
 use voyager_net::client::connect_any;
 use voyager_net::config::{ConnectionConfig, TlsMode};
 use voyager_net::error::NetError;
-use voyager_net::postgres::connection::format_postgres_query;
+use voyager_net::postgres::prepare_postgres_statement;
 use voyager_net::redis::resp::RespValue;
 use voyager_net::redis::transaction::format_cypher_with_params;
 use voyager_net::uri::{DatabaseProtocol, ParsedUri};
@@ -261,36 +261,42 @@ fn test_resp_array_and_map_allocation_bomb_rejected() {
 }
 
 #[test]
-fn test_postgres_parameter_collision_and_escaping() {
+fn test_postgres_parameter_collision_and_injection_prevention() {
     let mut params = HashMap::new();
     params.insert("p1".to_string(), serde_json::json!(42));
     params.insert("p10".to_string(), serde_json::json!(100));
 
     let query = "SELECT * FROM users WHERE id = $p10 AND age = $p1;";
-    let formatted = format_postgres_query(query, &params);
-    println!("PostgreSQL formatted query: {}", formatted);
+    let prepared = prepare_postgres_statement(query, &params).expect("prepare should succeed");
+    println!("PostgreSQL prepared statement: {}", prepared.statement);
 
-    // Prefix collision elimination: $p10 must NOT become 420!
-    assert!(
-        formatted.contains("id = 100"),
-        "Expected id = 100, got: {}",
-        formatted
+    // Prefix collision elimination: $p10 must NOT become $p1.
+    assert_eq!(
+        prepared.statement,
+        "SELECT * FROM users WHERE id = $1 AND age = $2;"
     );
-    assert!(
-        formatted.contains("age = 42"),
-        "Expected age = 42, got: {}",
-        formatted
+    assert_eq!(
+        prepared.parameter_values,
+        vec![Some(b"100".to_vec()), Some(b"42".to_vec())]
     );
 
-    // Single quote escaping for strings
+    // Injection payloads stay in bound values, never in the SQL text.
     let mut quote_params = HashMap::new();
-    quote_params.insert("name".to_string(), serde_json::json!("O'Reilly"));
+    quote_params.insert(
+        "name".to_string(),
+        serde_json::json!("O'Reilly'; DROP TABLE authors; --"),
+    );
     let quote_query = "SELECT * FROM authors WHERE name = $name;";
-    let quote_formatted = format_postgres_query(quote_query, &quote_params);
-    assert!(
-        quote_formatted.contains("'O''Reilly'"),
-        "Expected single quote to be escaped as '', got: {}",
-        quote_formatted
+    let quote_prepared =
+        prepare_postgres_statement(quote_query, &quote_params).expect("prepare should succeed");
+    assert_eq!(
+        quote_prepared.statement,
+        "SELECT * FROM authors WHERE name = $1;"
+    );
+    assert!(!quote_prepared.statement.contains("DROP TABLE"));
+    assert_eq!(
+        quote_prepared.parameter_values,
+        vec![Some(b"O'Reilly'; DROP TABLE authors; --".to_vec())]
     );
 }
 

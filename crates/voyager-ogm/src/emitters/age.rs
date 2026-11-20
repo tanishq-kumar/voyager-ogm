@@ -48,6 +48,83 @@ impl Default for AgeEmitter {
     }
 }
 
+/// Returns `true` when Cypher text references a `$name` parameter outside
+/// string literals, backtick identifiers, and comments.
+///
+/// Runtime bulk parameters (`UNWIND $batch AS row`) are not part of the compiled
+/// literal parameter map, but AGE still needs the third `cypher()` argument to
+/// receive them.
+fn contains_cypher_parameter_reference(statement: &str) -> bool {
+    let bytes = statement.as_bytes();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' => {
+                i += 1;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'\\' => i += 2,
+                        b'\'' => {
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+            }
+            b'"' => {
+                i += 1;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'\\' => i += 2,
+                        b'"' => {
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+            }
+            b'`' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'`' {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i < bytes.len() {
+                    if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'$' if bytes
+                .get(i + 1)
+                .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_') =>
+            {
+                return true;
+            }
+            _ => i += 1,
+        }
+    }
+
+    false
+}
+
 impl AstVisitor for AgeEmitter {
     fn visit_query(&mut self, arena: &QueryAstArena, root: NodeHandle) -> Result<CompiledQuery> {
         if !is_valid_age_graph_name(&self.graph_name) {
@@ -111,7 +188,9 @@ impl AstVisitor for AgeEmitter {
             format!("AS ({})", column_defs.join(", "))
         };
 
-        let params_arg = if cypher_compiled.parameters.is_empty() {
+        let params_arg = if cypher_compiled.parameters.is_empty()
+            && !contains_cypher_parameter_reference(&cypher_compiled.statement)
+        {
             String::new()
         } else {
             ", %s".to_string()
@@ -134,5 +213,29 @@ impl AstVisitor for AgeEmitter {
             execution_mode,
             cypher_compiled.columns,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::contains_cypher_parameter_reference;
+
+    #[test]
+    fn detects_runtime_parameters() {
+        assert!(contains_cypher_parameter_reference(
+            "UNWIND $batch AS row CREATE (n)"
+        ));
+        assert!(contains_cypher_parameter_reference("RETURN $name"));
+        assert!(contains_cypher_parameter_reference("RETURN $_private"));
+    }
+
+    #[test]
+    fn ignores_parameter_like_text_in_literals_and_comments() {
+        assert!(!contains_cypher_parameter_reference("RETURN '$p0'"));
+        assert!(!contains_cypher_parameter_reference(r#"RETURN "$p0""#));
+        assert!(!contains_cypher_parameter_reference("RETURN `$p0`"));
+        assert!(!contains_cypher_parameter_reference("RETURN 1 // $p0"));
+        assert!(!contains_cypher_parameter_reference("RETURN 1 /* $p0 */"));
+        assert!(!contains_cypher_parameter_reference("RETURN 'it\\'s $p0'"));
     }
 }

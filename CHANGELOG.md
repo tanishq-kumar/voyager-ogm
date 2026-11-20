@@ -117,6 +117,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Breaking:** Removed module-level free functions `unwind()` and `load_csv()` from `voyager_ogm` and `voyager_ogm.query`. Use `Query.unwind()` and `Query.load_csv()`.
 
 ### Fixed
+- **Native PostgreSQL and Apache AGE Parameter Binding (#222)**:
+  - The native PostgreSQL client now binds parameters through the extended query protocol (`Parse` / `Bind` / `Describe` / `Execute` / `Sync`) instead of substituting values into SQL text; parameter values are never interpolated for any dialect.
+  - Apache AGE statements bind the `%s` agtype parameter map as positional parameter `$1`, while `$name` references inside the `$$ ... $$` Cypher body are left for AGE to resolve from that map.
+  - SQL and SQL/PGQ `$name` placeholders are rewritten to positional `$1`, `$2`, ... in first-appearance order, with repeated names reusing one bound value.
+  - Error responses during the extended flow are drained through `ReadyForQuery`, so the connection stays usable and a failed statement inside `BEGIN` reports `FailedTransaction`.
+  - Apache AGE bulk `UNWIND $batch` statements now include the third `cypher()` parameter argument even when the batch map is a runtime parameter, so bulk create, bulk upsert, and identity-map flushes work on AGE.
+- **CI runs once per opened PR and once per push (CI)**: label and other PR metadata changes no longer trigger CI. The `full-ci` and `skip-changelog` labels are read from the PR at run time instead of from the event payload, so labels attached right after opening are honoured and a manual re-run picks up a label added later. Opening a PR with several labels previously started one run per label; cancelled runs posted a failing `CI Gate` that could leave the PR blocked.
 - **Relationship Unique and Primary-Key Constraint DDL (#211)**:
   - On the Cypher dialect, relationship fields marked `unique=True` or `primary_key=True` now emit a `REQUIRE r.<prop> IS UNIQUE` constraint instead of only an existence constraint, so duplicate values are rejected.
   - Relationship existence (`REQUIRE r.<prop> IS NOT NULL`) constraints are now emitted only when the field is non-nullable, so a nullable unique relationship field is no longer made mandatory.

@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::time::Instant;
+use tokio::io::AsyncRead;
 use tokio::net::TcpStream;
 
 use crate::config::Auth;
@@ -10,10 +11,13 @@ use crate::engine::{AsyncConnection, QueryResult, QuerySummary};
 use crate::error::{NetError, Result};
 use crate::postgres::agtype::rows_to_record_batch;
 use crate::postgres::auth::{ScramClient, compute_md5_password};
-use crate::postgres::codec::{read_backend_message, write_frontend_message, write_startup_message};
+use crate::postgres::codec::{
+    read_backend_message, write_frontend_message, write_frontend_messages, write_startup_message,
+};
 use crate::postgres::message::{
     AuthenticationRequest, BackendMessage, FrontendMessage, StartupMessage, TransactionStatus,
 };
+use crate::postgres::params::{PreparedPostgresStatement, prepare_postgres_statement};
 use crate::uri::ParsedUri;
 
 /// Asynchronous physical connection to a PostgreSQL database server or Apache AGE instance.
@@ -317,6 +321,91 @@ impl PostgresConnection {
         Ok(QueryResult::new(columns, batches, summary))
     }
 
+    /// Executes a parameterized statement via the PostgreSQL extended query protocol.
+    ///
+    /// Sends `Parse` / `Bind` / `Describe` / `Execute` / `Sync` in one flush and
+    /// drains responses through `ReadyForQuery`, including after an
+    /// `ErrorResponse`, so the connection remains usable and transaction state
+    /// reflects the server's report.
+    async fn execute_extended_inner(
+        &mut self,
+        prepared: &PreparedPostgresStatement,
+    ) -> Result<QueryResult> {
+        let start_time = Instant::now();
+        let parameter_count = prepared.parameter_values.len();
+
+        let messages = [
+            FrontendMessage::Parse {
+                name: String::new(),
+                query: prepared.statement.clone(),
+                param_types: prepared.parameter_oids.clone(),
+            },
+            FrontendMessage::Bind {
+                portal: String::new(),
+                statement: String::new(),
+                param_formats: vec![0; parameter_count],
+                params: prepared.parameter_values.clone(),
+                result_formats: vec![0],
+            },
+            FrontendMessage::Describe {
+                target_type: b'P',
+                name: String::new(),
+            },
+            FrontendMessage::Execute {
+                portal: String::new(),
+                max_rows: 0,
+            },
+            FrontendMessage::Sync,
+        ];
+        write_frontend_messages(&mut self.stream, &messages).await?;
+
+        let response = read_extended_response(&mut self.stream).await?;
+        self.transaction_status = response.transaction_status;
+        for (name, value) in response.parameter_status {
+            self.server_parameters.insert(name, value);
+        }
+        if let Some(tag) = response.command_tag {
+            self.last_command_tag = Some(tag);
+        }
+
+        if let Some(err) = response.error {
+            return Err(err);
+        }
+
+        let mut summary = response.summary;
+        summary.execution_time_ms = start_time.elapsed().as_millis() as u64;
+
+        let batch = rows_to_record_batch(&response.columns, &response.rows)?;
+        let batches = if batch.num_rows() > 0 || !response.columns.is_empty() {
+            vec![batch]
+        } else {
+            Vec::new()
+        };
+
+        Ok(QueryResult::new(response.columns, batches, summary))
+    }
+
+    /// Executes a prepared statement with the configured query timeout.
+    async fn execute_extended(
+        &mut self,
+        prepared: &PreparedPostgresStatement,
+    ) -> Result<QueryResult> {
+        if let Some(to) = self.query_timeout {
+            match tokio::time::timeout(to, self.execute_extended_inner(prepared)).await {
+                Ok(res) => res,
+                Err(_) => {
+                    self.transaction_status = TransactionStatus::FailedTransaction;
+                    Err(NetError::Timeout(format!(
+                        "Query execution timed out after {:?}",
+                        to
+                    )))
+                }
+            }
+        } else {
+            self.execute_extended_inner(prepared).await
+        }
+    }
+
     /// Returns the active query timeout.
     pub fn query_timeout(&self) -> Option<std::time::Duration> {
         self.query_timeout
@@ -332,7 +421,7 @@ impl PostgresConnection {
         self.transaction_status
     }
 
-    /// Returns the command tag of the most recently completed simple query.
+    /// Returns the command tag of the most recently completed query.
     pub fn last_command_tag(&self) -> Option<&str> {
         self.last_command_tag.as_deref()
     }
@@ -348,39 +437,6 @@ impl PostgresConnection {
     }
 }
 
-/// Helper function to interpolate parameters into a PostgreSQL / Apache AGE query string.
-///
-/// Parameter keys are sorted by descending length to prevent prefix collisions
-/// (e.g. `$p1` accidentally matching and corrupting `$p10`).
-pub fn format_postgres_query(query: &str, params: &HashMap<String, serde_json::Value>) -> String {
-    if params.is_empty() {
-        return query.to_string();
-    }
-
-    let mut q = query.to_string();
-
-    // Sort parameter keys by descending length to prevent prefix collisions ($p10 before $p1)
-    let mut sorted_keys: Vec<&String> = params.keys().collect();
-    sorted_keys.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
-
-    for k in sorted_keys {
-        let v = &params[k];
-        let json_repr = match v {
-            serde_json::Value::String(s) => format!("'{}'", s.replace('\'', "''")),
-            serde_json::Value::Null => "NULL".to_string(),
-            serde_json::Value::Number(n) => n.to_string(),
-            serde_json::Value::Bool(b) => b.to_string(),
-            other => {
-                let s = other.to_string();
-                s.replace('\'', "''")
-            }
-        };
-        let placeholder = format!("${}", k);
-        q = q.replace(&placeholder, &json_repr);
-    }
-    q
-}
-
 #[async_trait]
 impl AsyncConnection for PostgresConnection {
     async fn execute(
@@ -388,8 +444,11 @@ impl AsyncConnection for PostgresConnection {
         query: &str,
         params: &HashMap<String, serde_json::Value>,
     ) -> Result<QueryResult> {
-        let formatted_query = format_postgres_query(query, params);
-        self.execute_simple(&formatted_query).await
+        let prepared = prepare_postgres_statement(query, params)?;
+        if !prepared.is_parameterized() {
+            return self.execute_simple(&prepared.statement).await;
+        }
+        self.execute_extended(&prepared).await
     }
 
     async fn ping(&mut self) -> Result<()> {
@@ -498,6 +557,85 @@ pub(crate) fn validate_savepoint_name(name: &str) -> Result<()> {
     }
 }
 
+/// Fully drained response to an extended-query cycle.
+struct ExtendedResponse {
+    columns: Vec<String>,
+    rows: Vec<Vec<Option<String>>>,
+    summary: QuerySummary,
+    command_tag: Option<String>,
+    error: Option<NetError>,
+    transaction_status: TransactionStatus,
+    parameter_status: Vec<(String, String)>,
+}
+
+/// Reads extended-query responses until `ReadyForQuery`, even after an error.
+async fn read_extended_response<R>(reader: &mut R) -> Result<ExtendedResponse>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut response = ExtendedResponse {
+        columns: Vec::new(),
+        rows: Vec::new(),
+        summary: QuerySummary::empty(),
+        command_tag: None,
+        error: None,
+        transaction_status: TransactionStatus::Idle,
+        parameter_status: Vec::new(),
+    };
+
+    loop {
+        let msg = read_backend_message(reader).await?;
+        match msg {
+            BackendMessage::ParseComplete
+            | BackendMessage::BindComplete
+            | BackendMessage::CloseComplete
+            | BackendMessage::NoData
+            | BackendMessage::EmptyQueryResponse => {}
+            BackendMessage::RowDescription(fields) => {
+                response.columns = fields.into_iter().map(|f| f.name).collect();
+            }
+            BackendMessage::DataRow(vals) => {
+                let mut row = Vec::with_capacity(vals.len());
+                for val in vals {
+                    match val {
+                        Some(bytes) => {
+                            let s = String::from_utf8_lossy(&bytes).into_owned();
+                            row.push(Some(s));
+                        }
+                        None => row.push(None),
+                    }
+                }
+                response.rows.push(row);
+            }
+            BackendMessage::CommandComplete(tag) => {
+                parse_command_tag(&tag, &mut response.summary);
+                response.command_tag = Some(tag);
+            }
+            BackendMessage::ReadyForQuery(status) => {
+                response.transaction_status = status;
+                break;
+            }
+            BackendMessage::ErrorResponse(diag) => {
+                // Keep draining until ReadyForQuery: the server discards the
+                // rest of this extended-protocol cycle and reports the final
+                // transaction state there.
+                if response.error.is_none() {
+                    response.error = Some(NetError::ProtocolError(diag.format_error()));
+                }
+            }
+            BackendMessage::NoticeResponse(_) => {}
+            BackendMessage::ParameterStatus { name, value } => {
+                response.parameter_status.push((name, value));
+            }
+            other => {
+                tracing::trace!("Ignored message during extended query: {:?}", other);
+            }
+        }
+    }
+
+    Ok(response)
+}
+
 /// Parses PostgreSQL command tag (e.g. `INSERT 0 1`, `DELETE 5`, `UPDATE 2`) into summary metrics.
 fn parse_command_tag(tag: &str, summary: &mut QuerySummary) {
     let parts: Vec<&str> = tag.split_whitespace().collect();
@@ -528,5 +666,91 @@ fn parse_command_tag(tag: &str, summary: &mut QuerySummary) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncWriteExt, duplex};
+
+    fn frame(msg_type: u8, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(5 + payload.len());
+        out.push(msg_type);
+        out.extend_from_slice(&(4 + payload.len() as i32).to_be_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+
+    fn error_frame(message: &str) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(b"SERROR\0");
+        payload.extend_from_slice(b"C42601\0");
+        payload.push(b'M');
+        payload.extend_from_slice(message.as_bytes());
+        payload.push(0);
+        payload.push(0);
+        frame(b'E', &payload)
+    }
+
+    fn ready_frame(status: u8) -> Vec<u8> {
+        frame(b'Z', &[status])
+    }
+
+    #[tokio::test]
+    async fn extended_error_drains_to_ready_for_query_and_recovers() {
+        let (mut client, mut server) = duplex(4096);
+
+        let mut first_cycle = Vec::new();
+        first_cycle.extend_from_slice(&frame(b'1', &[])); // ParseComplete
+        first_cycle.extend_from_slice(&frame(b'2', &[])); // BindComplete
+        first_cycle.extend_from_slice(&error_frame("syntax error at or near \"%\""));
+        first_cycle.extend_from_slice(&ready_frame(b'E')); // failed transaction
+        server.write_all(&first_cycle).await.unwrap();
+
+        let first = read_extended_response(&mut client).await.unwrap();
+        assert!(first.error.is_some());
+        assert!(
+            first
+                .error
+                .as_ref()
+                .unwrap()
+                .to_string()
+                .contains("syntax error")
+        );
+        assert_eq!(
+            first.transaction_status,
+            TransactionStatus::FailedTransaction
+        );
+        assert!(first.columns.is_empty());
+
+        let mut second_cycle = Vec::new();
+        // RowDescription with one text column "n"
+        let mut row_desc = Vec::new();
+        row_desc.extend_from_slice(&1i16.to_be_bytes());
+        row_desc.extend_from_slice(b"n\0");
+        row_desc.extend_from_slice(&0i32.to_be_bytes()); // table oid
+        row_desc.extend_from_slice(&0i16.to_be_bytes()); // column attr
+        row_desc.extend_from_slice(&25i32.to_be_bytes()); // text
+        row_desc.extend_from_slice(&(-1i16).to_be_bytes()); // varlena
+        row_desc.extend_from_slice(&(-1i32).to_be_bytes()); // typmod
+        row_desc.extend_from_slice(&0i16.to_be_bytes()); // text format
+        second_cycle.extend_from_slice(&frame(b'T', &row_desc));
+
+        let mut data_row = Vec::new();
+        data_row.extend_from_slice(&1i16.to_be_bytes());
+        data_row.extend_from_slice(&3i32.to_be_bytes());
+        data_row.extend_from_slice(b"one");
+        second_cycle.extend_from_slice(&frame(b'D', &data_row));
+        second_cycle.extend_from_slice(&frame(b'C', b"SELECT 1\0"));
+        second_cycle.extend_from_slice(&ready_frame(b'I'));
+        server.write_all(&second_cycle).await.unwrap();
+
+        let second = read_extended_response(&mut client).await.unwrap();
+        assert!(second.error.is_none());
+        assert_eq!(second.transaction_status, TransactionStatus::Idle);
+        assert_eq!(second.columns, vec!["n".to_string()]);
+        assert_eq!(second.rows, vec![vec![Some("one".to_string())]]);
+        assert_eq!(second.command_tag.as_deref(), Some("SELECT 1"));
     }
 }

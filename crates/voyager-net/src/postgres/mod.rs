@@ -5,6 +5,7 @@ pub mod auth;
 pub mod codec;
 pub mod connection;
 pub mod message;
+pub mod params;
 pub mod transaction;
 
 pub use agtype::{
@@ -19,5 +20,8 @@ pub use connection::PostgresConnection;
 pub use message::{
     AuthenticationRequest, BackendMessage, FieldDescription, FrontendMessage, PG_PROTOCOL_V3,
     PgDiagnostic, StartupMessage, TransactionStatus, oids,
+};
+pub use params::{
+    ParameterPlaceholderStyle, PreparedPostgresStatement, prepare_postgres_statement,
 };
 pub use transaction::PostgresTransaction;

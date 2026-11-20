@@ -5,7 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    # Runs once per opened PR and once per push. Label and other metadata
+    # changes do not trigger CI; jobs read the PR's current labels at run time
+    # (see the `changes` job), so a re-run picks up a label added later.
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 concurrency:
@@ -31,7 +34,25 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       python: ${{ steps.filter.outputs.python }}
       net: ${{ steps.filter.outputs.net }}
+      full_ci: ${{ steps.labels.outputs.full_ci == 'true' }}
+      skip_changelog: ${{ steps.labels.outputs.skip_changelog == 'true' }}
     steps:
+      # Read the PR's labels live rather than from the event payload: labels added
+      # right after the PR is opened, or before a manual re-run, are not in the
+      # payload snapshot.
+      - name: Read Current PR Labels
+        id: labels
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          labels="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.labels[].name')"
+          echo "Current PR labels: ${labels:-<none>}"
+          if grep -qx 'full-ci' <<<"$labels"; then echo "full_ci=true" >> "$GITHUB_OUTPUT"; else echo "full_ci=false" >> "$GITHUB_OUTPUT"; fi
+          if grep -qx 'skip-changelog' <<<"$labels"; then echo "skip_changelog=true" >> "$GITHUB_OUTPUT"; else echo "skip_changelog=false" >> "$GITHUB_OUTPUT"; fi
+
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -128,6 +149,7 @@ jobs:
   # =========================================================================
   changelog:
     name: Changelog Gate
+    needs: [changes]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -139,7 +161,7 @@ jobs:
         run: python3 scripts/check_changelog.py --format
 
       - name: Verify Unreleased Changelog Entry
-        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
+        if: github.event_name == 'pull_request' && needs.changes.outputs.skip_changelog != 'true'
         run: python3 scripts/check_changelog.py --require-unreleased-change origin/${{ github.base_ref }}
 
   # =========================================================================
@@ -181,13 +203,13 @@ jobs:
     needs: [changes, lint]
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      needs.changes.outputs.full_ci == 'true' ||
       needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
+        os: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.full_ci == 'true') && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -219,14 +241,14 @@ jobs:
     needs: [changes, lint]
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      needs.changes.outputs.full_ci == 'true' ||
       needs.changes.outputs.python == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
-        python-version: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && fromJSON('["3.11", "3.12", "3.13", "3.14"]') || fromJSON('["3.11", "3.12"]') }}
+        os: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.full_ci == 'true') && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
+        python-version: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.full_ci == 'true') && fromJSON('["3.11", "3.12", "3.13", "3.14"]') || fromJSON('["3.11", "3.12"]') }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -268,7 +290,7 @@ jobs:
     needs: [changes, lint]
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      needs.changes.outputs.full_ci == 'true' ||
       needs.changes.outputs.net == 'true'
     runs-on: ubuntu-latest
     steps:
