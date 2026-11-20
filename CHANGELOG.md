@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Base install import failure (#239)**: `import voyager_ogm` no longer requires SQLAlchemy or any other optional extra. SQLAlchemy-backed names are resolved lazily and raise an `ImportError` naming `voyager-ogm[sqlalchemy]` when used without the extra; optional bridge, analytics, and hybrid helpers name their extra too. Added a base-only wheel smoke test to CI and the release workflow.
+- **Portable Linux wheels (#240)**: Linux `x86_64` and `aarch64` wheels are now built against `manylinux_2_28` in the matching container instead of the runner host, and the release workflow verifies every Linux wheel filename carries that tag before publishing.
+
 ## [0.4.0-alpha.7] - 2026-11-20
 
 ### Added

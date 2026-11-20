@@ -97,3 +97,5 @@ Release wheels and source distributions are published to PyPI using GitHub Actio
    git push origin v<version>
    ```
 7. The `.github/workflows/release.yml` workflow triggers on the tag push, compiles multi-platform wheels and sdist, creates the GitHub Release with the extracted changelog notes, and publishes to PyPI (if `PYPI_PUBLISH == 'true'`).
+   - Linux `x86_64` and `aarch64` wheels are built inside the `manylinux_2_28` container (glibc >= 2.28) so both targets share a portable tag. The workflow fails before creating the release if a Linux wheel filename does not carry `manylinux_2_28`.
+   - Each Linux `x86_64` wheel is installed into a fresh Python 3.11 and 3.12 environment without optional extras and exercised with `scripts/smoke_base_install.py` before the release is published.

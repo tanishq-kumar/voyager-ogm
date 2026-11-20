@@ -94,14 +94,19 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            manylinux: "2_28"
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
+            manylinux: "2_28"
           - os: macos-latest
             target: x86_64-apple-darwin
+            manylinux: "off"
           - os: macos-latest
             target: aarch64-apple-darwin
+            manylinux: "off"
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            manylinux: "off"
     steps:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -110,8 +115,29 @@ jobs:
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
           args: --release --out dist
           sccache: false
+
+      - name: Verify Linux Wheel manylinux Tag
+        if: contains(matrix.target, 'linux')
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import sys
+
+          expected = "manylinux_2_28"
+          wheels = sorted(pathlib.Path("dist").glob("*.whl"))
+          if not wheels:
+              sys.exit("No wheels found in dist/")
+          for wheel in wheels:
+              print(f"Checking {wheel.name}")
+              if expected not in wheel.name:
+                  sys.exit(
+                      f"ERROR: {wheel.name} does not carry the expected {expected} tag"
+                  )
+          print(f"All {len(wheels)} Linux wheel(s) carry the {expected} tag.")
+          PY
 
       - name: Upload Wheel Artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -120,11 +146,67 @@ jobs:
           path: dist/*
 
   # =========================================================================
+  # 3b. Verify Linux Wheel Tags and Base-Only Install
+  # =========================================================================
+  verify-wheels:
+    name: Verify Wheels (Py ${{ matrix.python-version }})
+    needs: [verify, build-wheels]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download Linux x86_64 Wheel
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: wheels-ubuntu-latest-x86_64-unknown-linux-gnu
+          path: dist
+
+      - name: Verify Downloaded Linux Wheel Tag
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import sys
+
+          expected = "manylinux_2_28"
+          wheels = sorted(pathlib.Path("dist").glob("*.whl"))
+          if not wheels:
+              sys.exit("No Linux x86_64 wheel found in dist/")
+          for wheel in wheels:
+              print(f"Checking {wheel.name}")
+              if expected not in wheel.name:
+                  sys.exit(f"ERROR: {wheel.name} does not carry the expected {expected} tag")
+          print(f"All {len(wheels)} Linux x86_64 wheel(s) carry the {expected} tag.")
+          PY
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+          version: "latest"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install Wheel into Fresh Environment (No Extras)
+        run: |
+          uv venv --python ${{ matrix.python-version }} "${RUNNER_TEMP}/voyager-base"
+          uv pip install --python "${RUNNER_TEMP}/voyager-base/bin/python" dist/*.whl
+
+      - name: Run Base-Install Smoke Test
+        run: |
+          "${RUNNER_TEMP}/voyager-base/bin/python" -I scripts/smoke_base_install.py
+
+  # =========================================================================
   # 4. GitHub Release Creation
   # =========================================================================
   release:
     name: Create GitHub Release
-    needs: [verify, build-sdist, build-wheels]
+    needs: [verify, build-sdist, build-wheels, verify-wheels]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository

@@ -42,6 +42,25 @@ else:
             pass
 
 
+_SQLALCHEMY_INSTALL_HINT = 'pip install "voyager-ogm[sqlalchemy]"'
+
+
+def _require_sqlalchemy(feature: str) -> None:
+    """Raises a clear ImportError when SQLAlchemy is not installed.
+
+    Args:
+        feature: Name of the SQLAlchemy-backed feature being used.
+
+    Raises:
+        ImportError: If SQLAlchemy is not installed, naming the optional extra.
+    """
+    if not HAS_SQLALCHEMY:
+        raise ImportError(
+            f"{feature} requires SQLAlchemy. Install the optional extra with: "
+            f"{_SQLALCHEMY_INSTALL_HINT}"
+        )
+
+
 class VertexTableDef:
     """Descriptor for a vertex table in a Property Graph catalog."""
 
@@ -127,8 +146,7 @@ class PropertyGraph:
         Returns:
             Configured PropertyGraph instance.
         """
-        if not HAS_SQLALCHEMY:
-            raise ImportError("SQLAlchemy is required to use PropertyGraph.from_metadata")
+        _require_sqlalchemy("PropertyGraph.from_metadata")
 
         metadata: MetaData = (
             metadata_or_base.metadata if hasattr(metadata_or_base, "metadata") else metadata_or_base
@@ -484,8 +502,7 @@ def graph_table(
         stmt = select(User.name, gt.c.friend_name).join(gt, User.id == gt.c.user_id)
         ```
     """
-    if not HAS_SQLALCHEMY:
-        raise ImportError("SQLAlchemy is required to use graph_table")
+    _require_sqlalchemy("graph_table")
 
     graph_name = graph.name if isinstance(graph, PropertyGraph) else str(graph)
 
@@ -558,8 +575,7 @@ def as_cte(
         stmt = select(User).join(cte, User.id == cte.c.target_id).where(cte.c.source_id == 42)
         ```
     """
-    if not HAS_SQLALCHEMY:
-        raise ImportError("SQLAlchemy is required to use as_cte")
+    _require_sqlalchemy("as_cte")
 
     from sqlalchemy import Integer, cast, literal
 
@@ -692,3 +708,21 @@ def graph_relationship(
         min_hops=min_hops,
         graph_name=graph_name,
     )
+
+
+def __getattr__(name: str) -> Any:
+    """Raises a clear error for SQLAlchemy-only symbols when the extra is missing.
+
+    Args:
+        name: Attribute name requested from this module.
+
+    Returns:
+        The resolved attribute value when available.
+
+    Raises:
+        ImportError: If the attribute is SQLAlchemy-backed and SQLAlchemy is not installed.
+        AttributeError: If the attribute does not exist.
+    """
+    if name == "GraphTableClause":
+        _require_sqlalchemy("GraphTableClause")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

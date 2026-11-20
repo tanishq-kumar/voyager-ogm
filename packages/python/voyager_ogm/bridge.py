@@ -3395,7 +3395,8 @@ def create_bridge(
                     return AsyncMockBridge() if is_async else MockBridge()
                 raise ImportError(
                     f"The 'neo4j' Python package is required to connect to URI '{mask_uri_password(driver_or_connection)}'. "
-                    f"Install it with 'pip install neo4j', or pass fallback='mock' for offline testing."
+                    "Install the optional extra with: "
+                    "pip install \"voyager-ogm[neo4j]\", or pass fallback='mock' for offline testing."
                 ) from e
             from urllib.parse import parse_qs, unquote, urlsplit, urlunsplit
 
@@ -3461,7 +3462,8 @@ def create_bridge(
                     return AsyncMockBridge() if is_async else MockBridge()
                 raise ImportError(
                     f"The 'duckdb' Python package is required to connect to URI '{mask_uri_password(driver_or_connection)}'. "
-                    f"Install it with 'pip install duckdb', or pass fallback='mock' for offline testing."
+                    "Install the optional extra with: "
+                    "pip install \"voyager-ogm[duckdb]\", or pass fallback='mock' for offline testing."
                 ) from e
             path = driver_or_connection.replace("duckdb://", "") or ":memory:"
             duck_conn = duckdb.connect(path)
@@ -3485,7 +3487,8 @@ def create_bridge(
                     return AsyncMockBridge() if is_async else MockBridge()
                 raise ImportError(
                     f"The 'psycopg' Python package is required to connect to URI '{mask_uri_password(driver_or_connection)}'. "
-                    f"Install it with 'pip install psycopg[binary]', or pass fallback='mock' for offline testing."
+                    "Install the optional extra with: "
+                    "pip install \"voyager-ogm[age]\", or pass fallback='mock' for offline testing."
                 ) from e
             from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -3610,7 +3613,8 @@ def create_bridge(
                     return AsyncMockBridge() if is_async else MockBridge()
                 raise ImportError(
                     f"The 'relate-db' Python package is required to connect to URI '{mask_uri_password(driver_or_connection)}'. "
-                    f"Install it with 'pip install relate-db', or pass fallback='mock' for offline testing."
+                    "Install the optional extra with: "
+                    "pip install \"voyager-ogm[relate]\", or pass fallback='mock' for offline testing."
                 ) from e
             path = driver_or_connection.split("://", 1)[1]
             target_path = ":memory:" if (not path or path == ":memory:") else path
