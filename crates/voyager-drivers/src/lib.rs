@@ -1,7 +1,4 @@
-//! Native asynchronous network runtime, connection pooling, and wire protocol engine for Voyager OGM.
-//!
-//! `voyager-drivers` aims to provides a high-throughput native Rust engine operating over raw TCP/TLS with
-//! zero GIL contention, connection pooling, and direct wire-to-Arrow streaming.
+#![doc = include_str!("../README.md")]
 //!
 //! # Architecture
 //! - [`ConnectionPool`]: Thread-safe, generic connection pool with RAII leasing guards and liveness probes.

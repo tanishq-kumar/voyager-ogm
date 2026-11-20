@@ -1,14 +1,19 @@
-//! # Voyager OGM Core Engine (`voyager-ogm`)
-//!
-//! Voyager OGM is a vendor-neutral Object-Graph Mapper (OGM)
-//! and AST query compiler implemented in pure safe Rust.
+#![doc = include_str!("../README.md")]
 //!
 //! ## Modules
 //! - [`ast`]: AST node definitions and handle-based memory management.
 //! - [`builder`]: Ergonomic fluent query builder API.
-//! - [`emitters`]: Multi-dialect query string emitters (openCypher, SQL:2023 PGQ, ISO GQL).
+//! - [`emitters`]: Multi-dialect query string emitters (openCypher, SQL:2023 PGQ, ISO GQL, Apache AGE).
 //! - [`visitor`]: AST Visitor trait and compilation result containers.
 //! - [`error`]: Error types and diagnostic reporting.
+//! - [`arrow`]: Apache Arrow bridge (available with the `arrow` feature).
+//! - [`bridge`]: Database bridge traits and mock implementations.
+//! - [`bulk`]: Bulk-ingestion plan and statement compilation.
+//! - [`cache`]: Compiled-query cache.
+//! - [`optimizer`]: AST optimizer and optimization levels.
+//! - [`schema`]: Schema registry, constraints, indexes, and conformance reports.
+//! - [`topology`]: Graph topology extraction.
+//! - [`transaction`]: Transactions, savepoints, and units of work.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

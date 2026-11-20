@@ -8,7 +8,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 keywords = ["neo4j", "memgraph", "falkordb", "postgresql", "database-driver"]
-categories = ["database", "database-implementations", "network-programming", "asynchronous"]
+categories = ["database", "network-programming", "asynchronous"]
 readme = "README.md"
 autobenches = false
 

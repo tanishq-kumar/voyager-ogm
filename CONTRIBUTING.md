@@ -60,13 +60,13 @@ To work on Voyager locally, make sure you have the following installed:
    ```bash
    just setup
    ```
-   This automatically installs all Python dependencies into a local virtual environment.
+   This installs the Python dependencies into a local virtual environment and fetches the official conformance corpora. The recipe also runs `bun install`; that only matters once the TypeScript workspace (`packages/typescript`) exists, and it is not part of this repository yet.
 
 3. **Verify your toolchain**:
    ```bash
    just doctor
    ```
-   This confirms that your Rust compiler, Python runner, and test suites are working properly.
+   This checks the Rust, Python, and TypeScript toolchains and audits the dialect TCK suites.
 
 4. **Build the project**:
    ```bash
@@ -82,11 +82,12 @@ To work on Voyager locally, make sure you have the following installed:
 Before submitting changes, make sure all standard tests pass:
 
 ```bash
-# Run all test suites (Rust and Python)
+# Run all test suites (Rust unit/integration + doctests, Python, and TypeScript)
 just test
 
 # Or run specific test suites:
-just test-rust       # Rust core unit and integration tests (via cargo-nextest)
+just test-rust       # Rust unit and integration tests (via cargo-nextest)
+just test-doc        # Rust doctests, including the crate README examples (cargo test --doc)
 just test-python     # Python SDK tests (via pytest)
 just test-snapshot   # Snapshot tests (via cargo-insta)
 ```
@@ -95,14 +96,15 @@ just test-snapshot   # Snapshot tests (via cargo-insta)
 Voyager integrates with real graph databases (Neo4j, Memgraph, Apache AGE, and FalkorDB). A pre-configured multi-database container stack is provided in `containers/compose.yaml`:
 
 ```bash
-# 1. Start local database containers (Docker or Podman)
-just up
+# 1. Start local database containers
+just up                # uses `podman compose`
+# Docker users: docker compose -f containers/compose.yaml up -d
 
 # 2. Run live database integration tests against real engines
 just test-live
 
 # 3. Stop containers when finished
-just down
+just down              # uses `podman compose`
 ```
 
 **Neo4j edition and licensing.** `just up` starts **Neo4j Community** (open source), and every live test passes on it; tests that need Enterprise-only features (property-existence constraints) adapt automatically. Neo4j Enterprise is opt-in, and you must accept Neo4j's licence terms yourself. Nothing in this repository accepts them for you:
@@ -114,6 +116,19 @@ NEO4J_EDITION=enterprise NEO4J_ACCEPT_LICENSE_AGREEMENT=eval just up neo4j
 ```
 
 Memgraph (BSL 1.1) and FalkorDB (SSPL v1) are pulled and run locally only; this project never redistributes them.
+
+### Git Hooks
+
+The repository ships hooks in `.githooks/`. Enable them once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+`just setup` does not set this for you. The hooks delegate to `just`:
+
+- `pre-commit` runs `just pre-commit` (format check, lint, and Python type checks) — fast enough for every commit.
+- `pre-push` currently runs `just pre-push`, which is the full `just test` suite plus a benchmark capture (`just bench-save`). That is slow; use `git push --no-verify` when you only need to push, until the pre-push hook is made fast (tracked separately).
 
 ---
 
@@ -131,9 +146,11 @@ just lint
 # Run static type checking (ty)
 just typecheck
 
-# Full CI check (runs formatting check, linters, and all tests)
+# Full CI check (format/lint, supply-chain gates, and all tests)
 just ci
 ```
+
+`just ci` runs `fmt-check`, `lint`, `deny`, `machete`, `audit`, and the complete `test` suite (Rust unit/integration tests, doctests, Python, and TypeScript when present).
 
 ---
 
@@ -141,11 +158,21 @@ just ci
 
 Voyager is structured as a monorepo:
 
-* `crates/voyager-ogm`: Rust core database engine, multi-dialect AST parser, query optimizer, and Arrow bridge.
-* `crates/voyager-pyo3`: PyO3 Rust-to-Python native extension bindings.
-* `crates/voyager-cli`: Command-line interface tool (`voy`).
-* `packages/python/voyager_ogm`: Python SDK, Polars streaming integration, and interactive graph viewer.
-* `containers/compose.yaml`: Multi-engine Docker/Podman stack for local live testing.
+* `crates/voyager-ogm`: Core query compiler — fluent builder, AST arena, optimizer, multi-dialect emitters (openCypher, SQL:2023 PGQ, ISO GQL, Apache AGE), schema registry, Arrow bridge.
+* `crates/voyager-drivers`: Native async driver layer — Bolt (Neo4j, Memgraph), PostgreSQL wire (Apache AGE, PostgreSQL 19), Redis RESP (FalkorDB), connection pooling, native transactions.
+* `crates/voyager-cli`: The `voyager` binary — diagnostics (`doctor`), plus early `compile`/`bench` placeholders (planned short alias: `voy`).
+* `crates/voyager-pyo3`: PyO3 native extension for the Python package (not published to crates.io; built into the wheel by maturin).
+* `packages/python/voyager_ogm`: Python SDK — sessions, models, bridges, Polars streaming, graph viewer.
+* `examples/`: Progressive Python learning path (01-31) plus a README cross-indexing the Rust examples in `crates/*/examples/`.
+* `benchmarks/`: Benchmark scripts, `benchmark_summary.json`, the published SVGs; see `benchmarks/README.md`.
+* `scripts/`: Release, benchmark, smoke-test, and conformance-fetch automation.
+* `spec/`: The query-spec JSON schema (`query_spec.v1.schema.json`).
+* `test_data/`: TCK/conformance corpora and seed data.
+* `fuzz/`: cargo-fuzz targets (excluded from the Cargo workspace).
+* `containers/compose.yaml`: Multi-engine Compose stack (Neo4j, Memgraph, Apache AGE, FalkorDB, PostgreSQL) for live tests.
+* `.github/workflows/` + `justfile`: CI (`ci.yml`), releases (`release.yml`), PR tooling, and every dev recipe.
+
+A TypeScript SDK (`packages/typescript`) is planned but is not part of this repository yet.
 
 ---
 
@@ -161,29 +188,38 @@ Following the cleanup in `#131`, Voyager maintains a strict policy regarding API
 
 ## 10. Submitting a Pull Request
 
-1. Create a feature branch from `main`:
+1. Create a branch from `main` named `<type>/<issue>-<short-desc>`, using the same type as your commit (real examples from this repository: `fix/221-age-uri-graph-param`, `feat/192-create-relationship-matched`, `refactor/217-rename-voyager-drivers`, `ci/242-trusted-publishing`):
    ```bash
-   git checkout -b feat/my-new-feature
+   git switch -c fix/221-age-uri-graph-param
    ```
 2. Make your changes and add tests where appropriate.
 3. Update `CHANGELOG.md`:
-   - Every user-facing pull request must add a bullet under `## [Unreleased]` in `CHANGELOG.md` following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-   - Internal-only pull requests (CI, internal refactors, documentation-only) are exempt if tagged with the `skip-changelog` label.
-4. Run `just ci` to ensure all formatting, linting, and tests pass.
-5. Commit your changes using conventional commit messages in simple English:
-   - `feat: add math functions to expression compiler`
-   - `fix: handle null property in record deserializer`
-   - `docs: update setup instructions in README`
-6. Push your branch to GitHub and open a Pull Request.
-7. In your PR description, explain what changes you made and link any related issues (e.g. `Closes #20`).
+   - Every user-facing pull request must add a bullet under `## [Unreleased]` in `CHANGELOG.md` following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). To check it locally, run `python3 scripts/check_changelog.py --format` and `python3 scripts/check_changelog.py --require-unreleased-change origin/main`.
+   - Internal-only pull requests (CI, internal refactors) are exempt if tagged with the `skip-changelog` label.
+4. Run `just ci` to ensure formatting, linting, supply-chain checks, and all tests pass.
+5. Commit with a subject in the form `<type>(<scope>): <summary> (#issue)`. Omit the scope only for repo-wide changes (e.g. `refactor: rename voyager-net crate to voyager-drivers (#217)`). Real examples:
+   - `fix(bridge): accept ?graph= / ?graph_name= on PostgreSQL and AGE URIs (#221)`
+   - `feat(query): create and merge relationships between matched nodes (#192)`
+   - `fix(net): bind PostgreSQL and AGE parameters instead of interpolating them (#222)`
+   - `fix(ddl): emit uniqueness constraints for unique relationship fields (#211)`
+   - `refactor(core): resolve primary key and MERGE key from the native schema registry (#200)`
+   - `feat(drivers): Cargo features per protocol, slimmer Arrow, README example links (#218)`
+6. Push your branch and open a pull request. Fill in the repository PR template (`.github/pull_request_template.md`): a summary, the type checkbox, related issues, and the verification checklist. The workflow `.github/workflows/pr-description.yml` keeps the commit list in the description up to date.
+7. Add the labels that change CI:
+   - `full-ci` expands the Rust and Python matrices to macOS and Windows (and Python 3.11-3.14).
+   - `skip-changelog` exempts the PR from the `[Unreleased]` changelog gate.
+   Labels are read when a CI run starts, not when the PR is opened. Add them when you open the PR (or before a manual re-run); a label added later needs a CI re-run to take effect.
+8. CI runs once per opened or reopened pull request and once per push; label-only changes do not start a new run.
 
 ---
 
 ## 11. Releasing
 
-Voyager OGM follows Semantic Versioning with pre-1.0 rules and an automated, tag-driven release process.
+Voyager OGM follows SemVer with pre-1.0 rules and a tag-driven, trusted-publishing release process. In short (see [RELEASING.md](RELEASING.md) for the full standard):
 
-For details on the versioning policy, pre-release conventions, maintenance branches, and the release checklist, see [RELEASING.md](RELEASING.md).
+1. From an up-to-date `main`, create a release branch (`chore/release-<version>`) and run `just release-prepare <version>` — it runs full CI, bumps the workspace version, refreshes lockfiles, cuts the changelog section, and creates the `chore(release): v<version>` commit.
+2. Open the release PR to `main` with the labels `full-ci` and `skip-changelog`, and merge it once green.
+3. On `main`, run `just release-tag <version>` and push the annotated tag. `.github/workflows/release.yml` then builds the wheels, creates the GitHub Release, and publishes via OIDC trusted publishing — TestPyPI for pre-release tags; PyPI and crates.io for stable tags. `voyager-pyo3` is never published as a crate (it ships as the Python wheel).
 
 ---
 
@@ -193,7 +229,7 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 
 ---
 
-## 12. Need Help?
+## 13. Need Help?
 
 * **Questions or Ideas**: Start a thread in [GitHub Discussions](https://github.com/tanishq-kumar/voyager/discussions).
 * **Bugs & Requests**: Open an issue using our [Bug Report](https://github.com/tanishq-kumar/voyager/issues/new/choose) or [Feature Request](https://github.com/tanishq-kumar/voyager/issues/new/choose) templates.

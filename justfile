@@ -91,12 +91,16 @@ build:
 build-release:
     uv run cargo build --workspace --release
 
-# Run all test suites across Rust (via cargo-nextest), Python, and TypeScript
-test: test-rust test-python test-ts
+# Run all test suites across Rust (via cargo-nextest and doctests), Python, and TypeScript
+test: test-rust test-doc test-python test-ts
 
 # Run Rust unit and integration tests with cargo-nextest
 test-rust:
     uv run cargo nextest run --workspace --all-targets
+
+# Run Rust doctests, including the crate README examples
+test-doc:
+    uv run cargo test --doc --workspace
 
 # Run snapshot tests with cargo-insta
 test-snapshot:
@@ -267,7 +271,7 @@ bench-python:
 bench-ogm:
     uv run python packages/python/benches/bench_head_to_head.py
 
-# Re-generate vector SVG benchmark charts for README documentation
+# Re-generate vector SVG benchmark charts for benchmarks/README.md
 bench-charts:
     uv run python scripts/generate_benchmark_charts.py
 

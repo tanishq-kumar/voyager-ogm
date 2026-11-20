@@ -1,6 +1,6 @@
 [package]
 name = "voyager-cli"
-description = "Command-line interface, benchmarking runner, and schema tools for Voyager OGM"
+description = "Diagnostic command-line interface for Voyager OGM (the `voyager` binary)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

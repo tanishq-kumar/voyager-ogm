@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **crates.io and docs.rs documentation (#245)**: rewrote the `voyager-ogm`, `voyager-drivers`, `voyager-cli`, and `voyager-pyo3` crate READMEs, shared the `voyager-ogm` and `voyager-drivers` READMEs as their crate docs, added a `just test-doc` doctest gate (in `just test` / `just ci` and CI), refreshed `CONTRIBUTING.md`, and moved the benchmark charts into `benchmarks/README.md` after removing the main README's Performance & Benchmarks section.
+
 ## [0.4.0-alpha.8] - 2026-11-20
 
 ### Fixed
