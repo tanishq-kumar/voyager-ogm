@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **README installation guide**: added an Installation section covering PyPI and uv installs, optional extras, supported Python versions and platforms, the crates.io crates and Cargo features, the `voyager` CLI, pre-release installs, and the Rust MSRV. Added PyPI, Python, crates.io, and docs.rs badges and converted relative links to absolute GitHub URLs so the README renders correctly on PyPI.
+- **Pre-releases publish to crates.io**: release tags with a pre-release suffix (`-alpha.N`, `-beta.N`, `-rc.N`) now publish the Rust crates to crates.io as well as the Python package to TestPyPI; PyPI still receives stable releases only.
+
 ## [0.4.0] - 2026-11-20
 
 First stable release of the 0.4 line: the first release on PyPI (`voyager-ogm`) and the first stable release on crates.io (`voyager-ogm`, `voyager-drivers`, `voyager-cli`, which carried `0.4.0-alpha.8` as their initial version). It consolidates the `0.4.0-alpha.5` to `0.4.0-alpha.8` pre-releases below; see those sections for the full list.
