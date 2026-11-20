@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "voyager-ogm"
 dynamic = ["version"]
 description = "Multi-dialect, vendor-neutral Object-Graph Mapper (OGM) with zero-copy Polars Arrow streaming"
-readme = "README.md"
+readme = "packages/python/README.md"
 authors = [{ name = "Tanishq Kumar" }]
 license = { text = "MIT OR Apache-2.0" }
 requires-python = ">=3.11"
