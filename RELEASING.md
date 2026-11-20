@@ -24,8 +24,7 @@ Voyager OGM follows [Semantic Versioning 2.0.0](https://semver.org/), with stand
 ### Pre-Releases vs. Stable Releases
 
 - **Pre-releases**: Tagged as `vX.Y.Z-alpha.N`, `vX.Y.Z-beta.N`, or `vX.Y.Z-rc.N` in Cargo. Maturin automatically maps these to PEP 440 formats on PyPI (`X.Y.ZaN`, `X.Y.ZbN`, `X.Y.ZrcN`).
-  - Pre-releases are marked as **Pre-release** on GitHub Releases.
-  - On PyPI, pre-releases are only installed when users pass `--pre` to `pip` or configure appropriate prerelease settings in package managers. This clearly demarcates upcoming development builds from production-ready releases.
+  - Pre-releases are marked as **Pre-release** on GitHub Releases and are published only to TestPyPI (see section 6), never to PyPI or crates.io. This clearly demarcates upcoming development builds from production-ready releases.
 - **Stable releases**: Plain tags without suffixes (`vX.Y.Z`). These become GitHub "Latest" releases and the default pip installs.
 
 ---
@@ -54,14 +53,46 @@ Voyager OGM follows [Semantic Versioning 2.0.0](https://semver.org/), with stand
 
 ---
 
-## 6. PyPI Trusted Publishing Setup
+## 6. Registry Publishing
 
-Release wheels and source distributions are published to PyPI using GitHub Actions OpenID Connect (OIDC) trusted publishing:
+Releases are published with GitHub Actions OpenID Connect (OIDC) trusted publishing, so no registry API token is stored in the repository or in GitHub secrets. Every publish job runs only after the GitHub Release has been created and is gated by a repository variable, so a registry can be enabled after its trusted publisher exists.
 
-- **Environment**: `pypi`
-- **Permissions**: `id-token: write`
-- **Prerequisite**: The repository owner must configure Voyager OGM as a trusted publisher in the PyPI administrative portal (linking repo `tanishq-kumar/voyager`, workflow `.github/workflows/release.yml`, and environment `pypi`). Note: Following the repository rename, the trusted publisher configuration on PyPI must be updated to reference `tanishq-kumar/voyager` (not `voyager-ogm`) for GitHub Actions OIDC authentication to succeed.
-- **Opt-in control**: The publish job runs only when repository variable `PYPI_PUBLISH == 'true'`. Until enabled, release artifacts (sdist and wheels) are built, verified, and attached exclusively to the GitHub Release.
+### 6.1 GitHub Environments
+
+Create these environments under **Settings → Environments**:
+
+| Environment | Registry | URL |
+| --- | --- | --- |
+| `testpypi` | TestPyPI | `https://test.pypi.org/p/voyager-ogm` |
+| `pypi` | PyPI | `https://pypi.org/p/voyager-ogm` |
+| `crates-io` | crates.io | `https://crates.io/crates/voyager-ogm` |
+
+Add the maintainer (`tanishq-kumar`) as a **required reviewer** on each environment so every registry publish waits for manual approval. The environment name is part of the OIDC claim and must match the trusted-publisher configuration exactly.
+
+### 6.2 Repository Variables
+
+Set these under **Settings → Secrets and variables → Actions → Variables**:
+
+| Variable | Set to `true` when | Published jobs |
+| --- | --- | --- |
+| `TESTPYPI_PUBLISH` | The TestPyPI pending publisher is configured | TestPyPI on every tag (pre-releases included) |
+| `PYPI_PUBLISH` | The PyPI pending publisher is configured and a stable release is ready | PyPI on stable tags only |
+| `CRATES_PUBLISH` | Every crate has had its first manual publish and the trusted publishers are configured | crates.io on stable tags only |
+
+A pre-release tag (`vX.Y.Z-alpha.N`, `-beta.N`, `-rc.N`) publishes to TestPyPI only. A stable tag (`vX.Y.Z`) publishes to TestPyPI and, when enabled, to PyPI and crates.io.
+
+### 6.3 Trusted Publishers
+
+Each registry trusts this repository's `release.yml` workflow running in the matching environment (`pypi`, `testpypi`, `crates-io`). Renaming the workflow file or an environment, or moving the repository, requires updating the trusted publisher on every registry. crates.io trusted publishers are configured per crate, and a crate must exist before its publisher can be added, so a **new crate needs one manual first publish** (`cargo publish -p <crate>` with a personal token) before CI can publish it. `voyager-pyo3` is not published as a Rust crate: it ships as the Python wheel and sdist (`publish = false`).
+
+crates.io versions are **permanent**: a version can be yanked (`cargo yank --version <version> -p <crate>`) but never deleted or reused.
+
+### 6.4 Re-runs and Scope
+
+- PyPI and TestPyPI use `skip-existing: true`, so a re-run does not fail on files already uploaded.
+- The crates.io job queries `https://crates.io/api/v1/crates/<crate>/<version>` before each publish and skips versions that already exist.
+- Pre-releases stop at TestPyPI; PyPI and crates.io receive stable tags only.
+- npm is not published yet.
 
 ---
 
@@ -96,6 +127,6 @@ Release wheels and source distributions are published to PyPI using GitHub Actio
    ```bash
    git push origin v<version>
    ```
-7. The `.github/workflows/release.yml` workflow triggers on the tag push, compiles multi-platform wheels and sdist, creates the GitHub Release with the extracted changelog notes, and publishes to PyPI (if `PYPI_PUBLISH == 'true'`).
+7. The `.github/workflows/release.yml` workflow triggers on the tag push, compiles multi-platform wheels and sdist, creates the GitHub Release with the extracted changelog notes, publishes to TestPyPI (if `TESTPYPI_PUBLISH == 'true'`), and on stable tags to PyPI (if `PYPI_PUBLISH == 'true'`) and crates.io (if `CRATES_PUBLISH == 'true'`). See section 6 for the one-time environment and trusted-publisher setup.
    - Linux `x86_64` and `aarch64` wheels are built inside the `manylinux_2_28` container (glibc >= 2.28) so both targets share a portable tag. The workflow fails before creating the release if a Linux wheel filename does not carry `manylinux_2_28`.
    - Each Linux `x86_64` wheel is installed into a fresh Python 3.11 and 3.12 environment without optional extras and exercised with `scripts/smoke_base_install.py` before the release is published.
