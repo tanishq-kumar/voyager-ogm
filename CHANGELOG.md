@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0-alpha.7] - 2026-11-20
+
 ### Added
 - **Driver Cargo Features and Feature-Matrix CI (#218)**:
   - Added `bolt`, `postgres`, `redis`, `arrow` and `testkit` Cargo features to `voyager-drivers`; `bolt`, `postgres`, `redis` and `arrow` are on by default, so default builds and the Python package are unchanged, while `testkit` stays opt-in.
@@ -101,6 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added explicit, loud errors on mock bridge fallback in production configurations.
 
 ### Changed
+- **Release flow for a protected `main`, compile cache and pre-push hook**: `just release` is replaced by `just release-prepare <version>` (on a release branch: CI, version bump, lockfiles, changelog cut, release commit; merged through a pull request) and `just release-tag <version>` (on `main` after the merge: verifies the version and changelog section, then creates the annotated tag); `RELEASING.md` describes the flow. The `justfile` no longer forces an empty `RUSTC_WRAPPER`, so a compile cache configured in the environment or `~/.cargo/config.toml` (such as sccache) applies to every recipe. `.githooks/pre-push` is now executable, so git runs it. `just test-ts` (and therefore `just test` / `just ci`) skips cleanly when `packages/typescript` is not present instead of failing.
 - **Slimmer Arrow Footprint and README Example Links (#218)**: the `arrow` umbrella crate is no longer used anywhere in the workspace, so Arrow's compute kernels (`arrow-cast`, `arrow-ord`, `arrow-arith`, `arrow-string`, `arrow-row`) are no longer compiled: `voyager-pyo3` now depends on `arrow-array` (with `ffi`) / `arrow-schema`, and a clean workspace build is ~38% faster (debug 152 s -> 95 s, release 107 s -> 67 s on 8 cores); dependencies are built without debug info in the dev profile, shrinking a clean debug `target/` by ~30%; `voyager-ogm`'s optional `arrow` feature now depends on `arrow-array` / `arrow-schema` instead of the `arrow` umbrella crate, and `voyager-drivers` uses `arrow-select` directly. Also removed the README Roadmap section, fixed the interactive graph viewer example links, and linked each Key Features section to the Python example that demonstrates it.
 - **Crate Rename: `voyager-net` -> `voyager-drivers` (#217)**: renamed the Rust crate `voyager-net` to `voyager-drivers` (Rust path `voyager_net` -> `voyager_drivers`, `RUST_LOG`/tracing targets now use `voyager_drivers`) and moved `crates/voyager-net` to `crates/voyager-drivers`; the Python package and `voyager_ogm` import are unchanged. The connection-URI prefix, Bolt user-agent product string, and PostgreSQL `application_name` now use `voyager-drivers`; `voy:` is accepted as a shorthand prefix alongside `vn:`, and `create_bridge()` now accepts these namespace prefixes (`voyager:`, `voyager+native:`, `voyager+bridge:`, `voyager-drivers:`, `voy:`, `vn:`) like the native parser instead of rejecting them. Added crate-specific crates.io `keywords` and `categories` to every workspace crate and removed the unused workspace-level metadata.
 - **v0.4.0 behaviour documentation (#216)**: documented `Field` defaults, partial bulk upserts, Apache AGE graph-name precedence, Neo4j Community constraint handling, module-qualified model identity, and `Field`/model description metadata in the README and Python examples, and fixed the live Neo4j example to continue past Enterprise-only constraints. Also corrected the benchmark documentation: removed claims with no measuring code (memory chart and RSS figures, official-driver throughput, p95 values), labelled the remaining captures with method, sample size and capture date plus a note that they predate the v0.4.0 changes, deleted the duplicate head-to-head copy, and fixed `just bench-python` to collect the `bench_*.py` files.
@@ -320,7 +323,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Typed entity models: `@node`, `@relationship`, `Node`, `Relationship`, and `Field[T]` descriptors.
   - Constructor auto-aliasing (`p = Person()` -> `_person_0`) and fluent query compiler.
 
-[Unreleased]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0-alpha.6...HEAD
+
+[Unreleased]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0-alpha.7...HEAD
+[0.4.0-alpha.7]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0-alpha.6...v0.4.0-alpha.7
 [0.4.0-alpha.6]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0-alpha.5...v0.4.0-alpha.6
 [0.4.0-alpha.5]: https://github.com/tanishq-kumar/voyager/compare/v0.3.0-alpha.1...v0.4.0-alpha.5
 [0.3.0-alpha.1]: https://github.com/tanishq-kumar/voyager/compare/v0.2.0-alpha.1...v0.3.0-alpha.1

@@ -5,7 +5,11 @@
 set windows-shell := ["powershell", "-NoProfile", "-Command"]
 
 export UV_PYTHON_INSTALL_DIR := env_var_or_default("UV_PYTHON_INSTALL_DIR", home_directory() / ".cargo/uv-python")
-export RUSTC_WRAPPER := env_var_or_default("RUSTC_WRAPPER", "")
+# RUSTC_WRAPPER is deliberately not set here, so a compile cache configured in the
+# environment or in ~/.cargo/config.toml (e.g. `rustc-wrapper = "sccache"`) applies to
+# every recipe. If sccache reports "Connection refused" / "Connection to server timed
+# out", restart it (`sccache --stop-server`) or bypass it for one command:
+# `RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= just <recipe>`.
 
 # Default: List available recipes
 default:
@@ -106,9 +110,21 @@ test-python:
 test-relate:
     uv run --no-sync pytest packages/python/tests/test_relate_compatibility.py -v
 
-# Run TypeScript SDK tests with bun test
+# Run TypeScript SDK tests with bun test (skipped when the TypeScript package is not present)
+[unix]
 test-ts:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -d packages/typescript ]]; then
+        echo "[SKIP] packages/typescript not present; no TypeScript tests to run."
+        exit 0
+    fi
     bun test packages/typescript
+
+# Run TypeScript SDK tests with bun test (skipped when the TypeScript package is not present)
+[windows]
+test-ts:
+    if (Test-Path packages/typescript) { bun test packages/typescript } else { Write-Host "[SKIP] packages/typescript not present; no TypeScript tests to run." }
 
 # Format code across Rust and Python
 fmt:
@@ -160,18 +176,22 @@ typecheck:
 ci: fmt-check lint deny machete audit test
     @echo "[PASS] Full CI verification passed with 0 errors!"
 
-# Cut a release: verify branch & clean tree, run CI, update manifests, cut changelog, commit and tag
+# Release step 1 (on a release branch): run CI, bump the version, update lockfiles, cut the changelog, commit
 [unix]
-release version:
+release-prepare version:
     #!/usr/bin/env bash
     set -euo pipefail
     branch=$(git rev-parse --abbrev-ref HEAD)
-    if [[ "$branch" != "main" ]]; then
-        echo "Error: Releases must be cut from the 'main' branch (currently on '$branch')." >&2
+    if [[ "$branch" == "main" ]]; then
+        echo "Error: main is protected; run release-prepare on a release branch (e.g. chore/release-{{version}})." >&2
         exit 1
     fi
     if [[ -n "$(git status --porcelain)" ]]; then
         echo "Error: Working directory is not clean. Commit or stash changes before releasing." >&2
+        exit 1
+    fi
+    if git rev-parse -q --verify "refs/tags/v{{version}}" >/dev/null; then
+        echo "Error: tag v{{version}} already exists." >&2
         exit 1
     fi
     echo "=== Running Full CI Suite ==="
@@ -183,14 +203,49 @@ release version:
     uv lock
     echo "=== Cutting CHANGELOG.md Section ==="
     python3 scripts/check_changelog.py --release "{{version}}" "$(date +%Y-%m-%d)"
-    echo "=== Creating Release Commit and Tag ==="
+    echo "=== Creating Release Commit ==="
     git add Cargo.toml Cargo.lock uv.lock CHANGELOG.md
     git commit -m "chore(release): v{{version}}"
-    git tag -a "v{{version}}" -m "Release v{{version}}"
     echo ""
-    echo "Release v{{version}} created successfully!"
+    echo "Release commit for v{{version}} created on '$branch'."
+    echo "Next: push the branch, open a PR to main with labels full-ci and skip-changelog, merge it, then run 'just release-tag {{version}}' on main."
+
+# Release step 2 (on main, after the release PR is merged): verify the release and create the annotated tag
+[unix]
+release-tag version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    branch=$(git rev-parse --abbrev-ref HEAD)
+    if [[ "$branch" != "main" ]]; then
+        echo "Error: tag releases from 'main' (currently on '$branch')." >&2
+        exit 1
+    fi
+    if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+        echo "Error: tracked files have local changes." >&2
+        exit 1
+    fi
+    git fetch -q origin main
+    if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+        echo "Error: local main is not at origin/main; pull first." >&2
+        exit 1
+    fi
+    cargo_version=$(python3 -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('Cargo.toml').read_text(encoding='utf-8'))['workspace']['package']['version'])")
+    if [[ "$cargo_version" != "{{version}}" ]]; then
+        echo "Error: Cargo.toml version is '$cargo_version', expected '{{version}}' (is the release PR merged?)." >&2
+        exit 1
+    fi
+    if [[ -z "$(python3 scripts/check_changelog.py --extract '{{version}}')" ]]; then
+        echo "Error: CHANGELOG.md has no [{{version}}] section." >&2
+        exit 1
+    fi
+    if git rev-parse -q --verify "refs/tags/v{{version}}" >/dev/null; then
+        echo "Error: tag v{{version}} already exists." >&2
+        exit 1
+    fi
+    git tag -a "v{{version}}" -m "Release v{{version}}"
+    echo "Created annotated tag v{{version}} on $(git rev-parse --short HEAD)."
     echo "To publish, run:"
-    echo "    git push origin main v{{version}}"
+    echo "    git push origin v{{version}}"
 
 # Pre-commit hook recipe (formatting, linting, and type checking)
 pre-commit: fmt-check lint typecheck

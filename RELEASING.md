@@ -49,8 +49,8 @@ Voyager OGM follows [Semantic Versioning 2.0.0](https://semver.org/), with stand
 ## 5. Tagging Discipline
 
 - Tags must always be annotated: `vX.Y.Z[-pre.N]`.
-- Tags are created **only** via `just release <version>`, never manually.
-- Tags are pushed by a human maintainer (`git push origin main vX.Y.Z`). Automation never tags or pushes commits autonomously.
+- Tags are created **only** via `just release-tag <version>`, never manually, and only on `main` after the release PR is merged.
+- Tags are pushed by a human maintainer (`git push origin vX.Y.Z`). Automation never tags or pushes commits autonomously.
 
 ---
 
@@ -67,30 +67,33 @@ Release wheels and source distributions are published to PyPI using GitHub Actio
 
 ## 7. Release Checklist
 
-1. Ensure the `main` branch CI is completely green (`just ci`).
-2. Run the release automation recipe:
+`main` is protected, so a release goes through a pull request and the tag is created on the merge commit.
+
+1. Ensure the `main` branch CI is completely green.
+2. From an up-to-date `main`, create a release branch in a clean checkout (a fresh `git worktree` avoids untracked local files):
    ```bash
-   just release <version>
+   git switch -c chore/release-<version> origin/main
    ```
-   For example:
+3. Run the preparation recipe:
    ```bash
-   just release 0.4.0-alpha.7
+   just release-prepare <version>      # e.g. just release-prepare 0.4.0-alpha.7
    ```
    This recipe:
-   - Verifies you are on `main` with a clean working tree.
+   - Refuses to run on `main`, on a dirty working tree, or if the tag already exists.
    - Runs full CI verification (`just ci`).
-   - Updates `[workspace.package].version` in `Cargo.toml`.
+   - Updates `[workspace.package].version` (and internal path-dependency versions) in `Cargo.toml`.
    - Runs `cargo update -w` and `uv lock` to update lockfiles.
    - Runs `python3 scripts/check_changelog.py --release <version> <date>` to convert `[Unreleased]` to a dated section and add link definitions.
-   - Creates a commit `chore(release): v<version>`.
-   - Creates the annotated git tag `v<version>`.
-   - Prints the exact push command.
-3. Review the generated commit and diff:
+   - Creates the commit `chore(release): v<version>`.
+4. Push the branch, open a pull request to `main` with the labels `full-ci` and `skip-changelog` (the release commit moves entries out of `[Unreleased]`, which the changelog gate would otherwise reject), and merge it once CI is green.
+5. Update your local `main` and create the tag:
    ```bash
-   git show HEAD
+   git switch main && git pull --ff-only
+   just release-tag <version>
    ```
-4. Push the commit and tag to GitHub:
+   `release-tag` checks that local `main` equals `origin/main`, that `Cargo.toml` carries `<version>` and that `CHANGELOG.md` has its section, then creates the annotated tag `v<version>` and prints the push command.
+6. Push the tag:
    ```bash
-   git push origin main v<version>
+   git push origin v<version>
    ```
-5. The `.github/workflows/release.yml` workflow triggers on the tag push, compiles multi-platform wheels and sdist, creates the GitHub Release with the extracted changelog notes, and publishes to PyPI (if `PYPI_PUBLISH == 'true'`).
+7. The `.github/workflows/release.yml` workflow triggers on the tag push, compiles multi-platform wheels and sdist, creates the GitHub Release with the extracted changelog notes, and publishes to PyPI (if `PYPI_PUBLISH == 'true'`).
