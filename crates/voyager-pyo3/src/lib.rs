@@ -24,6 +24,145 @@ fn make_voyager_err(code: voyager_ogm::ErrorCode, msg: impl Into<String>) -> PyE
     })
 }
 
+/// Whether a [`SpecPath`] belongs to the Query Spec v1 consumer or to the
+/// fluent PyO3 builder API. Spec paths produce `INVALID_SPEC` errors that carry
+/// the JSON Pointer; fluent calls keep their historical error codes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpecPathMode {
+    Spec,
+    Fluent,
+}
+
+/// JSON Pointer to an element of a Query Spec v1 document.
+///
+/// Paths are built while descending into the document so an error does not have
+/// to reconstruct its location: [`SpecPath::key`] appends an object member and
+/// [`SpecPath::index`] appends an array index. `/` and `~` are escaped as `~1`
+/// and `~0`, as JSON Pointer requires. The document root is the empty string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SpecPath {
+    pointer: String,
+    mode: SpecPathMode,
+}
+
+impl SpecPath {
+    fn spec_root() -> Self {
+        Self {
+            pointer: String::new(),
+            mode: SpecPathMode::Spec,
+        }
+    }
+
+    fn fluent() -> Self {
+        Self {
+            pointer: String::new(),
+            mode: SpecPathMode::Fluent,
+        }
+    }
+
+    fn as_spec(&self) -> Self {
+        Self {
+            pointer: self.pointer.clone(),
+            mode: SpecPathMode::Spec,
+        }
+    }
+
+    fn is_spec(&self) -> bool {
+        self.mode == SpecPathMode::Spec
+    }
+
+    fn key(&self, key: &str) -> Self {
+        let mut pointer = self.pointer.clone();
+        pointer.push('/');
+        for ch in key.chars() {
+            match ch {
+                '~' => pointer.push_str("~0"),
+                '/' => pointer.push_str("~1"),
+                other => pointer.push(other),
+            }
+        }
+        Self {
+            pointer,
+            mode: self.mode,
+        }
+    }
+
+    fn index(&self, index: usize) -> Self {
+        let mut pointer = self.pointer.clone();
+        pointer.push('/');
+        pointer.push_str(&index.to_string());
+        Self {
+            pointer,
+            mode: self.mode,
+        }
+    }
+
+    fn pointer(&self) -> &str {
+        &self.pointer
+    }
+}
+
+/// Builds a [`VoyagerError`] with code `INVALID_SPEC`, the JSON Pointer on
+/// `err.path`, and the same pointer in the message.
+fn make_spec_err(path: &SpecPath, msg: impl Into<String>) -> PyErr {
+    Python::attach(|py| {
+        let pointer = path.pointer();
+        let msg = msg.into();
+        let message = if pointer.is_empty() {
+            format!("Invalid query spec at the document root: {msg}")
+        } else {
+            format!("Invalid query spec at '{pointer}': {msg}")
+        };
+        let py_err = VoyagerError::new_err(message);
+        let _ = py_err.value(py).setattr("code", "INVALID_SPEC");
+        let _ = py_err.value(py).setattr("path", pointer);
+        py_err
+    })
+}
+
+/// Structural error for a spec path, or the historical `INVALID_CLAUSE` for a
+/// fluent builder call.
+fn path_error(path: &SpecPath, msg: impl Into<String>) -> PyErr {
+    let msg = msg.into();
+    if path.is_spec() {
+        make_spec_err(path, msg)
+    } else {
+        make_voyager_err(voyager_ogm::ErrorCode::InvalidClause, msg)
+    }
+}
+
+/// Value error for a spec path, or the historical `ValueError` for a fluent
+/// builder call.
+fn path_value_error(path: &SpecPath, msg: impl Into<String>) -> PyErr {
+    let msg = msg.into();
+    if path.is_spec() {
+        make_spec_err(path, msg)
+    } else {
+        PyValueError::new_err(msg)
+    }
+}
+
+/// Extracts a Python value for a spec element, turning a conversion failure
+/// into `INVALID_SPEC` with the element path (or the historical `TypeError` for
+/// fluent calls).
+fn extract_required<'a, 'py, T>(
+    val: &'a Bound<'py, PyAny>,
+    path: &SpecPath,
+    expected: &str,
+) -> PyResult<T>
+where
+    T: pyo3::FromPyObject<'a, 'py>,
+{
+    val.extract::<T>().map_err(|_| {
+        let msg = format!("expected {expected}, got {}", val.get_type());
+        if path.is_spec() {
+            make_spec_err(path, msg)
+        } else {
+            PyTypeError::new_err(msg)
+        }
+    })
+}
+
 fn to_py_schema_err(err: voyager_ogm::Error) -> PyErr {
     Python::attach(|py| match err.code() {
         voyager_ogm::ErrorCode::UnsupportedDialect | voyager_ogm::ErrorCode::UnsupportedFeature => {
@@ -136,6 +275,21 @@ fn py_to_literal(val: &Bound<'_, PyAny>) -> PyResult<LiteralValue> {
     }
 }
 
+/// Converts the right-hand side of a fluent `IN` / `NOT IN` comparison. A
+/// Python list is the membership collection, so it is always a literal list;
+/// anything else goes through the normal expression converter.
+fn fluent_membership_operand(
+    builder: &mut QueryBuilder,
+    other: &Bound<'_, PyAny>,
+    path: &SpecPath,
+) -> PyResult<NodeHandle> {
+    if other.cast::<PyList>().is_ok() {
+        let lit = py_to_literal(other).map_err(|e| path_value_error(path, e.to_string()))?;
+        return Ok(builder.literal(lit));
+    }
+    py_to_node_handle_depth(builder, other, 0, path)
+}
+
 fn property_list_to_literals(val: &Bound<'_, PyAny>) -> PyResult<Vec<(String, LiteralValue)>> {
     let list = val.cast::<PyList>().map_err(|_| {
         PyTypeError::new_err("relationship properties must be a list of (name, value) pairs")
@@ -207,9 +361,9 @@ fn parse_unary_op(s: &str) -> PyResult<UnaryOp> {
 /// Parses the direction of an `order_by` entry. The schema defines it as a
 /// boolean (`true` = ascending) or the uppercase strings `"ASC"`/`"DESC"`, and
 /// this function accepts exactly those values so consumer and schema agree.
-/// Any other spelling (including lowercase `"asc"`) is rejected with a
-/// field-named `INVALID_CLAUSE` error.
-fn parse_order_asc(val: &Bound<'_, PyAny>, field: &str) -> PyResult<bool> {
+/// Any other spelling (including lowercase `"asc"`) is rejected with an
+/// `INVALID_SPEC` error at the direction element.
+fn parse_order_asc(val: &Bound<'_, PyAny>, path: &SpecPath, field: &str) -> PyResult<bool> {
     if let Ok(asc) = val.extract::<bool>() {
         return Ok(asc);
     }
@@ -220,8 +374,8 @@ fn parse_order_asc(val: &Bound<'_, PyAny>, field: &str) -> PyResult<bool> {
             _ => {}
         }
     }
-    Err(make_voyager_err(
-        voyager_ogm::ErrorCode::InvalidClause,
+    Err(make_spec_err(
+        path,
         format!(
             "Invalid '{field}': expected a boolean or 'ASC'/'DESC', got {}.",
             val.get_type()
@@ -274,8 +428,8 @@ impl PyAstExpr {
     fn binary(left: &Bound<'_, PyAny>, op: String, right: &Bound<'_, PyAny>) -> PyResult<Self> {
         let op_parsed = parse_binary_op(&op)?;
         let mut b = QueryBuilder::new();
-        let left_h = py_to_node_handle_depth(&mut b, left, 0)?;
-        let right_h = py_to_node_handle_depth(&mut b, right, 0)?;
+        let left_h = py_to_node_handle_depth(&mut b, left, 0, &SpecPath::fluent())?;
+        let right_h = py_to_node_handle_depth(&mut b, right, 0, &SpecPath::fluent())?;
         let h = b.binary_expr(left_h, op_parsed, right_h);
         Ok(Self {
             arena: b.into_arena(),
@@ -287,7 +441,7 @@ impl PyAstExpr {
     fn unary(op: String, operand: &Bound<'_, PyAny>) -> PyResult<Self> {
         let op_parsed = parse_unary_op(&op)?;
         let mut b = QueryBuilder::new();
-        let op_h = py_to_node_handle_depth(&mut b, operand, 0)?;
+        let op_h = py_to_node_handle_depth(&mut b, operand, 0, &SpecPath::fluent())?;
         let h = b.unary_expr(op_parsed, op_h);
         Ok(Self {
             arena: b.into_arena(),
@@ -300,7 +454,12 @@ impl PyAstExpr {
         let mut b = QueryBuilder::new();
         let mut arg_handles = Vec::with_capacity(args.len());
         for arg in &args {
-            arg_handles.push(py_to_node_handle_depth(&mut b, arg, 0)?);
+            arg_handles.push(py_to_node_handle_depth(
+                &mut b,
+                arg,
+                0,
+                &SpecPath::fluent(),
+            )?);
         }
         let h = b.function(name, arg_handles);
         Ok(Self {
@@ -312,7 +471,7 @@ impl PyAstExpr {
     fn in_(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
         let left_h = b.import_subarena(self.arena.clone(), self.handle);
-        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = fluent_membership_operand(&mut b, other, &SpecPath::fluent())?;
         let h = b.binary_expr(left_h, BinaryOp::In, right_h);
         Ok(Self {
             arena: b.into_arena(),
@@ -323,7 +482,7 @@ impl PyAstExpr {
     fn not_in(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
         let left_h = b.import_subarena(self.arena.clone(), self.handle);
-        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = fluent_membership_operand(&mut b, other, &SpecPath::fluent())?;
         let h = b.binary_expr(left_h, BinaryOp::NotIn, right_h);
         Ok(Self {
             arena: b.into_arena(),
@@ -334,7 +493,7 @@ impl PyAstExpr {
     fn contains(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
         let left_h = b.import_subarena(self.arena.clone(), self.handle);
-        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let h = b.binary_expr(left_h, BinaryOp::Contains, right_h);
         Ok(Self {
             arena: b.into_arena(),
@@ -345,7 +504,7 @@ impl PyAstExpr {
     fn startswith(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
         let left_h = b.import_subarena(self.arena.clone(), self.handle);
-        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let h = b.binary_expr(left_h, BinaryOp::StartsWith, right_h);
         Ok(Self {
             arena: b.into_arena(),
@@ -356,7 +515,7 @@ impl PyAstExpr {
     fn endswith(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
         let left_h = b.import_subarena(self.arena.clone(), self.handle);
-        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let h = b.binary_expr(left_h, BinaryOp::EndsWith, right_h);
         Ok(Self {
             arena: b.into_arena(),
@@ -387,7 +546,7 @@ impl PyAstExpr {
     fn __add__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
         let left_h = b.import_subarena(self.arena.clone(), self.handle);
-        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let h = b.binary_expr(left_h, BinaryOp::Add, right_h);
         Ok(Self {
             arena: b.into_arena(),
@@ -397,7 +556,7 @@ impl PyAstExpr {
 
     fn __radd__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
-        let left_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let left_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let right_h = b.import_subarena(self.arena.clone(), self.handle);
         let h = b.binary_expr(left_h, BinaryOp::Add, right_h);
         Ok(Self {
@@ -409,7 +568,7 @@ impl PyAstExpr {
     fn __sub__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
         let left_h = b.import_subarena(self.arena.clone(), self.handle);
-        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let h = b.binary_expr(left_h, BinaryOp::Sub, right_h);
         Ok(Self {
             arena: b.into_arena(),
@@ -419,7 +578,7 @@ impl PyAstExpr {
 
     fn __rsub__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
-        let left_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let left_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let right_h = b.import_subarena(self.arena.clone(), self.handle);
         let h = b.binary_expr(left_h, BinaryOp::Sub, right_h);
         Ok(Self {
@@ -431,7 +590,7 @@ impl PyAstExpr {
     fn __mul__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
         let left_h = b.import_subarena(self.arena.clone(), self.handle);
-        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let h = b.binary_expr(left_h, BinaryOp::Mul, right_h);
         Ok(Self {
             arena: b.into_arena(),
@@ -441,7 +600,7 @@ impl PyAstExpr {
 
     fn __rmul__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
-        let left_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let left_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let right_h = b.import_subarena(self.arena.clone(), self.handle);
         let h = b.binary_expr(left_h, BinaryOp::Mul, right_h);
         Ok(Self {
@@ -453,7 +612,7 @@ impl PyAstExpr {
     fn __truediv__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
         let left_h = b.import_subarena(self.arena.clone(), self.handle);
-        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let h = b.binary_expr(left_h, BinaryOp::Div, right_h);
         Ok(Self {
             arena: b.into_arena(),
@@ -463,7 +622,7 @@ impl PyAstExpr {
 
     fn __rtruediv__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
-        let left_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let left_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let right_h = b.import_subarena(self.arena.clone(), self.handle);
         let h = b.binary_expr(left_h, BinaryOp::Div, right_h);
         Ok(Self {
@@ -475,7 +634,7 @@ impl PyAstExpr {
     fn __mod__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
         let left_h = b.import_subarena(self.arena.clone(), self.handle);
-        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let h = b.binary_expr(left_h, BinaryOp::Mod, right_h);
         Ok(Self {
             arena: b.into_arena(),
@@ -485,7 +644,7 @@ impl PyAstExpr {
 
     fn __rmod__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
-        let left_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let left_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let right_h = b.import_subarena(self.arena.clone(), self.handle);
         let h = b.binary_expr(left_h, BinaryOp::Mod, right_h);
         Ok(Self {
@@ -507,7 +666,7 @@ impl PyAstExpr {
     fn __and__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
         let left_h = b.import_subarena(self.arena.clone(), self.handle);
-        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let h = b.binary_expr(left_h, BinaryOp::And, right_h);
         Ok(Self {
             arena: b.into_arena(),
@@ -517,7 +676,7 @@ impl PyAstExpr {
 
     fn __rand__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
-        let left_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let left_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let right_h = b.import_subarena(self.arena.clone(), self.handle);
         let h = b.binary_expr(left_h, BinaryOp::And, right_h);
         Ok(Self {
@@ -529,7 +688,7 @@ impl PyAstExpr {
     fn __or__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
         let left_h = b.import_subarena(self.arena.clone(), self.handle);
-        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let h = b.binary_expr(left_h, BinaryOp::Or, right_h);
         Ok(Self {
             arena: b.into_arena(),
@@ -539,7 +698,7 @@ impl PyAstExpr {
 
     fn __ror__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
-        let left_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let left_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let right_h = b.import_subarena(self.arena.clone(), self.handle);
         let h = b.binary_expr(left_h, BinaryOp::Or, right_h);
         Ok(Self {
@@ -551,7 +710,7 @@ impl PyAstExpr {
     fn __xor__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
         let left_h = b.import_subarena(self.arena.clone(), self.handle);
-        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let h = b.binary_expr(left_h, BinaryOp::Xor, right_h);
         Ok(Self {
             arena: b.into_arena(),
@@ -561,7 +720,7 @@ impl PyAstExpr {
 
     fn __rxor__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut b = QueryBuilder::new();
-        let left_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let left_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let right_h = b.import_subarena(self.arena.clone(), self.handle);
         let h = b.binary_expr(left_h, BinaryOp::Xor, right_h);
         Ok(Self {
@@ -601,7 +760,7 @@ impl PyAstExpr {
         };
         let mut b = QueryBuilder::new();
         let left_h = b.import_subarena(self.arena.clone(), self.handle);
-        let right_h = py_to_node_handle_depth(&mut b, other, 0)?;
+        let right_h = py_to_node_handle_depth(&mut b, other, 0, &SpecPath::fluent())?;
         let h = b.binary_expr(left_h, bin_op, right_h);
         Ok(Self {
             arena: b.into_arena(),
@@ -641,7 +800,15 @@ fn is_known_expr_tag(tag: &str) -> bool {
 }
 
 fn py_to_node_handle(builder: &mut QueryBuilder, val: &Bound<'_, PyAny>) -> PyResult<NodeHandle> {
-    py_to_node_handle_depth(builder, val, 0)
+    py_to_node_handle_depth(builder, val, 0, &SpecPath::fluent())
+}
+
+fn py_to_node_handle_at(
+    builder: &mut QueryBuilder,
+    val: &Bound<'_, PyAny>,
+    path: &SpecPath,
+) -> PyResult<NodeHandle> {
+    py_to_node_handle_depth(builder, val, 0, path)
 }
 
 #[inline(never)]
@@ -664,28 +831,28 @@ fn handle_dict_expr(
     builder: &mut QueryBuilder,
     dict: &Bound<'_, PyDict>,
     depth: usize,
+    path: &SpecPath,
 ) -> PyResult<NodeHandle> {
     if let Some(ver_item) = dict.get_item("spec_version")? {
-        let ver: u32 = ver_item.extract().map_err(|_| {
-            make_voyager_err(
-                voyager_ogm::ErrorCode::InvalidSpec,
-                "Invalid 'spec_version' in expression dictionary: expected integer 1.",
-            )
-        })?;
+        let ver_path = path.key("spec_version");
+        let ver: u32 = extract_required(&ver_item, &ver_path, "an integer major version")?;
         if ver != 1 {
-            return Err(make_voyager_err(
-                voyager_ogm::ErrorCode::InvalidSpec,
+            return Err(make_spec_err(
+                &ver_path,
                 format!("Unsupported expression spec_version: {ver}. Supported major versions: 1."),
             ));
         }
     }
     if let Some(inner_expr) = dict.get_item("expr")? {
-        return py_to_node_handle_depth(builder, &inner_expr, depth + 1);
+        if path.is_spec() {
+            reject_unknown_keys(dict, path, &["spec_version", "expr"], "expression object")?;
+        }
+        return py_to_node_handle_depth(builder, &inner_expr, depth + 1, &path.key("expr"));
     }
     let dict_cloned = dict.clone();
     let mut subquery_err: Option<PyErr> = None;
     let sub_h = builder.subquery(|q| {
-        if let Err(e) = build_query_from_spec_internal(q, &dict_cloned, depth + 1) {
+        if let Err(e) = build_query_from_spec_internal(q, &dict_cloned, path) {
             subquery_err = Some(e);
         }
     });
@@ -695,31 +862,11 @@ fn handle_dict_expr(
     Ok(sub_h)
 }
 
-#[inline(never)]
-fn extract_expr_tuple<'a>(val: &Bound<'a, PyAny>) -> Option<Bound<'a, PyTuple>> {
-    if let Ok(tuple) = val.cast::<PyTuple>() {
-        Some(tuple.clone())
-    } else if let Ok(list) = val.cast::<PyList>() {
-        if let Ok(first) = list.get_item(0)
-            && let Ok(tag) = first.extract::<String>()
-            && is_known_expr_tag(&tag)
-        {
-            Some(list.to_tuple())
-        } else {
-            None
-        }
-    } else {
-        None
-    }
-}
-
 /// Reads a Query Spec v1 array position as a sequence of items, accepting both
 /// spellings the protocol allows: a Python `list` (the JSON array form, e.g.
 /// after `json.loads`/`json.dumps`) and a Python `tuple` (the form the Python
 /// SDK emits). The two are interchangeable, so every array position goes
 /// through here instead of ad-hoc `PyTuple`/`PyList` casts.
-/// Returns `None` for non-sequence values (callers that historically skip
-/// malformed collections keep doing so).
 fn as_spec_sequence<'a>(val: &Bound<'a, PyAny>) -> Option<Bound<'a, PyTuple>> {
     if let Ok(tuple) = val.cast::<PyTuple>() {
         Some(tuple.clone())
@@ -730,13 +877,17 @@ fn as_spec_sequence<'a>(val: &Bound<'a, PyAny>) -> Option<Bound<'a, PyTuple>> {
     }
 }
 
-/// Fallible variant of [`as_spec_sequence`] for spec array positions whose
-/// shape is part of the v1 contract: a non-sequence value fails with a clear,
-/// field-named `INVALID_CLAUSE` error instead of a bare PyO3 `TypeError`.
-fn expect_spec_array<'a>(val: &Bound<'a, PyAny>, field: &str) -> PyResult<Bound<'a, PyTuple>> {
+/// Reads a spec array position whose shape is part of the v1 contract. A
+/// non-sequence value fails with `INVALID_SPEC` at `path` (or `INVALID_CLAUSE`
+/// for a fluent caller) instead of a bare PyO3 `TypeError`.
+fn expect_spec_array<'a>(
+    val: &Bound<'a, PyAny>,
+    path: &SpecPath,
+    field: &str,
+) -> PyResult<Bound<'a, PyTuple>> {
     as_spec_sequence(val).ok_or_else(|| {
-        make_voyager_err(
-            voyager_ogm::ErrorCode::InvalidClause,
+        path_error(
+            path,
             format!(
                 "Invalid '{field}': expected a JSON array (list or tuple), got {}.",
                 val.get_type()
@@ -750,14 +901,15 @@ fn expect_spec_array<'a>(val: &Bound<'a, PyAny>, field: &str) -> PyResult<Bound<
 /// `IndexError` a later `get_item` would raise.
 fn check_spec_arity(
     tuple: &Bound<'_, PyTuple>,
+    path: &SpecPath,
     field: &str,
     min_items: usize,
     shape: &str,
 ) -> PyResult<()> {
     let len = tuple.len();
     if len < min_items {
-        return Err(make_voyager_err(
-            voyager_ogm::ErrorCode::InvalidClause,
+        return Err(path_error(
+            path,
             format!("Invalid '{field}': expected at least {min_items} item(s) {shape}, got {len}."),
         ));
     }
@@ -768,8 +920,11 @@ fn check_spec_arity(
 /// when a projection carries no explicit alias. Sequence-agnostic: works for
 /// the tuple spelling and the JSON list spelling alike, so a round-tripped
 /// spec keeps its alias.
-fn extract_alias_from_expr_spec(expr_spec: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
-    if let Some(seq) = extract_expr_tuple(expr_spec)
+fn extract_alias_from_expr_spec(
+    expr_spec: &Bound<'_, PyAny>,
+    path: &SpecPath,
+) -> PyResult<Option<String>> {
+    if let Some(seq) = as_spec_sequence(expr_spec)
         && !seq.is_empty()
         && seq
             .get_item(0)?
@@ -777,7 +932,13 @@ fn extract_alias_from_expr_spec(expr_spec: &Bound<'_, PyAny>) -> PyResult<Option
             .map(|t| t == "alias")
             .unwrap_or(false)
     {
-        check_spec_arity(&seq, "expression 'alias'", 3, "[alias, expression, name]")?;
+        check_spec_arity(
+            &seq,
+            path,
+            "expression 'alias'",
+            3,
+            "[alias, expression, name]",
+        )?;
         return Ok(seq.get_item(2)?.extract().ok());
     }
     Ok(None)
@@ -787,9 +948,17 @@ fn extract_alias_from_expr_spec(expr_spec: &Bound<'_, PyAny>) -> PyResult<Option
 fn handle_prop_tuple(
     builder: &mut QueryBuilder,
     tuple: &Bound<'_, PyTuple>,
+    path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    let var: String = tuple.get_item(1)?.extract()?;
-    let prop: String = tuple.get_item(2)?.extract()?;
+    check_spec_arity(
+        tuple,
+        path,
+        "expression 'prop'",
+        3,
+        "[prop, variable, property]",
+    )?;
+    let var: String = extract_required(&tuple.get_item(1)?, &path.index(1), "a string variable")?;
+    let prop: String = extract_required(&tuple.get_item(2)?, &path.index(2), "a string property")?;
     Ok(builder.prop(var, prop))
 }
 
@@ -797,8 +966,10 @@ fn handle_prop_tuple(
 fn handle_ident_tuple(
     builder: &mut QueryBuilder,
     tuple: &Bound<'_, PyTuple>,
+    path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    let name: String = tuple.get_item(1)?.extract()?;
+    check_spec_arity(tuple, path, "expression 'ident'", 2, "[ident, name]")?;
+    let name: String = extract_required(&tuple.get_item(1)?, &path.index(1), "a string name")?;
     Ok(builder.ident(name))
 }
 
@@ -806,8 +977,10 @@ fn handle_ident_tuple(
 fn handle_param_tuple(
     builder: &mut QueryBuilder,
     tuple: &Bound<'_, PyTuple>,
+    path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    let name: String = tuple.get_item(1)?.extract()?;
+    check_spec_arity(tuple, path, "expression 'param'", 2, "[param, name]")?;
+    let name: String = extract_required(&tuple.get_item(1)?, &path.index(1), "a string name")?;
     Ok(builder.param(name))
 }
 
@@ -815,8 +988,12 @@ fn handle_param_tuple(
 fn handle_lit_tuple(
     builder: &mut QueryBuilder,
     tuple: &Bound<'_, PyTuple>,
+    path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    let lit = py_to_literal(&tuple.get_item(1)?)?;
+    check_spec_arity(tuple, path, "expression 'lit'", 2, "[lit, value]")?;
+    let value_path = path.index(1);
+    let lit = py_to_literal(&tuple.get_item(1)?)
+        .map_err(|e| path_value_error(&value_path, e.to_string()))?;
     Ok(builder.literal(lit))
 }
 
@@ -825,12 +1002,20 @@ fn handle_fn_tuple(
     builder: &mut QueryBuilder,
     tuple: &Bound<'_, PyTuple>,
     depth: usize,
+    path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    let name: String = tuple.get_item(1)?.extract()?;
-    let args_seq = expect_spec_array(&tuple.get_item(2)?, "fn args")?;
+    check_spec_arity(tuple, path, "expression 'fn'", 3, "[fn, name, args]")?;
+    let name: String = extract_required(&tuple.get_item(1)?, &path.index(1), "a string name")?;
+    let args_path = path.index(2);
+    let args_seq = expect_spec_array(&tuple.get_item(2)?, &args_path, "fn args")?;
     let mut arg_handles = Vec::with_capacity(args_seq.len());
-    for arg in args_seq {
-        arg_handles.push(py_to_node_handle_depth(builder, &arg, depth + 1)?);
+    for (idx, arg) in args_seq.iter().enumerate() {
+        arg_handles.push(py_to_node_handle_depth(
+            builder,
+            &arg,
+            depth + 1,
+            &args_path.index(idx),
+        )?);
     }
     Ok(builder.function(name, arg_handles))
 }
@@ -840,9 +1025,11 @@ fn handle_case_tuple(
     builder: &mut QueryBuilder,
     tuple: &Bound<'_, PyTuple>,
     depth: usize,
+    path: &SpecPath,
 ) -> PyResult<NodeHandle> {
     check_spec_arity(
         tuple,
+        path,
         "expression 'case'",
         4,
         "[case, operand, branches, else_branch]",
@@ -851,22 +1038,44 @@ fn handle_case_tuple(
     let operand = if op_item.is_none() {
         None
     } else {
-        Some(py_to_node_handle_depth(builder, &op_item, depth + 1)?)
+        Some(py_to_node_handle_depth(
+            builder,
+            &op_item,
+            depth + 1,
+            &path.index(1),
+        )?)
     };
-    let branches_seq = expect_spec_array(&tuple.get_item(2)?, "case branches")?;
+    let branches_path = path.index(2);
+    let branches_seq = expect_spec_array(&tuple.get_item(2)?, &branches_path, "case branches")?;
     let mut branches = Vec::with_capacity(branches_seq.len());
-    for item in branches_seq {
-        let branch = expect_spec_array(&item, "case branch")?;
-        check_spec_arity(&branch, "case branch", 2, "[when, then]")?;
-        let w = py_to_node_handle_depth(builder, &branch.get_item(0)?, depth + 1)?;
-        let t = py_to_node_handle_depth(builder, &branch.get_item(1)?, depth + 1)?;
+    for (idx, item) in branches_seq.iter().enumerate() {
+        let branch_path = branches_path.index(idx);
+        let branch = expect_spec_array(&item, &branch_path, "case branch")?;
+        check_spec_arity(&branch, &branch_path, "case branch", 2, "[when, then]")?;
+        let w = py_to_node_handle_depth(
+            builder,
+            &branch.get_item(0)?,
+            depth + 1,
+            &branch_path.index(0),
+        )?;
+        let t = py_to_node_handle_depth(
+            builder,
+            &branch.get_item(1)?,
+            depth + 1,
+            &branch_path.index(1),
+        )?;
         branches.push((w, t));
     }
     let else_item = tuple.get_item(3)?;
     let else_branch = if else_item.is_none() {
         None
     } else {
-        Some(py_to_node_handle_depth(builder, &else_item, depth + 1)?)
+        Some(py_to_node_handle_depth(
+            builder,
+            &else_item,
+            depth + 1,
+            &path.index(3),
+        )?)
     };
     Ok(builder.case_when(operand, branches, else_branch))
 }
@@ -876,20 +1085,38 @@ fn handle_list_comp_tuple(
     builder: &mut QueryBuilder,
     tuple: &Bound<'_, PyTuple>,
     depth: usize,
+    path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    let var: String = tuple.get_item(1)?.extract()?;
-    let list_h = py_to_node_handle_depth(builder, &tuple.get_item(2)?, depth + 1)?;
+    check_spec_arity(
+        tuple,
+        path,
+        "expression 'list_comp'",
+        5,
+        "[list_comp, variable, list_expr, where_filter, map_expr]",
+    )?;
+    let var: String = extract_required(&tuple.get_item(1)?, &path.index(1), "a string variable")?;
+    let list_h = py_to_node_handle_depth(builder, &tuple.get_item(2)?, depth + 1, &path.index(2))?;
     let wh_item = tuple.get_item(3)?;
     let where_filter = if wh_item.is_none() {
         None
     } else {
-        Some(py_to_node_handle_depth(builder, &wh_item, depth + 1)?)
+        Some(py_to_node_handle_depth(
+            builder,
+            &wh_item,
+            depth + 1,
+            &path.index(3),
+        )?)
     };
     let map_item = tuple.get_item(4)?;
     let map_expr = if map_item.is_none() {
         None
     } else {
-        Some(py_to_node_handle_depth(builder, &map_item, depth + 1)?)
+        Some(py_to_node_handle_depth(
+            builder,
+            &map_item,
+            depth + 1,
+            &path.index(4),
+        )?)
     };
     Ok(builder.list_comprehension(var, list_h, where_filter, map_expr))
 }
@@ -899,16 +1126,29 @@ fn handle_pattern_comp_tuple(
     builder: &mut QueryBuilder,
     tuple: &Bound<'_, PyTuple>,
     depth: usize,
+    path: &SpecPath,
 ) -> PyResult<NodeHandle> {
+    check_spec_arity(
+        tuple,
+        path,
+        "expression 'pattern_comp'",
+        4,
+        "[pattern_comp, path_spec, where_filter, proj_expr]",
+    )?;
     let path_spec = tuple.get_item(1)?;
-    let path_h = build_path_from_py(builder, &path_spec, depth + 1)?;
+    let path_h = build_path_from_py(builder, &path_spec, &path.index(1))?;
     let wh_item = tuple.get_item(2)?;
     let where_filter = if wh_item.is_none() {
         None
     } else {
-        Some(py_to_node_handle_depth(builder, &wh_item, depth + 1)?)
+        Some(py_to_node_handle_depth(
+            builder,
+            &wh_item,
+            depth + 1,
+            &path.index(2),
+        )?)
     };
-    let proj_h = py_to_node_handle_depth(builder, &tuple.get_item(3)?, depth + 1)?;
+    let proj_h = py_to_node_handle_depth(builder, &tuple.get_item(3)?, depth + 1, &path.index(3))?;
     Ok(builder.pattern_comprehension(path_h, where_filter, proj_h))
 }
 
@@ -916,10 +1156,17 @@ fn handle_pattern_comp_tuple(
 fn handle_exists_tuple(
     builder: &mut QueryBuilder,
     tuple: &Bound<'_, PyTuple>,
-    depth: usize,
+    path: &SpecPath,
 ) -> PyResult<NodeHandle> {
+    check_spec_arity(
+        tuple,
+        path,
+        "expression 'exists'",
+        2,
+        "[exists, subquery_spec]",
+    )?;
     let sub_spec = tuple.get_item(1)?;
-    let sub_h = build_subquery_from_py(builder, &sub_spec, depth + 1)?;
+    let sub_h = build_subquery_from_py(builder, &sub_spec, &path.index(1))?;
     Ok(builder.exists_subquery(sub_h))
 }
 
@@ -927,10 +1174,17 @@ fn handle_exists_tuple(
 fn handle_count_tuple(
     builder: &mut QueryBuilder,
     tuple: &Bound<'_, PyTuple>,
-    depth: usize,
+    path: &SpecPath,
 ) -> PyResult<NodeHandle> {
+    check_spec_arity(
+        tuple,
+        path,
+        "expression 'count'",
+        2,
+        "[count, subquery_spec]",
+    )?;
     let sub_spec = tuple.get_item(1)?;
-    let sub_h = build_subquery_from_py(builder, &sub_spec, depth + 1)?;
+    let sub_h = build_subquery_from_py(builder, &sub_spec, &path.index(1))?;
     Ok(builder.count_subquery(sub_h))
 }
 
@@ -939,11 +1193,19 @@ fn handle_list_literal_tuple(
     builder: &mut QueryBuilder,
     tuple: &Bound<'_, PyTuple>,
     depth: usize,
+    path: &SpecPath,
 ) -> PyResult<NodeHandle> {
-    let items_seq = expect_spec_array(&tuple.get_item(1)?, "list items")?;
+    check_spec_arity(tuple, path, "expression 'list'", 2, "[list, items]")?;
+    let items_path = path.index(1);
+    let items_seq = expect_spec_array(&tuple.get_item(1)?, &items_path, "list items")?;
     let mut item_handles = Vec::with_capacity(items_seq.len());
-    for item in items_seq {
-        item_handles.push(py_to_node_handle_depth(builder, &item, depth + 1)?);
+    for (idx, item) in items_seq.iter().enumerate() {
+        item_handles.push(py_to_node_handle_depth(
+            builder,
+            &item,
+            depth + 1,
+            &items_path.index(idx),
+        )?);
     }
     Ok(builder.list_literal(item_handles))
 }
@@ -952,17 +1214,20 @@ fn handle_list_literal_tuple(
 fn handle_literal_fallback(
     builder: &mut QueryBuilder,
     val: &Bound<'_, PyAny>,
+    path: &SpecPath,
 ) -> PyResult<NodeHandle> {
     if let Ok(lit) = py_to_literal(val) {
         Ok(builder.literal(lit))
     } else {
-        Err(make_voyager_err(
-            voyager_ogm::ErrorCode::InvalidSpec,
-            format!(
-                "Cannot convert Python object to AST node handle: {}",
-                val.get_type()
-            ),
-        ))
+        let msg = format!(
+            "Cannot convert Python object to AST node handle: {}",
+            val.get_type()
+        );
+        if path.is_spec() {
+            Err(make_spec_err(path, msg))
+        } else {
+            Err(make_voyager_err(voyager_ogm::ErrorCode::InvalidSpec, msg))
+        }
     }
 }
 
@@ -970,63 +1235,165 @@ fn py_to_node_handle_depth(
     builder: &mut QueryBuilder,
     val: &Bound<'_, PyAny>,
     depth: usize,
+    path: &SpecPath,
 ) -> PyResult<NodeHandle> {
     if depth > MAX_AST_DEPTH {
-        return Err(PyValueError::new_err(format!(
-            "Maximum AST expression recursion depth exceeded ({MAX_AST_DEPTH}). Query is too deeply nested.",
-        )));
+        return Err(path_value_error(
+            path,
+            format!(
+                "Maximum AST expression recursion depth exceeded ({MAX_AST_DEPTH}). Query is too deeply nested.",
+            ),
+        ));
     }
     // Direct Native AST Expression fast-path:
     if let Some(h) = try_import_native_ast(builder, val) {
         return Ok(h);
     }
     if let Ok(dict) = val.cast::<PyDict>() {
-        return handle_dict_expr(builder, dict, depth);
+        return handle_dict_expr(builder, dict, depth, path);
     }
-    if let Some(tuple) = extract_expr_tuple(val) {
-        if tuple.is_empty() {
-            return Err(make_voyager_err(
-                voyager_ogm::ErrorCode::InvalidClause,
-                "Empty expression tuple",
+    // In an expression position a sequence is always a tagged expression: there
+    // is no implicit literal-list spelling. Lists and tuples are accepted
+    // interchangeably, but the first item must be a known expression tag.
+    if let Some(tuple) = as_spec_sequence(val) {
+        return handle_expr_sequence(builder, tuple, depth, path);
+    }
+    if path.is_spec() {
+        return Err(make_spec_err(
+            path,
+            format!(
+                "expected an expression (a tagged JSON array or an object-wrapped expression), got {}; write a scalar literal as [\"lit\", value]",
+                val.get_type()
+            ),
+        ));
+    }
+    handle_literal_fallback(builder, val, path)
+}
+
+/// Suggestion appended to expression-array errors, naming the two explicit
+/// spellings for a list value.
+const EXPRESSION_ARRAY_HINT: &str =
+    "Use [\"lit\", [...]] for a literal list or [\"list\", [...]] for a list of expressions.";
+
+/// Validates the first item of an expression sequence and returns its tag.
+///
+/// A JSON array in an expression position is never a literal list: it must be a
+/// tagged expression descriptor, so the first item must be a known expression
+/// tag. Empty sequences, non-string first items and unknown tags are rejected at
+/// the sequence's own JSON Pointer.
+fn expression_tag(tuple: &Bound<'_, PyTuple>, path: &SpecPath) -> PyResult<String> {
+    if tuple.is_empty() {
+        return Err(path_error(
+            path,
+            format!(
+                "Empty expression array: an expression array must start with a known expression tag. {}",
+                EXPRESSION_ARRAY_HINT
+            ),
+        ));
+    }
+    let first = tuple.get_item(0)?;
+    let tag = match first.extract::<String>() {
+        Ok(tag) => tag,
+        Err(_) => {
+            let rendered: String = first
+                .repr()
+                .and_then(|value| value.extract())
+                .unwrap_or_else(|_| "<unprintable>".to_string());
+            return Err(path_error(
+                path,
+                format!(
+                    "Invalid expression array: the first element must be a known expression tag string, got {rendered} ({}). {}",
+                    first.get_type(),
+                    EXPRESSION_ARRAY_HINT
+                ),
             ));
         }
-        let tag: String = tuple.get_item(0)?.extract()?;
-        match tag.as_str() {
-            "prop" => handle_prop_tuple(builder, &tuple),
-            "ident" => handle_ident_tuple(builder, &tuple),
-            "param" => handle_param_tuple(builder, &tuple),
-            "lit" | "literal" => handle_lit_tuple(builder, &tuple),
-            "bin" => {
-                let op_str: String = tuple.get_item(1)?.extract()?;
-                let op = parse_binary_op(&op_str)?;
-                let left = py_to_node_handle_depth(builder, &tuple.get_item(2)?, depth + 1)?;
-                let right = py_to_node_handle_depth(builder, &tuple.get_item(3)?, depth + 1)?;
-                Ok(builder.binary_expr(left, op, right))
-            }
-            "unary" => {
-                let op_str: String = tuple.get_item(1)?.extract()?;
-                let op = parse_unary_op(&op_str)?;
-                let operand = py_to_node_handle_depth(builder, &tuple.get_item(2)?, depth + 1)?;
-                Ok(builder.unary_expr(op, operand))
-            }
-            "fn" | "func" | "call" => handle_fn_tuple(builder, &tuple, depth),
-            "case" => handle_case_tuple(builder, &tuple, depth),
-            "list_comp" => handle_list_comp_tuple(builder, &tuple, depth),
-            "pattern_comp" => handle_pattern_comp_tuple(builder, &tuple, depth),
-            "exists" => handle_exists_tuple(builder, &tuple, depth),
-            "count" => handle_count_tuple(builder, &tuple, depth),
-            "list" => handle_list_literal_tuple(builder, &tuple, depth),
-            "alias" => {
-                let inner = tuple.get_item(1)?;
-                py_to_node_handle_depth(builder, &inner, depth + 1)
-            }
-            other => Err(make_voyager_err(
-                voyager_ogm::ErrorCode::InvalidClause,
-                format!("Unknown expression tuple tag: '{other}'"),
-            )),
+    };
+    if !is_known_expr_tag(&tag) {
+        return Err(path_error(
+            path,
+            format!(
+                "Unknown expression tag '{tag}': the first element of an expression array must be a known expression tag. {}",
+                EXPRESSION_ARRAY_HINT
+            ),
+        ));
+    }
+    Ok(tag)
+}
+
+#[inline(never)]
+fn handle_expr_sequence(
+    builder: &mut QueryBuilder,
+    tuple: Bound<'_, PyTuple>,
+    depth: usize,
+    path: &SpecPath,
+) -> PyResult<NodeHandle> {
+    let tag = expression_tag(&tuple, path)?;
+    match tag.as_str() {
+        "prop" => handle_prop_tuple(builder, &tuple, path),
+        "ident" => handle_ident_tuple(builder, &tuple, path),
+        "param" => handle_param_tuple(builder, &tuple, path),
+        "lit" | "literal" => handle_lit_tuple(builder, &tuple, path),
+        "bin" => {
+            check_spec_arity(
+                &tuple,
+                path,
+                "expression 'bin'",
+                4,
+                "[bin, operator, left, right]",
+            )?;
+            let op_path = path.index(1);
+            let op_str: String =
+                extract_required(&tuple.get_item(1)?, &op_path, "a string operator")?;
+            let op =
+                parse_binary_op(&op_str).map_err(|e| path_value_error(&op_path, e.to_string()))?;
+            let left =
+                py_to_node_handle_depth(builder, &tuple.get_item(2)?, depth + 1, &path.index(2))?;
+            let right =
+                py_to_node_handle_depth(builder, &tuple.get_item(3)?, depth + 1, &path.index(3))?;
+            Ok(builder.binary_expr(left, op, right))
         }
-    } else {
-        handle_literal_fallback(builder, val)
+        "unary" => {
+            check_spec_arity(
+                &tuple,
+                path,
+                "expression 'unary'",
+                3,
+                "[unary, operator, operand]",
+            )?;
+            let op_path = path.index(1);
+            let op_str: String =
+                extract_required(&tuple.get_item(1)?, &op_path, "a string operator")?;
+            let op =
+                parse_unary_op(&op_str).map_err(|e| path_value_error(&op_path, e.to_string()))?;
+            let operand =
+                py_to_node_handle_depth(builder, &tuple.get_item(2)?, depth + 1, &path.index(2))?;
+            Ok(builder.unary_expr(op, operand))
+        }
+        "fn" | "func" | "call" => handle_fn_tuple(builder, &tuple, depth, path),
+        "case" => handle_case_tuple(builder, &tuple, depth, path),
+        "list_comp" => handle_list_comp_tuple(builder, &tuple, depth, path),
+        "pattern_comp" => handle_pattern_comp_tuple(builder, &tuple, depth, path),
+        "exists" => handle_exists_tuple(builder, &tuple, path),
+        "count" => handle_count_tuple(builder, &tuple, path),
+        "list" => handle_list_literal_tuple(builder, &tuple, depth, path),
+        "alias" => {
+            check_spec_arity(
+                &tuple,
+                path,
+                "expression 'alias'",
+                3,
+                "[alias, expression, name]",
+            )?;
+            py_to_node_handle_depth(builder, &tuple.get_item(1)?, depth + 1, &path.index(1))
+        }
+        other => Err(path_error(
+            path,
+            format!(
+                "Unknown expression tag '{other}': the first element of an expression array must be a known expression tag. {}",
+                EXPRESSION_ARRAY_HINT
+            ),
+        )),
     }
 }
 
@@ -1047,30 +1414,68 @@ fn parse_direction(dir_str: &str) -> PyResult<Direction> {
 fn build_path_steps_into_builder(
     builder: &mut QueryBuilder,
     steps: &Bound<'_, PyTuple>,
+    path: &SpecPath,
 ) -> PyResult<()> {
-    for step in steps {
-        let tuple = expect_spec_array(&step, "path step")?;
-        let tag: String = tuple.get_item(0)?.extract()?;
+    for (idx, step) in steps.iter().enumerate() {
+        let step_path = path.index(idx);
+        let tuple = expect_spec_array(&step, &step_path, "path step")?;
+        let tag_path = step_path.index(0);
+        let tag: String =
+            extract_required(&tuple.get_item(0)?, &tag_path, "a string path step tag")?;
         match tag.as_str() {
             "node" => {
-                check_spec_arity(&tuple, "path step 'node'", 3, "[node, variable, labels]")?;
-                let var: Option<String> = tuple.get_item(1)?.extract()?;
-                let labels: Vec<String> = tuple.get_item(2)?.extract()?;
+                check_spec_arity(
+                    &tuple,
+                    &step_path,
+                    "path step 'node'",
+                    3,
+                    "[node, variable, labels]",
+                )?;
+                let var: Option<String> = extract_required(
+                    &tuple.get_item(1)?,
+                    &step_path.index(1),
+                    "a string or null variable",
+                )?;
+                let labels: Vec<String> = extract_required(
+                    &tuple.get_item(2)?,
+                    &step_path.index(2),
+                    "an array of string labels",
+                )?;
                 builder.node(var, labels);
             }
             "edge" => {
                 check_spec_arity(
                     &tuple,
+                    &step_path,
                     "path step 'edge'",
                     6,
                     "[edge, direction, types, variable, min_hops, max_hops]",
                 )?;
-                let dir_str: String = tuple.get_item(1)?.extract()?;
-                let dir = parse_direction(&dir_str)?;
-                let edge_types: Vec<String> = tuple.get_item(2)?.extract()?;
-                let var: Option<String> = tuple.get_item(3)?.extract()?;
-                let min_hops: Option<u32> = tuple.get_item(4)?.extract()?;
-                let max_hops: Option<u32> = tuple.get_item(5)?.extract()?;
+                let dir_path = step_path.index(1);
+                let dir_str: String =
+                    extract_required(&tuple.get_item(1)?, &dir_path, "a string edge direction")?;
+                let dir =
+                    parse_direction(&dir_str).map_err(|e| path_error(&dir_path, e.to_string()))?;
+                let edge_types: Vec<String> = extract_required(
+                    &tuple.get_item(2)?,
+                    &step_path.index(2),
+                    "an array of string edge types",
+                )?;
+                let var: Option<String> = extract_required(
+                    &tuple.get_item(3)?,
+                    &step_path.index(3),
+                    "a string or null variable",
+                )?;
+                let min_hops: Option<u32> = extract_required(
+                    &tuple.get_item(4)?,
+                    &step_path.index(4),
+                    "a non-negative integer or null",
+                )?;
+                let max_hops: Option<u32> = extract_required(
+                    &tuple.get_item(5)?,
+                    &step_path.index(5),
+                    "a non-negative integer or null",
+                )?;
                 match dir {
                     Direction::Outgoing => builder.to(edge_types, var),
                     Direction::Incoming => builder.from(edge_types, var),
@@ -1083,8 +1488,8 @@ fn build_path_steps_into_builder(
                 }
             }
             other => {
-                return Err(make_voyager_err(
-                    voyager_ogm::ErrorCode::InvalidClause,
+                return Err(path_error(
+                    &tag_path,
                     format!("Unknown path step tag: '{other}'. Expected 'node' or 'edge'."),
                 ));
             }
@@ -1100,25 +1505,37 @@ fn build_path_steps_into_builder(
 fn build_order_by_entry(
     builder: &mut QueryBuilder,
     item: &Bound<'_, PyAny>,
+    path: &SpecPath,
     field: &str,
 ) -> PyResult<()> {
-    let tuple = expect_spec_array(item, field)?;
+    let tuple = expect_spec_array(item, path, field)?;
+    check_spec_arity(
+        &tuple,
+        path,
+        field,
+        2,
+        "[variable, property, direction] or [expression, direction]",
+    )?;
     let first = tuple.get_item(0)?;
     if let Ok(var) = first.extract::<String>() {
-        check_spec_arity(&tuple, field, 3, "[variable, property, direction]")?;
-        let prop: String = tuple.get_item(1)?.extract()?;
-        let asc = parse_order_asc(&tuple.get_item(2)?, field)?;
+        check_spec_arity(&tuple, path, field, 3, "[variable, property, direction]")?;
+        let prop: String =
+            extract_required(&tuple.get_item(1)?, &path.index(1), "a string property")?;
+        let asc = parse_order_asc(&tuple.get_item(2)?, &path.index(2), field)?;
         builder.order_by_property(var, prop, asc);
     } else {
-        check_spec_arity(&tuple, field, 2, "[expression, direction]")?;
-        let expr_h = py_to_node_handle(builder, &first)?;
-        let asc = parse_order_asc(&tuple.get_item(1)?, field)?;
+        let expr_h = py_to_node_handle_at(builder, &first, &path.index(0))?;
+        let asc = parse_order_asc(&tuple.get_item(1)?, &path.index(1), field)?;
         builder.order_by(expr_h, asc);
     }
     Ok(())
 }
 
-fn build_path_from_py(builder: &mut QueryBuilder, spec: &Bound<'_, PyAny>) -> PyResult<NodeHandle> {
+fn build_path_from_py(
+    builder: &mut QueryBuilder,
+    spec: &Bound<'_, PyAny>,
+    path: &SpecPath,
+) -> PyResult<NodeHandle> {
     let target = if let Ok(native) = spec.getattr("_native") {
         native
     } else {
@@ -1134,7 +1551,7 @@ fn build_path_from_py(builder: &mut QueryBuilder, spec: &Bound<'_, PyAny>) -> Py
         let steps = list.to_tuple();
         let mut err: Option<PyErr> = None;
         let sub_h = builder.subquery(|q| {
-            if let Err(e) = build_path_steps_into_builder(q, &steps) {
+            if let Err(e) = build_path_steps_into_builder(q, &steps, path) {
                 err = Some(e);
             }
         });
@@ -1143,14 +1560,14 @@ fn build_path_from_py(builder: &mut QueryBuilder, spec: &Bound<'_, PyAny>) -> Py
         }
         Ok(sub_h)
     } else {
-        py_to_node_handle_depth(builder, spec, depth)
+        py_to_node_handle_at(builder, spec, path)
     }
 }
 
 fn build_subquery_from_py(
     builder: &mut QueryBuilder,
     spec: &Bound<'_, PyAny>,
-    depth: usize,
+    path: &SpecPath,
 ) -> PyResult<NodeHandle> {
     let target = if let Ok(native) = spec.getattr("_native") {
         native
@@ -1167,7 +1584,7 @@ fn build_subquery_from_py(
         let dict_cloned = dict.clone();
         let mut err: Option<PyErr> = None;
         let sub_h = builder.subquery(|q| {
-            if let Err(e) = build_query_from_spec_internal(q, &dict_cloned, depth) {
+            if let Err(e) = build_query_from_spec_internal(q, &dict_cloned, path) {
                 err = Some(e);
             }
         });
@@ -1180,7 +1597,7 @@ fn build_subquery_from_py(
         let mut err: Option<PyErr> = None;
         let sub_h = builder.subquery(|q| {
             q.r#match();
-            if let Err(e) = build_path_steps_into_builder(q, &steps) {
+            if let Err(e) = build_path_steps_into_builder(q, &steps, path) {
                 err = Some(e);
             }
         });
@@ -1189,136 +1606,396 @@ fn build_subquery_from_py(
         }
         Ok(sub_h)
     } else {
-        py_to_node_handle_depth(builder, spec, depth)
+        py_to_node_handle_at(builder, spec, path)
     }
+}
+
+const ROOT_SPEC_KEYS: &[&str] = &[
+    "spec_version",
+    "load_csv",
+    "unwinds",
+    "matches",
+    "mutations",
+    "with_clauses",
+    "projections",
+    "distinct",
+    "order_by",
+    "skip",
+    "offset",
+    "limit",
+    "execution_mode",
+    // Supported by the consumer and exercised by the round-trip suite, but not
+    // yet listed in the v1 schema (schema completeness is tracked separately).
+    "linear_clauses",
+];
+
+const MATCH_SPEC_KEYS: &[&str] = &[
+    "spec_version",
+    "optional",
+    "path_mode",
+    "path_variable",
+    "paths",
+    "where",
+];
+
+const WITH_SPEC_KEYS: &[&str] = &[
+    "spec_version",
+    "distinct",
+    "projections",
+    "where",
+    "order_by",
+    "skip",
+    "limit",
+];
+
+/// Rejects any object key that is not in the closed v1 key set for that object.
+fn reject_unknown_keys(
+    dict: &Bound<'_, PyDict>,
+    path: &SpecPath,
+    allowed: &[&str],
+    what: &str,
+) -> PyResult<()> {
+    for (key, _value) in dict.iter() {
+        let key_path = path.key("<key>");
+        let key_str: String = extract_required(&key, &key_path, "a string object key")?;
+        if !allowed.contains(&key_str.as_str()) {
+            return Err(make_spec_err(
+                &path.key(&key_str),
+                format!(
+                    "unknown {what} key '{key_str}'. Allowed keys: {}.",
+                    allowed.join(", ")
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Parses a non-negative `skip` / `offset` / `limit` value.
+fn parse_non_negative(val: &Bound<'_, PyAny>, path: &SpecPath, field: &str) -> PyResult<u64> {
+    if val.is_instance_of::<PyBool>() {
+        return Err(make_spec_err(
+            path,
+            format!(
+                "Invalid '{field}': expected a non-negative integer, got {}.",
+                val.get_type()
+            ),
+        ));
+    }
+    let value: i64 = extract_required(val, path, "a non-negative integer")?;
+    if value < 0 {
+        return Err(make_spec_err(
+            path,
+            format!("Invalid '{field}': expected a non-negative integer, got {value}."),
+        ));
+    }
+    Ok(value as u64)
+}
+
+/// Builds one projection item (`field`, `agg`, or `expr`) shared by the root
+/// `projections` list and `with_clauses[i].projections`.
+fn build_projection_item(
+    builder: &mut QueryBuilder,
+    item: &Bound<'_, PyAny>,
+    path: &SpecPath,
+) -> PyResult<()> {
+    let tuple = expect_spec_array(item, path, "projection")?;
+    check_spec_arity(&tuple, path, "projection", 1, "[tag, ...]")?;
+    let tag_path = path.index(0);
+    let tag: String = extract_required(&tuple.get_item(0)?, &tag_path, "a string projection tag")?;
+    match tag.as_str() {
+        "field" => {
+            check_spec_arity(
+                &tuple,
+                path,
+                "projection 'field'",
+                4,
+                "[field, variable, property, alias]",
+            )?;
+            let var: String =
+                extract_required(&tuple.get_item(1)?, &path.index(1), "a string variable")?;
+            let prop: String =
+                extract_required(&tuple.get_item(2)?, &path.index(2), "a string property")?;
+            let alias: Option<String> = extract_required(
+                &tuple.get_item(3)?,
+                &path.index(3),
+                "a string or null alias",
+            )?;
+            builder.field(var, prop, alias);
+        }
+        "agg" => {
+            check_spec_arity(
+                &tuple,
+                path,
+                "projection 'agg'",
+                5,
+                "[agg, variable, property, func, alias]",
+            )?;
+            let var: String =
+                extract_required(&tuple.get_item(1)?, &path.index(1), "a string variable")?;
+            let prop: String =
+                extract_required(&tuple.get_item(2)?, &path.index(2), "a string property")?;
+            let func_path = path.index(3);
+            let func_str: String = extract_required(
+                &tuple.get_item(3)?,
+                &func_path,
+                "a string aggregation function",
+            )?;
+            let alias: Option<String> = extract_required(
+                &tuple.get_item(4)?,
+                &path.index(4),
+                "a string or null alias",
+            )?;
+            let agg = match func_str.to_lowercase().as_str() {
+                "count" => AggregationFunc::Count,
+                "count_distinct" => AggregationFunc::CountDistinct,
+                "sum" => AggregationFunc::Sum,
+                "avg" => AggregationFunc::Avg,
+                "min" => AggregationFunc::Min,
+                "max" => AggregationFunc::Max,
+                "collect" => AggregationFunc::Collect,
+                other => {
+                    return Err(make_spec_err(
+                        &func_path,
+                        format!(
+                            "Unknown aggregation function '{other}'. Expected count, count_distinct, sum, avg, min, max, collect."
+                        ),
+                    ));
+                }
+            };
+            if prop == "*" || prop.is_empty() {
+                let expr = builder.ident(var);
+                builder.select_aggregate(expr, agg, alias);
+            } else {
+                builder.select_property_aggregate(var, prop, agg, alias);
+            }
+        }
+        "expr" => {
+            check_spec_arity(
+                &tuple,
+                path,
+                "projection 'expr'",
+                3,
+                "[expr, expression, alias]",
+            )?;
+            let expr_path = path.index(1);
+            let expr_spec = tuple.get_item(1)?;
+            let mut alias: Option<String> = extract_required(
+                &tuple.get_item(2)?,
+                &path.index(2),
+                "a string or null alias",
+            )?;
+            if alias.is_none() {
+                alias = extract_alias_from_expr_spec(&expr_spec, &expr_path)?;
+            }
+            let h = py_to_node_handle_at(builder, &expr_spec, &expr_path)?;
+            builder.select_expr(h, alias);
+        }
+        other => {
+            return Err(make_spec_err(
+                &tag_path,
+                format!("Unknown projection tag '{other}'. Expected 'field', 'agg', or 'expr'."),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::collapsible_if)]
 fn build_query_from_spec_internal(
     builder: &mut QueryBuilder,
     spec: &Bound<'_, PyDict>,
-    depth: usize,
+    path: &SpecPath,
 ) -> PyResult<()> {
+    // Everything below this point is Query Spec v1 parsing, even when a dict
+    // expression reached here through the fluent API.
+    let spec_path = path.as_spec();
+    let path = &spec_path;
+
     // Spec Versioning & Compatibility Check:
     // Requires top-level "spec_version": 1 in accordance with the Query Spec Interchange Protocol v1.
+    let version_path = path.key("spec_version");
     match spec.get_item("spec_version")? {
         Some(ver_item) => {
-            let ver: u32 = ver_item.extract().map_err(|_| {
-                make_voyager_err(
-                    voyager_ogm::ErrorCode::InvalidSpec,
-                    "Invalid 'spec_version': expected an integer major version number (e.g. 1).",
-                )
-            })?;
+            let ver: u32 =
+                extract_required(&ver_item, &version_path, "an integer major version number")?;
             if ver != 1 {
-                return Err(make_voyager_err(
-                    voyager_ogm::ErrorCode::InvalidSpec,
+                return Err(make_spec_err(
+                    &version_path,
                     format!("Unsupported query spec_version: {ver}. Supported major versions: 1."),
                 ));
             }
         }
         None => {
-            return Err(make_voyager_err(
-                voyager_ogm::ErrorCode::InvalidSpec,
+            return Err(make_spec_err(
+                &version_path,
                 "Missing required 'spec_version' in query spec dictionary. Expected 'spec_version': 1.",
             ));
         }
     }
 
+    reject_unknown_keys(spec, path, ROOT_SPEC_KEYS, "top-level query spec")?;
+
+    let mut produced_clause = false;
+
     if let Some(load_csv_item) = spec.get_item("load_csv")? {
         if !load_csv_item.is_none() {
-            let tuple = expect_spec_array(&load_csv_item, "load_csv")?;
-            check_spec_arity(&tuple, "load_csv", 3, "[url, with_headers, alias]")?;
-            let url: String = tuple.get_item(0)?.extract()?;
-            let with_headers: bool = tuple.get_item(1)?.extract()?;
-            let alias: String = tuple.get_item(2)?.extract()?;
+            let item_path = path.key("load_csv");
+            let tuple = expect_spec_array(&load_csv_item, &item_path, "load_csv")?;
+            check_spec_arity(
+                &tuple,
+                &item_path,
+                "load_csv",
+                3,
+                "[url, with_headers, alias]",
+            )?;
+            let url: String =
+                extract_required(&tuple.get_item(0)?, &item_path.index(0), "a string URL")?;
+            let with_headers: bool =
+                extract_required(&tuple.get_item(1)?, &item_path.index(1), "a boolean")?;
+            let alias: String =
+                extract_required(&tuple.get_item(2)?, &item_path.index(2), "a string alias")?;
             builder.load_csv(url, with_headers, alias);
+            produced_clause = true;
         }
     }
 
     if let Some(unwinds_item) = spec.get_item("unwinds")? {
-        if let Some(unwinds_seq) = as_spec_sequence(&unwinds_item) {
-            for item in unwinds_seq {
-                let tuple = expect_spec_array(&item, "unwinds entry")?;
-                check_spec_arity(&tuple, "unwinds entry", 2, "[param, alias]")?;
-                let param_name: String = tuple.get_item(0)?.extract()?;
-                let alias: String = tuple.get_item(1)?.extract()?;
-                builder.unwind_param(param_name, alias);
-            }
+        let key_path = path.key("unwinds");
+        let unwinds_seq = expect_spec_array(&unwinds_item, &key_path, "unwinds")?;
+        for (idx, item) in unwinds_seq.iter().enumerate() {
+            let item_path = key_path.index(idx);
+            let tuple = expect_spec_array(&item, &item_path, "unwinds entry")?;
+            check_spec_arity(&tuple, &item_path, "unwinds entry", 2, "[param, alias]")?;
+            let param_name: String = extract_required(
+                &tuple.get_item(0)?,
+                &item_path.index(0),
+                "a string parameter name",
+            )?;
+            let alias: String =
+                extract_required(&tuple.get_item(1)?, &item_path.index(1), "a string alias")?;
+            builder.unwind_param(param_name, alias);
+            produced_clause = true;
         }
     }
 
     if let Some(matches_item) = spec.get_item("matches")? {
-        if let Some(matches_seq) = as_spec_sequence(&matches_item) {
-            for m in matches_seq {
-                let m_dict = m.cast::<PyDict>()?;
-                if let Some(m_ver_item) = m_dict.get_item("spec_version")? {
-                    let m_ver: u32 = m_ver_item.extract().map_err(|_| {
-                        make_voyager_err(
-                            voyager_ogm::ErrorCode::InvalidSpec,
-                            "Invalid 'spec_version' in match clause: expected an integer major version number.",
-                        )
-                    })?;
-                    if m_ver != 1 {
-                        return Err(make_voyager_err(
-                            voyager_ogm::ErrorCode::InvalidSpec,
-                            format!(
-                                "Unsupported match clause spec_version: {m_ver}. Supported major versions: 1."
-                            ),
-                        ));
-                    }
+        let key_path = path.key("matches");
+        let matches_seq = expect_spec_array(&matches_item, &key_path, "matches")?;
+        for (idx, m) in matches_seq.iter().enumerate() {
+            let m_path = key_path.index(idx);
+            let m_dict = m.cast::<PyDict>().map_err(|_| {
+                make_spec_err(
+                    &m_path,
+                    format!("expected a match clause object, got {}", m.get_type()),
+                )
+            })?;
+            reject_unknown_keys(m_dict, &m_path, MATCH_SPEC_KEYS, "match clause")?;
+            if let Some(m_ver_item) = m_dict.get_item("spec_version")? {
+                let version_path = m_path.key("spec_version");
+                let m_ver: u32 = extract_required(
+                    &m_ver_item,
+                    &version_path,
+                    "an integer major version number",
+                )?;
+                if m_ver != 1 {
+                    return Err(make_spec_err(
+                        &version_path,
+                        format!(
+                            "Unsupported match clause spec_version: {m_ver}. Supported major versions: 1."
+                        ),
+                    ));
                 }
-                let is_optional: bool = m_dict
-                    .get_item("optional")?
-                    .map(|v| v.extract().unwrap_or(false))
-                    .unwrap_or(false);
-                if is_optional {
-                    builder.optional_match();
+            }
+            let paths_item = m_dict.get_item("paths")?.ok_or_else(|| {
+                make_spec_err(
+                    &m_path.key("paths"),
+                    "missing required 'paths' in match clause.",
+                )
+            })?;
+            if paths_item.is_none() {
+                return Err(make_spec_err(
+                    &m_path.key("paths"),
+                    "missing required 'paths' in match clause.",
+                ));
+            }
+            let paths_path = m_path.key("paths");
+            let paths_seq = expect_spec_array(&paths_item, &paths_path, "paths")?;
+
+            let is_optional = if let Some(optional_item) = m_dict.get_item("optional")? {
+                if optional_item.is_none() {
+                    false
                 } else {
-                    builder.r#match();
+                    extract_required(&optional_item, &m_path.key("optional"), "a boolean")?
                 }
+            } else {
+                false
+            };
+            if is_optional {
+                builder.optional_match();
+            } else {
+                builder.r#match();
+            }
 
-                if let Some(mode_item) = m_dict.get_item("path_mode")? {
-                    if let Ok(m_str) = mode_item.extract::<String>() {
-                        let m = match m_str.to_ascii_lowercase().as_str() {
-                            "trail" => voyager_ogm::ast::PathMode::Trail,
-                            "simple" => voyager_ogm::ast::PathMode::Simple,
-                            "acyclic" => voyager_ogm::ast::PathMode::Acyclic,
-                            "walk" => voyager_ogm::ast::PathMode::Walk,
-                            _ => voyager_ogm::ast::PathMode::None,
-                        };
-                        builder.path_mode(m);
-                    }
-                }
-                if let Some(var_item) = m_dict.get_item("path_variable")? {
-                    if let Ok(v_str) = var_item.extract::<String>() {
-                        builder.path_variable(v_str);
-                    }
-                }
-
-                if let Some(paths_item) = m_dict.get_item("paths")? {
-                    if let Some(paths_seq) = as_spec_sequence(&paths_item) {
-                        for (p_idx, p_steps) in paths_seq.iter().enumerate() {
-                            if p_idx > 0 {
-                                builder.pattern();
-                            }
-                            if let Some(steps) = as_spec_sequence(&p_steps) {
-                                build_path_steps_into_builder(builder, &steps)?;
-                            }
+            if let Some(mode_item) = m_dict.get_item("path_mode")? {
+                if !mode_item.is_none() {
+                    let mode_path = m_path.key("path_mode");
+                    let m_str: String =
+                        extract_required(&mode_item, &mode_path, "a string path mode")?;
+                    let m = match m_str.to_ascii_lowercase().as_str() {
+                        "trail" => voyager_ogm::ast::PathMode::Trail,
+                        "simple" => voyager_ogm::ast::PathMode::Simple,
+                        "acyclic" => voyager_ogm::ast::PathMode::Acyclic,
+                        "walk" => voyager_ogm::ast::PathMode::Walk,
+                        "none" => voyager_ogm::ast::PathMode::None,
+                        other => {
+                            return Err(make_spec_err(
+                                &mode_path,
+                                format!(
+                                    "unknown path_mode '{other}'. Expected 'trail', 'simple', 'acyclic', 'walk', or 'none'."
+                                ),
+                            ));
                         }
-                    }
+                    };
+                    builder.path_mode(m);
                 }
+            }
+            if let Some(var_item) = m_dict.get_item("path_variable")? {
+                if !var_item.is_none() {
+                    let var_path = m_path.key("path_variable");
+                    let v_str: String =
+                        extract_required(&var_item, &var_path, "a string path variable")?;
+                    builder.path_variable(v_str);
+                }
+            }
 
-                if let Some(where_item) = m_dict.get_item("where")? {
-                    if !where_item.is_none() {
-                        if let Ok(wh_list) = where_item.cast::<PyList>() {
-                            for wh in wh_list {
-                                let h = py_to_node_handle_depth(builder, &wh, depth)?;
-                                builder.where_expr(h);
-                            }
-                        } else {
-                            let h = py_to_node_handle_depth(builder, &where_item, depth)?;
+            for (p_idx, p_steps) in paths_seq.iter().enumerate() {
+                if p_idx > 0 {
+                    builder.pattern();
+                }
+                let p_path = paths_path.index(p_idx);
+                let steps = expect_spec_array(&p_steps, &p_path, "path")?;
+                if !steps.is_empty() {
+                    produced_clause = true;
+                }
+                build_path_steps_into_builder(builder, &steps, &p_path)?;
+            }
+
+            if let Some(where_item) = m_dict.get_item("where")? {
+                if !where_item.is_none() {
+                    let where_path = m_path.key("where");
+                    // Keep the historical list-vs-single-expression behaviour:
+                    // a list is a list of predicates, anything else is one
+                    // expression.
+                    if let Ok(wh_list) = where_item.cast::<PyList>() {
+                        for (w_idx, wh) in wh_list.iter().enumerate() {
+                            let pred_path = where_path.index(w_idx);
+                            let h = py_to_node_handle_at(builder, &wh, &pred_path)?;
                             builder.where_expr(h);
                         }
+                    } else {
+                        let h = py_to_node_handle_at(builder, &where_item, &where_path)?;
+                        builder.where_expr(h);
                     }
                 }
             }
@@ -1326,346 +2003,316 @@ fn build_query_from_spec_internal(
     }
 
     if let Some(mutations_item) = spec.get_item("mutations")? {
-        if let Some(mutations_seq) = as_spec_sequence(&mutations_item) {
-            for mut_item in mutations_seq {
-                let tuple = expect_spec_array(&mut_item, "mutation")?;
-                let tag: String = tuple.get_item(0)?.extract()?;
-                match tag.as_str() {
-                    "create" => {
-                        check_spec_arity(&tuple, "mutation 'create'", 2, "[create, paths]")?;
-                        builder.create();
-                        let paths =
-                            expect_spec_array(&tuple.get_item(1)?, "mutation 'create' paths")?;
-                        for (p_idx, p_steps) in paths.iter().enumerate() {
-                            if p_idx > 0 {
-                                builder.pattern();
-                            }
-                            if let Some(steps) = as_spec_sequence(&p_steps) {
-                                build_path_steps_into_builder(builder, &steps)?;
-                            }
+        let key_path = path.key("mutations");
+        let mutations_seq = expect_spec_array(&mutations_item, &key_path, "mutations")?;
+        for (idx, mut_item) in mutations_seq.iter().enumerate() {
+            let mut_path = key_path.index(idx);
+            let tuple = expect_spec_array(&mut_item, &mut_path, "mutation")?;
+            check_spec_arity(&tuple, &mut_path, "mutation", 1, "[tag, ...]")?;
+            let tag_path = mut_path.index(0);
+            let tag: String =
+                extract_required(&tuple.get_item(0)?, &tag_path, "a string mutation tag")?;
+            match tag.as_str() {
+                "create" => {
+                    check_spec_arity(&tuple, &mut_path, "mutation 'create'", 2, "[create, paths]")?;
+                    builder.create();
+                    let paths_path = mut_path.index(1);
+                    let paths = expect_spec_array(
+                        &tuple.get_item(1)?,
+                        &paths_path,
+                        "mutation 'create' paths",
+                    )?;
+                    for (p_idx, p_steps) in paths.iter().enumerate() {
+                        if p_idx > 0 {
+                            builder.pattern();
                         }
-                    }
-                    "merge" => {
-                        check_spec_arity(
-                            &tuple,
-                            "mutation 'merge'",
-                            4,
-                            "[merge, path, on_create_set, on_match_set]",
-                        )?;
-                        builder.merge();
-                        let path_steps =
-                            expect_spec_array(&tuple.get_item(1)?, "mutation 'merge' path")?;
-                        build_path_steps_into_builder(builder, &path_steps)?;
-                        if let Some(on_creates) = as_spec_sequence(&tuple.get_item(2)?) {
-                            for item in on_creates {
-                                let s_tuple =
-                                    expect_spec_array(&item, "merge 'on_create_set' entry")?;
-                                check_spec_arity(
-                                    &s_tuple,
-                                    "merge 'on_create_set' entry",
-                                    3,
-                                    "[variable, property, value]",
-                                )?;
-                                let var: String = s_tuple.get_item(0)?.extract()?;
-                                let prop: String = s_tuple.get_item(1)?.extract()?;
-                                let val_h =
-                                    py_to_node_handle_depth(builder, &s_tuple.get_item(2)?, depth)?;
-                                builder.on_create_set_expr(var, prop, val_h);
-                            }
-                        }
-                        if let Some(on_matches) = as_spec_sequence(&tuple.get_item(3)?) {
-                            for item in on_matches {
-                                let s_tuple =
-                                    expect_spec_array(&item, "merge 'on_match_set' entry")?;
-                                check_spec_arity(
-                                    &s_tuple,
-                                    "merge 'on_match_set' entry",
-                                    3,
-                                    "[variable, property, value]",
-                                )?;
-                                let var: String = s_tuple.get_item(0)?.extract()?;
-                                let prop: String = s_tuple.get_item(1)?.extract()?;
-                                let val_h =
-                                    py_to_node_handle_depth(builder, &s_tuple.get_item(2)?, depth)?;
-                                builder.on_match_set_expr(var, prop, val_h);
-                            }
-                        }
-                    }
-                    "set" => {
-                        check_spec_arity(
-                            &tuple,
-                            "mutation 'set'",
-                            4,
-                            "[set, variable, property, value]",
-                        )?;
-                        let var: String = tuple.get_item(1)?.extract()?;
-                        let prop: String = tuple.get_item(2)?.extract()?;
-                        let val_h = py_to_node_handle_depth(builder, &tuple.get_item(3)?, depth)?;
-                        builder.set_property_expr(var, prop, val_h);
-                    }
-                    "delete" => {
-                        check_spec_arity(
-                            &tuple,
-                            "mutation 'delete'",
-                            3,
-                            "[delete, detach, targets]",
-                        )?;
-                        let detach: bool = tuple.get_item(1)?.extract()?;
-                        let targets: Vec<String> = tuple.get_item(2)?.extract()?;
-                        if detach {
-                            builder.detach_delete(targets);
-                        } else {
-                            builder.delete(targets);
-                        }
-                    }
-                    "remove" => {
-                        check_spec_arity(
-                            &tuple,
-                            "mutation 'remove'",
-                            3,
-                            "[remove, variable, property]",
-                        )?;
-                        let var: String = tuple.get_item(1)?.extract()?;
-                        let prop: String = tuple.get_item(2)?.extract()?;
-                        builder.remove_property(var, prop);
-                    }
-                    other => {
-                        return Err(make_voyager_err(
-                            voyager_ogm::ErrorCode::InvalidClause,
-                            format!("Unknown mutation tag: '{other}'"),
-                        ));
+                        let p_path = paths_path.index(p_idx);
+                        let steps = expect_spec_array(&p_steps, &p_path, "mutation 'create' path")?;
+                        build_path_steps_into_builder(builder, &steps, &p_path)?;
                     }
                 }
+                "merge" => {
+                    check_spec_arity(
+                        &tuple,
+                        &mut_path,
+                        "mutation 'merge'",
+                        4,
+                        "[merge, path, on_create_set, on_match_set]",
+                    )?;
+                    builder.merge();
+                    let path_path = mut_path.index(1);
+                    let path_steps = expect_spec_array(
+                        &tuple.get_item(1)?,
+                        &path_path,
+                        "mutation 'merge' path",
+                    )?;
+                    build_path_steps_into_builder(builder, &path_steps, &path_path)?;
+
+                    let on_create_path = mut_path.index(2);
+                    let on_creates = expect_spec_array(
+                        &tuple.get_item(2)?,
+                        &on_create_path,
+                        "merge 'on_create_set' entries",
+                    )?;
+                    for (s_idx, item) in on_creates.iter().enumerate() {
+                        let item_path = on_create_path.index(s_idx);
+                        let s_tuple =
+                            expect_spec_array(&item, &item_path, "merge 'on_create_set' entry")?;
+                        check_spec_arity(
+                            &s_tuple,
+                            &item_path,
+                            "merge 'on_create_set' entry",
+                            3,
+                            "[variable, property, value]",
+                        )?;
+                        let var: String = extract_required(
+                            &s_tuple.get_item(0)?,
+                            &item_path.index(0),
+                            "a string variable",
+                        )?;
+                        let prop: String = extract_required(
+                            &s_tuple.get_item(1)?,
+                            &item_path.index(1),
+                            "a string property",
+                        )?;
+                        let val_h = py_to_node_handle_at(
+                            builder,
+                            &s_tuple.get_item(2)?,
+                            &item_path.index(2),
+                        )?;
+                        builder.on_create_set_expr(var, prop, val_h);
+                    }
+
+                    let on_match_path = mut_path.index(3);
+                    let on_matches = expect_spec_array(
+                        &tuple.get_item(3)?,
+                        &on_match_path,
+                        "merge 'on_match_set' entries",
+                    )?;
+                    for (s_idx, item) in on_matches.iter().enumerate() {
+                        let item_path = on_match_path.index(s_idx);
+                        let s_tuple =
+                            expect_spec_array(&item, &item_path, "merge 'on_match_set' entry")?;
+                        check_spec_arity(
+                            &s_tuple,
+                            &item_path,
+                            "merge 'on_match_set' entry",
+                            3,
+                            "[variable, property, value]",
+                        )?;
+                        let var: String = extract_required(
+                            &s_tuple.get_item(0)?,
+                            &item_path.index(0),
+                            "a string variable",
+                        )?;
+                        let prop: String = extract_required(
+                            &s_tuple.get_item(1)?,
+                            &item_path.index(1),
+                            "a string property",
+                        )?;
+                        let val_h = py_to_node_handle_at(
+                            builder,
+                            &s_tuple.get_item(2)?,
+                            &item_path.index(2),
+                        )?;
+                        builder.on_match_set_expr(var, prop, val_h);
+                    }
+                }
+                "set" => {
+                    check_spec_arity(
+                        &tuple,
+                        &mut_path,
+                        "mutation 'set'",
+                        4,
+                        "[set, variable, property, value]",
+                    )?;
+                    let var: String = extract_required(
+                        &tuple.get_item(1)?,
+                        &mut_path.index(1),
+                        "a string variable",
+                    )?;
+                    let prop: String = extract_required(
+                        &tuple.get_item(2)?,
+                        &mut_path.index(2),
+                        "a string property",
+                    )?;
+                    let val_h =
+                        py_to_node_handle_at(builder, &tuple.get_item(3)?, &mut_path.index(3))?;
+                    builder.set_property_expr(var, prop, val_h);
+                }
+                "delete" => {
+                    check_spec_arity(
+                        &tuple,
+                        &mut_path,
+                        "mutation 'delete'",
+                        3,
+                        "[delete, detach, targets]",
+                    )?;
+                    let detach: bool =
+                        extract_required(&tuple.get_item(1)?, &mut_path.index(1), "a boolean")?;
+                    let targets: Vec<String> = extract_required(
+                        &tuple.get_item(2)?,
+                        &mut_path.index(2),
+                        "an array of string variables",
+                    )?;
+                    if detach {
+                        builder.detach_delete(targets);
+                    } else {
+                        builder.delete(targets);
+                    }
+                }
+                "remove" => {
+                    check_spec_arity(
+                        &tuple,
+                        &mut_path,
+                        "mutation 'remove'",
+                        3,
+                        "[remove, variable, property]",
+                    )?;
+                    let var: String = extract_required(
+                        &tuple.get_item(1)?,
+                        &mut_path.index(1),
+                        "a string variable",
+                    )?;
+                    let prop: String = extract_required(
+                        &tuple.get_item(2)?,
+                        &mut_path.index(2),
+                        "a string property",
+                    )?;
+                    builder.remove_property(var, prop);
+                }
+                other => {
+                    return Err(make_spec_err(
+                        &tag_path,
+                        format!(
+                            "Unknown mutation tag: '{other}'. Expected 'create', 'merge', 'set', 'delete', or 'remove'."
+                        ),
+                    ));
+                }
             }
+            produced_clause = true;
         }
     }
 
     if let Some(with_item) = spec.get_item("with_clauses")? {
-        if let Some(with_seq) = as_spec_sequence(&with_item) {
-            for item in with_seq {
-                let with_dict = item.cast::<PyDict>()?;
-                if let Some(w_ver_item) = with_dict.get_item("spec_version")? {
-                    let w_ver: u32 = w_ver_item.extract().map_err(|_| {
-                        make_voyager_err(
-                            voyager_ogm::ErrorCode::InvalidSpec,
-                            "Invalid 'spec_version' in with clause: expected an integer major version number.",
-                        )
-                    })?;
-                    if w_ver != 1 {
-                        return Err(make_voyager_err(
-                            voyager_ogm::ErrorCode::InvalidSpec,
-                            format!(
-                                "Unsupported with clause spec_version: {w_ver}. Supported major versions: 1."
-                            ),
-                        ));
+        let key_path = path.key("with_clauses");
+        let with_seq = expect_spec_array(&with_item, &key_path, "with_clauses")?;
+        for (idx, item) in with_seq.iter().enumerate() {
+            let item_path = key_path.index(idx);
+            let with_dict = item.cast::<PyDict>().map_err(|_| {
+                make_spec_err(
+                    &item_path,
+                    format!("expected a with clause object, got {}", item.get_type()),
+                )
+            })?;
+            reject_unknown_keys(with_dict, &item_path, WITH_SPEC_KEYS, "with clause")?;
+            if let Some(w_ver_item) = with_dict.get_item("spec_version")? {
+                let version_path = item_path.key("spec_version");
+                let w_ver: u32 = extract_required(
+                    &w_ver_item,
+                    &version_path,
+                    "an integer major version number",
+                )?;
+                if w_ver != 1 {
+                    return Err(make_spec_err(
+                        &version_path,
+                        format!(
+                            "Unsupported with clause spec_version: {w_ver}. Supported major versions: 1."
+                        ),
+                    ));
+                }
+            }
+            let proj_item = with_dict.get_item("projections")?.ok_or_else(|| {
+                make_spec_err(
+                    &item_path.key("projections"),
+                    "missing required 'projections' in with clause.",
+                )
+            })?;
+            if proj_item.is_none() {
+                return Err(make_spec_err(
+                    &item_path.key("projections"),
+                    "missing required 'projections' in with clause.",
+                ));
+            }
+            let proj_path = item_path.key("projections");
+            let proj_seq = expect_spec_array(&proj_item, &proj_path, "with_clauses 'projections'")?;
+            builder.r#with();
+            if !proj_seq.is_empty() {
+                produced_clause = true;
+            }
+            if let Some(distinct_item) = with_dict.get_item("distinct")? {
+                if !distinct_item.is_none() {
+                    let distinct: bool =
+                        extract_required(&distinct_item, &item_path.key("distinct"), "a boolean")?;
+                    if distinct {
+                        builder.distinct(true);
                     }
                 }
-                builder.r#with();
-                if let Some(distinct_item) = with_dict.get_item("distinct")? {
-                    if let Ok(distinct) = distinct_item.extract::<bool>() {
-                        if distinct {
-                            builder.distinct(true);
-                        }
-                    }
-                }
-                if let Some(proj_item) = with_dict.get_item("projections")? {
-                    if let Some(proj_seq) = as_spec_sequence(&proj_item) {
-                        for p in proj_seq {
-                            let tuple = expect_spec_array(&p, "projection")?;
-                            let tag: String = tuple.get_item(0)?.extract()?;
-                            match tag.as_str() {
-                                "field" => {
-                                    check_spec_arity(
-                                        &tuple,
-                                        "projection 'field'",
-                                        4,
-                                        "[field, variable, property, alias]",
-                                    )?;
-                                    let var: String = tuple.get_item(1)?.extract()?;
-                                    let prop: String = tuple.get_item(2)?.extract()?;
-                                    let alias: Option<String> = tuple.get_item(3)?.extract()?;
-                                    builder.field(var, prop, alias);
-                                }
-                                "expr" => {
-                                    check_spec_arity(
-                                        &tuple,
-                                        "projection 'expr'",
-                                        3,
-                                        "[expr, expression, alias]",
-                                    )?;
-                                    let expr_spec = tuple.get_item(1)?;
-                                    let mut alias: Option<String> = tuple.get_item(2)?.extract()?;
-                                    if alias.is_none() {
-                                        alias = extract_alias_from_expr_spec(&expr_spec)?;
-                                    }
-                                    let h = py_to_node_handle_depth(builder, &expr_spec, depth)?;
-                                    builder.select_expr(h, alias);
-                                }
-                                "agg" => {
-                                    check_spec_arity(
-                                        &tuple,
-                                        "projection 'agg'",
-                                        5,
-                                        "[agg, variable, property, func, alias]",
-                                    )?;
-                                    let var: String = tuple.get_item(1)?.extract()?;
-                                    let prop: String = tuple.get_item(2)?.extract()?;
-                                    let func_str: String = tuple.get_item(3)?.extract()?;
-                                    let alias: Option<String> = tuple.get_item(4)?.extract()?;
-                                    let agg = match func_str.to_lowercase().as_str() {
-                                        "count" => AggregationFunc::Count,
-                                        "count_distinct" => AggregationFunc::CountDistinct,
-                                        "sum" => AggregationFunc::Sum,
-                                        "avg" => AggregationFunc::Avg,
-                                        "min" => AggregationFunc::Min,
-                                        "max" => AggregationFunc::Max,
-                                        "collect" => AggregationFunc::Collect,
-                                        other => {
-                                            return Err(make_voyager_err(
-                                                voyager_ogm::ErrorCode::InvalidClause,
-                                                format!(
-                                                    "Unknown aggregation function '{other}'. Expected count, count_distinct, sum, avg, min, max, collect."
-                                                ),
-                                            ));
-                                        }
-                                    };
-                                    if prop == "*" || prop.is_empty() {
-                                        let expr = builder.ident(var);
-                                        builder.select_aggregate(expr, agg, alias);
-                                    } else {
-                                        builder.select_property_aggregate(var, prop, agg, alias);
-                                    }
-                                }
-                                other => {
-                                    return Err(make_voyager_err(
-                                        voyager_ogm::ErrorCode::InvalidClause,
-                                        format!(
-                                            "Unknown projection tag '{other}'. Expected 'field', 'agg', or 'expr'."
-                                        ),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-                if let Some(where_item) = with_dict.get_item("where")? {
-                    if let Ok(where_list) = where_item.cast::<PyList>() {
-                        for wh in where_list {
-                            let h = py_to_node_handle_depth(builder, &wh, depth)?;
-                            builder.where_expr(h);
-                        }
-                    } else if !where_item.is_none() {
-                        let h = py_to_node_handle_depth(builder, &where_item, depth)?;
+            }
+            for (p_idx, p) in proj_seq.iter().enumerate() {
+                build_projection_item(builder, &p, &proj_path.index(p_idx))?;
+            }
+            if let Some(where_item) = with_dict.get_item("where")? {
+                let where_path = item_path.key("where");
+                if let Ok(where_list) = where_item.cast::<PyList>() {
+                    for (w_idx, wh) in where_list.iter().enumerate() {
+                        let pred_path = where_path.index(w_idx);
+                        let h = py_to_node_handle_at(builder, &wh, &pred_path)?;
                         builder.where_expr(h);
                     }
+                } else if !where_item.is_none() {
+                    let h = py_to_node_handle_at(builder, &where_item, &where_path)?;
+                    builder.where_expr(h);
                 }
-                if let Some(order_item) = with_dict.get_item("order_by")? {
-                    if let Some(order_seq) = as_spec_sequence(&order_item) {
-                        for item in order_seq {
-                            build_order_by_entry(builder, &item, "with_clauses 'order_by' entry")?;
-                        }
+            }
+            if let Some(order_item) = with_dict.get_item("order_by")? {
+                if !order_item.is_none() {
+                    let order_path = item_path.key("order_by");
+                    let order_seq =
+                        expect_spec_array(&order_item, &order_path, "with_clauses 'order_by'")?;
+                    for (o_idx, order_entry) in order_seq.iter().enumerate() {
+                        build_order_by_entry(
+                            builder,
+                            &order_entry,
+                            &order_path.index(o_idx),
+                            "with_clauses 'order_by' entry",
+                        )?;
                     }
                 }
-                if let Some(skip_item) = with_dict.get_item("skip")? {
-                    if let Ok(skip) = skip_item.extract::<u64>() {
-                        builder.skip(skip);
-                    }
+            }
+            if let Some(skip_item) = with_dict.get_item("skip")? {
+                if !skip_item.is_none() {
+                    let skip = parse_non_negative(&skip_item, &item_path.key("skip"), "skip")?;
+                    builder.skip(skip);
                 }
-                if let Some(limit_item) = with_dict.get_item("limit")? {
-                    if let Ok(limit) = limit_item.extract::<u64>() {
-                        builder.limit(limit);
-                    }
+            }
+            if let Some(limit_item) = with_dict.get_item("limit")? {
+                if !limit_item.is_none() {
+                    let limit = parse_non_negative(&limit_item, &item_path.key("limit"), "limit")?;
+                    builder.limit(limit);
                 }
             }
         }
     }
 
     if let Some(proj_item) = spec.get_item("projections")? {
-        if let Some(proj_seq) = as_spec_sequence(&proj_item) {
+        if !proj_item.is_none() {
+            let proj_path = path.key("projections");
+            let proj_seq = expect_spec_array(&proj_item, &proj_path, "projections")?;
             if !proj_seq.is_empty() {
                 builder.r#return();
-                for item in proj_seq {
-                    let tuple = expect_spec_array(&item, "projection")?;
-                    let tag: String = tuple.get_item(0)?.extract()?;
-                    match tag.as_str() {
-                        "field" => {
-                            check_spec_arity(
-                                &tuple,
-                                "projection 'field'",
-                                4,
-                                "[field, variable, property, alias]",
-                            )?;
-                            let var: String = tuple.get_item(1)?.extract()?;
-                            let prop: String = tuple.get_item(2)?.extract()?;
-                            let alias: Option<String> = tuple.get_item(3)?.extract()?;
-                            builder.field(var, prop, alias);
-                        }
-                        "agg" => {
-                            check_spec_arity(
-                                &tuple,
-                                "projection 'agg'",
-                                5,
-                                "[agg, variable, property, func, alias]",
-                            )?;
-                            let var: String = tuple.get_item(1)?.extract()?;
-                            let prop: String = tuple.get_item(2)?.extract()?;
-                            let func_str: String = tuple.get_item(3)?.extract()?;
-                            let alias: Option<String> = tuple.get_item(4)?.extract()?;
-                            let agg = match func_str.to_lowercase().as_str() {
-                                "count" => AggregationFunc::Count,
-                                "count_distinct" => AggregationFunc::CountDistinct,
-                                "sum" => AggregationFunc::Sum,
-                                "avg" => AggregationFunc::Avg,
-                                "min" => AggregationFunc::Min,
-                                "max" => AggregationFunc::Max,
-                                "collect" => AggregationFunc::Collect,
-                                other => {
-                                    return Err(make_voyager_err(
-                                        voyager_ogm::ErrorCode::InvalidClause,
-                                        format!(
-                                            "Unknown aggregation function '{other}'. Expected count, count_distinct, sum, avg, min, max, collect."
-                                        ),
-                                    ));
-                                }
-                            };
-                            if prop == "*" || prop.is_empty() {
-                                let expr = builder.ident(var);
-                                builder.select_aggregate(expr, agg, alias);
-                            } else {
-                                builder.select_property_aggregate(var, prop, agg, alias);
-                            }
-                        }
-                        "expr" => {
-                            check_spec_arity(
-                                &tuple,
-                                "projection 'expr'",
-                                3,
-                                "[expr, expression, alias]",
-                            )?;
-                            let expr_spec = tuple.get_item(1)?;
-                            let mut alias: Option<String> = tuple.get_item(2)?.extract()?;
-                            if alias.is_none() {
-                                alias = extract_alias_from_expr_spec(&expr_spec)?;
-                            }
-                            let h = py_to_node_handle_depth(builder, &expr_spec, depth)?;
-                            builder.select_expr(h, alias);
-                        }
-                        other => {
-                            return Err(make_voyager_err(
-                                voyager_ogm::ErrorCode::InvalidClause,
-                                format!(
-                                    "Unknown projection tag '{other}'. Expected 'field', 'agg', or 'expr'."
-                                ),
-                            ));
-                        }
-                    }
-                }
+                produced_clause = true;
+            }
+            for (idx, item) in proj_seq.iter().enumerate() {
+                build_projection_item(builder, &item, &proj_path.index(idx))?;
             }
         }
     }
 
     if let Some(distinct_item) = spec.get_item("distinct")? {
-        if let Ok(distinct) = distinct_item.extract::<bool>() {
+        if !distinct_item.is_none() {
+            let distinct: bool =
+                extract_required(&distinct_item, &path.key("distinct"), "a boolean")?;
             if distinct {
                 builder.distinct(true);
             }
@@ -1673,67 +2320,101 @@ fn build_query_from_spec_internal(
     }
 
     if let Some(order_item) = spec.get_item("order_by")? {
-        if let Some(order_seq) = as_spec_sequence(&order_item) {
-            for item in order_seq {
-                build_order_by_entry(builder, &item, "order_by entry")?;
+        if !order_item.is_none() {
+            let order_path = path.key("order_by");
+            let order_seq = expect_spec_array(&order_item, &order_path, "order_by")?;
+            for (idx, order_entry) in order_seq.iter().enumerate() {
+                build_order_by_entry(
+                    builder,
+                    &order_entry,
+                    &order_path.index(idx),
+                    "order_by entry",
+                )?;
             }
         }
     }
 
     if let Some(skip_item) = spec.get_item("skip")? {
-        if let Ok(skip) = skip_item.extract::<u64>() {
+        if !skip_item.is_none() {
+            let skip = parse_non_negative(&skip_item, &path.key("skip"), "skip")?;
             builder.skip(skip);
         }
     }
 
     if let Some(offset_item) = spec.get_item("offset")? {
-        if let Ok(offset) = offset_item.extract::<u64>() {
+        if !offset_item.is_none() {
+            let offset = parse_non_negative(&offset_item, &path.key("offset"), "offset")?;
             builder.offset(offset);
         }
     }
 
     if let Some(limit_item) = spec.get_item("limit")? {
-        if let Ok(limit) = limit_item.extract::<u64>() {
+        if !limit_item.is_none() {
+            let limit = parse_non_negative(&limit_item, &path.key("limit"), "limit")?;
             builder.limit(limit);
         }
     }
 
     if let Some(linear_item) = spec.get_item("linear_clauses")? {
-        if let Some(linear_seq) = as_spec_sequence(&linear_item) {
-            for item in linear_seq {
-                let tuple = expect_spec_array(&item, "linear_clauses entry")?;
-                let tag: String = tuple.get_item(0)?.extract()?;
-                match tag.as_str() {
-                    "let" => {
-                        check_spec_arity(
-                            &tuple,
-                            "linear clause 'let'",
-                            3,
-                            "[let, variable, expression]",
-                        )?;
-                        let var: String = tuple.get_item(1)?.extract()?;
-                        let expr_h = py_to_node_handle_depth(builder, &tuple.get_item(2)?, depth)?;
-                        builder.let_(var, expr_h);
-                    }
-                    "filter" => {
-                        check_spec_arity(
-                            &tuple,
-                            "linear clause 'filter'",
-                            2,
-                            "[filter, predicate]",
-                        )?;
-                        let pred_h = py_to_node_handle(builder, &tuple.get_item(1)?)?;
-                        builder.filter_(pred_h);
-                    }
-                    _ => {}
+        let key_path = path.key("linear_clauses");
+        let linear_seq = expect_spec_array(&linear_item, &key_path, "linear_clauses")?;
+        for (idx, item) in linear_seq.iter().enumerate() {
+            let item_path = key_path.index(idx);
+            let tuple = expect_spec_array(&item, &item_path, "linear_clauses entry")?;
+            check_spec_arity(&tuple, &item_path, "linear_clauses entry", 1, "[tag, ...]")?;
+            let tag_path = item_path.index(0);
+            let tag: String =
+                extract_required(&tuple.get_item(0)?, &tag_path, "a string linear clause tag")?;
+            match tag.as_str() {
+                "let" => {
+                    check_spec_arity(
+                        &tuple,
+                        &item_path,
+                        "linear clause 'let'",
+                        3,
+                        "[let, variable, expression]",
+                    )?;
+                    let var: String = extract_required(
+                        &tuple.get_item(1)?,
+                        &item_path.index(1),
+                        "a string variable",
+                    )?;
+                    let expr_h =
+                        py_to_node_handle_at(builder, &tuple.get_item(2)?, &item_path.index(2))?;
+                    builder.let_(var, expr_h);
+                }
+                "filter" => {
+                    check_spec_arity(
+                        &tuple,
+                        &item_path,
+                        "linear clause 'filter'",
+                        2,
+                        "[filter, predicate]",
+                    )?;
+                    let pred_h =
+                        py_to_node_handle_at(builder, &tuple.get_item(1)?, &item_path.index(1))?;
+                    builder.filter_(pred_h);
+                }
+                other => {
+                    return Err(make_spec_err(
+                        &tag_path,
+                        format!(
+                            "Unknown linear clause tag: '{other}'. Expected 'let' or 'filter'."
+                        ),
+                    ));
                 }
             }
+            produced_clause = true;
         }
     }
 
     if let Some(mode_item) = spec.get_item("execution_mode")? {
-        if let Ok(mode_str) = mode_item.extract::<String>() {
+        if !mode_item.is_none() {
+            let mode_path = path.key("execution_mode");
+            let mode_str: String =
+                extract_required(&mode_item, &mode_path, "a string execution mode")?;
             match mode_str.to_ascii_lowercase().as_str() {
+                "normal" => {}
                 "explain" => {
                     builder.explain();
                 }
@@ -1744,9 +2425,23 @@ fn build_query_from_spec_internal(
                     builder.explain();
                     builder.profile();
                 }
-                _ => {}
+                other => {
+                    return Err(make_spec_err(
+                        &mode_path,
+                        format!(
+                            "unknown execution_mode '{other}'. Expected 'normal', 'explain', 'profile', or 'explain_and_profile'."
+                        ),
+                    ));
+                }
             }
         }
+    }
+
+    if !produced_clause {
+        return Err(make_spec_err(
+            path,
+            "empty query spec: expected at least one of 'load_csv', 'unwinds', 'matches', 'mutations', 'with_clauses', 'projections', or 'linear_clauses'.",
+        ));
     }
 
     Ok(())
@@ -2791,17 +3486,35 @@ fn generate_synthetic_stream(count: usize) -> PyResult<PyArrowStream> {
 }
 
 /// Compiles a query spec dictionary directly into a target dialect query with parameters in a single FFI call.
+///
+/// The spec must be a Query Spec v1 object (`spec_version: 1`). Any malformed
+/// structure raises `VoyagerError` with `code == "INVALID_SPEC"`; the JSON
+/// Pointer to the offending element is available as `err.path` and also appears
+/// in the message (for example `/matches/0/paths/1/2`). In an expression
+/// position every array must be a tagged expression: bare or untagged arrays
+/// (an empty array, a non-string first element, or an unknown tag) are rejected,
+/// so a literal list is written as `["lit", [...]]` and a list of expressions as
+/// `["list", [...]]`.
 #[pyfunction]
 #[pyo3(signature = (spec, dialect="cypher", graph_name=None, optimize=false, optimization_level="standard", use_cache=true))]
 fn compile_query_from_spec<'py>(
     py: Python<'py>,
-    spec: &Bound<'py, PyDict>,
+    spec: &Bound<'py, PyAny>,
     dialect: &str,
     graph_name: Option<String>,
     optimize: bool,
     optimization_level: &str,
     use_cache: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
+    let spec = spec.cast::<PyDict>().map_err(|_| {
+        make_spec_err(
+            &SpecPath::spec_root(),
+            format!(
+                "expected a query spec object (dict), got {}",
+                spec.get_type()
+            ),
+        )
+    })?;
     let cache_key = if use_cache {
         Some(format!(
             "{}:{}:{}:{}:{}",
@@ -2822,7 +3535,7 @@ fn compile_query_from_spec<'py>(
     }
 
     let mut builder = QueryBuilder::new();
-    build_query_from_spec_internal(&mut builder, spec, 0)?;
+    build_query_from_spec_internal(&mut builder, spec, &SpecPath::spec_root())?;
     check_warn_cypher_path_mode(py, dialect, builder.get_path_mode().as_deref())?;
     let (mut arena, root) = builder
         .try_build()
@@ -5976,7 +6689,7 @@ fn _voyager_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // statements skipped on Neo4j Community. The class-level default also covers errors raised from Rust,
     // which bypass this Python __init__.
     m.py().run(
-        c"def _init(self, message='', *args, code=None, **kwargs):\n    super(type(self), self).__init__(message, *args, **kwargs)\n    self.code = code\n    self.skipped = []\nVoyagerError.__init__ = _init\nVoyagerError.skipped = []\n",
+        c"def _init(self, message='', *args, code=None, **kwargs):\n    super(type(self), self).__init__(message, *args, **kwargs)\n    self.code = code\n    self.path = None\n    self.skipped = []\nVoyagerError.__init__ = _init\nVoyagerError.path = None\nVoyagerError.skipped = []\n",
         Some(&m.dict()),
         None,
     )?;

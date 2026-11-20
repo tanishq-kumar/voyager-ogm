@@ -271,15 +271,23 @@ def test_mixed_tuple_and_list_arrays_compile_identically() -> None:
 
 
 @pytest.mark.parametrize(
-    ("spec", "field"),
+    ("spec", "field", "path"),
     [
         # load_csv: non-sequence and wrong length.
-        ({"spec_version": 1, "load_csv": "file:///a.csv"}, "load_csv"),
-        ({"spec_version": 1, "load_csv": ("file:///a.csv", True)}, "load_csv"),
-        ({"spec_version": 1, "load_csv": ["file:///a.csv", True]}, "load_csv"),
+        ({"spec_version": 1, "load_csv": "file:///a.csv"}, "load_csv", "/load_csv"),
+        (
+            {"spec_version": 1, "load_csv": ("file:///a.csv", True)},
+            "load_csv",
+            "/load_csv",
+        ),
+        (
+            {"spec_version": 1, "load_csv": ["file:///a.csv", True]},
+            "load_csv",
+            "/load_csv",
+        ),
         # unwinds entry: wrong length.
-        ({"spec_version": 1, "unwinds": [("$batch",)]}, "unwinds entry"),
-        ({"spec_version": 1, "unwinds": [["$batch"]]}, "unwinds entry"),
+        ({"spec_version": 1, "unwinds": [("$batch",)]}, "unwinds entry", "/unwinds/0"),
+        ({"spec_version": 1, "unwinds": [["$batch"]]}, "unwinds entry", "/unwinds/0"),
         # case branch: wrong length (branch needs [when, then]).
         (
             {
@@ -288,6 +296,7 @@ def test_mixed_tuple_and_list_arrays_compile_identically() -> None:
                 "projections": [("expr", ("case", None, [(("lit", 1),)], None), None)],
             },
             "case branch",
+            "/projections/0/1/2/0",
         ),
         (
             {
@@ -296,6 +305,7 @@ def test_mixed_tuple_and_list_arrays_compile_identically() -> None:
                 "projections": [("expr", ["case", None, [[["lit", 1]]], None], None)],
             },
             "case branch",
+            "/projections/0/1/2/0",
         ),
         # merge ON CREATE / ON MATCH set entry: wrong length.
         (
@@ -312,6 +322,7 @@ def test_mixed_tuple_and_list_arrays_compile_identically() -> None:
                 ],
             },
             "merge 'on_create_set' entry",
+            "/mutations/0/2/0",
         ),
         (
             {
@@ -320,15 +331,28 @@ def test_mixed_tuple_and_list_arrays_compile_identically() -> None:
                 "mutations": [("merge", [("node", "c", ["Company"])], [], [["c", "name"]])],
             },
             "merge 'on_match_set' entry",
+            "/mutations/0/3/0",
         ),
         # order_by entry: wrong length, non-sequence and bad direction spelling.
-        ({"spec_version": 1, "order_by": [("p", "name")]}, "order_by entry"),
-        ({"spec_version": 1, "order_by": [["p", "name"]]}, "order_by entry"),
-        ({"spec_version": 1, "order_by": [["p", "name", "sideways"]]}, "order_by entry"),
-        ({"spec_version": 1, "order_by": [42]}, "order_by entry"),
+        ({"spec_version": 1, "order_by": [("p", "name")]}, "order_by entry", "/order_by/0"),
+        ({"spec_version": 1, "order_by": [["p", "name"]]}, "order_by entry", "/order_by/0"),
+        (
+            {"spec_version": 1, "order_by": [["p", "name", "sideways"]]},
+            "order_by entry",
+            "/order_by/0/2",
+        ),
+        ({"spec_version": 1, "order_by": [42]}, "order_by entry", "/order_by/0"),
         # linear_clauses entry: wrong length.
-        ({"spec_version": 1, "linear_clauses": [("let", "x")]}, "linear clause 'let'"),
-        ({"spec_version": 1, "linear_clauses": [["filter"]]}, "linear clause 'filter'"),
+        (
+            {"spec_version": 1, "linear_clauses": [("let", "x")]},
+            "linear clause 'let'",
+            "/linear_clauses/0",
+        ),
+        (
+            {"spec_version": 1, "linear_clauses": [["filter"]]},
+            "linear clause 'filter'",
+            "/linear_clauses/0",
+        ),
         # path step: wrong length (edge needs all six items).
         (
             {
@@ -342,16 +366,21 @@ def test_mixed_tuple_and_list_arrays_compile_identically() -> None:
                 "projections": [("field", "p", "name", None)],
             },
             "path step 'edge'",
+            "/matches/0/paths/0/1",
         ),
     ],
 )
-def test_wrong_shapes_raise_clear_field_named_errors(spec: dict[str, Any], field: str) -> None:
-    """Malformed array shapes fail with INVALID_CLAUSE naming the field."""
+def test_wrong_shapes_raise_clear_field_named_errors(
+    spec: dict[str, Any], field: str, path: str
+) -> None:
+    """Malformed array shapes fail with INVALID_SPEC naming the field and path."""
     with pytest.raises(VoyagerError) as exc_info:
         compile_query_from_spec(spec, "cypher")
-    assert exc_info.value.code == "INVALID_CLAUSE"
+    assert exc_info.value.code == "INVALID_SPEC"
     assert isinstance(exc_info.value, ValueError)
+    assert exc_info.value.path == path
     assert field in str(exc_info.value)
+    assert path in str(exc_info.value)
 
 
 ORDER_BY_ENTRY_FORMS = {
@@ -412,9 +441,11 @@ def test_order_by_direction_boolean_and_uppercase_strings_are_equivalent(
 def test_order_by_rejects_values_the_schema_does_not_allow(location: str, direction: Any) -> None:
     """Only booleans and uppercase "ASC"/"DESC" are accepted, as the schema says."""
     spec = _order_by_spec(location, ("p", "name", direction))
+    prefix = "/order_by" if location == "root" else "/with_clauses/0/order_by"
     with pytest.raises(VoyagerError) as exc_info:
         compile_query_from_spec(spec, "cypher")
-    assert exc_info.value.code == "INVALID_CLAUSE"
+    assert exc_info.value.code == "INVALID_SPEC"
+    assert exc_info.value.path == f"{prefix}/0/2"
     assert "order_by" in str(exc_info.value)
 
 
@@ -467,9 +498,7 @@ def test_tuple_spelling_behaviour_preserved() -> None:
     """Tuple forms keep their pre-existing tolerance and expression rule.
 
     Pins the behaviours the fix must not regress: four-item node tuples are
-    still tolerated, a bare tuple ``where`` is still one expression, and the
-    known-tag/implicit-literal rule for expression sequences is unchanged (an
-    unknown-tag list is a literal, an unknown-tag tuple is an error).
+    still tolerated and a bare tuple ``where`` is still one expression.
     """
     # 4-item node step (documented 3-item shape plus an ignored fourth) still
     # compiles, matching the existing tier-1 spec tests.
@@ -501,39 +530,65 @@ def test_tuple_spelling_behaviour_preserved() -> None:
     )
     assert "WHERE p.age > $p0" in bare["statement"]
 
-    # Known-tag rule (unchanged, tracked separately): a list whose first item
-    # is an unknown tag is a literal list parameter...
-    literal = compile_query_from_spec(
+
+def test_bare_expression_arrays_are_rejected_and_explicit_lists_work() -> None:
+    """No implicit literal lists: every expression array must be tagged.
+
+    See spec/README.md: a literal list is written as ``["lit", [...]]`` and a
+    list whose items are expressions as ``["list", [...]]``.
+    """
+    base = {
+        "spec_version": 1,
+        "matches": PERSON_MATCH,
+    }
+
+    for expression in ([1, 2, 3], ["red", "green"], [], ["propp", "x"]):
+        with pytest.raises(VoyagerError) as exc_info:
+            compile_query_from_spec(
+                {**base, "projections": [("expr", expression, "xs")]},
+                "cypher",
+            )
+        assert exc_info.value.code == "INVALID_SPEC"
+        assert exc_info.value.path == "/projections/0/1"
+
+    # The tuple spelling is a sequence too, so an unknown tag is rejected.
+    with pytest.raises(VoyagerError) as exc_info:
+        compile_query_from_spec(
+            {**base, "projections": [("expr", ("propp", "p", "age"), None)]},
+            "cypher",
+        )
+    assert exc_info.value.code == "INVALID_SPEC"
+    assert exc_info.value.path == "/projections/0/1"
+    assert "Unknown expression tag 'propp'" in str(exc_info.value)
+
+    # Explicit literal and expression list forms still compile.
+    numeric = compile_query_from_spec(
+        {**base, "projections": [("expr", ["lit", [1, 2, 3]], "xs")]},
+        "cypher",
+    )
+    assert numeric["statement"].endswith("AS xs")
+    assert [1, 2, 3] in numeric["parameters"].values()
+
+    strings = compile_query_from_spec(
+        {**base, "projections": [("expr", ["lit", ["red", "green"]], "xs")]},
+        "cypher",
+    )
+    assert strings["statement"].endswith("AS xs")
+    assert ["red", "green"] in strings["parameters"].values()
+
+    expressions = compile_query_from_spec(
         {
-            "spec_version": 1,
-            "matches": [
-                {
-                    "spec_version": 1,
-                    "paths": [[("node", "p", ["Person"])]],
-                    "where": [["propp", "u", "age"]],
-                }
-            ],
-            "projections": [("field", "p", "name", None)],
+            **base,
+            "projections": [("expr", ["list", [["lit", 1], ["lit", 2], ["lit", 3]]], "xs")],
         },
         "cypher",
     )
-    assert literal["parameters"] == {"p0": ["propp", "u", "age"]}
-
-    # ...while the same shape as a tuple is an unknown expression tag error.
-    with pytest.raises(VoyagerError) as exc_info:
-        compile_query_from_spec(
-            {
-                "spec_version": 1,
-                "matches": [
-                    {
-                        "spec_version": 1,
-                        "paths": [[("node", "p", ["Person"])]],
-                        "where": [("propp", "u", "age")],
-                    }
-                ],
-                "projections": [("field", "p", "name", None)],
-            },
-            "cypher",
-        )
-    assert exc_info.value.code == "INVALID_CLAUSE"
-    assert "Unknown expression tuple tag: 'propp'" in str(exc_info.value)
+    assert numeric["statement"] == "MATCH (p:Person) WHERE p.age > $p0 RETURN $p1 AS xs"
+    assert numeric["parameters"] == {"p0": 21, "p1": [1, 2, 3]}
+    assert strings["statement"] == "MATCH (p:Person) WHERE p.age > $p0 RETURN $p1 AS xs"
+    assert strings["parameters"] == {"p0": 21, "p1": ["red", "green"]}
+    assert (
+        expressions["statement"]
+        == "MATCH (p:Person) WHERE p.age > $p0 RETURN [$p1, $p2, $p3] AS xs"
+    )
+    assert expressions["parameters"] == {"p0": 21, "p1": 1, "p2": 2, "p3": 3}

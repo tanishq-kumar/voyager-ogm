@@ -32,6 +32,56 @@ Every query spec dictionary **must** carry a top-level integer attribute:
 
 ---
 
+## Errors
+
+Every structural failure in the Query Spec v1 consumer raises `VoyagerError`
+(a `ValueError` subclass) with:
+
+- `code == "INVALID_SPEC"`.
+- `path` set to a JSON Pointer to the offending element.
+- the same pointer in the message, prefixed with `Invalid query spec at`.
+
+The document root is the empty pointer `""`. Object members append `/name` and
+array items append `/index`, so `/matches/0/paths/1/2` is the third step of the
+second path of the first match. JSON Pointer escaping applies (`~` becomes
+`~0`, `/` becomes `~1`).
+
+Examples:
+
+| Spec | `path` |
+| :--- | :--- |
+| `{"spec_version": 1, "bogus": 1}` | `/bogus` |
+| `{"spec_version": 1}` (empty spec) | `""` |
+| `{"matches": []}` (missing `spec_version`) | `/spec_version` |
+| `{"spec_version": 1, "matches": 42}` | `/matches` |
+| `{"spec_version": 1, "matches": [{"paths": [[["node","n",["N"]], ["edge","out",["R"]]]]}]}` | `/matches/0/paths/0/1` |
+| `{"spec_version": 1, "skip": -1, ...}` | `/skip` |
+
+The following are rejected:
+
+- Unknown object keys at the root, in a match clause, in a with clause, and in
+  an object-wrapped expression. The key sets are closed.
+- Wrong container types for `load_csv`, `unwinds`, `matches`, `paths`,
+  `mutations`, `with_clauses`, `projections`, `order_by`, `linear_clauses`, and
+  merge set lists.
+- Unknown enum values: `path_mode`, `execution_mode`, `linear_clauses` tags,
+  mutation tags, path step tags, projection tags, and aggregation functions.
+- Negative or boolean `skip` / `offset` / `limit` values.
+- A bare or untagged array in an expression position: an empty array, a non-string
+  first element (for example `[1, 2, 3]`) or an unknown first string (for
+  example `["propp", ...]` or `["red", "green"]`). Every expression array must
+  be tagged (see [Expression arrays are always tagged](#expression-arrays-are-always-tagged)).
+- An **empty spec**: a document that has none of `load_csv`, `unwinds`,
+  `matches`, `mutations`, `with_clauses`, `projections`, or `linear_clauses`
+  with content. `{"spec_version": 1}` and `{"spec_version": 1, "matches": []}`
+  are both empty. Pagination and `execution_mode` alone do not make a spec
+  non-empty.
+
+`INVALID_CLAUSE` remains the code for non-spec callers, such as the fluent
+Python/Rust builder API.
+
+---
+
 ## 2. Root Query Spec Structure
 
 ```json
@@ -97,7 +147,7 @@ Every query spec dictionary **must** carry a top-level integer attribute:
 | `[variable, property, direction]` | Sort by a property of a bound variable, e.g. `["p", "name", true]`. |
 | `[expression, direction]` | Sort by an expression descriptor, e.g. `[["fn", "size", [["prop", "p", "name"]]], "DESC"]`. |
 
-`direction` accepts both a boolean and a string: `true` means ascending, `false` means descending, and the strings `"ASC"` / `"DESC"` are exact, uppercase spellings of the same two directions. A boolean and its string counterpart compile to the same statement, so `["p", "name", true]` and `["p", "name", "ASC"]` are equivalent. Any other value (for example `"asc"`, `"up"` or `1`) is rejected with an `INVALID_CLAUSE` error.
+`direction` accepts both a boolean and a string: `true` means ascending, `false` means descending, and the strings `"ASC"` / `"DESC"` are exact, uppercase spellings of the same two directions. A boolean and its string counterpart compile to the same statement, so `["p", "name", true]` and `["p", "name", "ASC"]` are equivalent. Any other value (for example `"asc"`, `"up"` or `1`) is rejected with an `INVALID_SPEC` error at the direction element (for example `/order_by/0/2`).
 
 ---
 
@@ -130,6 +180,35 @@ Expression trees used in `where`, `set`, and projections support fine-grained op
 | **Subquery Exists**| `["exists", subquery_spec]` | Existential graph subquery |
 | **Subquery Count** | `["count", subquery_spec]` | Scalar subquery count |
 | **Alias** | `["alias", inner, alias_name]` | Projection aliasing |
+
+### Expression arrays are always tagged
+
+An expression position never accepts an untagged JSON array. Every array there
+must be a tagged expression descriptor: its first element is a string that is a
+known expression tag. The array spelling may be a Python `list` (the JSON form)
+or a `tuple` (the form the Python SDK emits), and the tag rule is the same for
+both.
+
+Valid (a literal list, and a list whose items are expressions):
+
+```json
+["lit", [1, 2, 3]]
+["list", [["lit", 1], ["lit", 2], ["lit", 3]]]
+```
+
+Invalid (`INVALID_SPEC` at the path of the array itself):
+
+```json
+[1, 2, 3]
+```
+
+An empty array, a non-string first element and an unknown first string (for
+example `["propp", "p", "age"]` or `["red", "green"]`) are all rejected. Write a
+literal list as `["lit", [...]]`; write a list whose items are expressions as
+`["list", [...]]`.
+
+The `where` key keeps its historical shape discrimination: a list is a list of
+predicates, while any other value (including a bare tuple) is one expression.
 
 ---
 

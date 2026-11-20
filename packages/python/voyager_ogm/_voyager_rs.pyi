@@ -441,7 +441,21 @@ def compile_query_from_spec(
     optimize: bool = False,
     optimization_level: str = "standard",
     use_cache: bool = True,
-) -> dict[str, Any]: ...
+) -> dict[str, Any]:
+    """Compile a Query Spec v1 document to a dialect statement.
+
+    Any structural failure raises :class:`VoyagerError` with
+    ``code == "INVALID_SPEC"``. The JSON Pointer to the offending element is
+    available as ``err.path`` and also appears in the message, for example
+    ``/matches/0/paths/1/2``.
+
+    In an expression position every array must be a tagged expression: bare or
+    untagged arrays (empty arrays, non-string first elements, or unknown tags)
+    are rejected at the array's path. Write a literal list as ``["lit", [...]]``
+    and a list of expressions as ``["list", [...]]``.
+    """
+    ...
+
 def extract_topology_from_query(query: str) -> dict[str, Any]: ...
 def validate_query_against_schema(
     query: str, registry: NativeSchemaRegistry | None = None
@@ -586,5 +600,6 @@ class VoyagerError(ValueError):
     """Voyager OGM exception carrying a structured error code."""
 
     code: str | None
+    path: str | None
     skipped: list[str]
     def __init__(self, message: str, code: str | None = None) -> None: ...
