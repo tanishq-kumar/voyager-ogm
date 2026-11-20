@@ -15,22 +15,6 @@
 
 ---
 
-## Why I Built Voyager
-
-I started Voyager after facing real vendor lock-in and performance bottlenecks migrating between graph databases like Neo4j, Memgraph, and PostgreSQL Apache AGE.
-
-In the relational world, tools like SQLAlchemy make switching databases relatively straightforward. In the graph ecosystem, every database uses a slightly different dialect, custom driver protocols, and slow object serialization.
-
-I wanted a single tool that lets me:
-
-1. **Write one graph query and compile it to any dialect** (openCypher, SQL:2023 PGQ, ISO GQL).
-2. **Eliminate Python object hydration bottlenecks** by streaming data directly into Polars via Apache Arrow.
-3. **Optimize queries automatically** with a compiler pass before sending them to the database.
-
-I am developing Voyager in safe Rust with native Python (`PyO3`) bindings, with planned bindings for TypeScript (`NAPI-RS`).
-
----
-
 ## Installation
 
 Pick the package that matches what you are building:
