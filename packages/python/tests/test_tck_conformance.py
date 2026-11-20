@@ -246,7 +246,7 @@ def test_tck_match_and_where_permutations(
             2,
             "Alice",
             ":KNOWS*1..2]->",
-            ":KNOWS]->(b:Person)){1,2}",
+            ":KNOWS]->{1,2}(b:Person)",
             ["Bob", "Charlie", "Dan"],
         ),
         (
@@ -255,10 +255,10 @@ def test_tck_match_and_where_permutations(
             3,
             "Alice",
             ":KNOWS*1..3]->",
-            ":KNOWS]->(b:Person)){1,3}",
+            ":KNOWS]->{1,3}(b:Person)",
             ["Bob", "Charlie", "Dan"],
         ),
-        ("to", 2, 2, "Alice", ":KNOWS*2..2]->", ":KNOWS]->(b:Person)){2,2}", ["Charlie", "Dan"]),
+        ("to", 2, 2, "Alice", ":KNOWS*2..2]->", ":KNOWS]->{2,2}(b:Person)", ["Charlie", "Dan"]),
     ],
     ids=[
         "outgoing_single_hop",

@@ -168,57 +168,6 @@ impl IsoGqlEmitter {
         }
     }
 
-    fn emit_edge_pattern_unquantified(
-        &mut self,
-        arena: &QueryAstArena,
-        handle: NodeHandle,
-    ) -> Result<()> {
-        let node = arena.get(handle)?;
-        if let AstNode::EdgePattern {
-            variable,
-            label_expression,
-            direction,
-            predicates,
-            target_node,
-            ..
-        } = node
-        {
-            match direction {
-                Direction::Incoming => self.buffer.push_str("<-["),
-                Direction::Outgoing | Direction::Undirected => self.buffer.push_str("-["),
-            }
-
-            if let Some(var) = variable {
-                self.buffer.push_str(var);
-            }
-
-            crate::emitters::emit_gql_edge_labels(&mut self.buffer, label_expression.as_ref());
-
-            if !predicates.is_empty() {
-                self.buffer.push_str(" {");
-                for (i, &pred_handle) in predicates.iter().enumerate() {
-                    if i > 0 {
-                        self.buffer.push_str(", ");
-                    }
-                    self.emit_pattern_predicate(arena, pred_handle)?;
-                }
-                self.buffer.push('}');
-            }
-
-            match direction {
-                Direction::Outgoing => self.buffer.push_str("]->"),
-                Direction::Incoming | Direction::Undirected => self.buffer.push_str("]-"),
-            }
-
-            self.emit_node_pattern(arena, *target_node)?;
-            Ok(())
-        } else {
-            Err(Error::AstInvariantViolation(format!(
-                "Expected EdgePattern, got {node:?}"
-            )))
-        }
-    }
-
     fn emit_edge_pattern(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
         let node = arena.get(handle)?;
         if let AstNode::EdgePattern {
@@ -290,21 +239,6 @@ impl IsoGqlEmitter {
                 if edges.is_empty() {
                     self.emit_node_pattern(arena, *start_node)?;
                     return Ok(());
-                }
-                if edges.len() == 1 {
-                    let edge_node = arena.get(edges[0])?;
-                    if let AstNode::EdgePattern {
-                        min_hops, max_hops, ..
-                    } = edge_node
-                        && (min_hops.is_some() || max_hops.is_some())
-                    {
-                        self.buffer.push('(');
-                        self.emit_node_pattern(arena, *start_node)?;
-                        self.emit_edge_pattern_unquantified(arena, edges[0])?;
-                        self.buffer.push(')');
-                        self.emit_quantifier(*min_hops, *max_hops);
-                        return Ok(());
-                    }
                 }
 
                 self.emit_node_pattern(arena, *start_node)?;
@@ -391,6 +325,12 @@ impl IsoGqlEmitter {
                 Ok(())
             }
             AstNode::BinaryExpression { left, op, right } => {
+                if matches!(op, BinaryOp::RegexMatch) {
+                    return Err(Error::UnsupportedFeature {
+                        dialect: "iso_gql".to_string(),
+                        feature: "regular expression match operator '=~'".to_string(),
+                    });
+                }
                 if nested {
                     self.buffer.push('(');
                 }
@@ -814,6 +754,14 @@ impl IsoGqlEmitter {
             on_match_set,
         } = node
         {
+            if !set_lists_equivalent(arena, on_create_set, on_match_set)? {
+                return Err(Error::UnsupportedFeature {
+                    dialect: "iso_gql".to_string(),
+                    feature: "MERGE with distinct ON CREATE SET / ON MATCH SET assignments"
+                        .to_string(),
+                });
+            }
+
             self.buffer.push_str("UPSERT ");
             self.emit_path(arena, *path)?;
 
@@ -856,10 +804,13 @@ impl IsoGqlEmitter {
 
     fn emit_delete(&mut self, arena: &QueryAstArena, handle: NodeHandle) -> Result<()> {
         let node = arena.get(handle)?;
-        if let AstNode::DeleteClause { detach: _, targets } = node {
-            // Note on ISO/IEC 39075:2024 (GQL Standard):
-            // Unlike openCypher which uses `DETACH DELETE`, ISO GQL specifies unified `DELETE <targets>`
-            // where cascade or constraint enforcement is handled at the schema/engine level.
+        if let AstNode::DeleteClause { detach, targets } = node {
+            if *detach {
+                return Err(Error::UnsupportedFeature {
+                    dialect: "iso_gql".to_string(),
+                    feature: "DETACH DELETE clauses".to_string(),
+                });
+            }
             self.buffer.push_str("DELETE ");
             for (i, &t) in targets.iter().enumerate() {
                 if i > 0 {
@@ -907,6 +858,44 @@ impl IsoGqlEmitter {
             )))
         }
     }
+}
+
+/// Renders a `SetItem` in isolation so two assignments can be compared by effect.
+///
+/// ISO GQL `UPSERT ... SET` applies every assignment unconditionally, so it can only
+/// stand in for `MERGE ... ON CREATE SET ... ON MATCH SET ...` when both lists are
+/// empty or contain the same assignments. Rendering with a fresh emitter keeps the
+/// comparison independent of the emitter's current parameter allocation state.
+fn render_set_item_for_comparison(
+    arena: &QueryAstArena,
+    handle: NodeHandle,
+) -> Result<(String, HashMap<String, LiteralValue>)> {
+    let mut emitter = IsoGqlEmitter::new();
+    emitter.emit_set_item(arena, handle)?;
+    Ok((emitter.buffer, emitter.parameters))
+}
+
+/// Returns `true` when the two SET lists are empty or have identical effect.
+fn set_lists_equivalent(
+    arena: &QueryAstArena,
+    on_create_set: &[NodeHandle],
+    on_match_set: &[NodeHandle],
+) -> Result<bool> {
+    if on_create_set.is_empty() && on_match_set.is_empty() {
+        return Ok(true);
+    }
+    if on_create_set.len() != on_match_set.len() {
+        return Ok(false);
+    }
+
+    for (&create_item, &match_item) in on_create_set.iter().zip(on_match_set.iter()) {
+        let create = render_set_item_for_comparison(arena, create_item)?;
+        let matched = render_set_item_for_comparison(arena, match_item)?;
+        if create != matched {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 impl AstVisitor for IsoGqlEmitter {
@@ -971,7 +960,7 @@ impl AstVisitor for IsoGqlEmitter {
 
         if let AstNode::QueryStatement {
             execution_mode,
-            load_csv: _,
+            load_csv,
             unwinds,
             matches,
             linear_clauses,
@@ -980,6 +969,12 @@ impl AstVisitor for IsoGqlEmitter {
             return_clause,
         } = root_node
         {
+            if load_csv.is_some() {
+                return Err(Error::UnsupportedFeature {
+                    dialect: "iso_gql".to_string(),
+                    feature: "LOAD CSV clauses".to_string(),
+                });
+            }
             if !self.ignore_execution_mode {
                 match execution_mode {
                     ExecutionMode::Normal => {}
