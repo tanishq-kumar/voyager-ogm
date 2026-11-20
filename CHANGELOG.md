@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.0] - 2026-11-20
 
+First stable release of the 0.4 line: the first release on PyPI (`voyager-ogm`) and the first stable release on crates.io (`voyager-ogm`, `voyager-drivers`, `voyager-cli`, which carried `0.4.0-alpha.8` as their initial version). It consolidates the `0.4.0-alpha.5` to `0.4.0-alpha.8` pre-releases below; see those sections for the full list.
+
+Highlights of the 0.4 line:
+- **One query, many engines**: a fluent query builder (Python and Rust) with rich expressions, subqueries, a rule-based optimizer and query profiling, compiled to openCypher (Neo4j, Memgraph, FalkorDB), ISO GQL, SQL:2023 PGQ (PostgreSQL 19, DuckDB) and Apache AGE.
+- **Native drivers**: `voyager-drivers` speaks Bolt, the PostgreSQL wire protocol and Redis/RESP directly, with pooling, real transactions and bound parameters; protocols are opt-in Cargo features.
+- **OGM workflow**: `Node` / `Relationship` models with field defaults, description metadata and module-qualified identity; `Query.create_relationship` / `merge_relationship`; identity map, unit of work and real database transactions (`session.transaction()`); bulk ingestion that keeps properties a row does not supply.
+- **Schema and search**: multi-dialect constraint and index DDL, full-text and vector indexes, temporal and spatial types, and a schema registry with snapshots.
+- **Data tooling**: Arrow / Polars results, NetworkX export, file and cloud-storage ingestion, an embedded Relate bridge and an interactive graph viewer.
+- **Packaging**: `pip install voyager-ogm` works with only `polars` and `pyarrow`; optional integrations install as extras. Linux wheels target `manylinux_2_28`; releases are published through trusted publishing.
+
+Breaking changes in the 0.4 line are marked **Breaking** in the sections below (notably `session.transaction()` now opening a real database transaction, the `voyager-net` -> `voyager-drivers` rename, and removed legacy builder aliases).
+
 ### Changed
 - **License texts in crate packages (#247)**: `voyager-ogm`, `voyager-drivers` and `voyager-cli` now ship `LICENSE-MIT` and `LICENSE-APACHE` in their crates.io packages (symlinked to the repository root files), and the `voyager-ogm` README status line no longer names a specific version.
 - **crates.io and docs.rs documentation (#245)**: rewrote the `voyager-ogm`, `voyager-drivers`, `voyager-cli`, and `voyager-pyo3` crate READMEs, shared the `voyager-ogm` and `voyager-drivers` READMEs as their crate docs, added a `just test-doc` doctest gate (in `just test` / `just ci` and CI), refreshed `CONTRIBUTING.md`, and moved the benchmark charts into `benchmarks/README.md` after removing the main README's Performance & Benchmarks section.
