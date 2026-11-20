@@ -1,5 +1,5 @@
 //! 1 Million Nodes & 2 Million Edges Head-to-Head Comparative Benchmark:
-//! voyager-net (Zero-Copy Wire-to-Arrow) vs. neo4rs (Standard Rust Driver).
+//! voyager-net (Zero-Copy Wire-to-Arrow) vs. neo4rs (Community Rust Driver).
 
 use std::collections::HashMap;
 use std::sync::Arc;

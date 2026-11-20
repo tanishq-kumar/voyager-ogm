@@ -131,7 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "\n=========================================================================================================================="
     );
     println!(
-        "                   HEAD-TO-HEAD BENCHMARK: voyager-net (Zero-Copy) vs neo4rs (Standard Rust Driver)"
+        "                   HEAD-TO-HEAD BENCHMARK: voyager-net (Zero-Copy) vs neo4rs (Community Rust Driver)"
     );
     println!(
         "=========================================================================================================================="

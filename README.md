@@ -224,25 +224,32 @@ Explore the runnable interactive demos in the repository:
 
 ---
 
+## Model Identity & Schema Registry
+
+Models are registered under a module-qualified identity (`package.module.Model`), so two classes with the same name in different modules get separate schema entries. When a bare class name, node label, or relationship type matches more than one registration, lookups return the most recently registered model.
+
+`Field(description="...")` and a model-level `__description__` record documentation on schema entities. They are metadata only: generated DDL and compiled queries are unchanged, and `NativeSchemaRegistry.to_json()` snapshots include a `description` key only where one was set (fields and models without one have no `description` key). A subclass does not inherit its parent's `__description__` (field descriptions travel with the inherited `Field` objects). `examples/python/13_schema_ddl_and_indexes.py` prints a snapshot showing both cases.
+
+---
+
 ## Performance & Benchmarks
 
-This benchmark suite measures real-world entity hydration throughput, memory consumption under scale, and high-concurrency network tail latency comparing Voyager against Python graph OGMs and official drivers:
+Two captures are published. Both predate the v0.4.0 changes (native parameter binding, the MERGE-key policy, partial bulk MERGE, and the real-transaction/UnitOfWork rework), so treat them as historical reference rather than current performance. See [**benchmarks/README.md**](benchmarks/README.md) for methodology, environment and reproduction steps.
 
-1. **1,000,000+ Entities/Sec Hydration**: Columnar streaming achieves **44.0x faster** entity hydration than Neomodel and **3.6x faster** than Pydantic v2.
-2. **92% Lower Memory Footprint**: Stores 50,000 entities in **2.38 MB** of contiguous buffer memory (3.32 MB process RSS delta), compared to 42+ MB for standard Pydantic models.
-3. **2.5x Lower Tail Latency**: Pipelined asynchronous Bolt networking delivers **p99 latency of 49.5 ms** under heavy concurrency (vs. 123.8 ms for standard drivers).
+1. **Representation cost, 10,000 rows**: constructing a Polars DataFrame from dicts ran at **1,013,607 rows/s**, versus **23,016 rows/s** for `neomodel.StructuredNode.inflate()` and **280,899 rows/s** for Pydantic v2 model construction. Method: 10,000 rows pre-fetched with the official `neo4j` driver, in-memory conversion only, mean of 5 rounds; captured 2026-09-13. This is a representation-cost measurement, not end-to-end OGM hydration.
+2. **Point-read latency, 20 clients x 1,000 reads**: Voyager's native Bolt client measured **49.5 ms p99 / 12.5 ms p50** versus **123.8 ms p99 / 12.1 ms p50** for `neo4rs` 0.8.0, a community Rust driver. Method: one live Neo4j, identical statement, 20 concurrent clients x 1,000 point reads, single run; captured on or before 2026-09-12 (first committed then).
+
+No memory figures are published: the repository contains no RSS measurement script.
 
 <div align="center">
 
-![In-Memory Entity Hydration Speed](benchmarks/assets/hydration_throughput.svg)
+![Hydration representation cost](benchmarks/assets/hydration_throughput.svg)
 
-![Physical Memory Footprint](benchmarks/assets/memory_footprint.svg)
-
-![High-Concurrency Tail Latency](benchmarks/assets/concurrency_latency.svg)
+![High-concurrency point-read latency](benchmarks/assets/concurrency_latency.svg)
 
 </div>
 
-> **Methodology Note & Disclaimer**: These figures represent comparative in-library performance captures recorded on a local dev environment and should not be taken as final or definitive production terms. Real-world scenarios will yield different results depending on network topology, disk I/O, and database cluster configuration; more comprehensive benchmarking is ongoing. See [**benchmarks/README.md**](benchmarks/README.md) for full metrics, caveats, and reproduction steps.
+> **Disclaimer**: These are in-library captures from a local development environment, not production guarantees. Network topology, disk I/O and database configuration will change real-world results.
 
 ---
 
@@ -258,6 +265,8 @@ Voyager is verified against 6 database backends:
 | **DuckDB & DuckPGQ** | SQL:2023 PGQ (`GRAPH_TABLE`)                            | In-Memory / Arrow FFI    |
 | **FalkorDB**         | openCypher                                              | Redis RESP / Bolt        |
 | **PostgreSQL**       | Relational / Recursive SQL (14–18)<br>SQL:2023 PGQ (19+) | PostgreSQL Wire Protocol |
+
+> **Neo4j Community Edition:** uniqueness constraints are supported, but existence (`IS NOT NULL`) and key constraints require Neo4j Enterprise Edition. `create_constraints()` and `apply_schema()` apply every statement the server accepts, then raise one `VoyagerError` with code `SCHEMA_ERROR`; its `skipped` attribute lists the Enterprise-only constraint statements that were not applied. The accepted constraints (and any indexes applied by `apply_schema()`) stay in place.
 
 ---
 

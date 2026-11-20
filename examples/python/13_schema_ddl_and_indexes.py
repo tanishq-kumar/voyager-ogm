@@ -6,6 +6,8 @@ Teaches:
     - Dialect targets: Neo4j, Memgraph, FalkorDB, Apache AGE, DuckDB, PostgreSQL
     - Drop DDL generation via `SchemaManager.generate_drop_ddl()`
     - Executing DDL offline via `MockBridge` or real engines
+    - Recording field and model descriptions as metadata that appears in the
+      schema snapshot but never changes DDL or compiled queries
 
 Prerequisites:
     - Engine: None (runs offline / compile-only via MockBridge; optional DuckDB/Postgres if executed live)
@@ -17,8 +19,11 @@ Run with:
 
 from __future__ import annotations
 
+import json
+
 from voyager_ogm import (
     Field,
+    NativeSchemaRegistry,
     Node,
     Relationship,
     SchemaManager,
@@ -36,10 +41,12 @@ from voyager_ogm import (
 class User(Node):
     """User node entity showcasing primary keys, uniqueness, and secondary indexes."""
 
-    user_id: str = Field(primary_key=True)
-    email: str = Field(unique=True)
-    age: int = Field(index=True)
-    bio: str = Field(index=True)
+    __description__ = "A registered account holder in the social network."
+
+    user_id: str = Field(primary_key=True, description="Stable account identifier.")
+    email: str = Field(unique=True, description="Primary contact email address.")
+    age: int = Field(index=True, description="Age in years.")
+    bio: str = Field(index=True, description="Free-text profile biography.")
     city: str = Field(default="London", index=True)
     is_active: bool = True
 
@@ -48,7 +55,9 @@ class User(Node):
 class Follows(Relationship):
     """FOLLOWS edge entity with indexed temporal properties."""
 
-    since: int = Field(index=True)
+    __description__ = "A directed follow relationship between two users."
+
+    since: int = Field(index=True, description="Epoch seconds when the follow began.")
     weight: float = 1.0
 
 
@@ -160,6 +169,72 @@ def main() -> None:
     print("-" * 50)
     delegated = SchemaManager.create_indexes(session, User, Follows)
     print(f"  Successfully applied {len(delegated)} indexes via SchemaManager delegation.")
+    print()
+
+    # -----------------------------------------------------------------------
+    # Part 8: Description Metadata (schema snapshot only - no DDL change)
+    # -----------------------------------------------------------------------
+    print("[8] Description Metadata (schema snapshot only):")
+    print("-" * 50)
+    print("  Field(description=...) and a model-level __description__ are metadata:")
+    print("  they appear in the registry snapshot JSON but do not alter DDL or queries.")
+
+    registry = NativeSchemaRegistry()
+    User.register_schema(registry)
+    Follows.register_schema(registry)
+    snapshot = json.loads(registry.to_json())
+
+    for kind in ("nodes", "relationships"):
+        for identity, schema in snapshot[kind].items():
+            print(f"  {kind[:-1]} {identity}: description={schema.get('description')!r}")
+            for field_name, field_schema in schema["fields"].items():
+                present = "description" in field_schema
+                value = field_schema.get("description")
+                print(f"    field {field_name}: description={value!r} (key present: {present})")
+
+    # A model with the same labels and fields, but no descriptions.
+    class PlainUser(Node):
+        __labels__ = ["User"]
+
+        user_id: str = Field(primary_key=True)
+        email: str = Field(unique=True)
+        age: int = Field(index=True)
+        bio: str = Field(index=True)
+        city: str = Field(default="London", index=True)
+        is_active: bool = True
+
+    plain_registry = NativeSchemaRegistry()
+    PlainUser.register_schema(plain_registry)
+    described_ddl = registry.generate_cypher_ddl(model_name="User")
+    plain_ddl = plain_registry.generate_cypher_ddl(model_name="PlainUser")
+    print(f"  DDL identical to the same model without descriptions: {described_ddl == plain_ddl}")
+
+    # A subclass only carries a description when it declares its own.
+    class AuditUser(User):
+        """Subclass of User that declares no __description__ of its own."""
+
+        __labels__ = ["AuditUser"]
+
+    audit_registry = NativeSchemaRegistry()
+    AuditUser.register_schema(audit_registry)
+    audit_schema = audit_registry.get_node("AuditUser") or {}
+    print(f"  Subclass AuditUser (no __description__): {audit_schema.get('description')!r}")
+
+    class AdminUser(User):
+        """Subclass of User that declares its own description."""
+
+        __description__ = "A privileged account holder."
+        __labels__ = ["AdminUser"]
+
+    admin_registry = NativeSchemaRegistry()
+    AdminUser.register_schema(admin_registry)
+    admin_schema = admin_registry.get_node("AdminUser") or {}
+    print(f"  Subclass AdminUser (own __description__): {admin_schema.get('description')!r}")
+
+    print()
+    print("  Snapshot JSON (NativeSchemaRegistry.to_json()) for the User node:")
+    for line in json.dumps(snapshot["nodes"]["User"], indent=2).splitlines():
+        print(f"    {line}")
     print()
 
     print("=" * 76)

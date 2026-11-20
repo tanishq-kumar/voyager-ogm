@@ -4,12 +4,12 @@ test_bench_10k_nodes_pure_python_objects,default,32057.8,68446.4,44169.9857,3772
 test_bench_1m_nodes_to_arrow,default,181088.0,234988.1,199599.1833,195527.0,18768.7046,12467.8,5.01,6,1
 test_bench_1m_nodes_to_polars,default,239037.2,401330.2,308759.94,288422.6,62834.7238,87357.125,3.24,5,1
 test_bench_fast_path_parameter_serialization,default,1560.4,7431.0,2742.1,2443.35,1102.4106,677.45,364.68,76,1
-test_bench_gqlalchemy_10hop_compilation,default,16.7,225.5,20.2554,18.8,5.8853,2.1,49369.53,16156,1
-test_bench_gqlalchemy_1hop_compilation,default,2.4,395.2,3.7811,3.2,3.852,0.4,264475.59,58824,1
+test_bench_pure_python_builder_10hop_compilation,default,16.7,225.5,20.2554,18.8,5.8853,2.1,49369.53,16156,1
+test_bench_pure_python_builder_1hop_compilation,default,2.4,395.2,3.7811,3.2,3.852,0.4,264475.59,58824,1
 test_bench_lazy_execution_result_to_polars,default,7078.0,18705.0,9374.4962,9033.9,2191.1804,1830.925,106.67,79,1
 test_bench_native_falkordb_query_latency,default,641.9,3220.1,1351.2544,1295.4,442.2757,546.5,740.05,160,1
 test_bench_native_neo4j_query_latency,default,2478.9,7779.1,4374.2528,3972.15,1436.572,2071.8,228.61,36,1
-test_bench_neomodel_1hop_compilation,default,2.0,161.6,2.8341,2.7,1.7183,0.7,352844.76,51021,1
+test_bench_pure_python_nodeset_1hop_compilation,default,2.0,161.6,2.8341,2.7,1.7183,0.7,352844.76,51021,1
 test_bench_session_execute_to_polars_direct,default,851.2,7167.1,1646.3813,1525.1,587.4211,516.25,607.39,193,1
 test_bench_session_native_vs_bridge,default,830.2,3080.1,1376.1381,1287.1,365.2304,442.0,726.67,226,1
 test_bench_synthetic_stream_to_arrow,default,6698.7,15675.4,9008.3714,8706.1,1691.229,1326.3,111.01,77,1

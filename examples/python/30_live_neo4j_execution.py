@@ -4,6 +4,7 @@ Teaches:
     - Connecting to a live Neo4j database instance over Bolt protocol
     - Defining declarative domain models (`Customer`, `Account`, `Merchant`, `Owns`, `TransferredTo`, `Paid`)
     - Schema constraint application via `session.create_constraints()`
+    - Handling constraints that require Neo4j Enterprise Edition on Community
     - High-throughput OGM bulk seeding (`session.bulk_create`, `session.bulk_create_relationships`)
     - Executing complex multi-hop queries with `session.execute(fraud_query)`
     - Accessing query rows via `mappings()`, `scalars()`, and `to_polars()`
@@ -35,6 +36,7 @@ from voyager_ogm import (
     Query,
     Relationship,
     Session,
+    VoyagerError,
     create_bridge,
     node,
     relationship,
@@ -123,7 +125,24 @@ def main() -> None:
     q_clean = Query.match("n").detach_delete("n")
     session.execute(q_clean)
 
-    session.create_constraints(Customer, Account, Merchant)
+    # Uniqueness constraints are applied first. Neo4j Community rejects existence
+    # (IS NOT NULL) and key constraints because they require Enterprise Edition, so
+    # create_constraints() reports them in one SCHEMA_ERROR and continues. Other
+    # errors still propagate.
+    try:
+        session.create_constraints(Customer, Account, Merchant)
+        print("Applied all schema constraints.")
+    except VoyagerError as err:
+        if err.code != "SCHEMA_ERROR":
+            raise
+        skipped = getattr(err, "skipped", [])
+        print(
+            "Neo4j Community applied the UNIQUE constraints but skipped existence/key "
+            "constraints, which require Neo4j Enterprise Edition:"
+        )
+        for statement in skipped:
+            print(f"  - {statement}")
+        print("Continuing with the constraints the server accepted.\n")
 
     # ---------------------------------------------------------------------------
     # 4. Seed Real Multi-Hop Graph Data via OGM Bulk Creation

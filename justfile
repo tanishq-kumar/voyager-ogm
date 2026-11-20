@@ -191,9 +191,9 @@ pre-push: test bench-save
 bench:
     uv run cargo bench --workspace
 
-# Run Python PyCapsule & hydration benchmarks
+# Run Python PyCapsule & hydration benchmarks (collects bench_*.py explicitly)
 bench-python:
-    uv run pytest packages/python/benches/ --benchmark-only
+    uv run --no-sync pytest packages/python/benches/ --benchmark-only -o python_files="bench_*.py"
 
 # Run head-to-head OGM comparison benchmark against Neomodel and Pydantic v2
 bench-ogm:
