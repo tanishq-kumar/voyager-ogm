@@ -81,48 +81,13 @@ Set these under **Settings → Secrets and variables → Actions → Variables**
 
 A pre-release tag (`vX.Y.Z-alpha.N`, `-beta.N`, `-rc.N`) publishes to TestPyPI only. A stable tag (`vX.Y.Z`) publishes to TestPyPI and, when enabled, to PyPI and crates.io.
 
-### 6.3 Trusted-Publisher Form Values
+### 6.3 Trusted Publishers
 
-For PyPI and TestPyPI, use a **pending publisher** if the project does not exist yet. PyPI and TestPyPI are separate services, so configure the pending publisher on <https://pypi.org> and again on <https://test.pypi.org>:
+Each registry trusts this repository's `release.yml` workflow running in the matching environment (`pypi`, `testpypi`, `crates-io`). Renaming the workflow file or an environment, or moving the repository, requires updating the trusted publisher on every registry. crates.io trusted publishers are configured per crate, and a crate must exist before its publisher can be added, so a **new crate needs one manual first publish** (`cargo publish -p <crate>` with a personal token) before CI can publish it. `voyager-pyo3` is not published as a Rust crate: it ships as the Python wheel and sdist (`publish = false`).
 
-| Field | Value |
-| --- | --- |
-| PyPI project name | `voyager-ogm` |
-| Owner | `tanishq-kumar` |
-| Repository name | `voyager` |
-| Workflow name | `release.yml` |
-| Environment name | `pypi` on PyPI, `testpypi` on TestPyPI |
+crates.io versions are **permanent**: a version can be yanked (`cargo yank --version <version> -p <crate>`) but never deleted or reused.
 
-For crates.io, configure a trusted publisher **per crate** (crates.io does not support a workspace-wide publisher):
-
-| Field | Value |
-| --- | --- |
-| Crates | `voyager-ogm`, `voyager-drivers`, `voyager-cli` |
-| GitHub owner | `tanishq-kumar` |
-| Repository | `voyager` |
-| Workflow file | `release.yml` |
-| Environment | `crates-io` |
-
-`voyager-pyo3` is not published as a Rust crate: it ships as the Python wheel and sdist, and its manifest sets `publish = false`.
-
-### 6.4 One-Time Manual First Publish (crates.io)
-
-crates.io only lets you configure a trusted publisher for a crate that already exists, so the **first version of each crate must be published manually** with a personal API token (scopes `publish-new` and `publish-update`). Do this once, from the release tag commit, in dependency order:
-
-```bash
-git worktree add /tmp/voyager-release vX.Y.Z
-cd /tmp/voyager-release
-cargo login          # paste the API token from crates.io
-cargo publish -p voyager-ogm
-cargo publish -p voyager-drivers   # once voyager-ogm is visible on the index
-cargo publish -p voyager-cli
-```
-
-After all three crates exist, add the crates.io trusted publisher for each one (values in 6.3), then set `CRATES_PUBLISH=true`. Subsequent releases authenticate through OIDC; the token is only used for this bootstrap.
-
-crates.io versions are **permanent**: a published version and its files can be yanked but never deleted, and the version number cannot be reused. Use `cargo yank --version <version> -p <crate>` to stop new dependents from resolving a bad release.
-
-### 6.5 Re-runs and Scope
+### 6.4 Re-runs and Scope
 
 - PyPI and TestPyPI use `skip-existing: true`, so a re-run does not fail on files already uploaded.
 - The crates.io job queries `https://crates.io/api/v1/crates/<crate>/<version>` before each publish and skips versions that already exist.
