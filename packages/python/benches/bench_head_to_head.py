@@ -1,10 +1,10 @@
-"""Rigorous Apples-to-Apples Head-to-Head Benchmark: Voyager OGM vs. Python Graph OGMs.
+"""Head-to-head benchmark: Voyager OGM, Polars, Pydantic and Neomodel.
 
 Isolates and measures:
 1. Query Compilation Time (Microseconds)
 2. Live Database Query Execution Time over Bolt (Identical Cypher statement across all)
 3. Pure In-Memory Hydration Time (Transforming DB response into Model instances / DataFrames)
-4. Multi-Run End-to-End Averaged Latency (5 warmup + 5 timed rounds to eliminate network jitter)
+4. Multi-Run End-to-End Averaged Latency (5 timed rounds; no warm-up)
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def run_rigorous_benchmark(record_count: int = 10_000, rounds: int = 5) -> None:
     auth = ("neo4j", "voyagerpass123")
 
     print("=" * 80)
-    print("SCIENTIFIC APPLES-TO-APPLES BENCHMARK: VOYAGER OGM VS TRADITIONAL OGMs")
+    print("HEAD-TO-HEAD BENCHMARK: VOYAGER OGM, POLARS, PYDANTIC AND NEOMODEL")
     print(
         f"Dataset Size: {record_count:,} Graph Entities | Test Iterations: {rounds} Rounds Averaged"
     )
@@ -173,7 +173,7 @@ def run_rigorous_benchmark(record_count: int = 10_000, rounds: int = 5) -> None:
         pydantic_times.append((time.perf_counter() - t0) * 1000)
     avg_pydantic_hydration = statistics.mean(pydantic_times)
 
-    # 3. Voyager OGM / Polars Pure Hydration
+    # 3. Polars dict -> frame construction
     voyager_times = []
     for _ in range(rounds):
         gc.collect()
@@ -189,7 +189,7 @@ def run_rigorous_benchmark(record_count: int = 10_000, rounds: int = 5) -> None:
         f"   Pydantic v2 BaseModel    : {avg_pydantic_hydration:.2f} ms ({record_count / (avg_pydantic_hydration / 1000):,.0f} nodes/sec)"
     )
     print(
-        f"   Voyager OGM / Polars     : {avg_voyager_hydration:.2f} ms ({record_count / (avg_voyager_hydration / 1000):,.0f} nodes/sec)"
+        f"   Polars dict -> frame     : {avg_voyager_hydration:.2f} ms ({record_count / (avg_voyager_hydration / 1000):,.0f} nodes/sec)"
     )
     print(
         f"   --> Pure Hydration Speedup: Voyager is {avg_pydantic_hydration / avg_voyager_hydration:.2f}x faster than Pydantic"
@@ -241,7 +241,7 @@ def run_rigorous_benchmark(record_count: int = 10_000, rounds: int = 5) -> None:
     print("=" * 80)
     print("FINAL RIGOROUS COMPARISON SUMMARY (10,000 NODES)")
     print("=" * 80)
-    print(f"{'Metric':<30} | {'neomodel':<14} | {'Pydantic v2':<14} | {'Voyager OGM':<14}")
+    print(f"{'Metric':<30} | {'neomodel':<14} | {'Pydantic v2':<14} | {'Polars frame':<14}")
     print("-" * 80)
     print(
         f"{'Query AST Compilation':<30} | {f'{t_neomodel_compile:.2f} µs':<14} | {'N/A':<14} | {f'{t_voyager_compile:.2f} µs':<14}"
@@ -253,7 +253,7 @@ def run_rigorous_benchmark(record_count: int = 10_000, rounds: int = 5) -> None:
         f"{'Hydration Throughput (nodes/s)':<30} | {f'{record_count / (avg_neomodel_hydration / 1000):,.0f}':<14} | {f'{record_count / (avg_pydantic_hydration / 1000):,.0f}':<14} | {f'{record_count / (avg_voyager_hydration / 1000):,.0f}':<14}"
     )
     print(
-        f"{'End-to-End Latency (5 runs)':<30} | {'~22,800 ms':<14} | {f'{avg_e2e_pydantic:.2f} ms':<14} | {f'{avg_e2e_voyager:.2f} ms':<14}"
+        f"{'End-to-End Latency (5 runs)':<30} | {'not measured':<14} | {f'{avg_e2e_pydantic:.2f} ms':<14} | {f'{avg_e2e_voyager:.2f} ms':<14}"
     )
     print("=" * 80)
 

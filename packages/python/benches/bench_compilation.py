@@ -1,7 +1,12 @@
-"""Stage 1 Query Compilation Benchmarks: Voyager OGM vs GQLAlchemy vs Neomodel.
+"""Stage 1 Query Compilation Benchmarks: Voyager OGM vs pure-Python builder stand-ins.
+
+The baselines are toy builders defined in this file, not the GQLAlchemy or Neomodel
+libraries. They model the per-query work of a Python-side query builder.
 
 Run benchmarks with:
-    uv run pytest packages/python/tests/test_query_compilation_benchmark.py --benchmark-only
+    just bench-python
+    # or: uv run --no-sync pytest packages/python/benches/bench_compilation.py \
+    #       --benchmark-only -o python_files="bench_*.py"
 """
 
 from __future__ import annotations
@@ -46,39 +51,39 @@ class ActedIn(Relationship):
 
 
 # ============================================================
-# Baseline 1: Pure Python GQLAlchemy-style AST Builder
-# (Models Memgraph GQLAlchemy's pure Python query builder)
+# Baseline 1: Pure-Python dict-step builder stand-in
+# (A toy builder, not the GQLAlchemy library)
 # ============================================================
-class GQLAlchemyStyleBuilder:
+class PurePythonBuilderStandIn:
     def __init__(self) -> None:
         self.steps: list[dict[str, Any]] = []
         self.params: dict[str, Any] = {}
         self.param_idx = 0
 
-    def match(self) -> GQLAlchemyStyleBuilder:
+    def match(self) -> PurePythonBuilderStandIn:
         self.steps.append({"type": "MATCH"})
         return self
 
-    def node(self, variable: str, label: str) -> GQLAlchemyStyleBuilder:
+    def node(self, variable: str, label: str) -> PurePythonBuilderStandIn:
         self.steps.append({"type": "NODE", "var": variable, "label": label})
         return self
 
-    def to(self, rel_type: str, variable: str) -> GQLAlchemyStyleBuilder:
+    def to(self, rel_type: str, variable: str) -> PurePythonBuilderStandIn:
         self.steps.append({"type": "TO", "rel": rel_type, "var": variable})
         return self
 
-    def where_gt(self, variable: str, prop: str, val: Any) -> GQLAlchemyStyleBuilder:
+    def where_gt(self, variable: str, prop: str, val: Any) -> PurePythonBuilderStandIn:
         p_name = f"p{self.param_idx}"
         self.param_idx += 1
         self.params[p_name] = val
         self.steps.append({"type": "WHERE_GT", "var": variable, "prop": prop, "param": p_name})
         return self
 
-    def return_fields(self, *fields: str) -> GQLAlchemyStyleBuilder:
+    def return_fields(self, *fields: str) -> PurePythonBuilderStandIn:
         self.steps.append({"type": "RETURN", "fields": list(fields)})
         return self
 
-    def limit(self, count: int) -> GQLAlchemyStyleBuilder:
+    def limit(self, count: int) -> PurePythonBuilderStandIn:
         self.steps.append({"type": "LIMIT", "count": count})
         return self
 
@@ -106,10 +111,10 @@ class GQLAlchemyStyleBuilder:
 
 
 # ============================================================
-# Baseline 2: Pure Python Neomodel-style NodeSet Builder
-# (Models Neo4j Neomodel's NodeSet Cypher query generator)
+# Baseline 2: Pure-Python NodeSet builder stand-in
+# (A toy builder, not the Neomodel library)
 # ============================================================
-class NeomodelStyleNodeSet:
+class PurePythonNodeSetStandIn:
     def __init__(self, node_label: str) -> None:
         self.label = node_label
         self.filters: list[tuple[str, str, Any]] = []
@@ -117,20 +122,20 @@ class NeomodelStyleNodeSet:
         self.limit_count: int | None = None
         self.traversals: list[tuple[str, str]] = []
 
-    def filter(self, **kwargs: Any) -> NeomodelStyleNodeSet:
+    def filter(self, **kwargs: Any) -> PurePythonNodeSetStandIn:
         for k, v in kwargs.items():
             self.filters.append((k, ">", v))
         return self
 
-    def traverse(self, rel_type: str, target_label: str) -> NeomodelStyleNodeSet:
+    def traverse(self, rel_type: str, target_label: str) -> PurePythonNodeSetStandIn:
         self.traversals.append((rel_type, target_label))
         return self
 
-    def values(self, *fields: str) -> NeomodelStyleNodeSet:
+    def values(self, *fields: str) -> PurePythonNodeSetStandIn:
         self.projections.extend(fields)
         return self
 
-    def limit(self, count: int) -> NeomodelStyleNodeSet:
+    def limit(self, count: int) -> PurePythonNodeSetStandIn:
         self.limit_count = count
         return self
 
@@ -178,9 +183,9 @@ def test_bench_voyager_1hop_cypher_compilation(benchmark: Any) -> None:
     assert "MATCH (p:Person)-[r:ACTED_IN]->(m:Movie)" in result.statement
 
 
-def test_bench_gqlalchemy_1hop_compilation(benchmark: Any) -> None:
+def test_bench_pure_python_builder_1hop_compilation(benchmark: Any) -> None:
     def run():
-        builder = GQLAlchemyStyleBuilder()
+        builder = PurePythonBuilderStandIn()
         builder.match().node("p", "Person").to("ACTED_IN", "r").node("m", "Movie").where_gt(
             "p", "age", 21
         ).return_fields("p.name", "m.title").limit(10)
@@ -190,9 +195,9 @@ def test_bench_gqlalchemy_1hop_compilation(benchmark: Any) -> None:
     assert "MATCH (p:Person)" in stmt
 
 
-def test_bench_neomodel_1hop_compilation(benchmark: Any) -> None:
+def test_bench_pure_python_nodeset_1hop_compilation(benchmark: Any) -> None:
     def run():
-        nodeset = NeomodelStyleNodeSet("Person")
+        nodeset = PurePythonNodeSetStandIn("Person")
         nodeset.traverse("ACTED_IN", "Movie").filter(age=21).values("name").limit(10)
         return nodeset.compile()
 
@@ -221,9 +226,9 @@ def test_bench_voyager_10hop_cypher_compilation(benchmark: Any) -> None:
     assert "MATCH (_person_0:Person)" in result.statement
 
 
-def test_bench_gqlalchemy_10hop_compilation(benchmark: Any) -> None:
+def test_bench_pure_python_builder_10hop_compilation(benchmark: Any) -> None:
     def run():
-        builder = GQLAlchemyStyleBuilder()
+        builder = PurePythonBuilderStandIn()
         builder.match().node("u0", "Person").where_gt("u0", "age", 21)
         for i in range(1, 11):
             builder.to("KNOWS", f"r{i}").node(f"u{i}", "Person").where_gt(f"u{i}", "age", 18)

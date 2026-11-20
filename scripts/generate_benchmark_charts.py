@@ -4,7 +4,6 @@
 Produces vector SVG graphics with dark mode styling:
 1. benchmarks/assets/hydration_throughput.svg
 2. benchmarks/assets/concurrency_latency.svg
-3. benchmarks/assets/memory_footprint.svg
 
 """
 
@@ -350,7 +349,6 @@ def main() -> None:
 
     generate_bar_chart(data["hydration"], args.output_dir / "hydration_throughput.svg")
     generate_latency_chart(data["latency"], args.output_dir / "concurrency_latency.svg")
-    generate_bar_chart(data["memory"], args.output_dir / "memory_footprint.svg")
 
     print("=== All SVG Benchmark Charts Successfully Generated! ===")
 

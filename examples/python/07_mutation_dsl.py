@@ -4,6 +4,8 @@ Teaches:
     - Declarative graph mutations using fluent Query builder methods
     - Creating nodes and relationship patterns with `Query.create()`
     - Upsert patterns with `Query.merge()`, `on_create_set()`, and `on_match_set()`
+    - Field defaults with `default` / `default_factory`, written only on create
+    - Reading in-memory values with `.get()` because attributes build query predicates
     - In-place property mutation with `set()` and `set_()`
     - Safe deletion with `delete()` and cascade removal with `detach_delete()`
     - Property unsetting with `remove()`
@@ -28,6 +30,7 @@ class Account(Node):
     holder: str = Field()
     balance: float = Field(default=0.0)
     status: str = Field(default="PENDING")
+    tags: list[str] = Field(default_factory=list)
 
 
 @relationship(type_name="TRANSFERRED_TO")
@@ -61,10 +64,17 @@ def main() -> None:
     # -------------------------------------------------------------------------
     # 2. MERGE: Upsert with ON CREATE and ON MATCH
     # -------------------------------------------------------------------------
-    # Query.merge(instance) keys the MERGE pattern on the primary key (acc_no) and writes
-    # the other set fields in both ON CREATE SET and ON MATCH SET. Chained
-    # .on_create_set(...) / .on_match_set(...) calls are appended after them.
+    # Query.merge(instance) keys the MERGE pattern on the primary key (acc_no).
+    # Fields filled from a declared default are written only in ON CREATE SET, so an
+    # existing node keeps its stored value; explicitly supplied fields are written in
+    # both ON CREATE SET and ON MATCH SET. Chained .on_create_set(...) /
+    # .on_match_set(...) calls are appended after them.
     user = Account(alias="a", acc_no="ACC-300", holder="Charlie")
+    # Account attributes are query-DSL fields; read in-memory values with .get().
+    print(
+        f"    Defaults (read with .get): balance={user.get('balance')}, "
+        f"status={user.get('status')}, tags={user.get('tags')}"
+    )
     q_merge = Query.merge(user).on_match_set(user.status == "ACTIVE")
     compiled_merge = q_merge.compile("cypher")
     print("[3] MERGE Upsert Pattern (openCypher):")

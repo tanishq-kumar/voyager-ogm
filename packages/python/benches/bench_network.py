@@ -3,10 +3,10 @@
 Measures p50/p95/p99 query latency, QPS throughput, Arrow deserialization,
 and multi-threaded GIL contention under concurrent execution.
 
-Run with:
-    uv run pytest packages/python/tests/test_network_benchmarks.py --benchmark-only
-    or
-    uv run pytest packages/python/tests/test_network_benchmarks.py -v
+Run benchmarks with:
+    just bench-python
+    # or: uv run --no-sync pytest packages/python/benches/bench_network.py \
+    #       --benchmark-only -o python_files="bench_*.py"
 """
 
 from __future__ import annotations

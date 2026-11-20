@@ -5,6 +5,7 @@ Teaches:
     - Memgraph: High-throughput in-memory graph execution over Bolt protocol (port 7688)
     - FalkorDB: Low-latency sparse-matrix graph execution over Redis RESP (port 6379)
     - Apache AGE: Cypher-in-SQL graph queries over PostgreSQL (port 5455)
+    - Apache AGE graph-name precedence: Session > bridge/URI parameter > "age_graph" default
     - Cross-dialect query compilation matching each database's native execution engine
     - Graceful offline detection when containers are not running
 
@@ -144,13 +145,26 @@ def main() -> None:
     # 3. Apache AGE (PostgreSQL on port 5455)
     # -------------------------------------------------------------------------
     print("--- [3] Apache AGE (PostgreSQL port 5455) ---")
+    age_uri = "postgresql://postgres:voyagerpass123@127.0.0.1:5455/voyager_graph"
+    age_uri_with_graph = f"{age_uri}?graph=uri_graph"
+    # Precedence (highest to lowest):
+    #   Session(graph_name=...) > bridge graph_name / ?graph= or ?graph_name= URI parameter
+    #   > 'age_graph' default for the age dialect.
+    # create_bridge() reads ?graph= / ?graph_name= from the URI; print the form without
+    # connecting so this section still runs offline. The live bridges below use both forms.
+    print(f"Bridge URI form with ?graph=: {age_uri_with_graph}")
+    print(f"Default Apache AGE graph: {Session(dialect='age').graph_name}")
     if is_port_open("127.0.0.1", 5455):
         try:
-            age_uri = "postgresql://postgres:voyagerpass123@127.0.0.1:5455/voyager_graph"
-            bridge_age = create_bridge(age_uri)
+            uri_bridge = create_bridge(age_uri_with_graph)
+            print(f"Bridge graph_name from URI ?graph=: {uri_bridge.graph_name}")
+            uri_bridge.close()
+            bridge_age = create_bridge(age_uri, graph_name="age_graph")
+            print(f"Bridge graph_name argument: {bridge_age.graph_name}")
             session_age = Session(
                 bridge=bridge_age, dialect="age", graph_name="microservices_graph"
             )
+            print(f"Session graph_name overrides the bridge: {session_age.graph_name}")
 
             session_age.execute(q_clean)
             session_age.execute(q_seed)

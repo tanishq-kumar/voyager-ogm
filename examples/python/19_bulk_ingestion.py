@@ -7,6 +7,8 @@ Teaches:
     - Ingesting relationships from files (`session.ingest_parquet_relationships()`)
     - In-memory bulk node insertion from Polars DataFrames (`session.bulk_create()`)
     - Bulk relationship creation linking nodes by key (`session.bulk_create_relationships()`)
+    - Partial upserts: omitted properties keep stored values; explicit None clears them
+    - DataFrame columns count as supplied even when an individual cell is null
     - Inspecting execution plans and executing via `session.run_bulk()`
 
 Prerequisites:
@@ -152,6 +154,29 @@ def main() -> None:
         print(f"Relationship Statement:\n  {rel_plan.statement}")
         res_rel = session.run_bulk(rel_plan)
         print(f"Bulk linked {res_rel.total_records} graph edges.\n")
+
+        # ---------------------------------------------------------------------
+        # 5. Partial Upserts and Explicit Nulls
+        # ---------------------------------------------------------------------
+        print("--- [5] Partial Upserts (session.bulk_upsert) ---")
+        keep_plan = session.bulk_upsert(
+            User, [{"id": 101, "username": "alice_renamed"}], key_field="id"
+        )
+        print("A row that omits 'department' leaves its stored value untouched:")
+        print(f"  {keep_plan.statement}")
+
+        clear_plan = session.bulk_upsert(User, [{"id": 102, "department": None}], key_field="id")
+        print("A row that supplies 'department': None clears the stored value:")
+        print(f"  {clear_plan.statement}")
+
+        print(
+            "\nDataFrame columns always count as supplied: a null cell clears the property, "
+            "while an absent column is not written."
+        )
+        partial_df = pl.DataFrame({"id": [201, 202], "username": ["frank", None]})
+        partial_df_plan = session.bulk_upsert(User, partial_df, key_field="id")
+        print("DataFrame statement ('username' is set from the column; 'department' is absent):")
+        print(f"  {partial_df_plan.statement}\n")
 
     print("[SUCCESS] Ingestion & bulk loading demonstration completed successfully.")
 

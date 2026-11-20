@@ -1,7 +1,9 @@
 """Task 2.1: 1,000,000 Node Hydration Microbenchmark (Voyager Arrow/Polars vs Python OOP).
 
-Run with:
-    uv run pytest packages/python/tests/test_hydration_benchmark.py --benchmark-only
+Run benchmarks with:
+    just bench-python
+    # or: uv run --no-sync pytest packages/python/benches/bench_hydration.py \
+    #       --benchmark-only -o python_files="bench_*.py"
 """
 
 from __future__ import annotations
@@ -66,7 +68,7 @@ def test_bench_1m_nodes_to_arrow(benchmark: Any) -> None:
 
 
 def test_bench_10k_nodes_pure_python_objects(benchmark: Any) -> None:
-    """Simulate Neomodel / GQLAlchemy object hydration cliff (10,000 objects)."""
+    """Simulate the Python object-hydration cliff (10,000 objects)."""
 
     def run():
         objects = []

@@ -1,142 +1,94 @@
-# Voyager OGM — Benchmark Suite & Reproducibility Guide
+# Voyager OGM — Benchmark Suite
 
-[![Rust](https://img.shields.io/badge/Engine-Rust%20Native-blue.svg)](https://www.rust-lang.org/)
-[![Bolt](https://img.shields.io/badge/Protocol-Bolt%20v4%20%26%20v5-green.svg)](https://7687.org/)
-[![Standards](https://img.shields.io/badge/Standards-openCypher%20%7C%20SQL%3A2023%20PGQ%20%7C%20ISO%20GQL-purple.svg)](https://www.iso.org/standard/76120.html)
+This directory holds the benchmark scripts, the chart data, and the published captures. The figures below are the only performance numbers published by the project. They were captured before the v0.4.0 changes (native parameter binding, the MERGE-key policy, partial bulk MERGE, and the real-transaction/UnitOfWork rework), so they are historical reference points, not current performance.
 
-This benchmark suite measures real-world entity hydration throughput, memory consumption under scale, and high-concurrency network tail latency comparing Voyager against Python graph OGMs and official drivers.
+## Published figures
 
----
+### Hydration representation cost (10,000 rows)
 
-## Executive Summary
+| Representation | Rows/sec | Method |
+| :--- | ---: | :--- |
+| Polars `pl.DataFrame(dicts)` | 1,013,607 | 10,000 rows pre-fetched with the official `neo4j` driver; in-memory dict → frame conversion; mean of 5 rounds |
+| Pydantic v2 `BaseModel` construction | 280,899 | Same rows; model construction; mean of 5 rounds |
+| `neomodel.StructuredNode.inflate()` | 23,016 | Same rows; model inflation; mean of 5 rounds |
 
-Traditional Python Object-Graph Mappers (OGMs) and database drivers suffer from three fundamental bottlenecks:
-1. **Object Materialization Overhead**: Constructing thousands of Python class instances (`BaseModel`, `StructuredNode`) creates significant CPU and garbage collector overhead.
-2. **Interpreter Memory Bloat**: Dynamic Python objects carry per-instance dictionary and reference overhead, scaling memory usage rapidly.
-3. **Connection Head-of-Line Blocking**: Synchronous buffers frequently cause p99 tail-latency spikes under concurrent connection loads.
+Source: `packages/python/benches/bench_head_to_head.py`. Captured 2026-09-13 (`benchmarks/benchmark_summary.json`). This measures representation cost, not end-to-end OGM hydration: the database fetch is outside the timer.
 
-Voyager addresses these bottlenecks with:
-- **Direct Columnar Hydration**: High-throughput records stream into columnar tables at over **1,000,000 entities/sec** (**44x faster** than Neomodel).
-- **Contiguous Memory Efficiency**: 50,000 entities consume **2.38 MB** (**92% less RAM** than Pydantic v2).
-- **Asynchronous Network Multiplexing**: Bolt engine achieves **49.5 ms p99 tail latency** (**2.5x lower** than standard drivers).
+### Point-read latency (20 clients x 1,000 reads)
 
----
+| Driver | p50 | p99 | Method |
+| :--- | ---: | ---: | :--- |
+| Voyager native Bolt client | 12.5 ms | 49.5 ms | Same live Neo4j, same statement, 20 concurrent clients x 1,000 point reads; single run |
+| `neo4rs` 0.8.0 (community Rust driver) | 12.1 ms | 123.8 ms | Same scenario |
 
-## Visual Performance Dashboards
+Source: `crates/voyager-net/benches/bench_driver_vs_voyager_net.rs`. Captured on or before 2026-09-12 (when these numbers were first committed). This is a Rust-client comparison, not a comparison against an official Neo4j driver. The script writes its JSON results to a gitignored path, so p95 is deliberately not published.
 
-### 1. In-Memory Entity Hydration Speed
-*10,000 graph nodes with 6 typed properties (person_id, name, age, score, city, active) inflated into memory.*
+### Not published
 
-![In-Memory Entity Hydration Speed](assets/hydration_throughput.svg)
+No memory/RSS chart or memory-per-node figure is published. The repository contains no script that measures process RSS, so those numbers were removed. Likewise, the official-driver throughput row and the p95 values had no committed source and were removed.
 
-| Framework / Tool | Execution Mode | Throughput (Entities / Sec) | Relative Speedup | Memory per Node |
+## Environment
+
+Versions come from `containers/compose.yaml` and the workspace manifests:
+
+- Rust workspace: edition 2024, MSRV **1.87.0**; PyO3 **0.29** (`abi3-py311`).
+- Python: **>= 3.11**.
+- Neo4j: `neo4j:5.26-community` by default (Enterprise is opt-in and needs a licence).
+- Memgraph: `memgraph-mage:3.14.0`.
+- Apache AGE: `apache/age:release_PG18_1.8.0` (PostgreSQL on port 5455).
+- FalkorDB: `falkordb:6.0.4`.
+- PostgreSQL: `postgres:19beta3-alpine`.
+
+The published captures have no committed hardware metadata: their CPU, RAM and OS are unknown and are not claimed here. The scripts use the compose credentials (`neo4j` / `voyagerpass123`) and ports listed above.
+
+## Reproduce
+
+```bash
+just up                      # start the compose stack; required by every live benchmark
+just bench-python            # offline Python benches (live modules skip without containers)
+just bench-ogm               # live Neo4j head-to-head; seeds BenchmarkPerson itself
+just bench                   # cargo bench --workspace; runs live Neo4j benches too, so needs `just up`
+just bench-save              # append pytest-benchmark rows to latest_summary.csv
+just bench-charts            # regenerate the SVGs from benchmark_summary.json
+```
+
+`just bench` is **not** offline: `bench_live_bolt` and `bench_jumbo_payloads` connect to Neo4j at `127.0.0.1:7687`.
+
+### Seeding order for the native driver benches
+
+`bench_live_bolt` seeds the data the other driver benches assume:
+
+1. Start the stack: `just up`.
+2. Seed and run the live scenarios: `cargo bench -p voyager-net --bench bench_live_bolt` (creates 10,000 `BenchPerson` nodes and 20,000 `KNOWS` edges).
+3. Run the comparison: `cargo bench -p voyager-net --features bench-driver --bench bench_driver_vs_voyager_net` (asserts 10,000 rows).
+4. For the 1M comparison: `uv run python scripts/seed_1m_dataset.py`, then `cargo bench -p voyager-net --features bench-driver --bench bench_1m_driver_vs_voyager`.
+
+`just bench-ogm` seeds a different label (`BenchmarkPerson`) and does not prepare the Rust benches.
+
+## Per-benchmark map
+
+| Script | Measures | Does not measure | Reproduce | Containers / seeding |
 | :--- | :--- | :--- | :--- | :--- |
-| **Voyager OGM** | **Columnar Stream (`to_polars`)** | **1,013,607 /s** | **44.0x faster** | **~48 bytes** |
-| Official Neo4j Driver | `record.data()` (`list[dict]`) | ~448,000 /s | 19.5x faster | ~196 bytes |
-| Pydantic v2 | Driver + `BaseModel` | ~280,899 /s | 12.2x faster | ~844 bytes |
-| Neomodel | `StructuredNode.inflate()` | ~23,016 /s | 1.0x (Baseline) | ~1,420 bytes |
+| `benchmarks/complex_path_large_scale_benchmark.py` | Per-engine 2/3-hop opt-vs-unopt latency on six engines | Fair cross-engine speedups (row counts differ per engine); Voyager's optimizer for SQL variants (hand-written SQL) | `uv run python benchmarks/complex_path_large_scale_benchmark.py` | All six engines; seeds its own data |
+| `benchmarks/live_6engine_optimizer_benchmark.py` | Per-engine opt-vs-unopt latency and throughput | Equal dataset sizes (AGE uses fewer rows); cross-engine claims | `uv run python benchmarks/live_6engine_optimizer_benchmark.py` | All six engines; seeds its own data |
+| `benchmarks/live_profile_constant_folding.py` | Neo4j `PROFILE` dbHits, operator trees and interleaved latency | Other engines; client-side compilation cost | `uv run python benchmarks/live_profile_constant_folding.py` | Neo4j; seeds 10,000 nodes itself |
+| `benchmarks/profile_constant_folding.py` | Constant-folding compile cost, AST reduction and DuckDB execution on 500k rows | Live database or network behaviour | `uv run python benchmarks/profile_constant_folding.py` | Offline (`duckdb`) |
+| `benchmarks/profiler_waterfall_breakdown.py` | Per-phase CPU/network waterfall; live Neo4j and DuckDB workloads | Repeatable published numbers (writes a gitignored JSON) | `uv run python benchmarks/profiler_waterfall_breakdown.py` | Neo4j for live phases; DuckDB phases offline |
+| `packages/python/benches/bench_compilation.py` | Voyager Python compile/emit cost vs in-file pure-Python builder stand-ins | Real GQLAlchemy or Neomodel libraries; execution | `just bench-python` | Offline |
+| `packages/python/benches/bench_head_to_head.py` | Live fetch, compilation, representation cost and end-to-end latency | Voyager's `execute_to_polars` path (uses `pl.DataFrame` directly) | `just bench-ogm` | Neo4j; seeds and deletes `BenchmarkPerson` itself |
+| `packages/python/benches/bench_hydration.py` | Synthetic stream → Arrow/Polars and pure-Python object construction | Live wire hydration | `just bench-python` | Offline |
+| `packages/python/benches/bench_ingestion.py` | Bulk-ingestion plan generation and chunking | Execution throughput (no database calls) | `just bench-python` | Offline |
+| `packages/python/benches/bench_network.py` | Native-client point-query latency, QPS, Arrow decode and GIL behaviour | Official Python drivers; Voyager vs driver comparison | `just bench-python` | Neo4j and FalkorDB; live modules skip when offline |
+| `crates/voyager-net/benches/bench_live_bolt.rs` | Live native Bolt scenarios, including ingestion, and seeds the 10k dataset | Comparison against another driver | `cargo bench -p voyager-net --bench bench_live_bolt` | Neo4j; seeds 10,000 nodes + 20,000 edges |
+| `crates/voyager-net/benches/bench_driver_vs_voyager_net.rs` | Native Bolt client vs `neo4rs` 0.8.0 on identical queries | Official Neo4j driver; committed results (JSON is gitignored) | `cargo bench -p voyager-net --features bench-driver --bench bench_driver_vs_voyager_net` | Neo4j; needs the 10k seed above |
+| `crates/voyager-net/benches/bench_1m_driver_vs_voyager.rs` | Native Bolt client vs `neo4rs` 0.8.0 at 1M nodes / 2M edges | Seeding automation | `uv run python scripts/seed_1m_dataset.py` then `cargo bench -p voyager-net --features bench-driver --bench bench_1m_driver_vs_voyager` | Neo4j; 1M-node seed |
+| `crates/voyager-net/benches/bench_jumbo_payloads.rs` | 10/25/50 MB payload transport over the native Bolt stream | Ingestion semantics or driver comparison | `cargo bench -p voyager-net --bench bench_jumbo_payloads` | Neo4j |
+| `crates/voyager-net/benches/bench_security_overhead.rs` | PackStream, Redis and PostgreSQL security-hardening overhead | Live database behaviour | `cargo bench -p voyager-net --bench bench_security_overhead` | Offline |
+| `crates/voyager-ogm/benches/arena_bench.rs` | Criterion AST arena allocation and fluent builder construction | Emission or database access | `cargo bench -p voyager-ogm --bench arena_bench` | Offline |
+| `crates/voyager-ogm/benches/emitter_bench.rs` | Criterion Cypher, ISO GQL and SQL/PGQ emitter throughput | Apache AGE emitter; live database | `cargo bench -p voyager-ogm --bench emitter_bench` | Offline |
 
----
+## Caveats
 
-### 2. High-Concurrency Tail Latency (p50 vs p99)
-*1,000 point reads executed across 20 concurrent database connections over Bolt protocol.*
-
-![High-Concurrency Tail Latency](assets/concurrency_latency.svg)
-
-| Driver Engine | Concurrency | p50 Median Latency | p95 Latency | p99 Tail Latency | Connection Strategy |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Voyager Native Engine** | **20 workers** | **12.5 ms** | **28.4 ms** | **49.5 ms** | Non-blocking async channel multiplexing |
-| `neo4rs` Driver | 20 workers | 12.1 ms | 64.2 ms | 123.8 ms | Generic connection pool |
-
-> **Key Takeaway**: While median (p50) latency is comparable across engines, Voyager avoids head-of-line blocking, reducing **p99 tail latency by 2.5x**.
-
----
-
-### 3. Physical Resident Memory Footprint (RSS)
-*Memory consumption measured via process Resident Set Size (RSS) delta for 50,000 graph nodes.*
-
-![Physical Memory Footprint](assets/memory_footprint.svg)
-
-| Data Structure / Representation | Raw Buffer Size | Process RSS Delta | Inflation Factor vs. Voyager |
-| :--- | :--- | :--- | :--- |
-| **Voyager Columnar Buffer** | **2.38 MB** | **+3.32 MB** | **1.0x (Baseline)** |
-| Polars DataFrame | 2.00 MB | +6.08 MB | 1.83x |
-| Python `list[dict]` | 9.83 MB | +9.83 MB | 2.96x |
-| Pydantic v2 Models | 42.23 MB | +42.23 MB | **12.72x** |
-
----
-
-## Reproduction Guide (1-Command Automation)
-
-Every benchmark is fully automated via [`just`](https://github.com/casey/just).
-
-### Prerequisites
-- **Rust Toolchain**: 1.80+ (`cargo`)
-- **Python**: 3.12+ with [`uv`](https://docs.astral.sh/uv/)
-- **Just**: Task runner (`cargo install just` or `winget install Casey.Just`)
-- **Container Engine** *(optional, for live DB tests)*: Docker or Podman
-
-```bash
-# Verify environment and toolchain
-just doctor
-```
-
-### 1. Run Python Benchmarks
-Executes all Python streaming, hydration, and compilation benchmarks via pytest-benchmark:
-```bash
-just bench-python
-```
-
-### 2. Run Head-to-Head OGM Comparison
-Seeds a live database and benchmarks Voyager OGM against Neomodel and Pydantic v2:
-```bash
-# Start Neo4j container
-just up
-
-# Run head-to-head benchmark
-just bench-ogm
-```
-
-### 3. Run Rust Micro-Benchmarks
-Runs Criterion benchmarks for core AST traversal, expression folding, and dialect transpilation:
-```bash
-just bench
-```
-
-To run the comparative `neo4rs` driver benchmarks (compiles optional driver dependency):
-```bash
-cargo bench -p voyager-net --features bench-driver
-```
-
-### 4. Capture Benchmark Snapshots & Update Charts
-Runs the complete benchmark suite, writes timestamped JSON results, and re-renders SVG vector charts:
-```bash
-# Capture JSON snapshot named after active Git branch
-just bench-save
-
-# Re-generate SVG charts in benchmarks/assets/
-just bench-charts
-
-# Run full pipeline end-to-end
-just bench-all
-```
-
----
-
-## Test Environment & Disclaimer
-
-### Hardware & Setup (Local Development Laptop)
-These measurements were recorded on a local personal laptop:
-- **Machine**: Consumer Laptop (Dell / Lenovo)
-- **Processor**: 11th Gen Intel(R) Core(TM) i5-11300H @ 3.10GHz (4 cores / 8 threads)
-- **RAM**: 16 GB DDR4
-- **Operating System**: Microsoft Windows 11 Home Single Language (Build 26200)
-- **Rust Compiler**: `rustc 1.98.0` / `cargo 1.98.0`
-- **Python Runtime**: CPython 3.12.12 with PyO3 0.23 ABI3 bindings
-- **Database Engine**: Neo4j Enterprise 5.26.0 (Local container, 1GB JVM Heap limit)
-- **Sample Size**: 5 warm-up cycles followed by 10 timed cycles; outliers eliminated via IQR trimming.
-
-### Disclaimer & Caveats
-- **Not Final Production Terms**: These metrics represent relative in-library performance captures under isolated local conditions, not definitive or final benchmark claims.
-- **Real-World Variability**: Real-world scenarios (with remote network hops, disk I/O throughput, concurrent transactional writes, schema indexing, and distributed cluster nodes) will produce different yields.
-- **Better Benchmarking Needed**: Further comprehensive, large-scale, and distributed benchmarking across dedicated hardware is actively needed. Contributions, independent reproductions, and critique from diverse environments are warmly welcomed.
+- The driver comparison pre-warms the Voyager pool but not `neo4rs`, and runs once; it is not a statistical benchmark.
+- `just bench-python` collects `bench_*.py` via an explicit `python_files` override; the global pytest pattern stays `test_*.py`.
+- Results JSON written by these scripts is gitignored by design. Only `benchmark_summary.json`, `latest_summary.csv` and the two SVGs are committed.
