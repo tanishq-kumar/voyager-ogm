@@ -43,6 +43,38 @@ struct PendingEdge {
     predicates: Vec<NodeHandle>,
 }
 
+/// Property partition used by [`QueryBuilder::merge_relationship`].
+///
+/// Relationship MERGE follows the same key policy as node MERGE: `key` properties
+/// are placed in the MERGE pattern, `shared` properties are assigned on both
+/// create and match, and `create_only` properties (for example default-filled
+/// values) are assigned only when the relationship is created.
+#[derive(Debug, Clone, Default)]
+pub struct MergeRelationshipProperties {
+    /// Properties that identify the relationship inside the MERGE pattern.
+    pub key: Vec<(String, LiteralValue)>,
+    /// Properties applied with both `ON CREATE SET` and `ON MATCH SET`.
+    pub shared: Vec<(String, LiteralValue)>,
+    /// Properties applied with `ON CREATE SET` only.
+    pub create_only: Vec<(String, LiteralValue)>,
+}
+
+impl MergeRelationshipProperties {
+    /// Creates an empty property partition.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Cypher `CREATE`/`MERGE` patterns require a direction, so an undirected
+/// relationship is materialized left-to-right as outgoing.
+fn direction_for_creation(direction: Direction) -> Direction {
+    match direction {
+        Direction::Undirected => Direction::Outgoing,
+        other => other,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClauseMode {
     Match,
@@ -505,6 +537,153 @@ impl QueryBuilder {
         self.clause_mode = Some(ClauseMode::Merge);
         self.last_merged_variable = None;
         self
+    }
+
+    /// Creates a relationship between two variables already bound earlier in the query:
+    /// `CREATE (source)-[variable:TYPE {props}]->(target)`.
+    ///
+    /// The source and target must already be bound by a `MATCH`/`OPTIONAL MATCH` or by
+    /// an earlier `CREATE` in the same builder. Their pattern is emitted as a bare
+    /// variable reference (e.g. `(a)`), never with labels or properties. Relationship
+    /// properties are emitted inline and become query parameters.
+    ///
+    /// OpenCypher `CREATE` requires a direction, so an [`Direction::Undirected`]
+    /// relationship is created as an outgoing edge from `source` to `target`.
+    ///
+    /// Returns an error naming the offending alias when an endpoint is unbound.
+    pub fn create_relationship(
+        &mut self,
+        source: impl Into<String>,
+        rel_type: impl Into<String>,
+        direction: Direction,
+        rel_variable: Option<impl Into<String>>,
+        target: impl Into<String>,
+        properties: Vec<(impl Into<String>, impl Into<LiteralValue>)>,
+    ) -> Result<&mut Self> {
+        let source: String = source.into();
+        let target: String = target.into();
+        let rel_type: String = rel_type.into();
+        let rel_variable: Option<String> = rel_variable.map(Into::into);
+        let properties: Vec<(String, LiteralValue)> = properties
+            .into_iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect();
+
+        self.flush_current_path();
+        self.require_bound_relationship_endpoint(&source, "source")?;
+        self.require_bound_relationship_endpoint(&target, "target")?;
+
+        self.create();
+        self.append_relationship_path(
+            &source,
+            &rel_type,
+            direction_for_creation(direction),
+            rel_variable,
+            &target,
+            properties,
+        );
+        Ok(self)
+    }
+
+    /// Idempotently upserts a relationship between two already-bound variables:
+    /// `MERGE (source)-[variable:TYPE {key_props}]->(target)` with optional
+    /// `ON CREATE SET` / `ON MATCH SET` assignments.
+    ///
+    /// `key_properties` are emitted inline in the MERGE pattern. `shared_properties`
+    /// are applied with `ON CREATE SET` and `ON MATCH SET`, while
+    /// `create_only_properties` are applied with `ON CREATE SET` only, mirroring the
+    /// node MERGE key policy. Supplying either kind of set property requires a
+    /// relationship variable alias so the assignments have a target.
+    ///
+    /// An [`Direction::Undirected`] relationship is merged as an outgoing edge from
+    /// `source` to `target`, because Cypher requires a direction.
+    pub fn merge_relationship(
+        &mut self,
+        source: impl Into<String>,
+        rel_type: impl Into<String>,
+        direction: Direction,
+        rel_variable: Option<impl Into<String>>,
+        target: impl Into<String>,
+        properties: MergeRelationshipProperties,
+    ) -> Result<&mut Self> {
+        let source: String = source.into();
+        let target: String = target.into();
+        let rel_type: String = rel_type.into();
+        let rel_variable: Option<String> = rel_variable.map(Into::into);
+
+        self.flush_current_path();
+        self.require_bound_relationship_endpoint(&source, "source")?;
+        self.require_bound_relationship_endpoint(&target, "target")?;
+
+        if rel_variable.is_none()
+            && !(properties.shared.is_empty() && properties.create_only.is_empty())
+        {
+            return Err(Error::InvalidClause(
+                "merge_relationship requires a relationship variable alias when applying properties with ON CREATE SET / ON MATCH SET; pass a relationship variable (e.g. 'r')"
+                    .to_string(),
+            ));
+        }
+
+        self.merge();
+        let variable_for_sets = rel_variable.clone();
+        self.append_relationship_path(
+            &source,
+            &rel_type,
+            direction_for_creation(direction),
+            rel_variable,
+            &target,
+            properties.key,
+        );
+
+        if let Some(variable) = variable_for_sets {
+            for (name, value) in properties.shared {
+                self.on_create_and_match_set(variable.clone(), name, value);
+            }
+            for (name, value) in properties.create_only {
+                self.on_create_set(variable.clone(), name, value);
+            }
+        }
+        Ok(self)
+    }
+
+    /// Validates that a relationship endpoint alias is already bound in this query.
+    fn require_bound_relationship_endpoint(&self, alias: &str, role: &str) -> Result<()> {
+        if alias.trim().is_empty() {
+            return Err(Error::InvalidClause(format!(
+                "Cannot create relationship: {role} node alias must not be empty"
+            )));
+        }
+        if !self.is_variable_declared(alias) {
+            return Err(Error::InvalidClause(format!(
+                "Cannot create relationship: {role} node alias '{alias}' is not bound by a MATCH or earlier CREATE clause in this query"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Appends a relationship path between two bound variables to the active clause.
+    fn append_relationship_path(
+        &mut self,
+        source: &str,
+        rel_type: &str,
+        direction: Direction,
+        rel_variable: Option<String>,
+        target: &str,
+        properties: Vec<(String, LiteralValue)>,
+    ) {
+        self.node_var(source);
+        match direction {
+            Direction::Outgoing => {
+                self.to_with_props(vec![rel_type.to_string()], rel_variable, properties);
+            }
+            Direction::Incoming => {
+                self.from_with_props(vec![rel_type.to_string()], rel_variable, properties);
+            }
+            Direction::Undirected => {
+                self.edge_with_props(vec![rel_type.to_string()], rel_variable, properties);
+            }
+        }
+        self.node_var(target);
     }
 
     /// Adds an `ON CREATE SET target.prop = value` assignment to the active MERGE block.

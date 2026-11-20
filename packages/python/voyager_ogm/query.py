@@ -7,6 +7,7 @@ graph queries (openCypher, SQL:2023 PGQ, ISO GQL) backed by a native Rust AST en
 from __future__ import annotations
 
 import functools
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from typing import Any
@@ -590,6 +591,215 @@ class Query:
         q._start_merge_clause()
         if node_or_type is not None or labels is not None or variable is not None:
             q.node(node_or_type, labels=labels, variable=variable)
+        return q
+
+    @staticmethod
+    def _relationship_endpoint_alias(endpoint: Node | str, role: str) -> str:
+        """Resolves a relationship endpoint to the alias bound earlier in the query."""
+        if isinstance(endpoint, Node):
+            return endpoint.alias
+        if isinstance(endpoint, str) and endpoint:
+            return endpoint
+        raise TypeError(
+            f"create_relationship {role} must be a Node instance or an alias string, "
+            f"got {type(endpoint).__name__}"
+        )
+
+    @staticmethod
+    def _relationship_variable(
+        rel: Relationship | type[Relationship] | str,
+        variable: str | None,
+    ) -> str | None:
+        """Returns the requested relation alias, falling back to an explicitly supplied instance alias."""
+        if variable is not None:
+            return variable
+        if isinstance(rel, Relationship) and rel._alias_is_explicit:
+            return rel.alias
+        return None
+
+    @staticmethod
+    def _relationship_set_variable(
+        rel: Relationship | type[Relationship] | str,
+        rel_type: str,
+        variable: str | None,
+    ) -> str:
+        """Returns the alias targeting ON CREATE SET / ON MATCH SET assignments.
+
+        An explicit alias always wins. Otherwise a Relationship instance contributes
+        its own alias (the MERGE pattern and the SET clauses must name the same
+        variable), and a Relationship subclass or type string gets a fresh alias
+        generated with the same helper used for node and relationship aliases.
+        """
+        if variable is not None:
+            return variable
+        if isinstance(rel, Relationship):
+            return rel.alias
+        return _get_next_alias(rel_type)
+
+    @staticmethod
+    def _relationship_creation_parts(
+        rel: Relationship | type[Relationship] | str,
+    ) -> tuple[str, str, list[tuple[str, Any]], AbstractSet[str]]:
+        """Extracts type, direction, properties, and defaulted property names from a relationship."""
+        if isinstance(rel, Relationship):
+            return (
+                rel.edge_type,
+                getattr(type(rel), "__direction__", "outgoing"),
+                Query._extract_instance_properties(rel),
+                set(getattr(rel, "_defaulted_fields", set())),
+            )
+        if isinstance(rel, type) and issubclass(rel, Relationship):
+            rel_type = (
+                getattr(rel, "_cached_type", None)
+                or getattr(rel, "__type__", None)
+                or rel.__name__.upper()
+            )
+            return rel_type, getattr(rel, "__direction__", "outgoing"), [], set()
+        if isinstance(rel, str) and rel:
+            return rel, "outgoing", [], set()
+        raise TypeError(
+            "relationship must be a Relationship instance, Relationship subclass, "
+            f"or relationship type string, got {type(rel).__name__}"
+        )
+
+    @hybridmethod
+    def create_relationship(
+        self: Any,
+        source: Node | str,
+        rel: Relationship | type[Relationship] | str,
+        target: Node | str,
+        *,
+        variable: str | None = None,
+    ) -> Query:
+        """Creates a relationship between two nodes already bound in this query.
+
+        Generates a `CREATE (source)-[:TYPE {props}]->(target)` clause using the
+        aliases of nodes matched (or created) earlier in the same query. Node
+        instances are referenced by their alias, and plain alias strings are also
+        accepted.
+
+        Relationship properties are always emitted as query parameters, never
+        inlined as literals. An incoming relationship is emitted as
+        `(target)<-[:TYPE]-(source)` from the target's perspective, and an
+        undirected relationship is materialized as an outgoing edge from `source`
+        to `target` because Cypher `CREATE` requires a direction.
+
+        Args:
+            source: Source node instance or bound alias string.
+            rel: Relationship instance, Relationship subclass, or relationship type string.
+            target: Target node instance or bound alias string.
+            variable: Optional relationship variable alias, so the created edge can be
+                projected in a following `RETURN` clause. When omitted, an explicitly
+                supplied alias on a Relationship instance is used; auto-generated
+                instance aliases are not emitted.
+
+        Returns:
+            The Query instance chained with the CREATE relationship clause.
+
+        Raises:
+            ValueError: If `source` or `target` is not bound earlier in the query;
+                the message names the unbound alias.
+
+        Example:
+            >>> a, b = Person(alias="a"), Person(alias="b")
+            >>> query = (
+            ...     Query.match(a).where(a.id == 1)
+            ...     .match(b).where(b.id == 2)
+            ...     .create_relationship(a, Knows(since=2024), b)
+            ... )
+            >>> query.compile("cypher").statement
+            'MATCH (a:Person) WHERE a.id = $p0 MATCH (b:Person) WHERE b.id = $p1 CREATE (a)-[:KNOWS {since: $p2}]->(b)'
+        """
+        if isinstance(self, type):
+            q = self()
+        else:
+            q = self
+        source_alias = q._relationship_endpoint_alias(source, "source")
+        target_alias = q._relationship_endpoint_alias(target, "target")
+        rel_type, direction, properties, _ = q._relationship_creation_parts(rel)
+        q._native.create_relationship(
+            source_alias,
+            rel_type,
+            target_alias,
+            direction,
+            q._relationship_variable(rel, variable),
+            properties,
+        )
+        return q
+
+    @hybridmethod
+    def merge_relationship(
+        self: Any,
+        source: Node | str,
+        rel: Relationship | type[Relationship] | str,
+        target: Node | str,
+        *,
+        variable: str | None = None,
+    ) -> Query:
+        """Idempotently upserts a relationship between two nodes already bound in this query.
+
+        Generates a `MERGE (source)-[:TYPE {key}]->(target)` clause, with
+        `ON CREATE SET` / `ON MATCH SET` assignments for non-key relationship
+        properties. Key selection follows the same native schema policy as node
+        MERGE: a supplied primary key wins, then supplied unique fields, then all
+        supplied properties. Default-filled values are written only on create.
+
+        Incoming relationships are merged as `(target)<-[:TYPE]-(source)`, and
+        undirected relationships are materialized as outgoing from `source` to
+        `target`, because Cypher `MERGE` requires a direction.
+
+        Args:
+            source: Source node instance or bound alias string.
+            rel: Relationship instance, Relationship subclass, or relationship type string.
+            target: Target node instance or bound alias string.
+            variable: Optional relationship variable alias. When omitted, an explicitly
+                supplied alias on a Relationship instance is used. If non-key
+                properties need `ON CREATE SET` / `ON MATCH SET`, the clause
+                automatically falls back to the instance alias (or generates one for
+                a Relationship class or type string) so callers do not have to name a
+                variable.
+
+        Returns:
+            The Query instance chained with the MERGE relationship clause.
+
+        Raises:
+            ValueError: If `source` or `target` is not bound earlier in the query.
+        """
+        if isinstance(self, type):
+            q = self()
+        else:
+            q = self
+        source_alias = q._relationship_endpoint_alias(source, "source")
+        target_alias = q._relationship_endpoint_alias(target, "target")
+        rel_type, direction, properties, defaulted = q._relationship_creation_parts(rel)
+
+        key_props: list[tuple[str, Any]] = []
+        shared_props: list[tuple[str, Any]] = []
+        create_props: list[tuple[str, Any]] = []
+        if properties:
+            if isinstance(rel, Relationship):
+                supplied = [name for name, _ in properties]
+                key_names = set(_native_merge_key_fields(type(rel), supplied, defaulted))
+            else:
+                key_names = {name for name, _ in properties}
+            key_props = [(k, v) for k, v in properties if k in key_names]
+            shared_props = [
+                (k, v) for k, v in properties if k not in key_names and k not in defaulted
+            ]
+            create_props = [(k, v) for k, v in properties if k in defaulted]
+
+        variable_for_merge = q._relationship_variable(rel, variable)
+        if variable_for_merge is None and (shared_props or create_props):
+            variable_for_merge = q._relationship_set_variable(rel, rel_type, variable)
+
+        q._native.merge_relationship(
+            source_alias,
+            rel_type,
+            target_alias,
+            direction,
+            variable_for_merge,
+            (key_props, shared_props, create_props),
+        )
         return q
 
     @hybridmethod

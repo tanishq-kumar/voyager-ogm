@@ -43,6 +43,10 @@ _T = TypeVar("_T")
 # Thread-local alias counter for deterministic auto-aliasing
 _alias_state = threading.local()
 
+# Relationships whose alias was generated automatically. Tracking them weakly keeps
+# "was this alias explicit?" derivable without storing a per-instance flag.
+_auto_aliased_relationships: weakref.WeakSet[Relationship] = weakref.WeakSet()
+
 _BUILTIN_TYPES = {
     "str": str,
     "int": int,
@@ -1577,7 +1581,11 @@ class Relationship:
             or self.__type__
             or self.__class__.__name__.upper()
         )
-        self._alias = alias or _get_next_alias(rel_type)
+        if alias is None:
+            self._alias = _get_next_alias(rel_type)
+        else:
+            self._alias = alias
+        auto_alias = alias is None
         self._cached_alias = self._alias
         self._bound_fields: dict[str, BoundField] = {}
         hydrated_values: dict[str, Any] = {}
@@ -1586,11 +1594,18 @@ class Relationship:
             hydrated_values[k] = _hydrate_field_value(schema.get(k), v)
         self._defaulted_fields = _apply_field_defaults(hydrated_values, schema)
         self._values = hydrated_values
+        if auto_alias:
+            _auto_aliased_relationships.add(self)
 
     @property
     def alias(self) -> str:
         """Returns the variable alias assigned to this relationship instance."""
         return self._alias
+
+    @property
+    def _alias_is_explicit(self) -> bool:
+        """Returns True when the caller supplied the alias instead of auto-generation."""
+        return self not in _auto_aliased_relationships
 
     @property
     def edge_type(self) -> str:
