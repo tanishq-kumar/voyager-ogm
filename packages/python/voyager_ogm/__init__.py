@@ -1,5 +1,7 @@
 """Voyager OGM: Multi-Dialect, Vendor-Neutral Object-Graph Mapper."""
 
+from typing import TYPE_CHECKING, Any
+
 from voyager_ogm import expressions, fn, types
 from voyager_ogm._voyager_rs import (
     ArrowStream,
@@ -124,14 +126,6 @@ from voyager_ogm.session import (
     Session,
     SessionHealth,
 )
-from voyager_ogm.sqlalchemy import (
-    GraphRelationshipProperty,
-    GraphTableClause,
-    PropertyGraph,
-    as_cte,
-    graph_relationship,
-    graph_table,
-)
 from voyager_ogm.streaming import (
     QueryResult,
     to_arrow,
@@ -141,6 +135,66 @@ from voyager_ogm.transaction import AsyncTransaction, Transaction, TransactionSa
 from voyager_ogm.types import Point, parse_iso_duration, to_iso_duration
 from voyager_ogm.unit_of_work import SavepointContext, UnitOfWork
 from voyager_ogm.viewer import GraphViewer, explore, show, view_graph, visualize_query
+
+if TYPE_CHECKING:
+    from voyager_ogm.sqlalchemy import (
+        GraphRelationshipProperty,
+        GraphTableClause,
+        PropertyGraph,
+        as_cte,
+        graph_relationship,
+        graph_table,
+    )
+
+    _HAS_SQLALCHEMY = True
+else:
+    try:
+        from voyager_ogm.sqlalchemy import (
+            GraphRelationshipProperty,
+            GraphTableClause,
+            PropertyGraph,
+            as_cte,
+            graph_relationship,
+            graph_table,
+        )
+
+        _HAS_SQLALCHEMY = True
+    except ImportError:
+        _HAS_SQLALCHEMY = False
+
+_SQLALCHEMY_EXPORTS = frozenset(
+    {
+        "GraphRelationshipProperty",
+        "GraphTableClause",
+        "PropertyGraph",
+        "as_cte",
+        "graph_relationship",
+        "graph_table",
+    }
+)
+_SQLALCHEMY_INSTALL_HINT = 'pip install "voyager-ogm[sqlalchemy]"'
+
+
+def __getattr__(name: str) -> Any:
+    """Raises a clear ImportError for SQLAlchemy-only names when the extra is missing.
+
+    Args:
+        name: Attribute name requested from this package.
+
+    Returns:
+        The resolved attribute value when available.
+
+    Raises:
+        ImportError: If the attribute is SQLAlchemy-backed and SQLAlchemy is not installed.
+        AttributeError: If the attribute does not exist.
+    """
+    if name in _SQLALCHEMY_EXPORTS and not _HAS_SQLALCHEMY:
+        raise ImportError(
+            f"{name} requires SQLAlchemy. Install the optional extra with: "
+            f"{_SQLALCHEMY_INSTALL_HINT}"
+        )
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __version__ = version()
 
@@ -185,8 +239,6 @@ __all__ = [
     "FullTextIndex",
     "FunctionExpr",
     "GraphQuery",
-    "GraphRelationshipProperty",
-    "GraphTableClause",
     "GraphViewer",
     "HybridQuery",
     "HybridSession",
@@ -212,7 +264,6 @@ __all__ = [
     "PostgresBridge",
     "PredicateExpr",
     "PropExpr",
-    "PropertyGraph",
     "Query",
     "QueryResult",
     "RelateBridge",
@@ -233,7 +284,6 @@ __all__ = [
     "UnitOfWork",
     "VoyagerConfig",
     "adapt_tantivy_query",
-    "as_cte",
     "canonical_fulltext_index_name",
     "canonical_vector_index_name",
     "case",
@@ -263,8 +313,6 @@ __all__ = [
     "func_",
     "generate_synthetic_stream",
     "get_config",
-    "graph_relationship",
-    "graph_table",
     "ident",
     "list_comprehension",
     "lit",
@@ -293,3 +341,13 @@ __all__ = [
     "visualize_query",
     "VoyagerError",
 ]
+
+if _HAS_SQLALCHEMY:
+    __all__ += [
+        "GraphRelationshipProperty",
+        "GraphTableClause",
+        "PropertyGraph",
+        "as_cte",
+        "graph_relationship",
+        "graph_table",
+    ]

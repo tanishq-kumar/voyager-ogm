@@ -219,7 +219,12 @@ class HybridSession:
 
         try:
             from sqlalchemy import select
-
+        except ImportError:
+            raise ImportError(
+                "HybridSession.query_relational_from_graph requires SQLAlchemy. "
+                'Install the optional extra with: pip install "voyager-ogm[sqlalchemy]"'
+            ) from None
+        try:
             col = getattr(sa_model_or_table, sa_key) if isinstance(sa_key, str) else sa_key
             if filter_fn is not None:
                 stmt = filter_fn(sa_model_or_table, unique_ids)
