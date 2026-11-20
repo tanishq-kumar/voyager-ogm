@@ -242,27 +242,6 @@ Models are registered under a module-qualified identity (`package.module.Model`)
 
 ---
 
-## Performance & Benchmarks
-
-Two captures are published. Both predate the v0.4.0 changes (native parameter binding, the MERGE-key policy, partial bulk MERGE, and the real-transaction/UnitOfWork rework), so treat them as historical reference rather than current performance. See [**benchmarks/README.md**](benchmarks/README.md) for methodology, environment and reproduction steps.
-
-1. **Representation cost, 10,000 rows**: constructing a Polars DataFrame from dicts ran at **1,013,607 rows/s**, versus **23,016 rows/s** for `neomodel.StructuredNode.inflate()` and **280,899 rows/s** for Pydantic v2 model construction. Method: 10,000 rows pre-fetched with the official `neo4j` driver, in-memory conversion only, mean of 5 rounds; captured 2026-09-13. This is a representation-cost measurement, not end-to-end OGM hydration.
-2. **Point-read latency, 20 clients x 1,000 reads**: Voyager's native Bolt client measured **49.5 ms p99 / 12.5 ms p50** versus **123.8 ms p99 / 12.1 ms p50** for `neo4rs` 0.8.0, a community Rust driver. Method: one live Neo4j, identical statement, 20 concurrent clients x 1,000 point reads, single run; captured on or before 2026-09-12 (first committed then).
-
-No memory figures are published: the repository contains no RSS measurement script.
-
-<div align="center">
-
-![Hydration representation cost](benchmarks/assets/hydration_throughput.svg)
-
-![High-concurrency point-read latency](benchmarks/assets/concurrency_latency.svg)
-
-</div>
-
-> **Disclaimer**: These are in-library captures from a local development environment, not production guarantees. Network topology, disk I/O and database configuration will change real-world results.
-
----
-
 ## Database Compatibility
 
 Voyager is verified against 6 database backends:

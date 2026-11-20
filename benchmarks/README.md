@@ -14,6 +14,8 @@ This directory holds the benchmark scripts, the chart data, and the published ca
 
 Source: `packages/python/benches/bench_head_to_head.py`. Captured 2026-09-13 (`benchmarks/benchmark_summary.json`). This measures representation cost, not end-to-end OGM hydration: the database fetch is outside the timer.
 
+![Hydration representation cost](assets/hydration_throughput.svg)
+
 ### Point-read latency (20 clients x 1,000 reads)
 
 | Driver | p50 | p99 | Method |
@@ -22,6 +24,8 @@ Source: `packages/python/benches/bench_head_to_head.py`. Captured 2026-09-13 (`b
 | `neo4rs` 0.8.0 (community Rust driver) | 12.1 ms | 123.8 ms | Same scenario |
 
 Source: `crates/voyager-drivers/benches/bench_driver_vs_voyager_drivers.rs`. Captured on or before 2026-09-12 (when these numbers were first committed). This is a Rust-client comparison, not a comparison against an official Neo4j driver. The script writes its JSON results to a gitignored path, so p95 is deliberately not published.
+
+![High-concurrency point-read latency](assets/concurrency_latency.svg)
 
 ### Not published
 

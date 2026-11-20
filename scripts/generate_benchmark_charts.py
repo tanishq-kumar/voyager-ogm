@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generates clean, responsive SVG benchmark charts for README documentation.
+"""Generates clean, responsive SVG benchmark charts for benchmarks/README.md.
 
 Produces vector SVG graphics with dark mode styling:
 1. benchmarks/assets/hydration_throughput.svg
