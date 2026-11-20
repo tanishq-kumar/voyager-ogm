@@ -20,7 +20,7 @@ workspace = true
 
 [dependencies]
 voyager-ogm = { workspace = true, features = ["serde", "arrow"] }
-voyager-drivers = { workspace = true }
+voyager-drivers = { workspace = true, features = ["bolt", "postgres", "redis", "arrow"] }
 tokio = { workspace = true }
 arrow = { workspace = true }
 pyo3 = { workspace = true }

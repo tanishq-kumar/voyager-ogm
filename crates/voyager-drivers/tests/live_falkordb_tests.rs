@@ -1,6 +1,6 @@
 //! Live integration tests for voyager-drivers RedisConnection against running FalkorDB / Valkey container.
 
-use arrow::array::{Float64Array, Int64Array, StringArray};
+use arrow_array::{Float64Array, Int64Array, StringArray};
 use std::collections::HashMap;
 
 use voyager_drivers::engine::AsyncConnection;

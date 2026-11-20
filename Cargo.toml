@@ -37,9 +37,10 @@ url = "2.5"
 # Serialization & Data
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-arrow = { version = "57.3", default-features = false, features = ["ffi", "ipc", "json"] }
+arrow = { version = "57.3", default-features = false, features = ["ffi"] }
 arrow-schema = "57.3"
 arrow-array = "57.3"
+arrow-select = "57.3"
 
 # Cryptography & Auth (PostgreSQL MD5 & SCRAM-SHA-256)
 md-5 = "0.10"

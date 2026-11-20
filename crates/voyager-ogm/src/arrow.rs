@@ -1,10 +1,11 @@
 //! Zero-Copy Apache Arrow Columnar Graph Streaming & Ingestion.
 
 use crate::error::{Error, Result};
-use arrow::array::{ArrayRef, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
-use arrow::ffi_stream::FFI_ArrowArrayStream;
-use arrow::record_batch::RecordBatchReader;
+use arrow_array::ffi_stream::FFI_ArrowArrayStream;
+use arrow_array::{
+    ArrayRef, BooleanArray, Float64Array, Int64Array, RecordBatch, RecordBatchReader, StringArray,
+};
+use arrow_schema::{ArrowError, DataType, Field, Schema};
 use std::sync::Arc;
 
 /// In-memory stream reader over a collection of Arrow `RecordBatch` chunks.
@@ -26,7 +27,7 @@ impl MemoryRecordBatchReader {
 }
 
 impl Iterator for MemoryRecordBatchReader {
-    type Item = std::result::Result<RecordBatch, arrow::error::ArrowError>;
+    type Item = std::result::Result<RecordBatch, ArrowError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.index < self.batches.len() {

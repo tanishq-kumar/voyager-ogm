@@ -2,18 +2,25 @@
 
 use std::collections::HashMap;
 
+#[cfg(feature = "bolt")]
 use crate::bolt::BoltConnection;
-use crate::config::{ConnectionConfig, PoolConfig};
+#[cfg(feature = "bolt")]
+use crate::config::ConnectionConfig;
+use crate::config::PoolConfig;
 use crate::engine::{AsyncConnection, QueryResult};
 use crate::error::{NetError, Result};
 use crate::native_transaction::NativeTransaction;
 use crate::pool::ConnectionPool;
+#[cfg(feature = "postgres")]
 use crate::postgres::PostgresConnection;
+#[cfg(feature = "redis")]
 use crate::redis::RedisConnection;
 use crate::uri::{DatabaseProtocol, ParsedUri};
 
 /// Asynchronously connects to any supported database protocol based on the URI scheme.
 pub async fn connect_any(uri: &str) -> Result<Box<dyn AsyncConnection>> {
+    // Parsing already rejects protocols whose Cargo feature is disabled, with an
+    // error that names the missing feature.
     let parsed = ParsedUri::parse(uri)?;
     if parsed.tls != crate::config::TlsMode::Disabled {
         return Err(NetError::TlsError(format!(
@@ -23,17 +30,47 @@ pub async fn connect_any(uri: &str) -> Result<Box<dyn AsyncConnection>> {
     }
     match parsed.protocol {
         DatabaseProtocol::Bolt => {
-            let config = ConnectionConfig::from_uri(uri);
-            let conn = BoltConnection::connect(&config).await?;
-            Ok(Box::new(conn))
+            #[cfg(feature = "bolt")]
+            {
+                let config = ConnectionConfig::from_uri(uri);
+                let conn = BoltConnection::connect(&config).await?;
+                Ok(Box::new(conn))
+            }
+            #[cfg(not(feature = "bolt"))]
+            {
+                Err(NetError::ProtocolError(
+                    "voyager-drivers was built without the `bolt` feature; cannot open Bolt connections"
+                        .to_string(),
+                ))
+            }
         }
         DatabaseProtocol::Postgres => {
-            let conn = PostgresConnection::connect(&parsed).await?;
-            Ok(Box::new(conn))
+            #[cfg(feature = "postgres")]
+            {
+                let conn = PostgresConnection::connect(&parsed).await?;
+                Ok(Box::new(conn))
+            }
+            #[cfg(not(feature = "postgres"))]
+            {
+                Err(NetError::ProtocolError(
+                    "voyager-drivers was built without the `postgres` feature; cannot open PostgreSQL connections"
+                        .to_string(),
+                ))
+            }
         }
         DatabaseProtocol::Redis => {
-            let conn = RedisConnection::connect(&parsed).await?;
-            Ok(Box::new(conn))
+            #[cfg(feature = "redis")]
+            {
+                let conn = RedisConnection::connect(&parsed).await?;
+                Ok(Box::new(conn))
+            }
+            #[cfg(not(feature = "redis"))]
+            {
+                Err(NetError::ProtocolError(
+                    "voyager-drivers was built without the `redis` feature; cannot open Redis/FalkorDB connections"
+                        .to_string(),
+                ))
+            }
         }
         DatabaseProtocol::DuckDb => Err(NetError::ProtocolError(
             "Embedded DuckDB does not use TCP network connections; use voyager's DuckDbBridge instead"

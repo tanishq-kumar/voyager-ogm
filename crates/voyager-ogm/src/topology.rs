@@ -21,6 +21,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::ast::{
     AstNode, BinaryOp, Direction, LabelExpression, LiteralValue, NodeHandle, QueryAstArena,
 };
+#[cfg(feature = "serde")]
 use crate::error::Result;
 
 /// A graph node extracted from query path patterns.

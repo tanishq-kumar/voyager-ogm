@@ -1,6 +1,8 @@
 //! Asynchronous database engine, connection, and transaction traits for Voyager OGM.
 
 use arrow_array::RecordBatch;
+#[cfg(feature = "arrow")]
+use arrow_select::concat::concat_batches;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -93,6 +95,7 @@ impl QueryResult {
     }
 
     /// Consolidates multiple Arrow record batches into a single `RecordBatch`.
+    #[cfg(feature = "arrow")]
     pub fn into_single_batch(self) -> Result<Option<RecordBatch>> {
         if self.batches.is_empty() {
             return Ok(None);
@@ -102,8 +105,7 @@ impl QueryResult {
         }
 
         let schema = self.batches[0].schema();
-        let concatenated =
-            arrow::compute::concat_batches(&schema, &self.batches).map_err(NetError::ArrowError)?;
+        let concatenated = concat_batches(&schema, &self.batches).map_err(NetError::ArrowError)?;
         Ok(Some(concatenated))
     }
 }

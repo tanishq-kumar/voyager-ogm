@@ -19,6 +19,6 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-voyager-ogm = { workspace = true }
+voyager-ogm = { workspace = true, features = ["serde", "arrow"] }
 clap = { workspace = true }
 miette = { workspace = true }

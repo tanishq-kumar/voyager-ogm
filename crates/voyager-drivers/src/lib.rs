@@ -18,17 +18,23 @@ pub mod client;
 pub mod config;
 pub mod engine;
 pub mod error;
+#[cfg(feature = "testkit")]
 pub mod mock;
 pub mod native_transaction;
 pub mod pool;
+#[cfg(feature = "postgres")]
 pub mod postgres;
+#[cfg(feature = "redis")]
 pub mod redis;
 pub mod uri;
 
 // Re-exports
+#[cfg(feature = "testkit")]
+pub use bolt::BoltStubServer;
+#[cfg(feature = "bolt")]
+pub use bolt::{BoltConnection, BoltRequest, BoltResponse, BoltVersion};
 pub use bolt::{
-    BoltConnection, BoltNode, BoltPath, BoltRelationship, BoltRequest, BoltResponse,
-    BoltStubServer, BoltUnboundRelationship, BoltValue, BoltVersion, PackStream,
+    BoltNode, BoltPath, BoltRelationship, BoltUnboundRelationship, BoltValue, PackStream,
 };
 pub use circuit::{
     BackendRoute, CircuitConfig, CircuitRouter, CircuitSnapshot, CircuitState, ErrorClassification,
@@ -41,15 +47,18 @@ pub use engine::{
     QueryResult, QuerySummary,
 };
 pub use error::{NetError, Result};
+#[cfg(feature = "testkit")]
 pub use mock::{MockConnection, MockConnectionFactory, MockEngine};
 pub use native_transaction::{NativeTransaction, NativeTransactionState};
 pub use pool::{ConnectionPool, PoolMetricsSnapshot, PooledConnection};
+#[cfg(feature = "postgres")]
 pub use postgres::{
     AgeEdge, AgePath, AgeValue, AgeVertex, AuthenticationRequest, BackendMessage, FieldDescription,
     FrontendMessage, PgDiagnostic, PostgresConnection, PostgresTransaction, ScramClient,
     StartupMessage, TransactionStatus, clean_agtype_string, compute_md5_password, parse_agtype,
     rows_to_record_batch,
 };
+#[cfg(feature = "redis")]
 pub use redis::{
     FalkorNode, FalkorQueryResult, FalkorRelationship, FalkorStatistics, RedisConnection,
     RedisTransaction, RespCodec, RespValue,

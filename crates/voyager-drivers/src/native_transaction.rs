@@ -273,7 +273,7 @@ impl<C: AsyncConnection + 'static> Drop for NativeTransaction<C> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "testkit"))]
 mod tests {
     use super::*;
     use crate::config::PoolConfig;
