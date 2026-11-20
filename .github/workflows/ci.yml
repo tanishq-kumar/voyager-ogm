@@ -367,7 +367,9 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Build Wheel (maturin)
-        run: uv run --python ${{ matrix.python-version }} maturin build --release --out dist
+        # maturin as a standalone tool (version range from [build-system].requires);
+        # `uv run` would need the dev extra and would also build the project first.
+        run: uvx --from "maturin>=1.7,<2.0" maturin build --release --out dist
 
       - name: Install Wheel into Fresh Environment (No Extras)
         run: |
