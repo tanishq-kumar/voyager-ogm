@@ -208,7 +208,7 @@ release-prepare version:
     git commit -m "chore(release): v{{version}}"
     echo ""
     echo "Release commit for v{{version}} created on '$branch'."
-    echo "Next: push the branch, open a PR to main, merge it, then run 'just release-tag {{version}}' on main."
+    echo "Next: push the branch, open a PR to main with labels full-ci and skip-changelog, merge it, then run 'just release-tag {{version}}' on main."
 
 # Release step 2 (on main, after the release PR is merged): verify the release and create the annotated tag
 [unix]

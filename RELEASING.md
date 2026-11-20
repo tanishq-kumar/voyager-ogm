@@ -85,7 +85,7 @@ Release wheels and source distributions are published to PyPI using GitHub Actio
    - Runs `cargo update -w` and `uv lock` to update lockfiles.
    - Runs `python3 scripts/check_changelog.py --release <version> <date>` to convert `[Unreleased]` to a dated section and add link definitions.
    - Creates the commit `chore(release): v<version>`.
-4. Push the branch, open a pull request to `main` (label `full-ci`), and merge it once CI is green.
+4. Push the branch, open a pull request to `main` with the labels `full-ci` and `skip-changelog` (the release commit moves entries out of `[Unreleased]`, which the changelog gate would otherwise reject), and merge it once CI is green.
 5. Update your local `main` and create the tag:
    ```bash
    git switch main && git pull --ff-only
