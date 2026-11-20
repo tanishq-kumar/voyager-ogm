@@ -8,6 +8,7 @@ for one rejection class.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -303,3 +304,511 @@ def test_explicit_literal_and_expression_lists_compile() -> None:
     assert strings["parameters"] == {"p0": ["red", "green"]}
     assert expressions["statement"] == "MATCH (p:Person) RETURN [$p0, $p1, $p2] AS xs"
     assert expressions["parameters"] == {"p0": 1, "p1": 2, "p2": 3}
+
+
+# --- `where`: one expression or a list of expressions (issue #187 follow-up) ---
+
+MATCH_WHERE_SINGLE_JSON = """
+{
+  "spec_version": 1,
+  "matches": [
+    {
+      "paths": [[["node", "p", ["Person"]]]],
+      "where": ["bin", "=", ["prop", "p", "age"], ["lit", 21]]
+    }
+  ],
+  "projections": [["field", "p", "name", null]]
+}
+"""
+
+MATCH_WHERE_LIST_JSON = """
+{
+  "spec_version": 1,
+  "matches": [
+    {
+      "paths": [[["node", "p", ["Person"]]]],
+      "where": [["bin", "=", ["prop", "p", "age"], ["lit", 21]]]
+    }
+  ],
+  "projections": [["field", "p", "name", null]]
+}
+"""
+
+WITH_WHERE_SINGLE_JSON = """
+{
+  "spec_version": 1,
+  "matches": [{"paths": [[["node", "p", ["Person"]]]]}],
+  "with_clauses": [
+    {
+      "projections": [["field", "p", "name", "n"]],
+      "where": ["bin", "=", ["ident", "n"], ["lit", "Alice"]]
+    }
+  ],
+  "projections": [["expr", ["ident", "n"], null]]
+}
+"""
+
+WITH_WHERE_LIST_JSON = """
+{
+  "spec_version": 1,
+  "matches": [{"paths": [[["node", "p", ["Person"]]]]}],
+  "with_clauses": [
+    {
+      "projections": [["field", "p", "name", "n"]],
+      "where": [["bin", "=", ["ident", "n"], ["lit", "Alice"]]]
+    }
+  ],
+  "projections": [["expr", ["ident", "n"], null]]
+}
+"""
+
+
+def compile_json(spec_json: str, dialect: str = "cypher") -> dict[str, Any]:
+    """Compile a literal JSON spec, so every array is a real JSON list."""
+    return compile_query_from_spec(json.loads(spec_json), dialect)
+
+
+@pytest.mark.parametrize(
+    ("single_json", "list_json"),
+    [
+        pytest.param(MATCH_WHERE_SINGLE_JSON, MATCH_WHERE_LIST_JSON, id="match"),
+        pytest.param(WITH_WHERE_SINGLE_JSON, WITH_WHERE_LIST_JSON, id="with"),
+    ],
+)
+def test_where_single_expression_json_array_compiles_like_predicate_list(
+    single_json: str, list_json: str
+) -> None:
+    """A single expression `where` is the same query as a one-item list form."""
+    single = compile_json(single_json)
+    predicates = compile_json(list_json)
+    assert single["statement"] == predicates["statement"]
+    assert single["parameters"] == predicates["parameters"]
+    assert "WHERE" in single["statement"]
+
+
+def test_where_list_of_two_predicates_json_array() -> None:
+    """Two predicates compile to the same AND as two list items."""
+    compiled = compile_json(
+        """
+        {
+          "spec_version": 1,
+          "matches": [
+            {
+              "paths": [[["node", "p", ["Person"]]]],
+              "where": [
+                ["bin", ">", ["prop", "p", "age"], ["lit", 21]],
+                ["bin", "<", ["prop", "p", "age"], ["lit", 65]]
+              ]
+            }
+          ],
+          "projections": [["field", "p", "name", null]]
+        }
+        """
+    )
+    assert compiled["statement"] == (
+        "MATCH (p:Person) WHERE (p.age > $p0) AND (p.age < $p1) RETURN p.name"
+    )
+    assert compiled["parameters"] == {"p0": 21, "p1": 65}
+
+
+def test_empty_where_array_is_an_empty_predicate_list() -> None:
+    """An empty `where` array adds no predicate, matching the previous rule."""
+    compiled = compile_json(
+        """
+        {
+          "spec_version": 1,
+          "matches": [
+            {
+              "paths": [[["node", "p", ["Person"]]]],
+              "where": []
+            }
+          ],
+          "projections": [["field", "p", "name", null]]
+        }
+        """
+    )
+    assert compiled["statement"] == "MATCH (p:Person) RETURN p.name"
+
+
+# --- Raw JSON value positions (not expression positions) ---------------------
+
+RAW_VALUE_POSITIONS: dict[str, tuple[str, str, str]] = {
+    "spec_version": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["field", "p", "name", null]]}',
+        "cypher",
+        "MATCH (p:Person)",
+    ),
+    "load_csv[url,with_headers,alias]": (
+        '{"spec_version": 1, "load_csv": ["https://example.com/nodes.csv", true, "row"], '
+        '"matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["field", "p", "name", null]]}',
+        "cypher",
+        "LOAD CSV WITH HEADERS FROM $p0 AS row",
+    ),
+    "unwinds[param,alias]": (
+        '{"spec_version": 1, "unwinds": [["$batch", "row"]], '
+        '"matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["field", "p", "name", null]]}',
+        "cypher",
+        "UNWIND $$batch AS row",
+    ),
+    "match.optional": (
+        '{"spec_version": 1, "matches": [{"optional": true, '
+        '"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["field", "p", "name", null]]}',
+        "cypher",
+        "OPTIONAL MATCH",
+    ),
+    "match.path_mode": (
+        '{"spec_version": 1, "matches": [{"path_mode": "simple", '
+        '"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["field", "p", "name", null]]}',
+        "iso_gql",
+        "MATCH SIMPLE",
+    ),
+    "match.path_variable": (
+        '{"spec_version": 1, "matches": [{"path_variable": "pth", '
+        '"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["field", "p", "name", null]]}',
+        "cypher",
+        "MATCH pth =",
+    ),
+    "path_step.node[variable,labels]": (
+        '{"spec_version": 1, "matches": [{"paths": '
+        '[[["node", null, ["Person", "Admin"]]]]}], '
+        '"projections": [["field", "p", "name", null]]}',
+        "cypher",
+        "(:Person:Admin)",
+    ),
+    "path_step.edge[direction,types,variable,min_hops,max_hops]": (
+        '{"spec_version": 1, "matches": [{"paths": [['
+        '["node", "p", ["Person"]], '
+        '["edge", "incoming", ["KNOWS", "LIKES"], "r", 1, 3], '
+        '["node", "f", ["Person"]]]]}], '
+        '"projections": [["field", "p", "name", null]]}',
+        "cypher",
+        "<-[r:KNOWS|LIKES*1..3]-",
+    ),
+    "path_step.edge[null_hops]": (
+        '{"spec_version": 1, "matches": [{"paths": [['
+        '["node", "p", ["Person"]], '
+        '["edge", "undirected", [], null, null, null], '
+        '["node", "f", ["Person"]]]]}], '
+        '"projections": [["field", "p", "name", null]]}',
+        "cypher",
+        ")-[]-(",
+    ),
+    "mutation.create[paths]": (
+        '{"spec_version": 1, "mutations": [["create", [[["node", "c", ["Company"]]]]]]}',
+        "cypher",
+        "CREATE (c:Company)",
+    ),
+    "mutation.merge[path,on_create,on_match]": (
+        '{"spec_version": 1, "mutations": [["merge", [["node", "c", ["Company"]]], '
+        '[["c", "name", ["lit", "Acme"]]], [["c", "name", ["lit", "AcmeCorp"]]]]]}',
+        "cypher",
+        "ON CREATE SET c.name = $p0 ON MATCH SET c.name = $p1",
+    ),
+    "mutation.set[variable,property]": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"mutations": [["set", "p", "age", ["lit", 30]]], '
+        '"projections": [["field", "p", "name", null]]}',
+        "cypher",
+        "SET p.age = $p0",
+    ),
+    "mutation.delete[detach,targets]": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"mutations": [["delete", true, ["p"]]]}',
+        "cypher",
+        "DETACH DELETE p",
+    ),
+    "mutation.remove[variable,property]": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"mutations": [["remove", "p", "age"]], '
+        '"projections": [["field", "p", "name", null]]}',
+        "cypher",
+        "REMOVE p.age",
+    ),
+    "with_clause[distinct,projections,order_by,skip,limit]": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"with_clauses": [{"distinct": true, "projections": [["field", "p", "name", "n"]], '
+        '"order_by": [["n", "n", true]], "skip": 0, "limit": 5}], '
+        '"projections": [["field", "n", "n", null]]}',
+        "cypher",
+        "WITH DISTINCT p.name AS n ORDER BY n.n ASC SKIP 0 LIMIT 5",
+    ),
+    "projection.field[variable,property,alias]": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["field", "p", "name", "n"]]}',
+        "cypher",
+        "RETURN p.name AS n",
+    ),
+    "projection.agg[variable,property,func,alias]": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["agg", "p", "age", "count_distinct", null]]}',
+        "cypher",
+        "RETURN COUNT(DISTINCT p.age)",
+    ),
+    "root.distinct": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["field", "p", "name", null]], "distinct": true}',
+        "cypher",
+        "RETURN DISTINCT p.name",
+    ),
+    "order_by[variable,property,direction]": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["field", "p", "name", null]], '
+        '"order_by": [["p", "age", false], ["p", "name", "ASC"]]}',
+        "cypher",
+        "ORDER BY p.age DESC, p.name ASC",
+    ),
+    "pagination[skip,offset,limit]": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["field", "p", "name", null]], '
+        '"skip": 0, "offset": 0, "limit": 50}',
+        "cypher",
+        "SKIP 0 LIMIT 50",
+    ),
+    "execution_mode": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["field", "p", "name", null]], "execution_mode": "explain"}',
+        "cypher",
+        "EXPLAIN MATCH (p:Person)",
+    ),
+    "expression.lit[payload]": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["expr", ["lit", {"name": "Alice", "age": 30, '
+        '"tags": ["a", "b"], "ok": true, "none": null}], "m"]]}',
+        "cypher",
+        "RETURN $p0 AS m",
+    ),
+    "expression.case[operand,branches,else]": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["expr", ["case", null, '
+        '[[["lit", true], ["lit", "yes"]]], null], "c"]]}',
+        "cypher",
+        "CASE WHEN $p0 THEN $p1 END",
+    ),
+    "expression.list_comp[where_filter,map_expr]": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["expr", ["list_comp", "x", ["prop", "p", "tags"], null, null], '
+        '"x"]]}',
+        "cypher",
+        "[x IN p.tags]",
+    ),
+    "expression.pattern_comp[path_spec,where_filter]": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["expr", ["pattern_comp", [["node", "f", ["Person"]]], null, '
+        '["prop", "f", "name"]], "x"]]}',
+        "cypher",
+        "[(f:Person) | f.name]",
+    ),
+    "expression.exists[subquery_spec]": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["expr", ["exists", {"spec_version": 1, "matches": [{"paths": '
+        '[[["node", "f", ["Person"]]]]}]}], "x"]]}',
+        "cypher",
+        "EXISTS { MATCH (f:Person) }",
+    ),
+    "expression.count[subquery_spec]": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["expr", ["count", {"spec_version": 1, "matches": [{"paths": '
+        '[[["node", "f", ["Person"]]]]}]}], "x"]]}',
+        "cypher",
+        "COUNT { MATCH (f:Person) }",
+    ),
+    "expression.object_wrapped[spec_version,expr]": (
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["expr", {"spec_version": 1, "expr": ["lit", 7]}, null]]}',
+        "cypher",
+        "RETURN $p0",
+    ),
+    "linear_clauses[variable,expression]": (
+        '{"spec_version": 1, "linear_clauses": ['
+        '["let", "threshold", ["lit", 30]], '
+        '["filter", ["bin", "gt", ["ident", "threshold"], ["lit", 0]]]], '
+        '"matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["field", "p", "name", null]]}',
+        "cypher",
+        "$p0 AS threshold",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("spec_json", "dialect", "fragment"),
+    RAW_VALUE_POSITIONS.values(),
+    ids=RAW_VALUE_POSITIONS.keys(),
+)
+def test_raw_value_positions_accept_schema_values(
+    spec_json: str, dialect: str, fragment: str
+) -> None:
+    """A raw JSON value position accepts exactly the schema value it documents."""
+    compiled = compile_json(spec_json, dialect)
+    assert fragment in compiled["statement"]
+
+
+def test_literal_payload_keeps_nested_raw_json_values() -> None:
+    """A ["lit", value] payload may be any raw JSON value, including objects."""
+    payload = {"name": "Alice", "age": 30, "tags": ["a", "b"], "ok": True, "none": None}
+    compiled = compile_json(
+        '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+        '"projections": [["expr", ["lit", {"name": "Alice", "age": 30, '
+        '"tags": ["a", "b"], "ok": true, "none": null}], "m"]]}'
+    )
+    assert compiled["parameters"] == {"p0": payload}
+
+
+# --- Error messages: JSON type names and explicit-form hints ------------------
+
+LIST_HINT = 'Use ["lit", [...]] for a literal list or ["list", [...]] for a list of expressions'
+SCALAR_HINT = '["lit", value]'
+
+
+@pytest.mark.parametrize(
+    ("spec_json", "path", "type_text", "hint"),
+    [
+        pytest.param(
+            '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+            '"projections": [["expr", 21, null]]}',
+            "/projections/0/1",
+            "got number",
+            SCALAR_HINT,
+            id="bare-scalar",
+        ),
+        pytest.param(
+            '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+            '"projections": [["expr", [1, 2, 3], null]]}',
+            "/projections/0/1",
+            "got 1 (number)",
+            LIST_HINT,
+            id="bare-list-non-string-first",
+        ),
+        pytest.param(
+            '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+            '"projections": [["expr", [], null]]}',
+            "/projections/0/1",
+            "Empty expression array",
+            LIST_HINT,
+            id="empty-array",
+        ),
+        pytest.param(
+            '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+            '"projections": [["expr", ["red", "green"], null]]}',
+            "/projections/0/1",
+            "Unknown expression tag 'red'",
+            LIST_HINT,
+            id="unknown-tag",
+        ),
+        pytest.param(
+            '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+            '"projections": [["expr", ["propp", "p", "age"], null]]}',
+            "/projections/0/1",
+            "Unknown expression tag 'propp'",
+            LIST_HINT,
+            id="misspelt-tag",
+        ),
+    ],
+)
+def test_expression_position_errors_use_json_types_and_hints(
+    spec_json: str, path: str, type_text: str, hint: str
+) -> None:
+    """Expression rejections name JSON types and suggest an explicit spelling."""
+    error = assert_invalid_spec(json.loads(spec_json), path)
+    message = str(error)
+    assert "<class" not in message
+    assert type_text in message
+    assert hint in message
+
+
+@pytest.mark.parametrize(
+    ("spec_json", "path", "type_text", "hint"),
+    [
+        pytest.param(
+            '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]], '
+            '"where": [1, 2, 3]}], "projections": [["field", "p", "name", null]]}',
+            "/matches/0/where",
+            "got first element 1 (number)",
+            LIST_HINT,
+            id="where-array-scalar-first",
+        ),
+        pytest.param(
+            '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]], '
+            '"where": 21}], "projections": [["field", "p", "name", null]]}',
+            "/matches/0/where",
+            "got number",
+            SCALAR_HINT,
+            id="where-bare-scalar",
+        ),
+        pytest.param(
+            '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]], '
+            '"where": [["bin", "in", ["prop", "p", "name"], [1, 2, 3]]]}], '
+            '"projections": [["field", "p", "name", null]]}',
+            "/matches/0/where/0/3",
+            "got 1 (number)",
+            LIST_HINT,
+            id="where-expression-list-non-string-first",
+        ),
+    ],
+)
+def test_where_rejections_use_json_types_and_hints(
+    spec_json: str, path: str, type_text: str, hint: str
+) -> None:
+    """A `where` that matches neither schema branch explains both spellings."""
+    error = assert_invalid_spec(json.loads(spec_json), path)
+    message = str(error)
+    assert "<class" not in message
+    assert type_text in message
+    assert hint in message
+
+
+@pytest.mark.parametrize(
+    ("spec_json", "path", "type_text"),
+    [
+        pytest.param(
+            '{"spec_version": 1, "matches": [{"paths": [[["node", "p", 42]]]}]}',
+            "/matches/0/paths/0/0/2",
+            "got number",
+            id="node-labels",
+        ),
+        pytest.param(
+            '{"spec_version": 1, "matches": 42}',
+            "/matches",
+            "got number",
+            id="matches-container",
+        ),
+        pytest.param(
+            '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+            '"skip": true}',
+            "/skip",
+            "got boolean",
+            id="skip-boolean",
+        ),
+        pytest.param(
+            '{"spec_version": 1, "matches": [{"paths": [[["node", "p", ["Person"]]]]}], '
+            '"order_by": [["p", "age", 1]]}',
+            "/order_by/0/2",
+            "got number",
+            id="order-direction",
+        ),
+        pytest.param(
+            '{"spec_version": 1, "matches": [42]}',
+            "/matches/0",
+            "got number",
+            id="match-object",
+        ),
+        pytest.param(
+            '["spec_version", 1]',
+            "",
+            "got array",
+            id="non-object-spec",
+        ),
+    ],
+)
+def test_non_expression_errors_use_json_types(spec_json: str, path: str, type_text: str) -> None:
+    """Non-expression rejections also say JSON type names, never Python reprs."""
+    error = assert_invalid_spec(json.loads(spec_json), path)
+    message = str(error)
+    assert "<class" not in message
+    assert type_text in message

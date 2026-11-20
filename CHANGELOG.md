@@ -10,7 +10,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 ### Fixed
-- **PyPI package page**: `voyager-ogm` now uses a Python-focused `packages/python/README.md` as its PyPI long description instead of the repository-wide root README.
 - **Query Spec v1 Accepts JSON Arrays at Every Position (#185)**:
   - The spec consumer now accepts Python lists (the JSON array form produced by `json.loads`/`json.dumps`) and Python tuples interchangeably at every array position, so any schema-valid JSON document compiles instead of raising `TypeError: 'list' object is not an instance of 'tuple'`.
   - Fixed list-rejected positions: `load_csv`, `unwinds` entries, `case` branches, merge `ON CREATE SET` / `ON MATCH SET` entries, `order_by` entries (root and inside `with_clauses`), `linear_clauses` entries, path steps, mutations and projections.

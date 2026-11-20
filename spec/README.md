@@ -46,6 +46,12 @@ array items append `/index`, so `/matches/0/paths/1/2` is the third step of the
 second path of the first match. JSON Pointer escaping applies (`~` becomes
 `~0`, `/` becomes `~1`).
 
+Messages name JSON types (`string`, `number`, `boolean`, `null`, `array`,
+`object`), not Python class names, because spec authors write JSON. An
+expression-position rejection also names the explicit spelling to use:
+`["lit", value]` for a scalar and `["lit", [...]]` / `["list", [...]]` for a
+list.
+
 Examples:
 
 | Spec | `path` |
@@ -71,6 +77,9 @@ The following are rejected:
   first element (for example `[1, 2, 3]`) or an unknown first string (for
   example `["propp", ...]` or `["red", "green"]`). Every expression array must
   be tagged (see [Expression arrays are always tagged](#expression-arrays-are-always-tagged)).
+- A `where` array whose first element is a scalar other than a string (for
+  example `[1, 2, 3]`), which is neither one expression nor an array of
+  expressions (see [`where`: one expression or a list](#where-one-expression-or-a-list-of-expressions)).
 - An **empty spec**: a document that has none of `load_csv`, `unwinds`,
   `matches`, `mutations`, `with_clauses`, `projections`, or `linear_clauses`
   with content. `{"spec_version": 1}` and `{"spec_version": 1, "matches": []}`
@@ -207,8 +216,29 @@ example `["propp", "p", "age"]` or `["red", "green"]`) are all rejected. Write a
 literal list as `["lit", [...]]`; write a list whose items are expressions as
 `["list", [...]]`.
 
-The `where` key keeps its historical shape discrimination: a list is a list of
-predicates, while any other value (including a bare tuple) is one expression.
+### `where`: one expression or a list of expressions
+
+The schema allows `where` to be either one `Expression` or an array of
+`Expression`s. A single expression is itself a JSON array starting with its tag
+string, so the form is chosen deterministically from the first element:
+
+| `where` value | Meaning |
+| :--- | :--- |
+| `[]` | An empty predicate list; no predicate is emitted. |
+| `["bin", ...]` (first element is a string) | One expression. |
+| `[["bin", ...], ["bin", ...]]` (first element is an array or object) | A list of expressions. |
+| anything else, such as `[1, 2, 3]` | `INVALID_SPEC` at the `where` path. |
+
+These two forms compile to identical Cypher:
+
+```json
+"where": ["bin", "gt", ["prop", "f", "age"], ["lit", 21]]
+"where": [["bin", "gt", ["prop", "f", "age"], ["lit", 21]]]
+```
+
+The rule is the same for `matches[i].where` and `with_clauses[i].where`, and for
+the Python tuple spelling of either form. An empty array remains an empty
+predicate list in both spellings.
 
 ---
 

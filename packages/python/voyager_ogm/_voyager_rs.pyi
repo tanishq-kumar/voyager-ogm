@@ -453,6 +453,12 @@ def compile_query_from_spec(
     untagged arrays (empty arrays, non-string first elements, or unknown tags)
     are rejected at the array's path. Write a literal list as ``["lit", [...]]``
     and a list of expressions as ``["list", [...]]``.
+
+    A ``where`` array whose first element is a string is one expression; one
+    whose first element is an array or object is a list of predicates; an empty
+    array is an empty predicate list. Both forms compile identically. Error
+    messages name JSON types (``string``, ``number``, ``array``, ...), not
+    Python type reprs.
     """
     ...
 

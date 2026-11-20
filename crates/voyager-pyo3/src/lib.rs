@@ -102,6 +102,28 @@ impl SpecPath {
     }
 }
 
+/// JSON type name for a Python value, used in spec error messages.
+///
+/// Spec authors write JSON, so messages say `number`, `string`, `array`, and so
+/// on instead of leaking a Python type repr such as `<class 'int'>`.
+fn json_type_name(val: &Bound<'_, PyAny>) -> &'static str {
+    if val.is_none() {
+        "null"
+    } else if val.is_instance_of::<PyBool>() {
+        "boolean"
+    } else if val.is_instance_of::<PyInt>() || val.is_instance_of::<PyFloat>() {
+        "number"
+    } else if val.is_instance_of::<PyString>() {
+        "string"
+    } else if val.is_instance_of::<PyList>() || val.is_instance_of::<PyTuple>() {
+        "array"
+    } else if val.is_instance_of::<PyDict>() {
+        "object"
+    } else {
+        "value"
+    }
+}
+
 /// Builds a [`VoyagerError`] with code `INVALID_SPEC`, the JSON Pointer on
 /// `err.path`, and the same pointer in the message.
 fn make_spec_err(path: &SpecPath, msg: impl Into<String>) -> PyErr {
@@ -154,7 +176,7 @@ where
     T: pyo3::FromPyObject<'a, 'py>,
 {
     val.extract::<T>().map_err(|_| {
-        let msg = format!("expected {expected}, got {}", val.get_type());
+        let msg = format!("expected {expected}, got {}", json_type_name(val));
         if path.is_spec() {
             make_spec_err(path, msg)
         } else {
@@ -270,7 +292,7 @@ fn py_to_literal(val: &Bound<'_, PyAny>) -> PyResult<LiteralValue> {
     } else {
         Err(PyValueError::new_err(format!(
             "Unsupported parameter type: {}",
-            val.get_type()
+            json_type_name(val)
         )))
     }
 }
@@ -378,7 +400,7 @@ fn parse_order_asc(val: &Bound<'_, PyAny>, path: &SpecPath, field: &str) -> PyRe
         path,
         format!(
             "Invalid '{field}': expected a boolean or 'ASC'/'DESC', got {}.",
-            val.get_type()
+            json_type_name(val)
         ),
     ))
 }
@@ -890,7 +912,7 @@ fn expect_spec_array<'a>(
             path,
             format!(
                 "Invalid '{field}': expected a JSON array (list or tuple), got {}.",
-                val.get_type()
+                json_type_name(val)
             ),
         )
     })
@@ -1221,7 +1243,7 @@ fn handle_literal_fallback(
     } else {
         let msg = format!(
             "Cannot convert Python object to AST node handle: {}",
-            val.get_type()
+            json_type_name(val)
         );
         if path.is_spec() {
             Err(make_spec_err(path, msg))
@@ -1263,7 +1285,7 @@ fn py_to_node_handle_depth(
             path,
             format!(
                 "expected an expression (a tagged JSON array or an object-wrapped expression), got {}; write a scalar literal as [\"lit\", value]",
-                val.get_type()
+                json_type_name(val)
             ),
         ));
     }
@@ -1303,7 +1325,7 @@ fn expression_tag(tuple: &Bound<'_, PyTuple>, path: &SpecPath) -> PyResult<Strin
                 path,
                 format!(
                     "Invalid expression array: the first element must be a known expression tag string, got {rendered} ({}). {}",
-                    first.get_type(),
+                    json_type_name(&first),
                     EXPRESSION_ARRAY_HINT
                 ),
             ));
@@ -1531,6 +1553,62 @@ fn build_order_by_entry(
     Ok(())
 }
 
+/// Builds the predicates of a `where` position, shared by match and with
+/// clauses.
+///
+/// The schema defines `where` as one `Expression` or an array of `Expression`s.
+/// A single `Expression` is itself a JSON array that starts with a tag string,
+/// so the two forms are told apart deterministically by the first element:
+///
+/// - an empty array is an empty predicate list (no predicates are emitted);
+/// - an array whose first element is a string is one expression;
+/// - an array whose first element is an array, tuple, or object is a list of
+///   expressions.
+///
+/// A non-array value is one expression (the object-wrapped form, or a value the
+/// expression parser rejects). A `where` array whose first element is any other
+/// scalar matches neither schema branch and is rejected at the `where` path.
+fn build_where_predicates(
+    builder: &mut QueryBuilder,
+    where_item: &Bound<'_, PyAny>,
+    path: &SpecPath,
+) -> PyResult<()> {
+    if let Some(seq) = as_spec_sequence(where_item) {
+        if seq.is_empty() {
+            return Ok(());
+        }
+        let first = seq.get_item(0)?;
+        if first.extract::<String>().is_ok() {
+            let h = py_to_node_handle_depth(builder, where_item, 0, path)?;
+            builder.where_expr(h);
+            return Ok(());
+        }
+        if first.cast::<PyDict>().is_ok() || as_spec_sequence(&first).is_some() {
+            for (idx, predicate) in seq.iter().enumerate() {
+                let pred_path = path.index(idx);
+                let h = py_to_node_handle_at(builder, &predicate, &pred_path)?;
+                builder.where_expr(h);
+            }
+            return Ok(());
+        }
+        let rendered: String = first
+            .repr()
+            .and_then(|value| value.extract())
+            .unwrap_or_else(|_| "<unprintable>".to_string());
+        return Err(make_spec_err(
+            path,
+            format!(
+                "Invalid 'where': a 'where' array must be one expression (starting with a string tag) or an array of expressions (starting with an array or object), got first element {rendered} ({}). {}",
+                json_type_name(&first),
+                EXPRESSION_ARRAY_HINT
+            ),
+        ));
+    }
+    let h = py_to_node_handle_at(builder, where_item, path)?;
+    builder.where_expr(h);
+    Ok(())
+}
+
 fn build_path_from_py(
     builder: &mut QueryBuilder,
     spec: &Bound<'_, PyAny>,
@@ -1678,7 +1756,7 @@ fn parse_non_negative(val: &Bound<'_, PyAny>, path: &SpecPath, field: &str) -> P
             path,
             format!(
                 "Invalid '{field}': expected a non-negative integer, got {}.",
-                val.get_type()
+                json_type_name(val)
             ),
         ));
     }
@@ -1887,7 +1965,7 @@ fn build_query_from_spec_internal(
             let m_dict = m.cast::<PyDict>().map_err(|_| {
                 make_spec_err(
                     &m_path,
-                    format!("expected a match clause object, got {}", m.get_type()),
+                    format!("expected a match clause object, got {}", json_type_name(&m)),
                 )
             })?;
             reject_unknown_keys(m_dict, &m_path, MATCH_SPEC_KEYS, "match clause")?;
@@ -1983,20 +2061,7 @@ fn build_query_from_spec_internal(
 
             if let Some(where_item) = m_dict.get_item("where")? {
                 if !where_item.is_none() {
-                    let where_path = m_path.key("where");
-                    // Keep the historical list-vs-single-expression behaviour:
-                    // a list is a list of predicates, anything else is one
-                    // expression.
-                    if let Ok(wh_list) = where_item.cast::<PyList>() {
-                        for (w_idx, wh) in wh_list.iter().enumerate() {
-                            let pred_path = where_path.index(w_idx);
-                            let h = py_to_node_handle_at(builder, &wh, &pred_path)?;
-                            builder.where_expr(h);
-                        }
-                    } else {
-                        let h = py_to_node_handle_at(builder, &where_item, &where_path)?;
-                        builder.where_expr(h);
-                    }
+                    build_where_predicates(builder, &where_item, &m_path.key("where"))?;
                 }
             }
         }
@@ -2202,7 +2267,10 @@ fn build_query_from_spec_internal(
             let with_dict = item.cast::<PyDict>().map_err(|_| {
                 make_spec_err(
                     &item_path,
-                    format!("expected a with clause object, got {}", item.get_type()),
+                    format!(
+                        "expected a with clause object, got {}",
+                        json_type_name(&item)
+                    ),
                 )
             })?;
             reject_unknown_keys(with_dict, &item_path, WITH_SPEC_KEYS, "with clause")?;
@@ -2253,16 +2321,8 @@ fn build_query_from_spec_internal(
                 build_projection_item(builder, &p, &proj_path.index(p_idx))?;
             }
             if let Some(where_item) = with_dict.get_item("where")? {
-                let where_path = item_path.key("where");
-                if let Ok(where_list) = where_item.cast::<PyList>() {
-                    for (w_idx, wh) in where_list.iter().enumerate() {
-                        let pred_path = where_path.index(w_idx);
-                        let h = py_to_node_handle_at(builder, &wh, &pred_path)?;
-                        builder.where_expr(h);
-                    }
-                } else if !where_item.is_none() {
-                    let h = py_to_node_handle_at(builder, &where_item, &where_path)?;
-                    builder.where_expr(h);
+                if !where_item.is_none() {
+                    build_where_predicates(builder, &where_item, &item_path.key("where"))?;
                 }
             }
             if let Some(order_item) = with_dict.get_item("order_by")? {
@@ -3494,7 +3554,10 @@ fn generate_synthetic_stream(count: usize) -> PyResult<PyArrowStream> {
 /// position every array must be a tagged expression: bare or untagged arrays
 /// (an empty array, a non-string first element, or an unknown tag) are rejected,
 /// so a literal list is written as `["lit", [...]]` and a list of expressions as
-/// `["list", [...]]`.
+/// `["list", [...]]`. A `where` array whose first element is a string is one
+/// expression, while an array whose first element is an array or object is a
+/// list of predicates. Error messages use JSON type names (`string`, `number`,
+/// `array`, ...) rather than Python type reprs.
 #[pyfunction]
 #[pyo3(signature = (spec, dialect="cypher", graph_name=None, optimize=false, optimization_level="standard", use_cache=true))]
 fn compile_query_from_spec<'py>(
@@ -3511,7 +3574,7 @@ fn compile_query_from_spec<'py>(
             &SpecPath::spec_root(),
             format!(
                 "expected a query spec object (dict), got {}",
-                spec.get_type()
+                json_type_name(spec)
             ),
         )
     })?;
