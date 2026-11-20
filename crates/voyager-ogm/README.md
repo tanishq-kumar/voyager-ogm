@@ -2,7 +2,7 @@
 
 `voyager-ogm` is the core of Voyager OGM: a vendor-neutral Object-Graph Mapper and AST query compiler in safe Rust (`#![forbid(unsafe_code)]`). Build a query once with the fluent `QueryBuilder`, optimize it, and compile it to openCypher 9/25, SQL:2023 PGQ (`GRAPH_TABLE`, DuckDB/DuckPGQ), ISO GQL, or Apache AGE.
 
-> Status: `0.4.0-alpha`, pre-1.0. Breaking changes may land in minor releases.
+> Status: pre-1.0. Breaking changes may land in minor releases.
 
 ## Install
 
