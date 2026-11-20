@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0-alpha.8] - 2026-11-20
+
 ### Fixed
 - **Base install import failure (#239)**: `import voyager_ogm` no longer requires SQLAlchemy or any other optional extra. SQLAlchemy-backed names are resolved lazily and raise an `ImportError` naming `voyager-ogm[sqlalchemy]` when used without the extra; optional bridge, analytics, and hybrid helpers name their extra too. Added a base-only wheel smoke test to CI and the release workflow.
 - **Portable Linux wheels (#240)**: Linux `x86_64` and `aarch64` wheels are now built against `manylinux_2_28` in the matching container instead of the runner host, and the release workflow verifies every Linux wheel filename carries that tag before publishing.
@@ -328,7 +330,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Constructor auto-aliasing (`p = Person()` -> `_person_0`) and fluent query compiler.
 
 
-[Unreleased]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0-alpha.7...HEAD
+
+[Unreleased]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0-alpha.8...HEAD
+[0.4.0-alpha.8]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0-alpha.7...v0.4.0-alpha.8
 [0.4.0-alpha.7]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0-alpha.6...v0.4.0-alpha.7
 [0.4.0-alpha.6]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0-alpha.5...v0.4.0-alpha.6
 [0.4.0-alpha.5]: https://github.com/tanishq-kumar/voyager/compare/v0.3.0-alpha.1...v0.4.0-alpha.5
