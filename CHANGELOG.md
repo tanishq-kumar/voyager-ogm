@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **README installation guide**: added an Installation section covering PyPI and uv installs, optional extras, supported Python versions and platforms, the crates.io crates and Cargo features, the `voyager` CLI, pre-release installs, and the Rust MSRV. Added PyPI, Python, crates.io, and docs.rs badges and converted relative links to absolute GitHub URLs so the README renders correctly on PyPI.
 - **Pre-releases publish to crates.io**: release tags with a pre-release suffix (`-alpha.N`, `-beta.N`, `-rc.N`) now publish the Rust crates to crates.io as well as the Python package to TestPyPI; PyPI still receives stable releases only.
+- **Maintenance-branch releases**: releases can now be prepared and tagged from `release/X.Y` branches (cut from the `vX.Y.0` tag) so patch fixes still ship after `main` moves to the next minor. `just release-prepare` and `just release-tag` validate the base line and version (a `release/X.Y` base accepts only `X.Y.N`), CI runs on `release/**`, and the release workflow refuses tags not reachable from `main` or the matching release branch and marks a tag **Latest** only when it is the highest `v*` version.
 
 ## [0.4.0] - 2026-11-20
 
