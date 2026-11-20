@@ -14,7 +14,7 @@ exclude = [
 large_enum_variant = "warn"
 
 [workspace.package]
-version = "0.4.0-alpha.6"
+version = "0.4.0-alpha.7"
 edition = "2024"
 rust-version = "1.87.0"
 authors = ["Tanishq Kumar"]
@@ -23,8 +23,8 @@ repository = "https://github.com/tanishq-kumar/voyager"
 
 [workspace.dependencies]
 # Internal workspace crates
-voyager-ogm = { path = "crates/voyager-ogm", version = "0.4.0-alpha.6" }
-voyager-drivers = { path = "crates/voyager-drivers", version = "0.4.0-alpha.6" }
+voyager-ogm = { path = "crates/voyager-ogm", version = "0.4.0-alpha.7" }
+voyager-drivers = { path = "crates/voyager-drivers", version = "0.4.0-alpha.7" }
 
 # Asynchronous Network Runtime
 tokio = { version = "1.43", features = ["full"] }
