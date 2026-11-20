@@ -469,7 +469,29 @@ jobs:
     if: always()
     needs: [lint, feature-combinations, changelog, supply-chain, package-check, changes, test-rust, test-python, test-wheel-base-install, sanitizer-and-fuzz]
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
     steps:
+      # `needs.<job>.result` is one aggregate per matrix job; a single matrix leg that
+      # is cancelled (e.g. no runner available) can leave it at `success`. Check every
+      # individual job of this run (latest attempt of each) instead.
+      - name: Verify Every Job in This Run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          jobs_json="$(gh api --paginate "repos/${REPO}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100" --jq '.jobs[] | select(.name != "CI Gate") | {name, conclusion}')"
+          echo "${jobs_json}" | jq -r '"\(.conclusion // "pending")\t\(.name)"' | sort
+          bad="$(echo "${jobs_json}" | jq -r 'select(.conclusion != "success" and .conclusion != "skipped") | "\(.name) (\(.conclusion // "pending"))"')"
+          if [[ -n "${bad}" ]]; then
+            echo "::error::These jobs did not succeed:"
+            echo "${bad}"
+            exit 1
+          fi
+          echo "Every job in this run succeeded or was skipped."
+
       - name: Verify All Matrix Jobs Passed
         run: |
           if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
