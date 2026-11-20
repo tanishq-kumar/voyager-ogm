@@ -4,14 +4,8 @@
 
 [![CI](https://github.com/tanishq-kumar/voyager/actions/workflows/ci.yml/badge.svg)](https://github.com/tanishq-kumar/voyager/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/tanishq-kumar/voyager?color=orange&label=Release)](https://github.com/tanishq-kumar/voyager/releases)
-[![PyPI](https://img.shields.io/pypi/v/voyager-ogm.svg)](https://pypi.org/project/voyager-ogm/)
-[![PyPI - Python Versions](https://img.shields.io/pypi/pyversions/voyager-ogm.svg)](https://pypi.org/project/voyager-ogm/)
-[![crates.io voyager-ogm](https://img.shields.io/crates/v/voyager-ogm.svg)](https://crates.io/crates/voyager-ogm)
-[![crates.io voyager-drivers](https://img.shields.io/crates/v/voyager-drivers.svg)](https://crates.io/crates/voyager-drivers)
-[![docs.rs](https://img.shields.io/docsrs/voyager-ogm.svg)](https://docs.rs/voyager-ogm)
 [![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/tanishq-kumar/voyager/blob/main/LICENSE)
 [![Standards](https://img.shields.io/badge/Standards-openCypher%20%7C%20SQL%3A2023%20PGQ%20%7C%20ISO%20GQL-green.svg)](https://www.iso.org/standard/76120.html)
-[![Arrow](https://img.shields.io/badge/Zero--Copy-Apache%20Arrow%20PyCapsule-orange.svg)](https://arrow.apache.org/)
 
 ---
 
@@ -28,13 +22,24 @@ Pick the package that matches what you are building:
 
 ### Python
 
+[![PyPI](https://img.shields.io/pypi/v/voyager-ogm.svg?label=PyPI)](https://pypi.org/project/voyager-ogm/)
+[![PyPI - Python Versions](https://img.shields.io/pypi/pyversions/voyager-ogm.svg)](https://pypi.org/project/voyager-ogm/)
+
+With pip:
+
 ```bash
 pip install voyager-ogm
+```
 
-# In a uv project (adds it to pyproject.toml):
+In a uv project (adds it to `pyproject.toml`):
+
+```bash
 uv add voyager-ogm
+```
 
-# Or into an existing virtual environment with uv:
+Into an existing virtual environment with uv:
+
+```bash
 uv pip install voyager-ogm
 ```
 
@@ -60,10 +65,15 @@ Some integrations live behind extras so the base install stays small:
 | `analytics` | `networkx` | NetworkX graph export via `to_networkx()` | `pip install "voyager-ogm[analytics]"` |
 | `notebook` | `marimo`, `anywidget`, `traitlets` | Interactive `show()` / `explore()` viewer widget in Marimo and Jupyter/VS Code notebooks | `pip install "voyager-ogm[notebook]"` |
 
-In a uv project, swap `pip install` for `uv add` (or use `uv pip install` for an existing environment). Combine extras in one command:
+In a uv project, swap `pip install` for `uv add` (or use `uv pip install` for an existing environment). Combine extras in one command, with pip:
 
 ```bash
 pip install "voyager-ogm[neo4j,sqlalchemy]"
+```
+
+or with uv:
+
+```bash
 uv add "voyager-ogm[neo4j,sqlalchemy]"
 ```
 
@@ -71,10 +81,15 @@ uv add "voyager-ogm[neo4j,sqlalchemy]"
 
 #### Pre-releases
 
-Pre-releases (`X.Y.ZaN`) are published to [TestPyPI](https://test.pypi.org/project/voyager-ogm/), not PyPI. Install one with PyPI as the fallback index for the dependencies:
+Pre-releases (`X.Y.ZaN`) are published to [TestPyPI](https://test.pypi.org/project/voyager-ogm/), not PyPI. Install one with PyPI as the fallback index for the dependencies, with pip:
 
 ```bash
 pip install --pre -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ voyager-ogm
+```
+
+or with uv:
+
+```bash
 uv pip install --prerelease allow --index https://test.pypi.org/simple/ --default-index https://pypi.org/simple/ --index-strategy unsafe-best-match voyager-ogm
 ```
 
@@ -82,13 +97,18 @@ The Rust crates publish pre-releases to crates.io. Cargo never selects them for 
 
 ### Rust
 
+All three crates require **Rust 1.87.0** or newer (the workspace `rust-version`).
+
+#### `voyager-ogm`: query compiler
+
+[![crates.io](https://img.shields.io/crates/v/voyager-ogm.svg)](https://crates.io/crates/voyager-ogm)
+[![docs.rs](https://img.shields.io/docsrs/voyager-ogm.svg)](https://docs.rs/voyager-ogm)
+
 ```bash
 cargo add voyager-ogm
-cargo add voyager-drivers
-cargo install voyager-cli
 ```
 
-**`voyager-ogm` — query compiler.** The default features are `serde` and `arrow`:
+The default features are `serde` and `arrow`:
 
 | Feature | Default | Enables |
 | :--- | :--- | :--- |
@@ -101,7 +121,16 @@ For a slim build without Arrow:
 cargo add voyager-ogm --no-default-features --features serde
 ```
 
-**`voyager-drivers` — native drivers.** The default features are `bolt`, `postgres`, `redis`, and `arrow`:
+#### `voyager-drivers`: native drivers
+
+[![crates.io](https://img.shields.io/crates/v/voyager-drivers.svg)](https://crates.io/crates/voyager-drivers)
+[![docs.rs](https://img.shields.io/docsrs/voyager-drivers.svg)](https://docs.rs/voyager-drivers)
+
+```bash
+cargo add voyager-drivers
+```
+
+The default features are `bolt`, `postgres`, `redis`, and `arrow`:
 
 | Feature | Default | Enables |
 | :--- | :--- | :--- |
@@ -119,14 +148,19 @@ cargo add voyager-drivers --no-default-features --features bolt
 
 A URI or client that targets a protocol whose feature is disabled returns a `NetError` naming the missing feature. The `testkit` feature is opt-in and intended for tests.
 
-**`voyager-cli` — the `voyager` binary.**
+#### `voyager-cli`: the `voyager` binary
+
+[![crates.io](https://img.shields.io/crates/v/voyager-cli.svg)](https://crates.io/crates/voyager-cli)
 
 ```bash
 cargo install voyager-cli
-voyager --version
 ```
 
-All three crates require **Rust 1.87.0** or newer (the workspace `rust-version`).
+Check the installed version:
+
+```bash
+voyager --version
+```
 
 For local development setup (building the Python extension from source, test databases, and contribution guidelines), see [**CONTRIBUTING.md**](https://github.com/tanishq-kumar/voyager/blob/main/CONTRIBUTING.md).
 
