@@ -60,7 +60,7 @@ Examples:
 | `{"spec_version": 1}` (empty spec) | `""` |
 | `{"matches": []}` (missing `spec_version`) | `/spec_version` |
 | `{"spec_version": 1, "matches": 42}` | `/matches` |
-| `{"spec_version": 1, "matches": [{"paths": [[["node","n",["N"]], ["edge","out",["R"]]]]}]}` | `/matches/0/paths/0/1` |
+| `{"spec_version": 1, "matches": [{"paths": [[["node","n",["N"],{"name":["lit","x"]}]]]}]}` (properties map on a node step) | `/matches/0/paths/0/0/3` |
 | `{"spec_version": 1, "skip": -1, ...}` | `/skip` |
 
 The following are rejected:
@@ -166,8 +166,8 @@ Paths within `matches[i].paths` or `create`/`merge` mutations are sequences of s
 
 | Step Type | Shape | Description |
 | :--- | :--- | :--- |
-| **Node** | `["node", variable, labels]` | Node pattern, e.g. `["node", "u", ["User", "Admin"]]`. `variable` can be `null` for anonymous nodes. |
-| **Edge** | `["edge", dir, types, variable, min_hops, max_hops]` | Directed or undirected relationship traversal. `dir` is `"outgoing"`, `"incoming"`, or `"undirected"`. `min_hops` and `max_hops` specify variable-length paths (`null` for 1 hop). |
+| **Node** | `["node", variable, labels]` | Node pattern, e.g. `["node", "u", ["User", "Admin"]]`. `variable` can be `null` for anonymous nodes. Path steps carry no properties in v1: a non-null item after `labels` is rejected (trailing `null` items are accepted). Filter with `where` or write properties with a `set` mutation. |
+| **Edge** | `["edge", dir, types, variable, min_hops, max_hops]` | Directed or undirected relationship traversal. `dir` is `"outgoing"`, `"incoming"`, or `"undirected"`. `min_hops` and `max_hops` specify variable-length paths (`null` for 1 hop). `variable`, `min_hops` and `max_hops` may be omitted (`["edge", dir, types]`) and default to `null`; a non-null item after `max_hops` is rejected. |
 
 ---
 

@@ -360,7 +360,7 @@ def test_mixed_tuple_and_list_arrays_compile_identically() -> None:
                 "matches": [
                     {
                         "spec_version": 1,
-                        "paths": [[("node", "p", ["Person"]), ("edge", "out", ["KNOWS"])]],
+                        "paths": [[("node", "p", ["Person"]), ("edge", "out")]],
                     }
                 ],
                 "projections": [("field", "p", "name", None)],

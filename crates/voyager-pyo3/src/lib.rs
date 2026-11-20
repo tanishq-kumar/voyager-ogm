@@ -938,6 +938,45 @@ fn check_spec_arity(
     Ok(())
 }
 
+/// Rejects items past a path step's documented shape unless they are `null`.
+///
+/// Query Spec v1 path steps carry no properties, so a trailing properties map
+/// such as `["node", "a", ["Person"], {"name": ...}]` would otherwise be
+/// dropped without an error. Trailing `null` placeholders stay accepted.
+fn reject_extra_step_items(
+    tuple: &Bound<'_, PyTuple>,
+    path: &SpecPath,
+    field: &str,
+    documented_items: usize,
+    shape: &str,
+) -> PyResult<()> {
+    for idx in documented_items..tuple.len() {
+        let item = tuple.get_item(idx)?;
+        if !item.is_none() {
+            return Err(path_error(
+                &path.index(idx),
+                format!(
+                    "Invalid '{field}': unexpected {} after the documented shape {shape}. Query Spec v1 path steps carry no properties; filter with a 'where' predicate or write properties with a 'set' mutation.",
+                    json_type_name(&item)
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Returns item `idx` of a path step, or `None` when the step is shorter.
+fn optional_step_item<'py>(
+    tuple: &Bound<'py, PyTuple>,
+    idx: usize,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    if idx < tuple.len() {
+        Ok(Some(tuple.get_item(idx)?))
+    } else {
+        Ok(None)
+    }
+}
+
 /// Recovers the alias of an `['alias', inner_expression, name]` expression spec
 /// when a projection carries no explicit alias. Sequence-agnostic: works for
 /// the tuple spelling and the JSON list spelling alike, so a round-tripped
@@ -1453,6 +1492,13 @@ fn build_path_steps_into_builder(
                     3,
                     "[node, variable, labels]",
                 )?;
+                reject_extra_step_items(
+                    &tuple,
+                    &step_path,
+                    "path step 'node'",
+                    3,
+                    "[node, variable, labels]",
+                )?;
                 let var: Option<String> = extract_required(
                     &tuple.get_item(1)?,
                     &step_path.index(1),
@@ -1470,6 +1516,13 @@ fn build_path_steps_into_builder(
                     &tuple,
                     &step_path,
                     "path step 'edge'",
+                    3,
+                    "[edge, direction, types, variable?, min_hops?, max_hops?]",
+                )?;
+                reject_extra_step_items(
+                    &tuple,
+                    &step_path,
+                    "path step 'edge'",
                     6,
                     "[edge, direction, types, variable, min_hops, max_hops]",
                 )?;
@@ -1483,21 +1536,28 @@ fn build_path_steps_into_builder(
                     &step_path.index(2),
                     "an array of string edge types",
                 )?;
-                let var: Option<String> = extract_required(
-                    &tuple.get_item(3)?,
-                    &step_path.index(3),
-                    "a string or null variable",
-                )?;
-                let min_hops: Option<u32> = extract_required(
-                    &tuple.get_item(4)?,
-                    &step_path.index(4),
-                    "a non-negative integer or null",
-                )?;
-                let max_hops: Option<u32> = extract_required(
-                    &tuple.get_item(5)?,
-                    &step_path.index(5),
-                    "a non-negative integer or null",
-                )?;
+                let var: Option<String> = match optional_step_item(&tuple, 3)? {
+                    Some(item) => {
+                        extract_required(&item, &step_path.index(3), "a string or null variable")?
+                    }
+                    None => None,
+                };
+                let min_hops: Option<u32> = match optional_step_item(&tuple, 4)? {
+                    Some(item) => extract_required(
+                        &item,
+                        &step_path.index(4),
+                        "a non-negative integer or null",
+                    )?,
+                    None => None,
+                };
+                let max_hops: Option<u32> = match optional_step_item(&tuple, 5)? {
+                    Some(item) => extract_required(
+                        &item,
+                        &step_path.index(5),
+                        "a non-negative integer or null",
+                    )?,
+                    None => None,
+                };
                 match dir {
                     Direction::Outgoing => builder.to(edge_types, var),
                     Direction::Incoming => builder.from(edge_types, var),

@@ -108,7 +108,7 @@ def test_issue_187_empty_spec_is_rejected() -> None:
         (
             {
                 "spec_version": 1,
-                "matches": [{"paths": [[("node", "p", ["Person"]), ("edge", "out", ["KNOWS"])]]}],
+                "matches": [{"paths": [[("node", "p", ["Person"]), ("edge", "out")]]}],
             },
             "/matches/0/paths/0/1",
         ),
@@ -812,3 +812,50 @@ def test_non_expression_errors_use_json_types(spec_json: str, path: str, type_te
     message = str(error)
     assert "<class" not in message
     assert type_text in message
+
+
+# --- Path step shapes -------------------------------------------------------
+
+
+def _match_spec(step_json: str) -> dict[str, Any]:
+    return json.loads(
+        '{"spec_version": 1, "matches": [{"spec_version": 1, "paths": [[["node", "a", ["Person"]], '
+        + step_json
+        + ', ["node", "b", ["Person"]]]]}], "projections": [["field", "a", "name", "n"]]}'
+    )
+
+
+def test_node_step_properties_map_is_rejected_not_dropped() -> None:
+    spec = json.loads(
+        '{"spec_version": 1, "mutations": [["create", [[["node", "a", ["Person"], '
+        '{"name": ["lit", "Alice"]}]]]]]}'
+    )
+    error = assert_invalid_spec(spec, "/mutations/0/1/0/0/3")
+    assert "object" in str(error)
+    assert "carry no properties" in str(error)
+
+
+def test_node_step_trailing_null_is_still_accepted() -> None:
+    spec = json.loads(
+        '{"spec_version": 1, "matches": [{"spec_version": 1, "paths": '
+        '[[["node", "p", ["Person"], null]]]}], "projections": [["field", "p", "name", "n"]]}'
+    )
+    assert compile_query_from_spec(spec, "cypher")["statement"] == (
+        "MATCH (p:Person) RETURN p.name AS n"
+    )
+
+
+def test_edge_step_short_form_matches_full_form() -> None:
+    short = compile_query_from_spec(_match_spec('["edge", "out", ["KNOWS"]]'), "cypher")
+    full = compile_query_from_spec(
+        _match_spec('["edge", "out", ["KNOWS"], null, null, null]'), "cypher"
+    )
+    assert short["statement"] == full["statement"]
+
+
+def test_edge_step_extra_item_is_rejected() -> None:
+    error = assert_invalid_spec(
+        _match_spec('["edge", "out", ["KNOWS"], "r", null, null, {"since": ["lit", 2020]}]'),
+        "/matches/0/paths/0/1/6",
+    )
+    assert "carry no properties" in str(error)
