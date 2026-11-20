@@ -60,7 +60,9 @@ Examples:
 | `{"spec_version": 1}` (empty spec) | `""` |
 | `{"matches": []}` (missing `spec_version`) | `/spec_version` |
 | `{"spec_version": 1, "matches": 42}` | `/matches` |
-| `{"spec_version": 1, "matches": [{"paths": [[["node","n",["N"],{"name":["lit","x"]}]]]}]}` (properties map on a node step) | `/matches/0/paths/0/0/3` |
+| `{"spec_version": 1, "matches": [{"paths": [[["node","n",["N"],"extra"]]]}]}` (non-object node properties) | `/matches/0/paths/0/0/3` |
+| `{"spec_version": 1, "matches": [{"paths": [[["node","n",["N"],{"name":"x"}]]]}]}` (bare scalar property value) | `/matches/0/paths/0/0/3/name` |
+| `{"spec_version": 1, "matches": [{"paths": [[["node","n",["N"]],["edge","out",["E"],null,null,null,{},1]]]}]}` (8th edge item) | `/matches/0/paths/0/1/7` |
 | `{"spec_version": 1, "skip": -1, ...}` | `/skip` |
 
 The following are rejected:
@@ -77,6 +79,9 @@ The following are rejected:
   first element (for example `[1, 2, 3]`) or an unknown first string (for
   example `["propp", ...]` or `["red", "green"]`). Every expression array must
   be tagged (see [Expression arrays are always tagged](#expression-arrays-are-always-tagged)).
+- A path step `properties` item that is neither an object nor `null`, a
+  non-null item past a step's documented shape (5th node item, 8th edge item),
+  or a property value that is not a tagged expression.
 - A `where` array whose first element is a scalar other than a string (for
   example `[1, 2, 3]`), which is neither one expression nor an array of
   expressions (see [`where`: one expression or a list](#where-one-expression-or-a-list-of-expressions)).
@@ -106,8 +111,8 @@ Python/Rust builder API.
       "path_variable": "p",
       "paths": [
         [
-          ["node", "u", ["User"]],
-          ["edge", "outgoing", ["KNOWS"], "r", 1, 2],
+          ["node", "u", ["User"], {"city": ["lit", "Berlin"]}],
+          ["edge", "outgoing", ["KNOWS"], "r", 1, 2, {"since": ["lit", 2020]}],
           ["node", "f", ["User"]]
         ]
       ],
@@ -166,8 +171,17 @@ Paths within `matches[i].paths` or `create`/`merge` mutations are sequences of s
 
 | Step Type | Shape | Description |
 | :--- | :--- | :--- |
-| **Node** | `["node", variable, labels]` | Node pattern, e.g. `["node", "u", ["User", "Admin"]]`. `variable` can be `null` for anonymous nodes. Path steps carry no properties in v1: a non-null item after `labels` is rejected (trailing `null` items are accepted). Filter with `where` or write properties with a `set` mutation. |
-| **Edge** | `["edge", dir, types, variable, min_hops, max_hops]` | Directed or undirected relationship traversal. `dir` is `"outgoing"`, `"incoming"`, or `"undirected"`. `min_hops` and `max_hops` specify variable-length paths (`null` for 1 hop). `variable`, `min_hops` and `max_hops` may be omitted (`["edge", dir, types]`) and default to `null`; a non-null item after `max_hops` is rejected. |
+| **Node** | `["node", variable, labels, properties]` | Node pattern, e.g. `["node", "u", ["User", "Admin"]]`. `variable` can be `null` for anonymous nodes. `properties` is optional: an object mapping property names to [expressions](#4-expression-ast-descriptors), for example `{"name": ["lit", "Alice"]}`. Omitted, `null`, and `{}` all mean no properties; any other non-object is rejected. |
+| **Edge** | `["edge", dir, types, variable, min_hops, max_hops, properties]` | Directed or undirected relationship traversal. `dir` is `"outgoing"`, `"incoming"`, or `"undirected"`. `min_hops` and `max_hops` specify variable-length paths (`null` for 1 hop). `variable`, `min_hops`, `max_hops` and `properties` may be omitted (`["edge", dir, types]`) and default to `null`. `properties` follows the same rules as the node step. A non-null item after `properties` is rejected. |
+
+Property values follow the same strict rule as every other expression
+position: each value must be a tagged expression such as `["lit", "Alice"]` or
+`["param", "email"]`. A bare JSON scalar is rejected, for example
+`{"name": "Alice"}` fails at `/matches/0/paths/0/0/3/name` with the
+`["lit", value]` hint. Inline properties compile to the equivalent pattern in
+openCypher, Apache AGE and ISO GQL; SQL:PGQ renders the same values as
+`WHERE` predicates inside its node/edge pattern (for example
+`(p IS Person WHERE p.name = $p0)`).
 
 ---
 

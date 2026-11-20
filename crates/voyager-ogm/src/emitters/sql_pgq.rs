@@ -230,6 +230,11 @@ impl SqlPgqEmitter {
                 self.buffer.push_str(id);
                 Ok(())
             }
+            AstNode::Parameter(name) => {
+                self.buffer.push('$');
+                self.buffer.push_str(name);
+                Ok(())
+            }
             AstNode::NodePattern {
                 variable: Some(var),
                 ..

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Query Spec v1 Node and Relationship Properties (#263)**: path steps now carry an optional properties object as the 4th node item (`["node", variable, labels, properties]`) or the 7th edge item (`["edge", direction, types, variable, min_hops, max_hops, properties]`). Property values are Expressions, so both literals and parameters work, for example `{"name": ["lit", "Alice"]}` or `{"email": ["param", "email"]}`. The properties compile in `MATCH`, `OPTIONAL MATCH`, `CREATE` and `MERGE` (and in pattern comprehensions and `exists`/`count` subqueries, which share the path reader): openCypher and Apache AGE emit inline `{k: v}` maps, ISO GQL emits its inline property map, and SQL:PGQ renders the same values as `WHERE` predicates inside the node/edge pattern (including named parameters). Omitted, `null` and `{}` properties compile identically, variable-length edge hops are preserved, and a non-object properties item, a non-null item past the new shape, or an untagged property value is rejected with `INVALID_SPEC` and its JSON path. The v1 JSON Schema gains the optional properties item plus `maxItems` on both step shapes.
+
 ### Changed
 
 ### Fixed

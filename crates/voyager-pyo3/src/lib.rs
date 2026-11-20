@@ -940,9 +940,10 @@ fn check_spec_arity(
 
 /// Rejects items past a path step's documented shape unless they are `null`.
 ///
-/// Query Spec v1 path steps carry no properties, so a trailing properties map
-/// such as `["node", "a", ["Person"], {"name": ...}]` would otherwise be
-/// dropped without an error. Trailing `null` placeholders stay accepted.
+/// A node step documents `[node, variable, labels, properties]` and an edge
+/// step documents `[edge, direction, types, variable, min_hops, max_hops,
+/// properties]`. Trailing `null` placeholders stay accepted; any other extra
+/// item is a spec error rather than being dropped.
 fn reject_extra_step_items(
     tuple: &Bound<'_, PyTuple>,
     path: &SpecPath,
@@ -956,13 +957,61 @@ fn reject_extra_step_items(
             return Err(path_error(
                 &path.index(idx),
                 format!(
-                    "Invalid '{field}': unexpected {} after the documented shape {shape}. Query Spec v1 path steps carry no properties; filter with a 'where' predicate or write properties with a 'set' mutation.",
+                    "Invalid {field}: unexpected {} after the documented shape {shape}. This path step accepts no further items.",
                     json_type_name(&item)
                 ),
             ));
         }
     }
     Ok(())
+}
+
+/// Parses a path step's optional properties item into `property -> expression`
+/// pairs.
+///
+/// Omitted and `null` both mean "no properties"; an empty object is treated the
+/// same way. A non-object is rejected at the properties item's path, and each
+/// value is parsed with the strict tagged-expression rule, so a bare scalar
+/// fails at `/.../properties/<name>` with the `["lit", value]` hint.
+fn parse_step_properties(
+    builder: &mut QueryBuilder,
+    tuple: &Bound<'_, PyTuple>,
+    idx: usize,
+    step_path: &SpecPath,
+    field: &str,
+) -> PyResult<Vec<(String, NodeHandle)>> {
+    let Some(item) = optional_step_item(tuple, idx)? else {
+        return Ok(Vec::new());
+    };
+    if item.is_none() {
+        return Ok(Vec::new());
+    }
+    let properties_path = step_path.index(idx);
+    let dict = item.cast::<PyDict>().map_err(|_| {
+        path_error(
+            &properties_path,
+            format!(
+                "Invalid {field} properties: expected a JSON object mapping property names to expressions, or null, got {}.",
+                json_type_name(&item)
+            ),
+        )
+    })?;
+    let mut properties = Vec::with_capacity(dict.len());
+    for (key, value) in dict.iter() {
+        let name: String = key.extract().map_err(|_| {
+            path_error(
+                &properties_path,
+                format!(
+                    "Invalid {field} properties: property names must be strings, got {}.",
+                    json_type_name(&key)
+                ),
+            )
+        })?;
+        let value_path = properties_path.key(&name);
+        let value_handle = py_to_node_handle_at(builder, &value, &value_path)?;
+        properties.push((name, value_handle));
+    }
+    Ok(properties)
 }
 
 /// Returns item `idx` of a path step, or `None` when the step is shorter.
@@ -1490,14 +1539,14 @@ fn build_path_steps_into_builder(
                     &step_path,
                     "path step 'node'",
                     3,
-                    "[node, variable, labels]",
+                    "[node, variable, labels, properties?]",
                 )?;
                 reject_extra_step_items(
                     &tuple,
                     &step_path,
                     "path step 'node'",
-                    3,
-                    "[node, variable, labels]",
+                    4,
+                    "[node, variable, labels, properties]",
                 )?;
                 let var: Option<String> = extract_required(
                     &tuple.get_item(1)?,
@@ -1509,7 +1558,13 @@ fn build_path_steps_into_builder(
                     &step_path.index(2),
                     "an array of string labels",
                 )?;
-                builder.node(var, labels);
+                let properties =
+                    parse_step_properties(builder, &tuple, 3, &step_path, "path step 'node'")?;
+                if properties.is_empty() {
+                    builder.node(var, labels);
+                } else {
+                    builder.node_with_prop_exprs(var, labels, properties);
+                }
             }
             "edge" => {
                 check_spec_arity(
@@ -1517,14 +1572,14 @@ fn build_path_steps_into_builder(
                     &step_path,
                     "path step 'edge'",
                     3,
-                    "[edge, direction, types, variable?, min_hops?, max_hops?]",
+                    "[edge, direction, types, variable?, min_hops?, max_hops?, properties?]",
                 )?;
                 reject_extra_step_items(
                     &tuple,
                     &step_path,
                     "path step 'edge'",
-                    6,
-                    "[edge, direction, types, variable, min_hops, max_hops]",
+                    7,
+                    "[edge, direction, types, variable, min_hops, max_hops, properties]",
                 )?;
                 let dir_path = step_path.index(1);
                 let dir_str: String =
@@ -1558,10 +1613,21 @@ fn build_path_steps_into_builder(
                     )?,
                     None => None,
                 };
-                match dir {
-                    Direction::Outgoing => builder.to(edge_types, var),
-                    Direction::Incoming => builder.from(edge_types, var),
-                    Direction::Undirected => builder.edge(edge_types, var),
+                let properties =
+                    parse_step_properties(builder, &tuple, 6, &step_path, "path step 'edge'")?;
+                match (dir, properties.is_empty()) {
+                    (Direction::Outgoing, true) => builder.to(edge_types, var),
+                    (Direction::Incoming, true) => builder.from(edge_types, var),
+                    (Direction::Undirected, true) => builder.edge(edge_types, var),
+                    (Direction::Outgoing, false) => {
+                        builder.to_with_prop_exprs(edge_types, var, properties)
+                    }
+                    (Direction::Incoming, false) => {
+                        builder.from_with_prop_exprs(edge_types, var, properties)
+                    }
+                    (Direction::Undirected, false) => {
+                        builder.edge_with_prop_exprs(edge_types, var, properties)
+                    }
                 };
                 if min_hops.is_some() || max_hops.is_some() {
                     let min = min_hops.unwrap_or(1);
@@ -3616,8 +3682,11 @@ fn generate_synthetic_stream(count: usize) -> PyResult<PyArrowStream> {
 /// so a literal list is written as `["lit", [...]]` and a list of expressions as
 /// `["list", [...]]`. A `where` array whose first element is a string is one
 /// expression, while an array whose first element is an array or object is a
-/// list of predicates. Error messages use JSON type names (`string`, `number`,
-/// `array`, ...) rather than Python type reprs.
+/// list of predicates. Node and edge path steps accept an optional properties
+/// object (the 4th node item and the 7th edge item) whose values are
+/// expressions; omitted, `null` and `{}` mean no properties. Error messages use
+/// JSON type names (`string`, `number`, `array`, ...) rather than Python type
+/// reprs.
 #[pyfunction]
 #[pyo3(signature = (spec, dialect="cypher", graph_name=None, optimize=false, optimization_level="standard", use_cache=true))]
 fn compile_query_from_spec<'py>(

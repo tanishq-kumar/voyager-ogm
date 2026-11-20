@@ -825,14 +825,22 @@ def _match_spec(step_json: str) -> dict[str, Any]:
     )
 
 
-def test_node_step_properties_map_is_rejected_not_dropped() -> None:
+def test_node_step_property_value_must_be_an_expression() -> None:
     spec = json.loads(
         '{"spec_version": 1, "mutations": [["create", [[["node", "a", ["Person"], '
-        '{"name": ["lit", "Alice"]}]]]]]}'
+        '{"name": "Alice"}]]]]]}'
+    )
+    error = assert_invalid_spec(spec, "/mutations/0/1/0/0/3/name")
+    assert "got string" in str(error)
+    assert '["lit", value]' in str(error)
+
+
+def test_node_step_properties_must_be_an_object_or_null() -> None:
+    spec = json.loads(
+        '{"spec_version": 1, "mutations": [["create", [[["node", "a", ["Person"], "Alice"]]]]]}'
     )
     error = assert_invalid_spec(spec, "/mutations/0/1/0/0/3")
-    assert "object" in str(error)
-    assert "carry no properties" in str(error)
+    assert "expected a JSON object" in str(error)
 
 
 def test_node_step_trailing_null_is_still_accepted() -> None:
@@ -855,7 +863,23 @@ def test_edge_step_short_form_matches_full_form() -> None:
 
 def test_edge_step_extra_item_is_rejected() -> None:
     error = assert_invalid_spec(
-        _match_spec('["edge", "out", ["KNOWS"], "r", null, null, {"since": ["lit", 2020]}]'),
+        _match_spec('["edge", "out", ["KNOWS"], "r", null, null, {"since": ["lit", 2020]}, 1]'),
+        "/matches/0/paths/0/1/7",
+    )
+    assert "accepts no further items" in str(error)
+
+
+def test_edge_step_properties_must_be_an_object_or_null() -> None:
+    error = assert_invalid_spec(
+        _match_spec('["edge", "out", ["KNOWS"], "r", null, null, ["since", 2020]]'),
         "/matches/0/paths/0/1/6",
     )
-    assert "carry no properties" in str(error)
+    assert "expected a JSON object" in str(error)
+
+
+def test_node_step_fifth_item_is_rejected() -> None:
+    error = assert_invalid_spec(
+        _match_spec('["node", "x", ["Person"], {"name": ["lit", "x"]}, 1]'),
+        "/matches/0/paths/0/1/4",
+    )
+    assert "accepts no further items" in str(error)

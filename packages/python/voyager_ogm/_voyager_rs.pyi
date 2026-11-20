@@ -454,6 +454,10 @@ def compile_query_from_spec(
     are rejected at the array's path. Write a literal list as ``["lit", [...]]``
     and a list of expressions as ``["list", [...]]``.
 
+    Node and edge path steps accept an optional properties object (the 4th node
+    item and the 7th edge item) whose values are expressions. Omitted, ``null``
+    and ``{}`` mean no properties.
+
     A ``where`` array whose first element is a string is one expression; one
     whose first element is an array or object is a list of predicates; an empty
     array is an empty predicate list. Both forms compile identically. Error

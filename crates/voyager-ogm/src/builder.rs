@@ -892,6 +892,24 @@ impl QueryBuilder {
         self.node_pattern_internal_with_predicates(var, label_expr, preds)
     }
 
+    /// Defines a node with inline property equality predicates whose right-hand
+    /// sides are arbitrary expression handles.
+    ///
+    /// This is the expression-handle counterpart of [`Self::node_with_props`]:
+    /// it accepts parameters and other expressions, not only literals, and
+    /// emits the same `(variable:Label {prop: expr, ...})` pattern shape.
+    pub fn node_with_prop_exprs(
+        &mut self,
+        variable: Option<impl Into<String>>,
+        labels: Vec<impl Into<String>>,
+        properties: Vec<(impl Into<String>, NodeHandle)>,
+    ) -> &mut Self {
+        let label_expr = LabelExpression::from_labels(labels.into_iter().map(Into::into));
+        let var = variable.map(Into::into);
+        let preds = self.pattern_prop_predicates(var.as_deref(), properties);
+        self.node_pattern_internal_with_predicates(var, label_expr, preds)
+    }
+
     /// Alias for [`Self::node_with_props`].
     #[inline(always)]
     pub fn node_properties(
@@ -901,6 +919,32 @@ impl QueryBuilder {
         properties: Vec<(impl Into<String>, impl Into<LiteralValue>)>,
     ) -> &mut Self {
         self.node_with_props(variable, labels, properties)
+    }
+
+    /// Builds `prop = expression` equality predicates for a pattern's inline
+    /// property map, using the pattern variable when it has one and a bare
+    /// property identifier otherwise.
+    fn pattern_prop_predicates(
+        &mut self,
+        variable: Option<&str>,
+        properties: Vec<(impl Into<String>, NodeHandle)>,
+    ) -> Vec<NodeHandle> {
+        let mut preds = Vec::with_capacity(properties.len());
+        for (prop, right) in properties {
+            let p_str: String = prop.into();
+            let left = if let Some(v) = variable {
+                self.prop(v, &p_str)
+            } else {
+                self.ident(&p_str)
+            };
+            let pred = self.arena.alloc(AstNode::BinaryExpression {
+                left,
+                op: BinaryOp::Eq,
+                right,
+            });
+            preds.push(pred);
+        }
+        preds
     }
 
     pub(crate) fn node_pattern_internal(
@@ -1056,6 +1100,28 @@ impl QueryBuilder {
         self
     }
 
+    /// Chains an **outgoing** relationship traversal whose inline property
+    /// predicates use arbitrary expression handles, for example parameters.
+    pub fn to_with_prop_exprs(
+        &mut self,
+        edge_types: Vec<impl Into<String>>,
+        variable: Option<impl Into<String>>,
+        properties: Vec<(impl Into<String>, NodeHandle)>,
+    ) -> &mut Self {
+        let expr = LabelExpression::from_edge_types(edge_types.into_iter().map(Into::into));
+        let var = variable.map(Into::into);
+        let preds = self.pattern_prop_predicates(var.as_deref(), properties);
+        self.pending_edge = Some(PendingEdge {
+            direction: Direction::Outgoing,
+            label_expression: expr,
+            variable: var,
+            min_hops: None,
+            max_hops: None,
+            predicates: preds,
+        });
+        self
+    }
+
     /// Chains an **outgoing** relationship traversal without variable alias: `(current)-[:TYPE]->(next_node)`.
     #[inline(always)]
     pub fn to_types(&mut self, edge_types: Vec<impl Into<String>>) -> &mut Self {
@@ -1145,6 +1211,28 @@ impl QueryBuilder {
         self
     }
 
+    /// Chains an **incoming** relationship traversal whose inline property
+    /// predicates use arbitrary expression handles, for example parameters.
+    pub fn from_with_prop_exprs(
+        &mut self,
+        edge_types: Vec<impl Into<String>>,
+        variable: Option<impl Into<String>>,
+        properties: Vec<(impl Into<String>, NodeHandle)>,
+    ) -> &mut Self {
+        let expr = LabelExpression::from_edge_types(edge_types.into_iter().map(Into::into));
+        let var = variable.map(Into::into);
+        let preds = self.pattern_prop_predicates(var.as_deref(), properties);
+        self.pending_edge = Some(PendingEdge {
+            direction: Direction::Incoming,
+            label_expression: expr,
+            variable: var,
+            min_hops: None,
+            max_hops: None,
+            predicates: preds,
+        });
+        self
+    }
+
     /// Chains an **incoming** relationship traversal without variable alias: `(current)<-[:TYPE]-(next_node)`.
     #[inline(always)]
     pub fn from_types(&mut self, edge_types: Vec<impl Into<String>>) -> &mut Self {
@@ -1223,6 +1311,28 @@ impl QueryBuilder {
             });
             preds.push(pred);
         }
+        self.pending_edge = Some(PendingEdge {
+            direction: Direction::Undirected,
+            label_expression: expr,
+            variable: var,
+            min_hops: None,
+            max_hops: None,
+            predicates: preds,
+        });
+        self
+    }
+
+    /// Chains an **undirected** relationship traversal whose inline property
+    /// predicates use arbitrary expression handles, for example parameters.
+    pub fn edge_with_prop_exprs(
+        &mut self,
+        edge_types: Vec<impl Into<String>>,
+        variable: Option<impl Into<String>>,
+        properties: Vec<(impl Into<String>, NodeHandle)>,
+    ) -> &mut Self {
+        let expr = LabelExpression::from_edge_types(edge_types.into_iter().map(Into::into));
+        let var = variable.map(Into::into);
+        let preds = self.pattern_prop_predicates(var.as_deref(), properties);
         self.pending_edge = Some(PendingEdge {
             direction: Direction::Undirected,
             label_expression: expr,
