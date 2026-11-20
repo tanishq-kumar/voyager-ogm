@@ -3116,6 +3116,28 @@ class AsyncRelateBridgeTransaction:
         raise RuntimeError(self._sync._savepoint_error_message)
 
 
+# Optional namespace prefixes accepted in front of a connection URI, matching the
+# native URI parser (voyager-drivers `ParsedUri::parse`). They select the backend
+# for a Session; the Python driver bridge ignores them and uses the URI after them.
+_URI_NAMESPACE_PREFIXES = (
+    "voyager+native:",
+    "voyager+bridge:",
+    "voyager-drivers:",
+    "voyager:",
+    "voy:",
+    "vn:",
+)
+
+
+def _strip_uri_namespace_prefix(uri: str) -> str:
+    """Removes an optional Voyager namespace prefix such as ``vn:`` or ``voy:``."""
+    stripped = uri.strip()
+    for prefix in _URI_NAMESPACE_PREFIXES:
+        if stripped.startswith(prefix):
+            return stripped[len(prefix) :].strip()
+    return stripped
+
+
 _BRIDGE_REGISTRY: list[tuple[Callable[[Any], bool], type, bool]] = []
 
 
@@ -3331,6 +3353,7 @@ def create_bridge(
 
     # If a database connection URI string was provided, attempt to auto-instantiate the official driver
     if isinstance(driver_or_connection, str):
+        driver_or_connection = _strip_uri_namespace_prefix(driver_or_connection)
         if driver_or_connection.startswith("mock://"):
             from urllib.parse import parse_qs, urlsplit
 

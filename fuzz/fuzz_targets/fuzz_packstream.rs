@@ -2,7 +2,7 @@
 
 use bytes::Bytes;
 use libfuzzer_sys::fuzz_target;
-use voyager_net::bolt::PackStream;
+use voyager_drivers::bolt::PackStream;
 
 fuzz_target!(|data: &[u8]| {
     let mut bytes = Bytes::copy_from_slice(data);

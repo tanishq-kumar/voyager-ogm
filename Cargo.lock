@@ -2525,7 +2525,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "voyager-net"
+name = "voyager-drivers"
 version = "0.4.0-alpha.6"
 dependencies = [
  "arrow",
@@ -2574,7 +2574,7 @@ dependencies = [
  "pyo3-async-runtimes",
  "serde_json",
  "tokio",
- "voyager-net",
+ "voyager-drivers",
  "voyager-ogm",
 ]
 

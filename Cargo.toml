@@ -4,7 +4,7 @@ members = [
     "crates/voyager-ogm",
     "crates/voyager-cli",
     "crates/voyager-pyo3",
-    "crates/voyager-net",
+    "crates/voyager-drivers",
 ]
 exclude = [
     "fuzz",
@@ -20,14 +20,11 @@ rust-version = "1.87.0"
 authors = ["Tanishq Kumar"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/tanishq-kumar/voyager"
-readme = "README.md"
-keywords = ["graph", "ogm", "cypher", "sql-pgq", "arrow"]
-categories = ["database", "compilers"]
 
 [workspace.dependencies]
 # Internal workspace crates
 voyager-ogm = { path = "crates/voyager-ogm", version = "0.4.0-alpha.6" }
-voyager-net = { path = "crates/voyager-net", version = "0.4.0-alpha.6" }
+voyager-drivers = { path = "crates/voyager-drivers", version = "0.4.0-alpha.6" }
 
 # Asynchronous Network Runtime
 tokio = { version = "1.43", features = ["full"] }
@@ -76,7 +73,7 @@ opt-level = 0
 opt-level = 2
 
 # Deep-recursion parsers need frame reuse to stay inside 1-2 MB stacks
-[profile.dev.package.voyager-net]
+[profile.dev.package.voyager-drivers]
 opt-level = 1
 
 [profile.dev.package.voyager-pyo3]

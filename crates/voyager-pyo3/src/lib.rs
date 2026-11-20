@@ -3091,7 +3091,7 @@ fn py_dict_to_json_params(
 pub struct PyNativeQueryResult {
     stream: PyArrowStream,
     columns: Vec<String>,
-    summary: voyager_net::QuerySummary,
+    summary: voyager_drivers::QuerySummary,
 }
 
 #[pymethods]
@@ -3190,7 +3190,7 @@ impl PyNativeQueryResult {
     }
 }
 
-fn query_result_to_py(query_result: voyager_net::QueryResult) -> PyResult<PyNativeQueryResult> {
+fn query_result_to_py(query_result: voyager_drivers::QueryResult) -> PyResult<PyNativeQueryResult> {
     let columns = query_result.columns.clone();
     let summary = query_result.summary.clone();
     let batch = query_result
@@ -3263,7 +3263,7 @@ fn get_runtime_pid() -> u32 {
 /// Native asynchronous Rust network client managing connection pooling and wire protocols.
 #[pyclass(name = "NativeClient")]
 pub struct PyNativeClient {
-    client: voyager_net::NativeClient,
+    client: voyager_drivers::NativeClient,
 }
 
 #[pymethods]
@@ -3272,12 +3272,12 @@ impl PyNativeClient {
     #[new]
     #[pyo3(signature = (uri, min_idle=1, max_size=10))]
     fn new(uri: &str, min_idle: usize, max_size: usize) -> PyResult<Self> {
-        let pool_config = voyager_net::PoolConfig {
+        let pool_config = voyager_drivers::PoolConfig {
             min_idle,
             max_size,
             ..Default::default()
         };
-        let client = voyager_net::NativeClient::new(uri, Some(pool_config))
+        let client = voyager_drivers::NativeClient::new(uri, Some(pool_config))
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self { client })
     }
@@ -3419,7 +3419,7 @@ impl PyNativeClient {
 }
 
 type NativeTransactionHandle =
-    voyager_net::NativeTransaction<Box<dyn voyager_net::AsyncConnection>>;
+    voyager_drivers::NativeTransaction<Box<dyn voyager_drivers::AsyncConnection>>;
 
 const TX_STATE_ACTIVE: u8 = 1;
 const TX_STATE_COMMITTED: u8 = 2;
@@ -3464,12 +3464,12 @@ impl Drop for TxFutureGuard {
     }
 }
 
-fn native_transaction_state_code(state: voyager_net::NativeTransactionState) -> u8 {
+fn native_transaction_state_code(state: voyager_drivers::NativeTransactionState) -> u8 {
     match state {
-        voyager_net::NativeTransactionState::Active => TX_STATE_ACTIVE,
-        voyager_net::NativeTransactionState::Failed => TX_STATE_FAILED,
-        voyager_net::NativeTransactionState::Committed => TX_STATE_COMMITTED,
-        voyager_net::NativeTransactionState::RolledBack => TX_STATE_ROLLED_BACK,
+        voyager_drivers::NativeTransactionState::Active => TX_STATE_ACTIVE,
+        voyager_drivers::NativeTransactionState::Failed => TX_STATE_FAILED,
+        voyager_drivers::NativeTransactionState::Committed => TX_STATE_COMMITTED,
+        voyager_drivers::NativeTransactionState::RolledBack => TX_STATE_ROLLED_BACK,
     }
 }
 
@@ -3847,7 +3847,7 @@ impl PyNativeTransaction {
 /// Native thread-safe circuit breaker and backend router for Voyager sessions.
 #[pyclass(name = "NativeCircuitRouter")]
 pub struct PyNativeCircuitRouter {
-    router: voyager_net::CircuitRouter,
+    router: voyager_drivers::CircuitRouter,
 }
 
 #[pymethods]
@@ -3856,13 +3856,13 @@ impl PyNativeCircuitRouter {
     #[new]
     #[pyo3(signature = (failure_threshold=1, cooldown_seconds=30.0, success_threshold=1))]
     fn new(failure_threshold: u32, cooldown_seconds: f64, success_threshold: u32) -> Self {
-        let config = voyager_net::CircuitConfig::new(
+        let config = voyager_drivers::CircuitConfig::new(
             failure_threshold,
             std::time::Duration::from_secs_f64(cooldown_seconds.max(0.0)),
         )
         .with_success_threshold(success_threshold);
         Self {
-            router: voyager_net::CircuitRouter::new(config),
+            router: voyager_drivers::CircuitRouter::new(config),
         }
     }
 
@@ -3961,13 +3961,13 @@ impl PyNativeCircuitRouter {
     /// Checks if an error string represents a query syntax, semantic, or constraint error.
     #[staticmethod]
     fn is_semantic_error(error_msg: &str) -> bool {
-        voyager_net::is_semantic_error(error_msg)
+        voyager_drivers::is_semantic_error(error_msg)
     }
 
     /// Classifies an error string as "semantic" or "transient".
     #[staticmethod]
     fn classify_error(error_msg: &str) -> &'static str {
-        voyager_net::classify_error(error_msg).as_str()
+        voyager_drivers::classify_error(error_msg).as_str()
     }
 
     fn __repr__(&self) -> String {

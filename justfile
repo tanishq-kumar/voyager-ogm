@@ -55,7 +55,7 @@ fetch-conformance:
 
 # Run official FalkorDB conformance test suite
 test-falkordb-official:
-    uv run cargo test -p voyager-net --test official_falkordb_tests -- --nocapture
+    uv run cargo test -p voyager-drivers --test official_falkordb_tests -- --nocapture
 
 # Fast type/borrow check of the whole workspace (no codegen, no linking)
 check:
@@ -288,8 +288,8 @@ examples-python:
 examples-live:
     uv run python examples/python/30_live_neo4j_execution.py
     uv run python examples/python/31_live_multi_engine_execution.py
-    uv run cargo run -p voyager-net --example live_explain_and_profile
-    uv run cargo run -p voyager-net --example live_connect_and_query
+    uv run cargo run -p voyager-drivers --example live_explain_and_profile
+    uv run cargo run -p voyager-drivers --example live_connect_and_query
 
 # Run all code examples across Rust and Python (offline)
 examples: examples-rust examples-python

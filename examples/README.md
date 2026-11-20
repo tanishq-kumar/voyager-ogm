@@ -42,8 +42,8 @@ Voyager OGM provides idiomatic interfaces in both Python and Rust. Where counter
 | **Bulk Ingestion Compilation** | [`19_bulk_ingestion.py`](python/19_bulk_ingestion.py) | [`10_bulk_ingest_compilation.rs`](../crates/voyager-ogm/examples/10_bulk_ingest_compilation.rs) | Vectorized `UNWIND $batch AS row` node/edge bulk templates for high-throughput loads. |
 | **Transactions & Savepoints** | [`18_transactions_and_identity_map.py`](python/18_transactions_and_identity_map.py) | [`11_transactions_and_unit_of_work.rs`](../crates/voyager-ogm/examples/11_transactions_and_unit_of_work.rs) | Real database transactions (commit/rollback/savepoints), plus in-memory Unit of Work entity snapshots and AST checkpoints. |
 | **Vector & Full-Text Search** | [`12_vector_and_fulltext_search.py`](python/12_vector_and_fulltext_search.py) | [`12_vector_and_fulltext_search.rs`](../crates/voyager-ogm/examples/12_vector_and_fulltext_search.rs) | Vector embeddings, full-text indexes, DDL generation, and similarity/procedure queries. |
-| **Live Engine Connection** | [`30_live_neo4j_execution.py`](python/30_live_neo4j_execution.py) | [`live_connect_and_query.rs`](../crates/voyager-net/examples/live_connect_and_query.rs) | Direct wire connection over Bolt, connection pooling, and clean unreachable handling. |
-| **Live Engine Profiling** | [`11_query_profiling_and_explain.py`](python/11_query_profiling_and_explain.py) | [`live_explain_and_profile.rs`](../crates/voyager-net/examples/live_explain_and_profile.rs) | Live query planning and runtime performance metrics against running database instances. |
+| **Live Engine Connection** | [`30_live_neo4j_execution.py`](python/30_live_neo4j_execution.py) | [`live_connect_and_query.rs`](../crates/voyager-drivers/examples/live_connect_and_query.rs) | Direct wire connection over Bolt, connection pooling, and clean unreachable handling. |
+| **Live Engine Profiling** | [`11_query_profiling_and_explain.py`](python/11_query_profiling_and_explain.py) | [`live_explain_and_profile.rs`](../crates/voyager-drivers/examples/live_explain_and_profile.rs) | Live query planning and runtime performance metrics against running database instances. |
 
 ---
 
@@ -60,7 +60,7 @@ Run live Rust engine examples (requires running containers) with:
 ```bash
 just examples-live
 # or run individual live example:
-cargo run -p voyager-net --example <example_name>
+cargo run -p voyager-drivers --example <example_name>
 ```
 
 ### Core Engine & AST Compilation (`crates/voyager-ogm/examples/`)
@@ -80,12 +80,12 @@ cargo run -p voyager-net --example <example_name>
 | [`11_transactions_and_unit_of_work.rs`](../crates/voyager-ogm/examples/11_transactions_and_unit_of_work.rs) | Unit of Work mutation tracking, AST checkpoints, named savepoints, and two-layer transaction rollbacks. | None (offline / in-memory UoW) | `cargo run -p voyager-ogm --example 11_transactions_and_unit_of_work` |
 | [`12_vector_and_fulltext_search.rs`](../crates/voyager-ogm/examples/12_vector_and_fulltext_search.rs) | Vector embeddings, full-text indexes, multi-dialect DDL, and vector similarity / full-text procedure queries. | None (offline / compile-only) | `cargo run -p voyager-ogm --example 12_vector_and_fulltext_search` |
 
-### Live Engine Execution (`crates/voyager-net/examples/`)
+### Live Engine Execution (`crates/voyager-drivers/examples/`)
 
 | File | What It Teaches | Prerequisites | Run Command |
 | :--- | :--- | :--- | :--- |
-| [`live_explain_and_profile.rs`](../crates/voyager-net/examples/live_explain_and_profile.rs) | Live Bolt execution against Neo4j (7687) and Memgraph (7688), graph cleanup/seeding, profiling metrics. | Neo4j / Memgraph container | `cargo run -p voyager-net --example live_explain_and_profile` |
-| [`live_connect_and_query.rs`](../crates/voyager-net/examples/live_connect_and_query.rs) | Direct wire connection over Bolt, connection pooling via `NativeClient`, Arrow result batches, clean skip handling. | Neo4j / Memgraph container | `cargo run -p voyager-net --example live_connect_and_query` |
+| [`live_explain_and_profile.rs`](../crates/voyager-drivers/examples/live_explain_and_profile.rs) | Live Bolt execution against Neo4j (7687) and Memgraph (7688), graph cleanup/seeding, profiling metrics. | Neo4j / Memgraph container | `cargo run -p voyager-drivers --example live_explain_and_profile` |
+| [`live_connect_and_query.rs`](../crates/voyager-drivers/examples/live_connect_and_query.rs) | Direct wire connection over Bolt, connection pooling via `NativeClient`, Arrow result batches, clean skip handling. | Neo4j / Memgraph container | `cargo run -p voyager-drivers --example live_connect_and_query` |
 
 ---
 

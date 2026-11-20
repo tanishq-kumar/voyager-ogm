@@ -1,6 +1,6 @@
 # osv-scanner accepted findings (`just audit`). Keep in sync with the ignore list in deny.toml.
 # Unmaintained crates pulled in only by neo4rs, an optional bench-only dependency
-# (voyager-net `bench-driver` feature). Not part of shipped builds.
+# (voyager-drivers `bench-driver` feature). Not part of shipped builds.
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2025-0012"

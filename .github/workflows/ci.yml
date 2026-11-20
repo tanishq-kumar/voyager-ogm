@@ -74,7 +74,7 @@ jobs:
               - 'tests/**'
               - '.github/workflows/ci.yml'
             net:
-              - 'crates/voyager-net/**'
+              - 'crates/voyager-drivers/**'
               - 'fuzz/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -322,7 +322,7 @@ jobs:
         env:
           RUSTFLAGS: "-Zsanitizer=address"
           ASAN_OPTIONS: "detect_leaks=1"
-        run: cargo test -p voyager-net --test wire_fuzz_tests --target x86_64-unknown-linux-gnu
+        run: cargo test -p voyager-drivers --test wire_fuzz_tests --target x86_64-unknown-linux-gnu
 
       - name: Smoke Test PackStream Fuzz Target
         run: cargo fuzz run fuzz_packstream --target x86_64-unknown-linux-gnu -- -runs=1000 -max_total_time=15

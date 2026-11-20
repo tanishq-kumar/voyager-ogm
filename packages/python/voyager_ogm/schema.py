@@ -72,7 +72,7 @@ _REL_CONSTRAINT_DETAIL_RE = re.compile(
 def _is_enterprise_only_constraint_error(exc: BaseException) -> bool:
     """Returns True when a database error says the failed constraint needs Neo4j Enterprise.
 
-    Both the Python Neo4j driver bridge and the native voyager-net client surface the
+    Both the Python Neo4j driver bridge and the native voyager-drivers client surface the
     server message, so matching the text covers both execution paths.
     """
     return _ENTERPRISE_ONLY_MARKER in str(exc).lower()

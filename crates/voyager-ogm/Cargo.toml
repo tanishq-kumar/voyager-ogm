@@ -7,6 +7,8 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords = ["graph", "ogm", "cypher", "sql-pgq", "query-builder"]
+categories = ["database", "compilers"]
 readme = "README.md"
 
 [lints]
