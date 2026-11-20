@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **License texts in crate packages (#247)**: `voyager-ogm`, `voyager-drivers` and `voyager-cli` now ship `LICENSE-MIT` and `LICENSE-APACHE` in their crates.io packages (symlinked to the repository root files), and the `voyager-ogm` README status line no longer names a specific version.
 - **crates.io and docs.rs documentation (#245)**: rewrote the `voyager-ogm`, `voyager-drivers`, `voyager-cli`, and `voyager-pyo3` crate READMEs, shared the `voyager-ogm` and `voyager-drivers` READMEs as their crate docs, added a `just test-doc` doctest gate (in `just test` / `just ci` and CI), refreshed `CONTRIBUTING.md`, and moved the benchmark charts into `benchmarks/README.md` after removing the main README's Performance & Benchmarks section.
 
 ## [0.4.0-alpha.8] - 2026-11-20
