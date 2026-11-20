@@ -180,9 +180,14 @@ typecheck:
 ci: fmt-check lint deny machete audit test
     @echo "[PASS] Full CI verification passed with 0 errors!"
 
-# Release step 1 (on a release branch): run CI, bump the version, update lockfiles, cut the changelog, commit
+# The branch may be based on main (normal minor/major release) or on release/X.Y (patch release).
+# The base is detected from the branch's upstream remote-tracking ref, then from the closest
+# `git merge-base` among origin/main and origin/release/*. Pass `base=main` or `base=release/X.Y`
+# as the second argument when that detection is ambiguous.
+#
+# Release step 1 (on a branch based on main or release/X.Y): run CI, bump the version, update lockfiles, cut the changelog, commit.
 [unix]
-release-prepare version:
+release-prepare version base="":
     #!/usr/bin/env bash
     set -euo pipefail
     branch=$(git rev-parse --abbrev-ref HEAD)
@@ -198,6 +203,137 @@ release-prepare version:
         echo "Error: tag v{{version}} already exists." >&2
         exit 1
     fi
+
+    current_version=$(python3 -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('Cargo.toml').read_text(encoding='utf-8'))['workspace']['package']['version'])")
+    if ! python3 - "$current_version" "{{version}}" <<'PY'
+    import re
+    import sys
+
+
+    def parse(version):
+        match = re.fullmatch(
+            r"(?P<major>0|[1-9][0-9]*)\.(?P<minor>0|[1-9][0-9]*)\.(?P<patch>0|[1-9][0-9]*)"
+            r"(?:-(?P<pre>[0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?",
+            version,
+        )
+        if match is None:
+            raise SystemExit(f"invalid SemVer version: {version}")
+        core = (int(match["major"]), int(match["minor"]), int(match["patch"]))
+        pre = match["pre"]
+        if pre is None:
+            return core + ((1, ()),)
+        identifiers = []
+        for identifier in pre.split("."):
+            if identifier.isdigit():
+                identifiers.append((0, int(identifier)))
+            else:
+                identifiers.append((1, identifier))
+        return core + ((0, tuple(identifiers)),)
+
+
+    current, target = sys.argv[1], sys.argv[2]
+    if parse(target) <= parse(current):
+        raise SystemExit(f"target version {target} is not greater than current version {current}")
+    PY
+    then
+        echo "Error: target version '{{version}}' must be greater than the current workspace version '$current_version'." >&2
+        exit 1
+    fi
+
+    base_branch=""
+    if [[ -n "{{base}}" ]]; then
+        base_branch="{{base}}"
+        # Accept both `just release-prepare 0.5.0 release/0.4` and the
+        # self-documenting `just release-prepare 0.5.0 base=release/0.4`.
+        base_branch="${base_branch#base=}"
+        case "$base_branch" in
+            main) ;;
+            release/[0-9]*.[0-9]*) ;;
+            *)
+                echo "Error: base must be 'main' or 'release/X.Y' (got '{{base}}')." >&2
+                exit 1
+                ;;
+        esac
+    else
+        # 1. An upstream remote-tracking branch is the most specific signal: a branch
+        #    created with `git switch -c chore/release-0.4.1 origin/release/0.4`
+        #    tracks origin/release/0.4.
+        upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+        case "$upstream" in
+            origin/main) base_branch="main" ;;
+            origin/release/*) base_branch="${upstream#origin/}" ;;
+        esac
+
+        # 2. Otherwise choose the candidate base whose merge-base with HEAD is closest
+        #    to HEAD (fewest commits only on this branch). The merge-base with the line
+        #    the branch was actually cut from is newer than the one shared with the
+        #    other line.
+        if [[ -z "$base_branch" ]]; then
+            candidates=()
+            if git rev-parse -q --verify refs/remotes/origin/main >/dev/null; then
+                candidates+=("main|refs/remotes/origin/main")
+            fi
+            while IFS= read -r ref; do
+                [[ -n "$ref" ]] && candidates+=("${ref#refs/remotes/origin/}|${ref}")
+            done < <(git for-each-ref --format='%(refname)' 'refs/remotes/origin/release/*')
+
+            if [[ ${#candidates[@]} -eq 0 ]]; then
+                echo "Error: cannot detect a base branch: no origin/main or origin/release/* refs." >&2
+                echo "Run 'git fetch origin' and retry, or pass base=main|release/X.Y." >&2
+                exit 1
+            fi
+
+            best_name=""
+            best_distance=""
+            ambiguous=false
+            for candidate in "${candidates[@]}"; do
+                name="${candidate%%|*}"
+                ref="${candidate#*|}"
+                merge_base=$(git merge-base HEAD "$ref" 2>/dev/null || true)
+                [[ -n "$merge_base" ]] || continue
+                distance=$(git rev-list --count "$merge_base..HEAD")
+                if [[ -z "$best_distance" || "$distance" -lt "$best_distance" ]]; then
+                    best_name="$name"
+                    best_distance="$distance"
+                    ambiguous=false
+                elif [[ "$distance" -eq "$best_distance" && "$name" != "$best_name" ]]; then
+                    ambiguous=true
+                fi
+            done
+
+            if [[ -z "$best_name" ]]; then
+                echo "Error: cannot find a merge-base with origin/main or origin/release/*." >&2
+                echo "Run 'git fetch origin' and retry, or pass base=main|release/X.Y." >&2
+                exit 1
+            fi
+            if [[ "$ambiguous" == true ]]; then
+                echo "Error: the release base is ambiguous (merge-base distance ties)." >&2
+                echo "Pass it explicitly: just release-prepare {{version}} base=main|release/X.Y" >&2
+                exit 1
+            fi
+            base_branch="$best_name"
+        fi
+    fi
+
+    echo "Release base: $base_branch"
+    if [[ "$base_branch" == release/* ]]; then
+        if ! python3 - "$base_branch" "{{version}}" <<'PY'
+    import re
+    import sys
+
+    base, version = sys.argv[1], sys.argv[2]
+    line = base.removeprefix("release/")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+", line):
+        raise SystemExit(f"invalid release branch '{base}' (expected release/X.Y)")
+    if not re.fullmatch(re.escape(line) + r"\.[0-9]+", version):
+        raise SystemExit(f"'{version}' is not a patch release on {base} (expected {line}.N)")
+    PY
+        then
+            echo "Error: branch '$branch' is based on '$base_branch', which only accepts patch releases in the form ${base_branch#release/}.N; '{{version}}' is not." >&2
+            exit 1
+        fi
+    fi
+
     echo "=== Running Full CI Suite ==="
     just ci
     echo "=== Updating Version to {{version}} in Cargo.toml ==="
@@ -211,26 +347,50 @@ release-prepare version:
     git add Cargo.toml Cargo.lock uv.lock CHANGELOG.md
     git commit -m "chore(release): v{{version}}"
     echo ""
-    echo "Release commit for v{{version}} created on '$branch'."
-    echo "Next: push the branch, open a PR to main with labels full-ci and skip-changelog, merge it, then run 'just release-tag {{version}}' on main."
+    echo "Release commit for v{{version}} created on '$branch' (base: $base_branch)."
+    if [[ "$base_branch" == "main" ]]; then
+        echo "Next: push the branch, open a PR to main with labels full-ci and skip-changelog, merge it, then run 'just release-tag {{version}}' on main."
+    else
+        echo "Next: push the branch, open a PR to $base_branch with labels full-ci and skip-changelog, merge it, then run 'just release-tag {{version}}' on $base_branch."
+    fi
 
-# Release step 2 (on main, after the release PR is merged): verify the release and create the annotated tag
+# Release step 2 (on main or release/X.Y, after the release PR is merged): verify the release and create the annotated tag
 [unix]
 release-tag version:
     #!/usr/bin/env bash
     set -euo pipefail
     branch=$(git rev-parse --abbrev-ref HEAD)
-    if [[ "$branch" != "main" ]]; then
-        echo "Error: tag releases from 'main' (currently on '$branch')." >&2
-        exit 1
-    fi
+    case "$branch" in
+        main) ;;
+        release/*)
+            if ! python3 - "$branch" "{{version}}" <<'PY'
+    import re
+    import sys
+
+    branch, version = sys.argv[1], sys.argv[2]
+    line = branch.removeprefix("release/")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+", line):
+        raise SystemExit(f"invalid release branch '{branch}' (expected release/X.Y)")
+    if not re.fullmatch(re.escape(line) + r"\.[0-9]+", version):
+        raise SystemExit(f"'{version}' is not a patch release on {branch} (expected {line}.N)")
+    PY
+            then
+                echo "Error: '$branch' only accepts patch tags in the form ${branch#release/}.N; '{{version}}' is not." >&2
+                exit 1
+            fi
+            ;;
+        *)
+            echo "Error: tag releases from 'main' or a 'release/X.Y' branch (currently on '$branch')." >&2
+            exit 1
+            ;;
+    esac
     if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
         echo "Error: tracked files have local changes." >&2
         exit 1
     fi
-    git fetch -q origin main
-    if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
-        echo "Error: local main is not at origin/main; pull first." >&2
+    git fetch -q origin "$branch"
+    if [[ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$branch")" ]]; then
+        echo "Error: local $branch is not at origin/$branch; pull first." >&2
         exit 1
     fi
     cargo_version=$(python3 -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('Cargo.toml').read_text(encoding='utf-8'))['workspace']['package']['version'])")
@@ -247,9 +407,25 @@ release-tag version:
         exit 1
     fi
     git tag -a "v{{version}}" -m "Release v{{version}}"
-    echo "Created annotated tag v{{version}} on $(git rev-parse --short HEAD)."
+    echo "Created annotated tag v{{version}} on $(git rev-parse --short HEAD) ($branch)."
     echo "To publish, run:"
     echo "    git push origin v{{version}}"
+
+# Print (does not run) the commands to cut the release/X.Y maintenance branch from tag vX.Y.0
+[unix]
+release-branch line:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! "{{line}}" =~ ^[0-9]+\.[0-9]+$ ]]; then
+        echo "Error: expected X.Y (for example 0.4), got '{{line}}'." >&2
+        exit 1
+    fi
+    cat <<EOF
+    # Cut the maintenance branch for the {{line}} line (run these yourself):
+    git fetch origin --tags
+    git switch -c release/{{line}} v{{line}}.0
+    git push -u origin release/{{line}}
+    EOF
 
 # Pre-commit hook recipe (formatting, linting, and type checking)
 pre-commit: fmt-check lint typecheck
