@@ -141,19 +141,19 @@ fn test_gql_quantified_paths_table_driven() {
             direction: "to",
             min_h: Some(1),
             max_h: Some(2),
-            expected_gql: "MATCH ((a:Person)-[:KNOWS]->(b:Person)){1,2} RETURN b.name",
+            expected_gql: "MATCH (a:Person)-[:KNOWS]->{1,2}(b:Person) RETURN b.name",
         },
         TestCase {
             direction: "to",
             min_h: Some(1),
             max_h: Some(3),
-            expected_gql: "MATCH ((a:Person)-[:KNOWS]->(b:Person)){1,3} RETURN b.name",
+            expected_gql: "MATCH (a:Person)-[:KNOWS]->{1,3}(b:Person) RETURN b.name",
         },
         TestCase {
             direction: "to",
             min_h: Some(2),
             max_h: Some(2),
-            expected_gql: "MATCH ((a:Person)-[:KNOWS]->(b:Person)){2,2} RETURN b.name",
+            expected_gql: "MATCH (a:Person)-[:KNOWS]->{2,2}(b:Person) RETURN b.name",
         },
     ];
 
@@ -413,7 +413,7 @@ fn test_gql_mutations_table_driven() {
     let mut b4 = QueryBuilder::new();
     b4.match_node(Some("p"), vec!["Person"])
         .where_property("p", "age", BinaryOp::Lt, 18)
-        .detach_delete(vec!["p".to_string()]);
+        .delete(vec!["p".to_string()]);
     let (a4, r4) = b4.build();
     let mut g4 = IsoGqlEmitter::new();
     let res4 = g4.visit_query(&a4, r4).unwrap();
@@ -773,4 +773,233 @@ fn test_mutation_paths_ignore_path_modes_and_variables() {
     let mut cypher2 = CypherEmitter::new();
     let res_cypher2 = cypher2.visit_query(&arena2, root2).unwrap();
     assert_eq!(res_cypher2.statement, "MERGE (p:Person) RETURN p");
+}
+
+// ---------------------------------------------------------------------------
+// 8. Unsupported ISO GQL Constructs
+// ---------------------------------------------------------------------------
+
+fn assert_gql_unsupported(feature_fragment: &str, build: impl FnOnce(&mut QueryBuilder)) {
+    let mut builder = QueryBuilder::new();
+    build(&mut builder);
+    let (arena, root) = builder
+        .try_build()
+        .expect("query should build before ISO GQL emission");
+    let mut gql = IsoGqlEmitter::new();
+    let err = gql.visit_query(&arena, root).unwrap_err();
+    match err {
+        voyager_ogm::Error::UnsupportedFeature { dialect, feature } => {
+            assert_eq!(dialect, "iso_gql");
+            assert!(
+                feature.contains(feature_fragment),
+                "expected feature to contain {feature_fragment:?}, got {feature:?}"
+            );
+        }
+        other => panic!("Expected UnsupportedFeature, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_gql_rejects_load_csv() {
+    assert_gql_unsupported("LOAD CSV", |builder| {
+        builder
+            .load_csv("file:///persons.csv", true, "row")
+            .create()
+            .node(Some("p"), vec!["Person"]);
+    });
+}
+
+#[test]
+fn test_gql_rejects_detach_delete() {
+    assert_gql_unsupported("DETACH DELETE", |builder| {
+        builder
+            .match_node(Some("p"), vec!["Person"])
+            .detach_delete(vec!["p".to_string()]);
+    });
+}
+
+#[test]
+fn test_gql_rejects_distinct_merge_sets() {
+    assert_gql_unsupported("ON CREATE SET / ON MATCH SET", |builder| {
+        builder
+            .merge()
+            .node(Some("p"), vec!["Person"])
+            .on_create_set("p", "name", "Ada")
+            .on_match_set("p", "city", "Paris");
+    });
+}
+
+#[test]
+fn test_gql_accepts_identical_merge_sets() {
+    let mut builder = QueryBuilder::new();
+    builder
+        .merge()
+        .node(Some("p"), vec!["Person"])
+        .on_create_and_match_set("p", "name", "Ada");
+    let (arena, root) = builder.try_build().expect("build failed");
+
+    let mut gql = IsoGqlEmitter::new();
+    let res = gql.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res.statement,
+        "UPSERT (p:Person) SET p.name = $p0, p.name = $p0"
+    );
+    assert_eq!(
+        res.parameters.get("p0"),
+        Some(&LiteralValue::String("Ada".into()))
+    );
+}
+
+#[test]
+fn test_gql_rejects_regex_match_operator() {
+    assert_gql_unsupported("regular expression match operator", |builder| {
+        builder
+            .match_node(Some("p"), vec!["Person"])
+            .where_property("p", "name", BinaryOp::RegexMatch, "^A.*")
+            .field("p", "name", None::<String>);
+    });
+}
+
+#[test]
+fn test_builder_rejects_inverted_hop_bounds() {
+    let mut builder = QueryBuilder::new();
+    builder
+        .match_node(Some("a"), vec!["Person"])
+        .to(vec!["KNOWS"], Some("r"))
+        .hops(3, 1)
+        .node(Some("b"), vec!["Person"]);
+
+    match builder.try_build().unwrap_err() {
+        voyager_ogm::Error::InvalidClause(message) => {
+            assert!(message.contains("max_hops (1)"));
+            assert!(message.contains("min_hops (3)"));
+        }
+        other => panic!("Expected InvalidClause, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_builder_accepts_equal_and_ordered_hop_bounds() {
+    for (min, max) in [(1, 1), (1, 3), (0, 2)] {
+        let mut builder = QueryBuilder::new();
+        builder
+            .match_node(Some("a"), vec!["Person"])
+            .to(vec!["KNOWS"], Some("r"))
+            .hops(min, max)
+            .node(Some("b"), vec!["Person"]);
+
+        let (arena, root) = builder.try_build().expect("valid hop bounds should build");
+        let mut gql = IsoGqlEmitter::new();
+        let res = gql.visit_query(&arena, root).unwrap();
+        assert!(res.statement.contains(&format!("{{{min},{max}}}")));
+    }
+}
+
+fn build_single_quantified_edge(
+    min: u32,
+    max: u32,
+) -> (
+    voyager_ogm::ast::QueryAstArena,
+    voyager_ogm::ast::NodeHandle,
+) {
+    let mut builder = QueryBuilder::new();
+    builder
+        .match_node(Some("a"), vec!["Person"])
+        .to(vec!["KNOWS"], Some("r"))
+        .hops(min, max)
+        .node(Some("b"), vec!["Person"]);
+    builder.try_build().expect("build failed")
+}
+
+fn first_edge_handle(
+    arena: &voyager_ogm::ast::QueryAstArena,
+    root: voyager_ogm::ast::NodeHandle,
+) -> voyager_ogm::ast::NodeHandle {
+    let AstNode::QueryStatement { matches, .. } = arena.get(root).unwrap() else {
+        panic!("expected QueryStatement");
+    };
+    let AstNode::MatchClause { paths, .. } = arena.get(matches[0]).unwrap() else {
+        panic!("expected MatchClause");
+    };
+    let AstNode::PathChain { edges, .. } = arena.get(paths[0]).unwrap() else {
+        panic!("expected PathChain");
+    };
+    edges[0]
+}
+
+#[test]
+fn test_gql_quantified_edge_open_bounds() {
+    let (mut arena, root) = build_single_quantified_edge(2, 5);
+    let edge = first_edge_handle(&arena, root);
+    if let AstNode::EdgePattern {
+        min_hops: _,
+        max_hops,
+        ..
+    } = arena.get_mut(edge).unwrap()
+    {
+        *max_hops = None;
+    }
+    let mut gql = IsoGqlEmitter::new();
+    assert_eq!(
+        gql.visit_query(&arena, root).unwrap().statement,
+        "MATCH (a:Person)-[r:KNOWS]->{2,}(b:Person)"
+    );
+
+    let (mut arena, root) = build_single_quantified_edge(2, 5);
+    let edge = first_edge_handle(&arena, root);
+    if let AstNode::EdgePattern {
+        min_hops, max_hops, ..
+    } = arena.get_mut(edge).unwrap()
+    {
+        *min_hops = None;
+        *max_hops = Some(5);
+    }
+    let mut gql = IsoGqlEmitter::new();
+    assert_eq!(
+        gql.visit_query(&arena, root).unwrap().statement,
+        "MATCH (a:Person)-[r:KNOWS]->{1,5}(b:Person)"
+    );
+}
+
+#[test]
+fn test_gql_quantified_edge_with_properties() {
+    let mut builder = QueryBuilder::new();
+    builder
+        .match_node(Some("a"), vec!["Person"])
+        .to_with_props(vec!["KNOWS"], Some("r"), vec![("since", 2024i64)])
+        .hops(1, 3)
+        .node(Some("b"), vec!["Person"])
+        .field("b", "name", None::<String>);
+    let (arena, root) = builder.try_build().expect("build failed");
+
+    let mut gql = IsoGqlEmitter::new();
+    let res = gql.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res.statement,
+        "MATCH (a:Person)-[r:KNOWS {since: $p0}]->{1,3}(b:Person) RETURN b.name"
+    );
+    assert_eq!(res.parameters.get("p0"), Some(&LiteralValue::Int64(2024)));
+}
+
+#[test]
+fn test_gql_quantified_edge_with_path_variable() {
+    let mut builder = QueryBuilder::new();
+    let path_ident = builder.ident("p");
+    builder
+        .r#match()
+        .path_variable("p")
+        .node(Some("a"), vec!["Person"])
+        .to(vec!["KNOWS"], Some("r"))
+        .hops(1, 3)
+        .node(Some("b"), vec!["Person"])
+        .r#return()
+        .select_expr(path_ident, None::<String>);
+    let (arena, root) = builder.try_build().expect("build failed");
+
+    let mut gql = IsoGqlEmitter::new();
+    let res = gql.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res.statement,
+        "MATCH p = (a:Person)-[r:KNOWS]->{1,3}(b:Person) RETURN p"
+    );
 }

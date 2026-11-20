@@ -1252,7 +1252,15 @@ impl QueryBuilder {
     }
 
     /// Configures variable-length hop repetition (e.g. `*1..3`) on the active edge pattern.
+    ///
+    /// A maximum smaller than the minimum cannot be expressed by any supported dialect,
+    /// so it is recorded and surfaced from [`Self::try_build`] as [`Error::InvalidClause`].
     pub fn hops(&mut self, min: u32, max: u32) -> &mut Self {
+        if max < min {
+            self.build_error = Some(format!(
+                "Invalid variable-length hop bounds: max_hops ({max}) must be greater than or equal to min_hops ({min})"
+            ));
+        }
         if let Some(pending) = self.pending_edge.as_mut() {
             pending.min_hops = Some(min);
             pending.max_hops = Some(max);
