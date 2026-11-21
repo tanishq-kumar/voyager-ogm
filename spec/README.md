@@ -359,19 +359,21 @@ The `dialect` argument is matched case-insensitively and accepts these aliases:
 
 ### Per-dialect limits
 
-Not every construct is available in every dialect. Some are rejected with
-`UNSUPPORTED_FEATURE` (for example `UNWIND`, `WITH`, `LET`/`FILTER` and DML
-mutations in SQL:PGQ); others are known gaps in the SQL:PGQ and ISO GQL
-emitters and are tracked as bugs, so do not rely on them:
+Not every construct is available in every dialect. Unsupported constructs raise
+`UNSUPPORTED_FEATURE` instead of being silently dropped or emitting a partial
+statement (for example `UNWIND`, `WITH`, `LET`/`FILTER` and DML mutations in
+SQL:PGQ):
 
-- `load_csv` currently renders only in openCypher and Apache AGE; SQL:PGQ and
-  ISO GQL omit it.
-- SQL:PGQ currently drops `optional: true` on a match and root `distinct: true`.
-- ISO GQL currently merges `MERGE ... ON CREATE SET` / `ON MATCH SET` into one
-  `SET`, and `["delete", true, [...]]` emits `DELETE` without `DETACH`.
-- ISO GQL renders a single quantified edge differently from the per-edge
-  openCypher form, and SQL:PGQ does not support `exists`/`count` subqueries,
-  `list_comp` or `pattern_comp` expressions.
+- `load_csv` renders only in openCypher and Apache AGE; SQL:PGQ and ISO GQL
+  raise `UNSUPPORTED_FEATURE` for it.
+- SQL:PGQ raises `UNSUPPORTED_FEATURE` for `optional: true` on a match,
+  `exists`/`count` subqueries, `list_comp`, `pattern_comp` and the `=~` regex
+  operator. Root `distinct: true` emits `SELECT DISTINCT`.
+- ISO GQL raises `UNSUPPORTED_FEATURE` for `MERGE` whose `ON CREATE SET` and
+  `ON MATCH SET` assignments differ, for `["delete", true, [...]]`
+  (`DETACH DELETE`), and for the `=~` regex operator.
+- ISO GQL quantifies a single edge on the edge itself (`-[r]->{1,3}`), the same
+  per-edge form used by openCypher multi-edge paths.
 
 A compile-time failure in any dialect still raises `VoyagerError` with
 `UNSUPPORTED_FEATURE`/`UNSUPPORTED_DIALECT` or `INVALID_SPEC`, never a bare

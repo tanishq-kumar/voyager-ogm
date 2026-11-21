@@ -265,7 +265,7 @@ EDGE_PROPS_HOPS_SPEC = _match_spec(
         (
             EDGE_PROPS_HOPS_SPEC,
             "iso_gql",
-            "MATCH ((a:Person)-[r:KNOWS {since: $p0}]->(b:Person)){1,3} RETURN b.name AS n",
+            "MATCH (a:Person)-[r:KNOWS {since: $p0}]->{1,3}(b:Person) RETURN b.name AS n",
         ),
         (
             EDGE_PROPS_HOPS_SPEC,

@@ -19,23 +19,23 @@ from voyager_ogm._voyager_rs import compile_query_from_spec
 DIALECTS = ("cypher", "iso_gql", "age", "sql_pgq")
 
 # Dialects whose emitter genuinely renders each construct. Missing dialects
-# are skipped in the round-trip matrix with the recorded reason: either the
-# emitter raises UnsupportedFeature, or it silently drops an openCypher-only
-# clause, so the construct is not exercised there either way.
+# are skipped in the round-trip matrix with the recorded reason: the emitter
+# raises UnsupportedFeature rather than dropping the construct or emitting a
+# partial statement.
 SUPPORTED_DIALECTS: dict[str, tuple[str, ...]] = {
     "paths_where_projections": DIALECTS,
     "order_by": DIALECTS,
     "case_branches": DIALECTS,
     "load_csv": ("cypher", "age"),
     "unwinds": ("cypher", "iso_gql", "age"),
-    "merge_sets": ("cypher", "iso_gql", "age"),
+    "merge_sets": ("cypher", "age"),
     "linear_clauses": ("cypher", "iso_gql", "age"),
     "with_clauses_order_by": ("cypher", "iso_gql", "age"),
 }
 SKIP_REASONS: dict[str, str] = {
-    "load_csv": "LOAD CSV is openCypher-only; the ISO GQL and SQL:PGQ emitters drop the clause",
+    "load_csv": "LOAD CSV is openCypher-only; the ISO GQL and SQL:PGQ emitters raise UnsupportedFeature",
     "unwinds": "sql_pgq raises UnsupportedFeature for UNWIND (read-only GRAPH_TABLE operator)",
-    "merge_sets": "sql_pgq raises UnsupportedFeature for DML mutations (read-only GRAPH_TABLE operator)",
+    "merge_sets": "iso_gql raises UnsupportedFeature for MERGE with distinct ON CREATE SET / ON MATCH SET assignments; sql_pgq raises UnsupportedFeature for DML mutations (read-only GRAPH_TABLE operator)",
     "linear_clauses": "sql_pgq raises UnsupportedFeature for LET/FILTER linear statements",
     "with_clauses_order_by": "sql_pgq raises UnsupportedFeature for WITH pipelines",
 }

@@ -454,16 +454,16 @@ def test_wrapped_expression_and_nested_subqueries_still_compile() -> None:
 # --- F27: build/emission failures are VoyagerError without debug dumps
 
 
-def test_sql_pgq_expression_failure_is_invalid_spec_without_a_debug_dump() -> None:
+def test_sql_pgq_exists_failure_is_unsupported_feature_without_a_debug_dump() -> None:
     spec = where_spec([["exists", {"spec_version": 1, "matches": [{"paths": PERSON_PATH}]}]])
     with pytest.raises(VoyagerError) as exc_info:
         compile_query_from_spec(spec, "sql_pgq")
     error = exc_info.value
-    assert error.code == "INVALID_SPEC"
+    assert error.code == "UNSUPPORTED_FEATURE"
     assert error.path == ""
     message = str(error)
-    assert "Unsupported expression node" in message
-    assert "AST node kind" in message
+    assert "does not support feature" in message
+    assert "EXISTS subquery expressions" in message
     assert "QueryStatement(" not in message
     assert "QueryStatementData" not in message
 
@@ -599,8 +599,9 @@ def test_readme_example_compiles(spec: dict[str, Any], dialect: str) -> None:
     try:
         compiled = compile_query_from_spec(json.loads(json.dumps(spec)), dialect)
     except VoyagerError as error:
-        # SQL:PGQ rejects some constructs (for example WITH pipelines).
-        assert dialect == "sql_pgq"
+        # ISO GQL and SQL:PGQ reject some constructs (for example LOAD CSV and
+        # WITH pipelines) instead of emitting a partial statement.
+        assert dialect in {"iso_gql", "sql_pgq"}
         assert error.code in {"UNSUPPORTED_FEATURE", "UNSUPPORTED_DIALECT"}
         return
     assert isinstance(compiled["statement"], str)

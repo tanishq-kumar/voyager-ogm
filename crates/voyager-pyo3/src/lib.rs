@@ -848,14 +848,6 @@ fn py_to_node_handle(builder: &mut QueryBuilder, val: &Bound<'_, PyAny>) -> PyRe
     py_to_node_handle_depth(builder, val, 0, &SpecPath::fluent())
 }
 
-fn py_to_node_handle_at(
-    builder: &mut QueryBuilder,
-    val: &Bound<'_, PyAny>,
-    path: &SpecPath,
-) -> PyResult<NodeHandle> {
-    py_to_node_handle_depth(builder, val, 0, path)
-}
-
 #[inline(never)]
 fn try_import_native_ast(builder: &mut QueryBuilder, val: &Bound<'_, PyAny>) -> Option<NodeHandle> {
     if let Ok(py_expr) = val.cast::<PyAstExpr>() {
@@ -908,7 +900,7 @@ fn handle_dict_expr(
     let dict_cloned = dict.clone();
     let mut subquery_err: Option<PyErr> = None;
     let sub_h = builder.subquery(|q| {
-        if let Err(e) = build_query_from_spec_internal(q, &dict_cloned, path) {
+        if let Err(e) = build_query_from_spec_internal(q, &dict_cloned, depth + 1, path) {
             subquery_err = Some(e);
         }
     });
@@ -1050,6 +1042,7 @@ fn parse_step_properties(
     builder: &mut QueryBuilder,
     tuple: &Bound<'_, PyTuple>,
     idx: usize,
+    depth: usize,
     step_path: &SpecPath,
     field: &str,
 ) -> PyResult<Vec<(String, NodeHandle)>> {
@@ -1081,7 +1074,7 @@ fn parse_step_properties(
             )
         })?;
         let value_path = properties_path.key(&name);
-        let value_handle = py_to_node_handle_at(builder, &value, &value_path)?;
+        let value_handle = py_to_node_handle_depth(builder, &value, depth, &value_path)?;
         properties.push((name, value_handle));
     }
     Ok(properties)
@@ -1345,7 +1338,7 @@ fn handle_pattern_comp_tuple(
         "[pattern_comp, path_spec, where_filter, proj_expr]",
     )?;
     let path_spec = tuple.get_item(1)?;
-    let path_h = build_path_from_py(builder, &path_spec, &path.index(1))?;
+    let path_h = build_path_from_py(builder, &path_spec, depth + 1, &path.index(1))?;
     let wh_item = tuple.get_item(2)?;
     let where_filter = if wh_item.is_none() {
         None
@@ -1365,6 +1358,7 @@ fn handle_pattern_comp_tuple(
 fn handle_exists_tuple(
     builder: &mut QueryBuilder,
     tuple: &Bound<'_, PyTuple>,
+    depth: usize,
     path: &SpecPath,
 ) -> PyResult<NodeHandle> {
     check_spec_arity_bounded(
@@ -1376,7 +1370,7 @@ fn handle_exists_tuple(
         "[exists, subquery_spec]",
     )?;
     let sub_spec = tuple.get_item(1)?;
-    let sub_h = build_subquery_from_py(builder, &sub_spec, &path.index(1))?;
+    let sub_h = build_subquery_from_py(builder, &sub_spec, depth + 1, &path.index(1))?;
     Ok(builder.exists_subquery(sub_h))
 }
 
@@ -1384,6 +1378,7 @@ fn handle_exists_tuple(
 fn handle_count_tuple(
     builder: &mut QueryBuilder,
     tuple: &Bound<'_, PyTuple>,
+    depth: usize,
     path: &SpecPath,
 ) -> PyResult<NodeHandle> {
     check_spec_arity_bounded(
@@ -1395,7 +1390,7 @@ fn handle_count_tuple(
         "[count, subquery_spec]",
     )?;
     let sub_spec = tuple.get_item(1)?;
-    let sub_h = build_subquery_from_py(builder, &sub_spec, &path.index(1))?;
+    let sub_h = build_subquery_from_py(builder, &sub_spec, depth + 1, &path.index(1))?;
     Ok(builder.count_subquery(sub_h))
 }
 
@@ -1587,8 +1582,8 @@ fn handle_expr_sequence(
         "case" => handle_case_tuple(builder, &tuple, depth, path),
         "list_comp" => handle_list_comp_tuple(builder, &tuple, depth, path),
         "pattern_comp" => handle_pattern_comp_tuple(builder, &tuple, depth, path),
-        "exists" => handle_exists_tuple(builder, &tuple, path),
-        "count" => handle_count_tuple(builder, &tuple, path),
+        "exists" => handle_exists_tuple(builder, &tuple, depth, path),
+        "count" => handle_count_tuple(builder, &tuple, depth, path),
         "list" => handle_list_literal_tuple(builder, &tuple, depth, path),
         "alias" => {
             check_spec_arity_bounded(
@@ -1630,6 +1625,7 @@ fn parse_direction(dir_str: &str) -> PyResult<Direction> {
 fn build_path_steps_into_builder(
     builder: &mut QueryBuilder,
     steps: &Bound<'_, PyTuple>,
+    depth: usize,
     path: &SpecPath,
 ) -> PyResult<()> {
     for (idx, step) in steps.iter().enumerate() {
@@ -1664,8 +1660,14 @@ fn build_path_steps_into_builder(
                     &step_path.index(2),
                     "an array of string labels",
                 )?;
-                let properties =
-                    parse_step_properties(builder, &tuple, 3, &step_path, "path step 'node'")?;
+                let properties = parse_step_properties(
+                    builder,
+                    &tuple,
+                    3,
+                    depth,
+                    &step_path,
+                    "path step 'node'",
+                )?;
                 if properties.is_empty() {
                     builder.node(var, labels);
                 } else {
@@ -1719,8 +1721,14 @@ fn build_path_steps_into_builder(
                     )?,
                     None => None,
                 };
-                let properties =
-                    parse_step_properties(builder, &tuple, 6, &step_path, "path step 'edge'")?;
+                let properties = parse_step_properties(
+                    builder,
+                    &tuple,
+                    6,
+                    depth,
+                    &step_path,
+                    "path step 'edge'",
+                )?;
                 match (dir, properties.is_empty()) {
                     (Direction::Outgoing, true) => builder.to(edge_types, var),
                     (Direction::Incoming, true) => builder.from(edge_types, var),
@@ -1759,6 +1767,7 @@ fn build_path_steps_into_builder(
 fn build_order_by_entry(
     builder: &mut QueryBuilder,
     item: &Bound<'_, PyAny>,
+    depth: usize,
     path: &SpecPath,
     field: &str,
 ) -> PyResult<()> {
@@ -1779,7 +1788,7 @@ fn build_order_by_entry(
         builder.order_by_property(var, prop, asc);
     } else {
         check_spec_arity_bounded(&tuple, path, field, 2, 2, "[expression, direction]")?;
-        let expr_h = py_to_node_handle_at(builder, &first, &path.index(0))?;
+        let expr_h = py_to_node_handle_depth(builder, &first, depth, &path.index(0))?;
         let asc = parse_order_asc(&tuple.get_item(1)?, &path.index(1), field)?;
         builder.order_by(expr_h, asc);
     }
@@ -1804,6 +1813,7 @@ fn build_order_by_entry(
 fn build_where_predicates(
     builder: &mut QueryBuilder,
     where_item: &Bound<'_, PyAny>,
+    depth: usize,
     path: &SpecPath,
 ) -> PyResult<()> {
     if let Some(seq) = as_spec_sequence(where_item) {
@@ -1812,14 +1822,14 @@ fn build_where_predicates(
         }
         let first = seq.get_item(0)?;
         if first.extract::<String>().is_ok() {
-            let h = py_to_node_handle_depth(builder, where_item, 0, path)?;
+            let h = py_to_node_handle_depth(builder, where_item, depth, path)?;
             builder.where_expr(h);
             return Ok(());
         }
         if first.cast::<PyDict>().is_ok() || as_spec_sequence(&first).is_some() {
             for (idx, predicate) in seq.iter().enumerate() {
                 let pred_path = path.index(idx);
-                let h = py_to_node_handle_at(builder, &predicate, &pred_path)?;
+                let h = py_to_node_handle_depth(builder, &predicate, depth, &pred_path)?;
                 builder.where_expr(h);
             }
             return Ok(());
@@ -1837,7 +1847,7 @@ fn build_where_predicates(
             ),
         ));
     }
-    let h = py_to_node_handle_at(builder, where_item, path)?;
+    let h = py_to_node_handle_depth(builder, where_item, depth, path)?;
     builder.where_expr(h);
     Ok(())
 }
@@ -1845,6 +1855,7 @@ fn build_where_predicates(
 fn build_path_from_py(
     builder: &mut QueryBuilder,
     spec: &Bound<'_, PyAny>,
+    depth: usize,
     path: &SpecPath,
 ) -> PyResult<NodeHandle> {
     let target = if let Ok(native) = spec.getattr("_native") {
@@ -1861,7 +1872,7 @@ fn build_path_from_py(
     if let Some(steps) = as_spec_sequence(spec) {
         let mut err: Option<PyErr> = None;
         let sub_h = builder.subquery(|q| {
-            if let Err(e) = build_path_steps_into_builder(q, &steps, path) {
+            if let Err(e) = build_path_steps_into_builder(q, &steps, depth, path) {
                 err = Some(e);
             }
         });
@@ -1870,13 +1881,14 @@ fn build_path_from_py(
         }
         Ok(sub_h)
     } else {
-        py_to_node_handle_at(builder, spec, path)
+        py_to_node_handle_depth(builder, spec, depth, path)
     }
 }
 
 fn build_subquery_from_py(
     builder: &mut QueryBuilder,
     spec: &Bound<'_, PyAny>,
+    depth: usize,
     path: &SpecPath,
 ) -> PyResult<NodeHandle> {
     let target = if let Ok(native) = spec.getattr("_native") {
@@ -1894,7 +1906,7 @@ fn build_subquery_from_py(
         let dict_cloned = dict.clone();
         let mut err: Option<PyErr> = None;
         let sub_h = builder.subquery(|q| {
-            if let Err(e) = build_query_from_spec_internal(q, &dict_cloned, path) {
+            if let Err(e) = build_query_from_spec_internal(q, &dict_cloned, depth, path) {
                 err = Some(e);
             }
         });
@@ -1906,7 +1918,7 @@ fn build_subquery_from_py(
         let mut err: Option<PyErr> = None;
         let sub_h = builder.subquery(|q| {
             q.r#match();
-            if let Err(e) = build_path_steps_into_builder(q, &steps, path) {
+            if let Err(e) = build_path_steps_into_builder(q, &steps, depth, path) {
                 err = Some(e);
             }
         });
@@ -1915,7 +1927,7 @@ fn build_subquery_from_py(
         }
         Ok(sub_h)
     } else {
-        py_to_node_handle_at(builder, spec, path)
+        py_to_node_handle_depth(builder, spec, depth, path)
     }
 }
 
@@ -2016,6 +2028,7 @@ fn parse_non_negative(val: &Bound<'_, PyAny>, path: &SpecPath, field: &str) -> P
 fn build_projection_item(
     builder: &mut QueryBuilder,
     item: &Bound<'_, PyAny>,
+    depth: usize,
     path: &SpecPath,
 ) -> PyResult<()> {
     let tuple = expect_spec_array(item, path, "projection")?;
@@ -2110,7 +2123,7 @@ fn build_projection_item(
             if alias.is_none() {
                 alias = extract_alias_from_expr_spec(&expr_spec, &expr_path)?;
             }
-            let h = py_to_node_handle_at(builder, &expr_spec, &expr_path)?;
+            let h = py_to_node_handle_depth(builder, &expr_spec, depth, &expr_path)?;
             builder.select_expr(h, alias);
         }
         other => {
@@ -2127,6 +2140,7 @@ fn build_projection_item(
 fn build_query_from_spec_internal(
     builder: &mut QueryBuilder,
     spec: &Bound<'_, PyDict>,
+    depth: usize,
     path: &SpecPath,
 ) -> PyResult<()> {
     // Everything below this point is Query Spec v1 parsing, even when a dict
@@ -2317,12 +2331,12 @@ fn build_query_from_spec_internal(
                 if !steps.is_empty() {
                     produced_clause = true;
                 }
-                build_path_steps_into_builder(builder, &steps, &p_path)?;
+                build_path_steps_into_builder(builder, &steps, depth, &p_path)?;
             }
 
             if let Some(where_item) = m_dict.get_item("where")? {
                 if !where_item.is_none() {
-                    build_where_predicates(builder, &where_item, &m_path.key("where"))?;
+                    build_where_predicates(builder, &where_item, depth, &m_path.key("where"))?;
                 }
             }
         }
@@ -2362,7 +2376,7 @@ fn build_query_from_spec_internal(
                         }
                         let p_path = paths_path.index(p_idx);
                         let steps = expect_spec_array(&p_steps, &p_path, "mutation 'create' path")?;
-                        build_path_steps_into_builder(builder, &steps, &p_path)?;
+                        build_path_steps_into_builder(builder, &steps, depth, &p_path)?;
                     }
                 }
                 "merge" => {
@@ -2381,7 +2395,7 @@ fn build_query_from_spec_internal(
                         &path_path,
                         "mutation 'merge' path",
                     )?;
-                    build_path_steps_into_builder(builder, &path_steps, &path_path)?;
+                    build_path_steps_into_builder(builder, &path_steps, depth, &path_path)?;
 
                     let on_create_path = mut_path.index(2);
                     let on_creates = expect_spec_array(
@@ -2411,9 +2425,10 @@ fn build_query_from_spec_internal(
                             &item_path.index(1),
                             "a string property",
                         )?;
-                        let val_h = py_to_node_handle_at(
+                        let val_h = py_to_node_handle_depth(
                             builder,
                             &s_tuple.get_item(2)?,
+                            depth,
                             &item_path.index(2),
                         )?;
                         builder.on_create_set_expr(var, prop, val_h);
@@ -2447,9 +2462,10 @@ fn build_query_from_spec_internal(
                             &item_path.index(1),
                             "a string property",
                         )?;
-                        let val_h = py_to_node_handle_at(
+                        let val_h = py_to_node_handle_depth(
                             builder,
                             &s_tuple.get_item(2)?,
+                            depth,
                             &item_path.index(2),
                         )?;
                         builder.on_match_set_expr(var, prop, val_h);
@@ -2474,8 +2490,12 @@ fn build_query_from_spec_internal(
                         &mut_path.index(2),
                         "a string property",
                     )?;
-                    let val_h =
-                        py_to_node_handle_at(builder, &tuple.get_item(3)?, &mut_path.index(3))?;
+                    let val_h = py_to_node_handle_depth(
+                        builder,
+                        &tuple.get_item(3)?,
+                        depth,
+                        &mut_path.index(3),
+                    )?;
                     builder.set_property_expr(var, prop, val_h);
                 }
                 "delete" => {
@@ -2598,11 +2618,11 @@ fn build_query_from_spec_internal(
                 }
             }
             for (p_idx, p) in proj_seq.iter().enumerate() {
-                build_projection_item(builder, &p, &proj_path.index(p_idx))?;
+                build_projection_item(builder, &p, depth, &proj_path.index(p_idx))?;
             }
             if let Some(where_item) = with_dict.get_item("where")? {
                 if !where_item.is_none() {
-                    build_where_predicates(builder, &where_item, &item_path.key("where"))?;
+                    build_where_predicates(builder, &where_item, depth, &item_path.key("where"))?;
                 }
             }
             if let Some(order_item) = with_dict.get_item("order_by")? {
@@ -2614,6 +2634,7 @@ fn build_query_from_spec_internal(
                         build_order_by_entry(
                             builder,
                             &order_entry,
+                            depth,
                             &order_path.index(o_idx),
                             "with_clauses 'order_by' entry",
                         )?;
@@ -2645,7 +2666,7 @@ fn build_query_from_spec_internal(
                 has_root_projections = true;
             }
             for (idx, item) in proj_seq.iter().enumerate() {
-                build_projection_item(builder, &item, &proj_path.index(idx))?;
+                build_projection_item(builder, &item, depth, &proj_path.index(idx))?;
             }
         }
     }
@@ -2694,6 +2715,7 @@ fn build_query_from_spec_internal(
                 build_order_by_entry(
                     builder,
                     &order_entry,
+                    depth,
                     &order_path.index(idx),
                     "order_by entry",
                 )?;
@@ -2747,8 +2769,12 @@ fn build_query_from_spec_internal(
                         &item_path.index(1),
                         "a string variable",
                     )?;
-                    let expr_h =
-                        py_to_node_handle_at(builder, &tuple.get_item(2)?, &item_path.index(2))?;
+                    let expr_h = py_to_node_handle_depth(
+                        builder,
+                        &tuple.get_item(2)?,
+                        depth,
+                        &item_path.index(2),
+                    )?;
                     builder.let_(var, expr_h);
                 }
                 "filter" => {
@@ -2760,8 +2786,12 @@ fn build_query_from_spec_internal(
                         2,
                         "[filter, predicate]",
                     )?;
-                    let pred_h =
-                        py_to_node_handle_at(builder, &tuple.get_item(1)?, &item_path.index(1))?;
+                    let pred_h = py_to_node_handle_depth(
+                        builder,
+                        &tuple.get_item(1)?,
+                        depth,
+                        &item_path.index(1),
+                    )?;
                     builder.filter_(pred_h);
                 }
                 other => {
@@ -3972,7 +4002,7 @@ fn compile_query_from_spec<'py>(
     }
 
     let mut builder = QueryBuilder::new();
-    build_query_from_spec_internal(&mut builder, spec, &SpecPath::spec_root())?;
+    build_query_from_spec_internal(&mut builder, spec, 0, &SpecPath::spec_root())?;
     check_warn_cypher_path_mode(py, dialect, builder.get_path_mode().as_deref())?;
     let (mut arena, root) = builder.try_build().map_err(map_compile_error)?;
 
