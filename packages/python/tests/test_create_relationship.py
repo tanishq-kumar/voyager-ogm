@@ -222,13 +222,8 @@ def test_merge_relationship_uses_key_policy_and_sets() -> None:
     )
     assert cypher.parameters == {"p0": "k1", "p1": "n", "p2": 5}
 
-    gql = query.compile("iso_gql")
-    assert gql.statement == (
-        "MATCH (a:Feat192Person) MATCH (b:Feat192Person) "
-        "UPSERT (a)-[r:FEAT192_MERGE {key: $p0, note: $p1}]->(b) "
-        "SET r.score = $p2"
-    )
-    assert gql.parameters == cypher.parameters
+    with pytest.raises(ValueError, match="ON CREATE SET / ON MATCH SET"):
+        query.compile("iso_gql")
 
 
 def test_merge_relationship_without_variable_uses_instance_alias() -> None:

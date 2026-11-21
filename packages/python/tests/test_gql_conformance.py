@@ -133,9 +133,9 @@ def test_gql_match_and_where_predicates(
         ("to", 1, 1, "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN b.name"),
         ("from", 1, 1, "MATCH (a:Person)<-[r:KNOWS]-(b:Person) RETURN b.name"),
         ("edge", 1, 1, "MATCH (a:Person)-[r:KNOWS]-(b:Person) RETURN b.name"),
-        ("to", 1, 2, "MATCH ((a:Person)-[_knows_0:KNOWS]->(b:Person)){1,2} RETURN b.name"),
-        ("to", 1, 3, "MATCH ((a:Person)-[_knows_0:KNOWS]->(b:Person)){1,3} RETURN b.name"),
-        ("to", 2, 2, "MATCH ((a:Person)-[_knows_0:KNOWS]->(b:Person)){2,2} RETURN b.name"),
+        ("to", 1, 2, "MATCH (a:Person)-[_knows_0:KNOWS]->{1,2}(b:Person) RETURN b.name"),
+        ("to", 1, 3, "MATCH (a:Person)-[_knows_0:KNOWS]->{1,3}(b:Person) RETURN b.name"),
+        ("to", 2, 2, "MATCH (a:Person)-[_knows_0:KNOWS]->{2,2}(b:Person) RETURN b.name"),
     ],
     ids=[
         "gql_outgoing_edge",
@@ -170,6 +170,44 @@ def test_gql_quantified_paths_and_directions(
     q = q.return_(b.name)
     compiled = q.compile(dialect="iso_gql")
     assert compiled.statement == expected_gql_statement
+
+
+@pytest.mark.parametrize(
+    ("direction", "expected_fragment"),
+    [
+        ("to", "(a:Person)-[r:KNOWS]->{1,3}(b:Person)"),
+        ("from", "(a:Person)<-[r:KNOWS]-{1,3}(b:Person)"),
+        ("edge", "(a:Person)-[r:KNOWS]-{1,3}(b:Person)"),
+    ],
+    ids=["gql_quantified_outgoing", "gql_quantified_incoming", "gql_quantified_undirected"],
+)
+def test_gql_quantified_edge_directions(direction: str, expected_fragment: str):
+    """Each quantified edge keeps its own direction, never wrapping the whole path."""
+    a = Person(alias="a")
+    b = Person(alias="b")
+
+    q = Query.match(a)
+    if direction == "to":
+        q = q.to(Knows, var="r")
+    elif direction == "from":
+        q = q.from_(Knows, var="r")
+    else:
+        q = q.edge(Knows, var="r")
+    q = q.hops(1, 3).node(b).return_(b.name)
+
+    compiled = q.compile(dialect="iso_gql")
+    assert expected_fragment in compiled.statement
+    assert not compiled.statement.startswith("MATCH ((")
+    assert compiled.parameters == {}
+
+
+def test_gql_quantified_edge_with_path_variable():
+    a = Person(alias="a")
+    b = Person(alias="b")
+    q = Query.match().path_variable("p").node(a).to(Knows, "r").hops(1, 3).node(b).return_("p")
+
+    compiled = q.compile(dialect="iso_gql")
+    assert compiled.statement == "MATCH p = (a:Person)-[r:KNOWS]->{1,3}(b:Person) RETURN p"
 
 
 # ---------------------------------------------------------------------------
@@ -248,15 +286,6 @@ def test_gql_aggregations_and_grouping():
         ),
         (
             lambda: (
-                Query.merge(Person(alias="p"))
-                .on_create_set(Person("p").name == "Eva")
-                .on_match_set(Person("p").age == 30)
-            ),
-            "UPSERT (p:Person) SET p.name = $p0, p.age = $p1",
-            {"p0": "Eva", "p1": 30},
-        ),
-        (
-            lambda: (
                 Query.match(Person(alias="p"))
                 .where(Person("p").name == "Dan")
                 .set(Person("p").age == 45, Person("p").city == "Oxford")
@@ -274,11 +303,7 @@ def test_gql_aggregations_and_grouping():
             {"p0": "Dan"},
         ),
         (
-            lambda: (
-                Query.match(Person(alias="p"))
-                .where(Person("p").age < 18)
-                .detach_delete(Person("p"))
-            ),
+            lambda: Query.match(Person(alias="p")).where(Person("p").age < 18).delete(Person("p")),
             "MATCH (p:Person) WHERE p.age < $p0 DELETE p",
             {"p0": 18},
         ),
@@ -286,7 +311,6 @@ def test_gql_aggregations_and_grouping():
     ids=[
         "gql_insert_node",
         "gql_insert_path",
-        "gql_upsert_merge",
         "gql_set_properties",
         "gql_remove_property",
         "gql_delete_node",
@@ -302,6 +326,51 @@ def test_gql_dml_mutations(
     compiled = q.compile(dialect="iso_gql")
     assert compiled.statement == expected_gql_statement
     assert compiled.parameters == expected_params
+
+
+def test_gql_accepts_identical_merge_sets():
+    """UPSERT ... SET is equivalent when ON CREATE and ON MATCH assign the same values."""
+    q = (
+        Query.merge(Person(alias="p"))
+        .on_create_set(Person("p").name == "Ada")
+        .on_match_set(Person("p").name == "Ada")
+    )
+    compiled = q.compile(dialect="iso_gql")
+    assert compiled.statement == "UPSERT (p:Person) SET p.name = $p0, p.name = $p1"
+    assert compiled.parameters == {"p0": "Ada", "p1": "Ada"}
+
+
+def test_gql_rejects_distinct_merge_sets():
+    """ISO GQL UPSERT has no ON CREATE / ON MATCH distinction, so distinct lists fail loudly."""
+    q = (
+        Query.merge(Person(alias="p"))
+        .on_create_set(Person("p").name == "Eva")
+        .on_match_set(Person("p").age == 30)
+    )
+    with pytest.raises(ValueError, match="ON CREATE SET / ON MATCH SET"):
+        q.compile(dialect="iso_gql")
+
+
+def test_gql_rejects_detach_delete():
+    q = Query.match(Person(alias="p")).where(Person("p").age < 18).detach_delete(Person("p"))
+    with pytest.raises(ValueError, match="DETACH DELETE"):
+        q.compile(dialect="iso_gql")
+
+
+def test_gql_rejects_load_csv():
+    q = Query.load_csv("file:///data.csv", with_headers=True, alias="row").match(Person(alias="p"))
+    with pytest.raises(ValueError, match="LOAD CSV"):
+        q.compile(dialect="iso_gql")
+
+
+def test_gql_rejects_regex_operator():
+    q = (
+        Query.match(Person(alias="p"))
+        .where(Person("p").name.regex("^A.*"))
+        .return_(Person("p").name)
+    )
+    with pytest.raises(ValueError, match="regular expression match operator"):
+        q.compile(dialect="iso_gql")
 
 
 # ---------------------------------------------------------------------------
@@ -850,3 +919,13 @@ def test_opengql_tier3_live_falkordb_execution():
         assert topo_res.success
 
     g.query("MATCH (n) DETACH DELETE n")
+
+
+@pytest.mark.parametrize("dialect", ["cypher", "iso_gql"])
+def test_hop_bounds_reject_max_below_min(dialect: str):
+    a = Person(alias="a")
+    b = Person(alias="b")
+    q = Query.match(a).to(Knows, "r").hops(3, 1).node(b).return_(b.name)
+
+    with pytest.raises(ValueError, match=r"max_hops \(1\).*min_hops \(3\)"):
+        q.compile(dialect=dialect)
