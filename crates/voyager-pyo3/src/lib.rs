@@ -660,7 +660,7 @@ fn handle_dict_expr(
     let dict_cloned = dict.clone();
     let mut subquery_err: Option<PyErr> = None;
     let sub_h = builder.subquery(|q| {
-        if let Err(e) = build_query_from_spec_internal(q, &dict_cloned) {
+        if let Err(e) = build_query_from_spec_internal(q, &dict_cloned, depth + 1) {
             subquery_err = Some(e);
         }
     });
@@ -800,7 +800,7 @@ fn handle_pattern_comp_tuple(
     depth: usize,
 ) -> PyResult<NodeHandle> {
     let path_spec = tuple.get_item(1)?;
-    let path_h = build_path_from_py(builder, &path_spec)?;
+    let path_h = build_path_from_py(builder, &path_spec, depth + 1)?;
     let wh_item = tuple.get_item(2)?;
     let where_filter = if wh_item.is_none() {
         None
@@ -815,9 +815,10 @@ fn handle_pattern_comp_tuple(
 fn handle_exists_tuple(
     builder: &mut QueryBuilder,
     tuple: &Bound<'_, PyTuple>,
+    depth: usize,
 ) -> PyResult<NodeHandle> {
     let sub_spec = tuple.get_item(1)?;
-    let sub_h = build_subquery_from_py(builder, &sub_spec)?;
+    let sub_h = build_subquery_from_py(builder, &sub_spec, depth + 1)?;
     Ok(builder.exists_subquery(sub_h))
 }
 
@@ -825,9 +826,10 @@ fn handle_exists_tuple(
 fn handle_count_tuple(
     builder: &mut QueryBuilder,
     tuple: &Bound<'_, PyTuple>,
+    depth: usize,
 ) -> PyResult<NodeHandle> {
     let sub_spec = tuple.get_item(1)?;
-    let sub_h = build_subquery_from_py(builder, &sub_spec)?;
+    let sub_h = build_subquery_from_py(builder, &sub_spec, depth + 1)?;
     Ok(builder.count_subquery(sub_h))
 }
 
@@ -910,8 +912,8 @@ fn py_to_node_handle_depth(
             "case" => handle_case_tuple(builder, &tuple, depth),
             "list_comp" => handle_list_comp_tuple(builder, &tuple, depth),
             "pattern_comp" => handle_pattern_comp_tuple(builder, &tuple, depth),
-            "exists" => handle_exists_tuple(builder, &tuple),
-            "count" => handle_count_tuple(builder, &tuple),
+            "exists" => handle_exists_tuple(builder, &tuple, depth),
+            "count" => handle_count_tuple(builder, &tuple, depth),
             "list" => handle_list_literal_tuple(builder, &tuple, depth),
             "alias" => {
                 let inner = tuple.get_item(1)?;
@@ -992,7 +994,11 @@ fn build_path_steps_into_builder(
     Ok(())
 }
 
-fn build_path_from_py(builder: &mut QueryBuilder, spec: &Bound<'_, PyAny>) -> PyResult<NodeHandle> {
+fn build_path_from_py(
+    builder: &mut QueryBuilder,
+    spec: &Bound<'_, PyAny>,
+    depth: usize,
+) -> PyResult<NodeHandle> {
     let target = if let Ok(native) = spec.getattr("_native") {
         native
     } else {
@@ -1017,13 +1023,14 @@ fn build_path_from_py(builder: &mut QueryBuilder, spec: &Bound<'_, PyAny>) -> Py
         }
         Ok(sub_h)
     } else {
-        py_to_node_handle(builder, spec)
+        py_to_node_handle_depth(builder, spec, depth)
     }
 }
 
 fn build_subquery_from_py(
     builder: &mut QueryBuilder,
     spec: &Bound<'_, PyAny>,
+    depth: usize,
 ) -> PyResult<NodeHandle> {
     let target = if let Ok(native) = spec.getattr("_native") {
         native
@@ -1040,7 +1047,7 @@ fn build_subquery_from_py(
         let dict_cloned = dict.clone();
         let mut err: Option<PyErr> = None;
         let sub_h = builder.subquery(|q| {
-            if let Err(e) = build_query_from_spec_internal(q, &dict_cloned) {
+            if let Err(e) = build_query_from_spec_internal(q, &dict_cloned, depth) {
                 err = Some(e);
             }
         });
@@ -1062,7 +1069,7 @@ fn build_subquery_from_py(
         }
         Ok(sub_h)
     } else {
-        py_to_node_handle(builder, spec)
+        py_to_node_handle_depth(builder, spec, depth)
     }
 }
 
@@ -1070,6 +1077,7 @@ fn build_subquery_from_py(
 fn build_query_from_spec_internal(
     builder: &mut QueryBuilder,
     spec: &Bound<'_, PyDict>,
+    depth: usize,
 ) -> PyResult<()> {
     // Spec Versioning & Compatibility Check:
     // Requires top-level "spec_version": 1 in accordance with the Query Spec Interchange Protocol v1.
@@ -1182,11 +1190,11 @@ fn build_query_from_spec_internal(
                     if !where_item.is_none() {
                         if let Ok(wh_list) = where_item.cast::<PyList>() {
                             for wh in wh_list {
-                                let h = py_to_node_handle(builder, &wh)?;
+                                let h = py_to_node_handle_depth(builder, &wh, depth)?;
                                 builder.where_expr(h);
                             }
                         } else {
-                            let h = py_to_node_handle(builder, &where_item)?;
+                            let h = py_to_node_handle_depth(builder, &where_item, depth)?;
                             builder.where_expr(h);
                         }
                     }
@@ -1231,7 +1239,8 @@ fn build_query_from_spec_internal(
                                 let s_tuple = item.cast::<PyTuple>()?;
                                 let var: String = s_tuple.get_item(0)?.extract()?;
                                 let prop: String = s_tuple.get_item(1)?.extract()?;
-                                let val_h = py_to_node_handle(builder, &s_tuple.get_item(2)?)?;
+                                let val_h =
+                                    py_to_node_handle_depth(builder, &s_tuple.get_item(2)?, depth)?;
                                 builder.on_create_set_expr(var, prop, val_h);
                             }
                         }
@@ -1240,7 +1249,8 @@ fn build_query_from_spec_internal(
                                 let s_tuple = item.cast::<PyTuple>()?;
                                 let var: String = s_tuple.get_item(0)?.extract()?;
                                 let prop: String = s_tuple.get_item(1)?.extract()?;
-                                let val_h = py_to_node_handle(builder, &s_tuple.get_item(2)?)?;
+                                let val_h =
+                                    py_to_node_handle_depth(builder, &s_tuple.get_item(2)?, depth)?;
                                 builder.on_match_set_expr(var, prop, val_h);
                             }
                         }
@@ -1248,7 +1258,7 @@ fn build_query_from_spec_internal(
                     "set" => {
                         let var: String = tuple.get_item(1)?.extract()?;
                         let prop: String = tuple.get_item(2)?.extract()?;
-                        let val_h = py_to_node_handle(builder, &tuple.get_item(3)?)?;
+                        let val_h = py_to_node_handle_depth(builder, &tuple.get_item(3)?, depth)?;
                         builder.set_property_expr(var, prop, val_h);
                     }
                     "delete" => {
@@ -1341,7 +1351,7 @@ fn build_query_from_spec_internal(
                                             }
                                         }
                                     }
-                                    let h = py_to_node_handle(builder, &expr_spec)?;
+                                    let h = py_to_node_handle_depth(builder, &expr_spec, depth)?;
                                     builder.select_expr(h, alias);
                                 }
                                 "agg" => {
@@ -1388,11 +1398,11 @@ fn build_query_from_spec_internal(
                 if let Some(where_item) = with_dict.get_item("where")? {
                     if let Ok(where_list) = where_item.cast::<PyList>() {
                         for wh in where_list {
-                            let h = py_to_node_handle(builder, &wh)?;
+                            let h = py_to_node_handle_depth(builder, &wh, depth)?;
                             builder.where_expr(h);
                         }
                     } else if !where_item.is_none() {
-                        let h = py_to_node_handle(builder, &where_item)?;
+                        let h = py_to_node_handle_depth(builder, &where_item, depth)?;
                         builder.where_expr(h);
                     }
                 }
@@ -1405,7 +1415,8 @@ fn build_query_from_spec_internal(
                                 let asc: bool = tuple.get_item(2)?.extract()?;
                                 builder.order_by_property(var, prop, asc);
                             } else {
-                                let expr_h = py_to_node_handle(builder, &tuple.get_item(0)?)?;
+                                let expr_h =
+                                    py_to_node_handle_depth(builder, &tuple.get_item(0)?, depth)?;
                                 let asc: bool = tuple.get_item(1)?.extract()?;
                                 builder.order_by(expr_h, asc);
                             }
@@ -1494,7 +1505,7 @@ fn build_query_from_spec_internal(
                                     }
                                 }
                             }
-                            let h = py_to_node_handle(builder, &expr_spec)?;
+                            let h = py_to_node_handle_depth(builder, &expr_spec, depth)?;
                             builder.select_expr(h, alias);
                         }
                         other => {
@@ -1528,7 +1539,7 @@ fn build_query_from_spec_internal(
                     let asc: bool = tuple.get_item(2)?.extract()?;
                     builder.order_by_property(var, prop, asc);
                 } else {
-                    let expr_h = py_to_node_handle(builder, &tuple.get_item(0)?)?;
+                    let expr_h = py_to_node_handle_depth(builder, &tuple.get_item(0)?, depth)?;
                     let asc: bool = tuple.get_item(1)?.extract()?;
                     builder.order_by(expr_h, asc);
                 }
@@ -1562,11 +1573,11 @@ fn build_query_from_spec_internal(
                 match tag.as_str() {
                     "let" => {
                         let var: String = tuple.get_item(1)?.extract()?;
-                        let expr_h = py_to_node_handle(builder, &tuple.get_item(2)?)?;
+                        let expr_h = py_to_node_handle_depth(builder, &tuple.get_item(2)?, depth)?;
                         builder.let_(var, expr_h);
                     }
                     "filter" => {
-                        let pred_h = py_to_node_handle(builder, &tuple.get_item(1)?)?;
+                        let pred_h = py_to_node_handle_depth(builder, &tuple.get_item(1)?, depth)?;
                         builder.filter_(pred_h);
                     }
                     _ => {}
@@ -2666,7 +2677,7 @@ fn compile_query_from_spec<'py>(
     }
 
     let mut builder = QueryBuilder::new();
-    build_query_from_spec_internal(&mut builder, spec)?;
+    build_query_from_spec_internal(&mut builder, spec, 0)?;
     check_warn_cypher_path_mode(py, dialect, builder.get_path_mode().as_deref())?;
     let (mut arena, root) = builder
         .try_build()

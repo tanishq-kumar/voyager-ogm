@@ -781,6 +781,7 @@ impl CypherEmitter {
 
 impl AstVisitor for CypherEmitter {
     fn visit_query(&mut self, arena: &QueryAstArena, root: NodeHandle) -> Result<CompiledQuery> {
+        crate::emitters::validate_query_identifiers(arena, root)?;
         self.buffer.clear();
         self.parameters.clear();
         self.node_params.clear();

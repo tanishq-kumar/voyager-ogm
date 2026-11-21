@@ -121,6 +121,37 @@ def test_ast_within_depth_limit_succeeds():
     assert "WHERE" in compiled["statement"]
 
 
+def test_ast_max_depth_guard_across_exists_subqueries():
+    """Verify the depth budget survives exists-subquery re-entry instead of resetting to 0."""
+    nested_spec: dict = {
+        "spec_version": 1,
+        "matches": [{"paths": [[("node", "n", ["Person"], None)]]}],
+    }
+    for _ in range(300):
+        nested_spec = {
+            "spec_version": 1,
+            "matches": [
+                {
+                    "paths": [[("node", "n", ["Person"], None)]],
+                    "where": [["exists", nested_spec]],
+                }
+            ],
+        }
+
+    query_spec = {
+        "spec_version": 1,
+        "matches": [
+            {
+                "paths": [[("node", "n", ["Person"], None)]],
+                "where": [["exists", nested_spec]],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="Maximum AST expression recursion depth exceeded"):
+        compile_query_from_spec(query_spec, "cypher", use_cache=False)
+
+
 def test_spec_version_validation():
     """Verify that compile_query_from_spec strictly enforces spec_version == 1."""
     # 1. Missing spec_version

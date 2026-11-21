@@ -612,6 +612,8 @@ impl AstVisitor for SqlPgqEmitter {
             )));
         }
 
+        crate::emitters::validate_query_identifiers(arena, root)?;
+
         self.buffer.clear();
         self.parameters.clear();
         self.param_counter = 0;
