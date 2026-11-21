@@ -124,7 +124,7 @@
     "sql_pgq": {
       "execution_mode": "normal",
       "parameters": {},
-      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) COLUMNS (p.city))",
+      "statement": "SELECT DISTINCT * FROM GRAPH_TABLE (g MATCH (p IS Person) COLUMNS (p.city))",
       "status": "ok"
     }
   },
@@ -364,10 +364,9 @@
       "status": "unsupported"
     },
     "sql_pgq": {
-      "execution_mode": "normal",
-      "parameters": {},
-      "statement": "SELECT * FROM GRAPH_TABLE (g MATCH (p IS Person) COLUMNS (p.name))",
-      "status": "ok"
+      "error_message": "Dialect 'sql_pgq' does not support feature: LOAD CSV clauses (load_csv) - GRAPH_TABLE is a read-only query operator over a registered property graph",
+      "error_type": "ValueError",
+      "status": "unsupported"
     }
   },
   "math_arithmetic_expressions": {
