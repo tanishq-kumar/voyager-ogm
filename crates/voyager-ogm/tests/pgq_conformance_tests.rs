@@ -41,6 +41,27 @@ fn test_pgq_single_node_and_where_conformance() {
 }
 
 #[test]
+fn test_pgq_named_parameter_in_node_property_predicate() {
+    let mut builder = QueryBuilder::new();
+    builder.r#match();
+    let email = builder.param("email");
+    builder.node_with_prop_exprs(Some("p"), vec!["Person"], vec![("email", email)]);
+    builder.field("p", "name", Some("name".to_string()));
+
+    let (arena, root) = builder.build();
+    let mut pgq = SqlPgqEmitter::new("social_graph");
+    let res = pgq.visit_query(&arena, root).unwrap();
+
+    assert!(
+        res.statement
+            .contains("(p IS Person WHERE p.email = $email)"),
+        "statement was {}",
+        res.statement
+    );
+    assert!(res.parameters.is_empty());
+}
+
+#[test]
 fn test_pgq_all_operator_translations() {
     let ops = [
         (BinaryOp::Eq, "=", LiteralValue::Int64(30)),

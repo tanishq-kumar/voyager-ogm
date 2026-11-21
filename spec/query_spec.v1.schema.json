@@ -143,26 +143,36 @@
       "description": "A node or relationship step in a graph traversal path.",
       "oneOf": [
         {
-          "description": "Node pattern: ['node', variable | null, labels: string[]]",
+          "description": "Node pattern: ['node', variable | null, labels: string[], properties | null]",
           "type": "array",
           "minItems": 3,
+          "maxItems": 4,
           "items": [
             { "type": "string", "const": "node" },
             { "type": ["string", "null"] },
-            { "type": "array", "items": { "type": "string" } }
+            { "type": "array", "items": { "type": "string" } },
+            {
+              "type": ["object", "null"],
+              "additionalProperties": { "$ref": "#/$defs/Expression" }
+            }
           ]
         },
         {
-          "description": "Edge pattern: ['edge', direction, types: string[], variable | null, min_hops | null, max_hops | null]",
+          "description": "Edge pattern: ['edge', direction, types: string[], variable | null, min_hops | null, max_hops | null, properties | null]",
           "type": "array",
           "minItems": 3,
+          "maxItems": 7,
           "items": [
             { "type": "string", "const": "edge" },
             { "type": "string", "enum": ["outgoing", "incoming", "undirected", "out", "in", "->", "<-", "-", "--", "both"] },
             { "type": "array", "items": { "type": "string" } },
             { "type": ["string", "null"] },
             { "type": ["integer", "null"] },
-            { "type": ["integer", "null"] }
+            { "type": ["integer", "null"] },
+            {
+              "type": ["object", "null"],
+              "additionalProperties": { "$ref": "#/$defs/Expression" }
+            }
           ]
         }
       ]
@@ -209,7 +219,7 @@
       ]
     },
     "OrderByItem": {
-      "description": "Ordering specification: [variable, property, ascending] or [expression_spec, ascending]",
+      "description": "Ordering specification: [variable, property, direction] or [expression_spec, direction]. direction is true (ascending), false (descending), or the string \"ASC\" / \"DESC\".",
       "oneOf": [
         {
           "type": "array",
@@ -218,7 +228,7 @@
           "items": [
             { "type": "string" },
             { "type": "string" },
-            { "type": "boolean" }
+            { "$ref": "#/$defs/OrderDirection" }
           ]
         },
         {
@@ -227,9 +237,16 @@
           "maxItems": 2,
           "items": [
             { "$ref": "#/$defs/Expression" },
-            { "type": "boolean" }
+            { "$ref": "#/$defs/OrderDirection" }
           ]
         }
+      ]
+    },
+    "OrderDirection": {
+      "description": "Ordering direction: true / \"ASC\" for ascending, false / \"DESC\" for descending. The string spellings are uppercase only.",
+      "oneOf": [
+        { "type": "boolean" },
+        { "type": "string", "enum": ["ASC", "DESC"] }
       ]
     },
     "MutationClause": {

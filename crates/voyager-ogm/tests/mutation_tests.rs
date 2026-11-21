@@ -209,6 +209,121 @@ fn test_create_path_with_props() {
 }
 
 #[test]
+fn test_create_path_with_prop_exprs_uses_parameters_and_literals() {
+    let mut builder = QueryBuilder::new();
+    builder.create();
+    let email = builder.param("email");
+    let name = builder.literal(LiteralValue::String("Alice".into()));
+    builder.node_with_prop_exprs(
+        Some("a"),
+        vec!["Person"],
+        vec![("email", email), ("name", name)],
+    );
+
+    let (arena, root) = builder.try_build().expect("build failed");
+    let mut cypher = CypherEmitter::new();
+    let res = cypher.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res.statement,
+        "CREATE (a:Person {email: $email, name: $p0})"
+    );
+    assert_eq!(
+        res.parameters.get("p0"),
+        Some(&LiteralValue::String("Alice".into()))
+    );
+    assert_eq!(res.parameters.len(), 1);
+}
+
+#[test]
+fn test_match_edge_with_prop_exprs_keeps_hops() {
+    let mut builder = QueryBuilder::new();
+    builder.r#match();
+    builder.node(Some("a"), vec!["Person"]);
+    let since = builder.literal(LiteralValue::Int64(2020));
+    builder.to_with_prop_exprs(vec!["KNOWS"], Some("r"), vec![("since", since)]);
+    builder.node(Some("b"), vec!["Person"]);
+    builder.hops(1, 3);
+    builder.field("b", "name", Some("n"));
+
+    let (arena, root) = builder.try_build().expect("build failed");
+    let mut cypher = CypherEmitter::new();
+    let res = cypher.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res.statement,
+        "MATCH (a:Person)-[r:KNOWS*1..3 {since: $p0}]->(b:Person) RETURN b.name AS n"
+    );
+}
+
+#[test]
+fn test_incoming_and_undirected_prop_expr_edges() {
+    let mut incoming = QueryBuilder::new();
+    incoming.r#match();
+    incoming.node(Some("b"), vec!["Person"]);
+    let since = incoming.literal(LiteralValue::Int64(2020));
+    incoming.from_with_prop_exprs(vec!["KNOWS"], Some("r"), vec![("since", since)]);
+    incoming.node(Some("a"), vec!["Person"]);
+    let (arena, root) = incoming.try_build().expect("build failed");
+    let mut cypher = CypherEmitter::new();
+    let res = cypher.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res.statement,
+        "MATCH (b:Person)<-[r:KNOWS {since: $p0}]-(a:Person)"
+    );
+
+    let mut undirected = QueryBuilder::new();
+    undirected.r#match();
+    undirected.node(Some("a"), vec!["Person"]);
+    let since = undirected.literal(LiteralValue::Int64(2020));
+    undirected.edge_with_prop_exprs(vec!["KNOWS"], Some("r"), vec![("since", since)]);
+    undirected.node(Some("b"), vec!["Person"]);
+    let (arena, root) = undirected.try_build().expect("build failed");
+    let mut cypher = CypherEmitter::new();
+    let res = cypher.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res.statement,
+        "MATCH (a:Person)-[r:KNOWS {since: $p0}]-(b:Person)"
+    );
+}
+
+#[test]
+fn test_prop_expr_variants_match_literal_variants_byte_for_byte() {
+    let mut literal = QueryBuilder::new();
+    literal.create().node_with_props(
+        Some("a"),
+        vec!["Person"],
+        vec![("name", LiteralValue::String("Alice".into()))],
+    );
+    literal.to_with_props(
+        vec!["KNOWS"],
+        Some("r"),
+        vec![("since", LiteralValue::Int64(2020))],
+    );
+    literal.node_with_props(
+        Some("b"),
+        vec!["Person"],
+        vec![("name", LiteralValue::String("Bob".into()))],
+    );
+
+    let mut exprs = QueryBuilder::new();
+    exprs.create();
+    let name = exprs.literal(LiteralValue::String("Alice".into()));
+    exprs.node_with_prop_exprs(Some("a"), vec!["Person"], vec![("name", name)]);
+    let since = exprs.literal(LiteralValue::Int64(2020));
+    exprs.to_with_prop_exprs(vec!["KNOWS"], Some("r"), vec![("since", since)]);
+    let name = exprs.literal(LiteralValue::String("Bob".into()));
+    exprs.node_with_prop_exprs(Some("b"), vec!["Person"], vec![("name", name)]);
+
+    let (literal_arena, literal_root) = literal.try_build().expect("build failed");
+    let (expr_arena, expr_root) = exprs.try_build().expect("build failed");
+    let mut cypher = CypherEmitter::new();
+    let literal_res = cypher.visit_query(&literal_arena, literal_root).unwrap();
+    let mut cypher = CypherEmitter::new();
+    let expr_res = cypher.visit_query(&expr_arena, expr_root).unwrap();
+    assert_eq!(literal_res.statement, expr_res.statement);
+    assert_eq!(literal_res.parameters, expr_res.parameters);
+}
+
+#[test]
 fn test_merge_with_on_create_and_match_set_dedup() {
     let mut builder = QueryBuilder::new();
     builder

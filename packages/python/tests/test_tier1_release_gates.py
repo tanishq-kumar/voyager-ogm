@@ -122,8 +122,8 @@ def test_voyager_error_subclasses_value_error() -> None:
     assert str(err) == "test error"
 
 
-def test_voyager_error_code_on_invalid_clause() -> None:
-    """Malformed projection tuple must trigger INVALID_CLAUSE error code."""
+def test_voyager_error_code_on_invalid_spec() -> None:
+    """Malformed projection tuple must trigger INVALID_SPEC error code."""
     spec = {
         "spec_version": 1,
         "projections": [("unknown_tag", "p", "name")],
@@ -131,7 +131,8 @@ def test_voyager_error_code_on_invalid_clause() -> None:
     with pytest.raises(VoyagerError) as exc_info:
         compile_query_from_spec(spec, "cypher")
 
-    assert exc_info.value.code == "INVALID_CLAUSE"
+    assert exc_info.value.code == "INVALID_SPEC"
+    assert exc_info.value.path == "/projections/0/0"
     # Legacy code catching ValueError continues to work
     assert isinstance(exc_info.value, ValueError)
 
@@ -275,7 +276,7 @@ def test_edge_direction_aliases_and_validation() -> None:
         res = compile_query_from_spec(spec, "cypher")
         assert "statement" in res
 
-    # Invalid direction string must raise VoyagerError with INVALID_CLAUSE
+    # Invalid direction string must raise VoyagerError with INVALID_SPEC
     invalid_spec = {
         "spec_version": 1,
         "matches": [
@@ -293,7 +294,8 @@ def test_edge_direction_aliases_and_validation() -> None:
     }
     with pytest.raises(VoyagerError) as exc_info:
         compile_query_from_spec(invalid_spec, "cypher")
-    assert exc_info.value.code == "INVALID_CLAUSE"
+    assert exc_info.value.code == "INVALID_SPEC"
+    assert exc_info.value.path == "/matches/0/paths/0/1/1"
 
 
 def test_session_none_bridge_zero_config_sandbox() -> None:

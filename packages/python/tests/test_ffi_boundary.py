@@ -93,7 +93,6 @@ def test_ast_max_depth_guard_raises_value_error():
                 "where": [nested_spec],
             }
         ],
-        "returns": [[nested_spec, None]],
     }
 
     with pytest.raises(ValueError, match="Maximum AST expression recursion depth exceeded"):
