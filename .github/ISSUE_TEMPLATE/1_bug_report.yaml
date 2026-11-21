@@ -67,6 +67,15 @@ body:
       required: false
 
   - type: input
+    id: affected-version
+    attributes:
+      label: Affected version
+      description: The Voyager OGM version where you saw the problem (for example `0.4.0`). Run `python -c "import voyager_ogm; print(voyager_ogm.__version__)"` if you are unsure.
+      placeholder: "0.4.0"
+    validations:
+      required: false
+
+  - type: input
     id: environment
     attributes:
       label: Environment

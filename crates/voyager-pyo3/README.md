@@ -14,7 +14,7 @@ Python PyO3 bindings and Apache Arrow PyCapsule bridge for Voyager OGM.
 pip install voyager-ogm
 ```
 
-The PyPI project and its documentation start at the [main repository README](https://github.com/tanishq-kumar/voyager#readme).
+The PyPI project page is the [Python package README](https://github.com/tanishq-kumar/voyager/blob/main/packages/python/README.md); the main repository README covers the whole project.
 
 ## Development
 

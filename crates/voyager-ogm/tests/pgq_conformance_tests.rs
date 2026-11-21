@@ -273,3 +273,211 @@ fn test_pgq_rejects_mutations_and_unwinds() {
     let err = pgq.visit_query(&arena, root).unwrap_err();
     assert!(err.to_string().contains("UNWIND"));
 }
+
+// ---------------------------------------------------------------------------
+// 7. #268: constructs must be translated or rejected (never silently dropped)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pgq_optional_match_is_unsupported() {
+    let mut builder = QueryBuilder::new();
+    builder
+        .match_node(Some("p"), vec!["Person"])
+        .optional_match()
+        .node(Some("c"), vec!["Company"])
+        .field("p", "name", None::<String>)
+        .field("c", "name", None::<String>);
+
+    let (arena, root) = builder.build();
+    let mut pgq = SqlPgqEmitter::new("g");
+    let err = pgq.visit_query(&arena, root).unwrap_err();
+    assert!(matches!(err, voyager_ogm::Error::UnsupportedFeature { .. }));
+    assert!(err.to_string().contains("OPTIONAL MATCH"), "{err}");
+}
+
+#[test]
+fn test_pgq_distinct_projection_is_emitted() {
+    let mut builder = QueryBuilder::new();
+    builder
+        .match_node(Some("p"), vec!["Person"])
+        .distinct(true)
+        .field("p", "city", None::<String>);
+
+    let (arena, root) = builder.build();
+    let mut pgq = SqlPgqEmitter::new("g");
+    let res = pgq.visit_query(&arena, root).unwrap();
+    assert_eq!(
+        res.statement,
+        "SELECT DISTINCT * FROM GRAPH_TABLE (g MATCH (p IS Person) COLUMNS (p.city))"
+    );
+}
+
+#[test]
+fn test_pgq_load_csv_is_unsupported() {
+    let mut builder = QueryBuilder::new();
+    builder
+        .load_csv("file:///persons.csv", true, "row")
+        .match_node(Some("p"), vec!["Person"])
+        .field("p", "name", None::<String>);
+
+    let (arena, root) = builder.build();
+    let mut pgq = SqlPgqEmitter::new("g");
+    let err = pgq.visit_query(&arena, root).unwrap_err();
+    assert!(matches!(err, voyager_ogm::Error::UnsupportedFeature { .. }));
+    assert!(err.to_string().contains("LOAD CSV"), "{err}");
+}
+
+#[test]
+fn test_pgq_regex_operator_is_unsupported() {
+    let mut builder = QueryBuilder::new();
+    builder
+        .match_node(Some("p"), vec!["Person"])
+        .where_property("p", "name", BinaryOp::RegexMatch, "A.*")
+        .field("p", "name", None::<String>);
+
+    let (arena, root) = builder.build();
+    let mut pgq = SqlPgqEmitter::new("g");
+    let err = pgq.visit_query(&arena, root).unwrap_err();
+    assert!(matches!(err, voyager_ogm::Error::UnsupportedFeature { .. }));
+    assert!(err.to_string().contains("Regular expression"), "{err}");
+    assert!(!err.to_string().contains("NodeHandle("), "{err}");
+}
+
+#[test]
+fn test_pgq_subquery_expressions_are_unsupported() {
+    // EXISTS
+    let mut b_exists = QueryBuilder::new();
+    b_exists.match_node(Some("p"), vec!["Person"]);
+    let path = b_exists.subquery(|q| {
+        q.node_var("p")
+            .to_types(vec!["WORKS_AT"])
+            .node(Some("c"), vec!["Company"]);
+    });
+    let exists = b_exists.exists_subquery(path);
+    b_exists
+        .where_expr(exists)
+        .field("p", "name", None::<String>);
+    let (arena, root) = b_exists.build();
+    let mut pgq = SqlPgqEmitter::new("g");
+    let err = pgq.visit_query(&arena, root).unwrap_err();
+    assert!(matches!(err, voyager_ogm::Error::UnsupportedFeature { .. }));
+    assert!(err.to_string().contains("EXISTS"), "{err}");
+    assert!(!err.to_string().contains("QueryStatement {"), "{err}");
+
+    // COUNT
+    let mut b_count = QueryBuilder::new();
+    b_count.match_node(Some("p"), vec!["Person"]);
+    let path = b_count.subquery(|q| {
+        q.node_var("p")
+            .to_types(vec!["WORKS_AT"])
+            .node(Some("c"), vec!["Company"]);
+    });
+    let count = b_count.count_subquery(path);
+    b_count.r#return().custom_expr(count, Some("company_count"));
+    let (arena, root) = b_count.build();
+    let mut pgq = SqlPgqEmitter::new("g");
+    let err = pgq.visit_query(&arena, root).unwrap_err();
+    assert!(matches!(err, voyager_ogm::Error::UnsupportedFeature { .. }));
+    assert!(err.to_string().contains("COUNT"), "{err}");
+    assert!(!err.to_string().contains("QueryStatement {"), "{err}");
+
+    // List comprehension
+    let mut b_list = QueryBuilder::new();
+    b_list.match_node(Some("p"), vec!["Person"]);
+    let tags = b_list.prop("p", "tags");
+    let list_comp = b_list.list_comprehension("x", tags, None, None);
+    b_list.r#return().custom_expr(list_comp, Some("tags"));
+    let (arena, root) = b_list.build();
+    let mut pgq = SqlPgqEmitter::new("g");
+    let err = pgq.visit_query(&arena, root).unwrap_err();
+    assert!(matches!(err, voyager_ogm::Error::UnsupportedFeature { .. }));
+    assert!(err.to_string().contains("List comprehension"), "{err}");
+    assert!(!err.to_string().contains("ListComprehension {"), "{err}");
+
+    // Pattern comprehension
+    let mut b_pattern = QueryBuilder::new();
+    b_pattern.match_node(Some("p"), vec!["Person"]);
+    let sub = b_pattern.subquery(|q| {
+        q.node_var("p")
+            .to_types(vec!["WORKS_AT"])
+            .node(Some("c"), vec!["Company"]);
+    });
+    let company_name = b_pattern.prop("c", "name");
+    let pattern_comp = b_pattern.pattern_comprehension(sub, None, company_name);
+    b_pattern
+        .r#return()
+        .custom_expr(pattern_comp, Some("companies"));
+    let (arena, root) = b_pattern.build();
+    let mut pgq = SqlPgqEmitter::new("g");
+    let err = pgq.visit_query(&arena, root).unwrap_err();
+    assert!(matches!(err, voyager_ogm::Error::UnsupportedFeature { .. }));
+    assert!(err.to_string().contains("Pattern comprehension"), "{err}");
+    assert!(!err.to_string().contains("PatternComprehension {"), "{err}");
+}
+
+#[test]
+fn test_pgq_requires_at_least_one_projection() {
+    let mut builder = QueryBuilder::new();
+    builder.match_node(Some("p"), vec!["Person"]);
+
+    let (arena, root) = builder.build();
+    let mut pgq = SqlPgqEmitter::new("g");
+    let err = pgq.visit_query(&arena, root).unwrap_err();
+    assert!(matches!(err, voyager_ogm::Error::EmissionError(_)));
+    assert!(err.to_string().contains("at least one projection"), "{err}");
+    assert!(!err.to_string().contains("COLUMNS ()"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// 8. #270: graph name validation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pgq_rejects_invalid_graph_names() {
+    let mut builder = QueryBuilder::new();
+    builder
+        .match_node(Some("p"), vec!["Person"])
+        .field("p", "name", None::<String>);
+    let (arena, root) = builder.build();
+
+    for name in [
+        "",
+        "g) UNION SELECT 1 --",
+        "g'",
+        "g;",
+        "g name",
+        "g-name",
+        "1g",
+        "g.dot",
+    ] {
+        let mut pgq = SqlPgqEmitter::new(name);
+        let err = pgq.visit_query(&arena, root).unwrap_err();
+        assert!(
+            matches!(err, voyager_ogm::Error::EmissionError(_)),
+            "expected EmissionError for graph name {name:?}, got {err:?}"
+        );
+        assert!(err.to_string().contains("Invalid graph name"), "{err}");
+        assert!(err.to_string().contains("SQL:PGQ"), "{err}");
+    }
+}
+
+#[test]
+fn test_pgq_accepts_plain_identifier_graph_names() {
+    let mut builder = QueryBuilder::new();
+    builder
+        .match_node(Some("p"), vec!["Person"])
+        .field("p", "name", None::<String>);
+    let (arena, root) = builder.build();
+
+    let max_len_name = "a".repeat(63);
+    for name in ["g", "_g", "g123", max_len_name.as_str()] {
+        let mut pgq = SqlPgqEmitter::new(name);
+        let res = pgq.visit_query(&arena, root).unwrap();
+        assert!(
+            res.statement
+                .contains(&format!("FROM GRAPH_TABLE ({name} MATCH")),
+            "{}",
+            res.statement
+        );
+    }
+}

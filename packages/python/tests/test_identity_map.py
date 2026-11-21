@@ -144,7 +144,9 @@ class TestBatchCoalescingFlush:
         mock_bridge = MockBridge()
         session = Session(bridge=mock_bridge, dialect="iso_gql", enable_identity_map=True)
 
-        p1 = Person(id="p1", name="Alice", age=30)
+        # Supply every defaultable field explicitly so the bulk MERGE has identical
+        # ON CREATE and ON MATCH assignments, which ISO GQL UPSERT can represent.
+        p1 = Person(id="p1", name="Alice", age=30, salary=0.0)
         session.register(p1)
         p1.age = 32
 

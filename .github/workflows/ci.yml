@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
     # Runs once per opened PR and once per push. Label and other metadata
     # changes do not trigger CI; jobs read the PR's current labels at run time
     # (see the `changes` job), so a re-run picks up a label added later.
@@ -482,7 +482,19 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          jobs_json="$(gh api --paginate "repos/${REPO}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100" --jq '.jobs[] | select(.name != "CI Gate") | {name, conclusion}')"
+          fetch_jobs() {
+            gh api --paginate "repos/${REPO}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100" \
+              --jq '.jobs[] | select(.name != "CI Gate") | {name, conclusion}'
+          }
+          # The jobs API can report a job that has just finished without its conclusion
+          # for a few seconds; wait until every job has one (up to ~5 minutes).
+          for attempt in $(seq 1 30); do
+            jobs_json="$(fetch_jobs)"
+            pending="$(echo "${jobs_json}" | jq -r 'select(.conclusion == null) | .name')"
+            [[ -z "${pending}" ]] && break
+            echo "Waiting for job conclusions (attempt ${attempt}/30): $(echo "${pending}" | paste -sd ', ' -)"
+            sleep 10
+          done
           echo "${jobs_json}" | jq -r '"\(.conclusion // "pending")\t\(.name)"' | sort
           bad="$(echo "${jobs_json}" | jq -r 'select(.conclusion != "success" and .conclusion != "skipped") | "\(.name) (\(.conclusion // "pending"))"')"
           if [[ -n "${bad}" ]]; then

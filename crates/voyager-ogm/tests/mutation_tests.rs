@@ -77,11 +77,13 @@ fn test_merge_upsert_with_on_create_and_on_match_set() {
     assert_eq!(res.parameters.len(), 3);
 
     let mut gql = IsoGqlEmitter::new();
-    let res_gql = gql.visit_query(&arena, root).unwrap();
-    assert_eq!(
-        res_gql.statement,
-        "UPSERT (p:User) SET p.created_at = $p0, p.status = $p1, p.updated_at = $p2"
-    );
+    match gql.visit_query(&arena, root).unwrap_err() {
+        voyager_ogm::Error::UnsupportedFeature { dialect, feature } => {
+            assert_eq!(dialect, "iso_gql");
+            assert!(feature.contains("ON CREATE SET / ON MATCH SET"));
+        }
+        other => panic!("Expected UnsupportedFeature, got {other:?}"),
+    }
 }
 
 #[test]
@@ -444,11 +446,13 @@ fn test_merge_relationship_with_key_and_set_properties() {
     assert_eq!(res.parameters.get("p2"), Some(&LiteralValue::Int64(5)));
 
     let mut gql = IsoGqlEmitter::new();
-    let res_gql = gql.visit_query(&arena, root).unwrap();
-    assert_eq!(
-        res_gql.statement,
-        "MATCH (a:Person) MATCH (b:Person) UPSERT (a)-[r:RATED {key: $p0}]->(b) SET r.note = $p1, r.score = $p2, r.note = $p1"
-    );
+    match gql.visit_query(&arena, root).unwrap_err() {
+        voyager_ogm::Error::UnsupportedFeature { dialect, feature } => {
+            assert_eq!(dialect, "iso_gql");
+            assert!(feature.contains("ON CREATE SET / ON MATCH SET"));
+        }
+        other => panic!("Expected UnsupportedFeature, got {other:?}"),
+    }
 }
 
 #[test]

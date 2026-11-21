@@ -1,16 +1,26 @@
 # voyager-drivers
 
+[![crates.io](https://img.shields.io/crates/v/voyager-drivers.svg)](https://crates.io/crates/voyager-drivers)
+[![docs.rs](https://img.shields.io/docsrs/voyager-drivers.svg)](https://docs.rs/voyager-drivers)
+[![CI](https://github.com/tanishq-kumar/voyager/actions/workflows/ci.yml/badge.svg)](https://github.com/tanishq-kumar/voyager/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/tanishq-kumar/voyager/blob/main/LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.87-blue.svg)](https://github.com/tanishq-kumar/voyager/blob/main/Cargo.toml)
+
 **Native asynchronous driver layer for Voyager OGM: connection pooling, wire protocols, and Arrow results.**
 
 `voyager-drivers` is the pure safe Rust driver layer for Voyager OGM. It opens asynchronous Bolt (Neo4j, Memgraph), PostgreSQL wire (Apache AGE, PostgreSQL 19) and Redis RESP (FalkorDB) connections over raw TCP, pools them, runs native transactions, and returns Apache Arrow record batches. It builds on [Tokio](https://tokio.rs) and contains no unsafe code.
 
 ## Install
 
-```bash
-# Default: bolt, postgres, redis, arrow
-cargo add voyager-drivers
+Install with the default features (`bolt`, `postgres`, `redis`, `arrow`):
 
-# Only the Bolt protocol
+```bash
+cargo add voyager-drivers
+```
+
+For a Bolt-only build:
+
+```bash
 cargo add voyager-drivers --no-default-features --features bolt
 ```
 

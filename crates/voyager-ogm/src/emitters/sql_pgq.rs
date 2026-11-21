@@ -8,6 +8,44 @@ use crate::error::{Error, Result};
 use crate::visitor::{AstVisitor, ColumnMeta, CompiledQuery};
 use std::collections::HashMap;
 
+/// Returns the AST node variant name without rendering its contents.
+fn ast_node_kind(node: &AstNode) -> &'static str {
+    match node {
+        AstNode::NodePattern { .. } => "NodePattern",
+        AstNode::EdgePattern { .. } => "EdgePattern",
+        AstNode::PathChain { .. } => "PathChain",
+        AstNode::BinaryExpression { .. } => "BinaryExpression",
+        AstNode::UnaryExpression { .. } => "UnaryExpression",
+        AstNode::FunctionCall { .. } => "FunctionCall",
+        AstNode::CaseExpression { .. } => "CaseExpression",
+        AstNode::ListComprehension { .. } => "ListComprehension",
+        AstNode::PatternComprehension { .. } => "PatternComprehension",
+        AstNode::ExistsSubquery { .. } => "ExistsSubquery",
+        AstNode::CountSubquery { .. } => "CountSubquery",
+        AstNode::ListLiteral(_) => "ListLiteral",
+        AstNode::PropertyAccess { .. } => "PropertyAccess",
+        AstNode::Literal(_) => "Literal",
+        AstNode::Identifier(_) => "Identifier",
+        AstNode::Parameter(_) => "Parameter",
+        AstNode::UnwindClause { .. } => "UnwindClause",
+        AstNode::WhereClause { .. } => "WhereClause",
+        AstNode::MatchClause { .. } => "MatchClause",
+        AstNode::ReturnClause { .. } => "ReturnClause",
+        AstNode::ProcedureCall { .. } => "ProcedureCall",
+        AstNode::CreateClause { .. } => "CreateClause",
+        AstNode::MergeClause { .. } => "MergeClause",
+        AstNode::SetClause { .. } => "SetClause",
+        AstNode::SetItem { .. } => "SetItem",
+        AstNode::DeleteClause { .. } => "DeleteClause",
+        AstNode::RemoveClause { .. } => "RemoveClause",
+        AstNode::LoadCsvClause { .. } => "LoadCsvClause",
+        AstNode::WithClause { .. } => "WithClause",
+        AstNode::LetClause { .. } => "LetClause",
+        AstNode::FilterClause { .. } => "FilterClause",
+        AstNode::QueryStatement { .. } => "QueryStatement",
+    }
+}
+
 /// Emits standardized ISO/IEC 9075-16:2023 SQL:PGQ `GRAPH_TABLE` queries.
 #[derive(Debug)]
 pub struct SqlPgqEmitter {
@@ -68,7 +106,8 @@ impl SqlPgqEmitter {
             Ok(())
         } else {
             Err(Error::AstInvariantViolation(format!(
-                "Expected NodePattern, got {node:?}"
+                "Expected NodePattern, got {}",
+                ast_node_kind(node)
             )))
         }
     }
@@ -133,7 +172,8 @@ impl SqlPgqEmitter {
             Ok(())
         } else {
             Err(Error::AstInvariantViolation(format!(
-                "Expected EdgePattern, got {node:?}"
+                "Expected EdgePattern, got {}",
+                ast_node_kind(node)
             )))
         }
     }
@@ -172,7 +212,8 @@ impl SqlPgqEmitter {
                 Ok(())
             }
             other => Err(Error::AstInvariantViolation(format!(
-                "Expected PathChain or NodePattern, got {other:?}"
+                "Expected PathChain or NodePattern, got {}",
+                ast_node_kind(other)
             ))),
         }
     }
@@ -242,6 +283,13 @@ impl SqlPgqEmitter {
                     BinaryOp::Concat => {
                         self.buffer.push_str(" || ");
                         self.emit_expression(arena, *right, true)?;
+                    }
+                    BinaryOp::RegexMatch => {
+                        return Err(Error::UnsupportedFeature {
+                            dialect: "sql_pgq".to_string(),
+                            feature: "Regular expression match operator ('=~', regex) - SQL:2023 PGQ GRAPH_TABLE does not define a regex match operator"
+                                .to_string(),
+                        });
                     }
                     other => {
                         self.buffer.push(' ');
@@ -344,18 +392,26 @@ impl SqlPgqEmitter {
                 self.buffer.push_str(" END");
                 Ok(())
             }
-            AstNode::ExistsSubquery { subquery } => {
-                self.buffer.push_str("EXISTS (");
-                self.emit_expression(arena, *subquery, false)?;
-                self.buffer.push(')');
-                Ok(())
-            }
-            AstNode::CountSubquery { subquery } => {
-                self.buffer.push_str("COUNT (");
-                self.emit_expression(arena, *subquery, false)?;
-                self.buffer.push(')');
-                Ok(())
-            }
+            AstNode::ExistsSubquery { .. } => Err(Error::UnsupportedFeature {
+                dialect: "sql_pgq".to_string(),
+                feature: "EXISTS subquery expressions (exists) - SQL:2023 PGQ GRAPH_TABLE does not support Cypher existential subqueries"
+                    .to_string(),
+            }),
+            AstNode::CountSubquery { .. } => Err(Error::UnsupportedFeature {
+                dialect: "sql_pgq".to_string(),
+                feature: "COUNT subquery expressions (count) - SQL:2023 PGQ GRAPH_TABLE does not support Cypher count subqueries"
+                    .to_string(),
+            }),
+            AstNode::ListComprehension { .. } => Err(Error::UnsupportedFeature {
+                dialect: "sql_pgq".to_string(),
+                feature: "List comprehension expressions (list_comp) - SQL:2023 PGQ GRAPH_TABLE does not support Cypher list comprehensions"
+                    .to_string(),
+            }),
+            AstNode::PatternComprehension { .. } => Err(Error::UnsupportedFeature {
+                dialect: "sql_pgq".to_string(),
+                feature: "Pattern comprehension expressions (pattern_comp) - SQL:2023 PGQ GRAPH_TABLE does not support Cypher pattern comprehensions"
+                    .to_string(),
+            }),
             AstNode::ListLiteral(items) => {
                 self.buffer.push('[');
                 for (i, &item) in items.iter().enumerate() {
@@ -368,7 +424,8 @@ impl SqlPgqEmitter {
                 Ok(())
             }
             other => Err(Error::AstInvariantViolation(format!(
-                "Unsupported expression node: {other:?}"
+                "Unsupported expression node kind: {}",
+                ast_node_kind(other)
             ))),
         }
     }
@@ -392,7 +449,8 @@ impl SqlPgqEmitter {
             Ok(())
         } else {
             Err(Error::AstInvariantViolation(format!(
-                "Expected WhereClause, got {node:?}"
+                "Expected WhereClause, got {}",
+                ast_node_kind(node)
             )))
         }
     }
@@ -482,11 +540,18 @@ impl SqlPgqEmitter {
             }
             let match_node = arena.get(match_handle)?;
             if let AstNode::MatchClause {
+                optional,
                 paths,
                 where_clause,
-                ..
             } = match_node
             {
+                if *optional {
+                    return Err(Error::UnsupportedFeature {
+                        dialect: "sql_pgq".to_string(),
+                        feature: "OPTIONAL MATCH clauses (optional) - SQL:2023 PGQ GRAPH_TABLE has no direct outer-join form for Cypher OPTIONAL MATCH"
+                            .to_string(),
+                    });
+                }
                 for (p_idx, &path_handle) in paths.iter().enumerate() {
                     if p_idx > 0 {
                         self.buffer.push_str(", ");
@@ -540,6 +605,15 @@ impl SqlPgqEmitter {
 
 impl AstVisitor for SqlPgqEmitter {
     fn visit_query(&mut self, arena: &QueryAstArena, root: NodeHandle) -> Result<CompiledQuery> {
+        if !crate::emitters::is_valid_age_graph_name(&self.graph_name) {
+            return Err(Error::EmissionError(format!(
+                "Invalid graph name '{}' for SQL:PGQ queries. Graph names must be valid identifiers (ASCII letters, digits, and underscores, starting with a letter or underscore, 1 to 63 characters).",
+                self.graph_name
+            )));
+        }
+
+        crate::emitters::validate_query_identifiers(arena, root)?;
+
         self.buffer.clear();
         self.parameters.clear();
         self.param_counter = 0;
@@ -547,7 +621,7 @@ impl AstVisitor for SqlPgqEmitter {
         let root_node = arena.get(root)?;
         if let AstNode::QueryStatement {
             execution_mode,
-            load_csv: _,
+            load_csv,
             unwinds,
             matches,
             linear_clauses,
@@ -560,6 +634,13 @@ impl AstVisitor for SqlPgqEmitter {
                 return Err(Error::UnsupportedFeature {
                     dialect: "sql_pgq".to_string(),
                     feature: "DML mutations (CREATE, MERGE, SET, DELETE) - GRAPH_TABLE is a read-only query operator".to_string(),
+                });
+            }
+            if load_csv.is_some() {
+                return Err(Error::UnsupportedFeature {
+                    dialect: "sql_pgq".to_string(),
+                    feature: "LOAD CSV clauses (load_csv) - GRAPH_TABLE is a read-only query operator over a registered property graph"
+                        .to_string(),
                 });
             }
             if !unwinds.is_empty() {
@@ -587,18 +668,20 @@ impl AstVisitor for SqlPgqEmitter {
             let mut order_by_clause = None;
             let mut limit_clause = None;
             let mut skip_clause = None;
+            let mut distinct = false;
             let mut projections_list: Vec<ProjectionItem> = Vec::new();
 
             if let Some(ret_handle) = return_clause {
                 let ret_node = arena.get(*ret_handle)?;
                 if let AstNode::ReturnClause {
+                    distinct: return_distinct,
                     projections,
                     order_by,
                     skip,
                     limit,
-                    ..
                 } = ret_node
                 {
+                    distinct = *return_distinct;
                     projections_list = projections.clone();
                     order_by_clause = Some(order_by);
                     limit_clause = *limit;
@@ -682,7 +765,11 @@ impl AstVisitor for SqlPgqEmitter {
                 }
 
                 self.buffer.push_str(prefix);
-                self.buffer.push_str("SELECT ");
+                self.buffer.push_str(if distinct {
+                    "SELECT DISTINCT "
+                } else {
+                    "SELECT "
+                });
                 for (i, item) in outer_select_items.iter().enumerate() {
                     if i > 0 {
                         self.buffer.push_str(", ");
@@ -717,11 +804,22 @@ impl AstVisitor for SqlPgqEmitter {
                 }
             } else {
                 self.buffer.push_str(prefix);
-                self.buffer.push_str("SELECT * FROM GRAPH_TABLE (");
+                self.buffer.push_str(if distinct {
+                    "SELECT DISTINCT * FROM GRAPH_TABLE ("
+                } else {
+                    "SELECT * FROM GRAPH_TABLE ("
+                });
                 self.buffer.push_str(&self.graph_name);
                 self.buffer.push_str(" MATCH ");
 
                 self.emit_matches_and_where(arena, matches)?;
+
+                if projections_list.is_empty() {
+                    return Err(Error::EmissionError(
+                        "SQL:PGQ GRAPH_TABLE queries require at least one projection; add a RETURN clause with at least one field or expression."
+                            .to_string(),
+                    ));
+                }
 
                 self.emit_columns(arena, &projections_list)?;
                 self.buffer.push(')');
@@ -768,7 +866,8 @@ impl AstVisitor for SqlPgqEmitter {
             ))
         } else {
             Err(Error::AstInvariantViolation(format!(
-                "Invalid root AST node for SQL:PGQ: {root_node:?}"
+                "Invalid root AST node for SQL:PGQ: {}",
+                ast_node_kind(root_node)
             )))
         }
     }
