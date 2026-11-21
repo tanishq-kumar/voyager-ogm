@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-21
+
 ### Changed
 - **README installation guide**: added an Installation section covering PyPI and uv installs, optional extras, supported Python versions and platforms, the crates.io crates and Cargo features, the `voyager` CLI, pre-release installs, and the Rust MSRV. Added PyPI, Python, crates.io, and docs.rs badges and converted relative links to absolute GitHub URLs so the README renders correctly on PyPI.
 - **Crate README badges**: added crates.io, docs.rs, CI, license, and MSRV badges to the `voyager-ogm`, `voyager-drivers`, and `voyager-cli` READMEs, and split multi-command install snippets into one command per code block.
@@ -366,7 +368,9 @@ Breaking changes in the 0.4 line are marked **Breaking** in the sections below (
 
 
 
-[Unreleased]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0...HEAD
+
+[Unreleased]: https://github.com/tanishq-kumar/voyager/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0-alpha.8...v0.4.0
 [0.4.0-alpha.8]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0-alpha.7...v0.4.0-alpha.8
 [0.4.0-alpha.7]: https://github.com/tanishq-kumar/voyager/compare/v0.4.0-alpha.6...v0.4.0-alpha.7
